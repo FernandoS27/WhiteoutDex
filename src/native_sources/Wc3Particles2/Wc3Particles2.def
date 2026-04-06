@@ -1,0 +1,7 @@
+LIBRARY Wc3Particles2
+EXPORTS
+    LibDescription
+    LibNumberClasses
+    LibClassDesc
+    LibVersion
+    CanAutoDefer

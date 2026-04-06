@@ -1,0 +1,265 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+********************************************************************
+WhiteoutDex Toolkit - PackageContents.xml
+Warcraft III MDX/MDL Modeling Toolkit for 3ds Max 2022-2027
+********************************************************************
+-->
+<ApplicationPackage 
+    SchemaVersion="1.0"
+    ProductType="Application"
+    AutodeskProduct="3ds Max"
+    Name="WhiteoutDex Manager"
+    Description="A toolkit for WC3"
+    AppVersion="1.0.0"
+    Author="Fernando Sahmkow & Benjamin Schiefer"
+    ProductCode="{20260402-2117-1.0.0-0000-WHITEOUTDEXTOOL}"
+    UpgradeCode="{4583FEEB-C403-46E3-9C96-4563A4A34E24}">
+
+    <!-- General runtime requirements -->
+    <RuntimeRequirements
+        OS="Win64"
+        Platform="3ds Max"
+        SeriesMin="2022"
+        SeriesMax="2027" />
+
+    <CompanyDetails
+        Name="Sahmkow & Schiefer"
+        Url="www.benjaminschiefer.de"
+        Email="kontakt@benjaminschiefer.de" />
+
+    <!-- ================================================================
+         NATIVE BLP BITMAP I/O (one blp.bmi per Max version)
+         ================================================================ -->
+
+    <!-- Max 2022 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2022" SeriesMax="2022" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2022/blp.bmi" />
+    </Components>
+
+    <!-- Max 2023 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2023" SeriesMax="2023" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2023/blp.bmi" />
+    </Components>
+
+    <!-- Max 2024 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2024" SeriesMax="2024" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2024/blp.bmi" />
+    </Components>
+
+    <!-- Max 2025 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2025" SeriesMax="2025" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2025/blp.bmi" />
+    </Components>
+
+    <!-- Max 2026 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2026" SeriesMax="2026" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2026/blp.bmi" />
+    </Components>
+
+    <!-- Max 2027 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2027" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2027/blp.bmi" />
+    </Components>
+
+    <!-- ================================================================
+         WHITEOUTDEX EXTRACTOR / RENDERER (one .dlx per Max version)
+         ================================================================ -->
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2022" SeriesMax="2022" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2022/WhiteoutDexExtractor_2022.dlx" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2023" SeriesMax="2023" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2023/WhiteoutDexExtractor_2023.dlx" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2024" SeriesMax="2024" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2024/WhiteoutDexExtractor_2024.dlx" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2025" SeriesMax="2025" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2025/WhiteoutDexExtractor_2025.dlx" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2026" SeriesMax="2026" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2026/WhiteoutDexExtractor_2026.dlx" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2027" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2027/WhiteoutDexExtractor_2027.dlx" />
+    </Components>
+
+    <!-- ================================================================
+         WC3 PARTICLES2 (one .dlo per Max version)
+         ================================================================ -->
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2022" SeriesMax="2022" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2022/Wc3Particles2.dlo" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2023" SeriesMax="2023" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2023/Wc3Particles2.dlo" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2024" SeriesMax="2024" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2024/Wc3Particles2.dlo" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2025" SeriesMax="2025" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2025/Wc3Particles2.dlo" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2026" SeriesMax="2026" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2026/Wc3Particles2.dlo" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2027" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2027/Wc3Particles2.dlo" />
+    </Components>
+
+    <!-- ================================================================
+         WC3 RIBBON (one .dlr per Max version)
+         ================================================================ -->
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2022" SeriesMax="2022" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2022/Wc3Ribbon.dlo" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2023" SeriesMax="2023" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2023/Wc3Ribbon.dlo" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2024" SeriesMax="2024" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2024/Wc3Ribbon.dlo" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2025" SeriesMax="2025" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2025/Wc3Ribbon.dlo" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2026" SeriesMax="2026" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2026/Wc3Ribbon.dlo" />
+    </Components>
+
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2027" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2027/Wc3Ribbon.dlo" />
+    </Components>
+
+    <!-- ================================================================
+         MAXSCRIPT: Pre-start-up scripts (all versions)
+         ================================================================ -->
+
+    <Components Description="pre_startup_scripts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2022" SeriesMax="2027" />
+        
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexGlobals.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexLocalization.ms" />
+
+        <ComponentEntry ModuleName="./src/scripted_plugins/Popcorn.ms" />
+        <ComponentEntry ModuleName="./src/scripted_plugins/FaceFX.ms" />
+        <ComponentEntry ModuleName="./src/scripted_plugins/Wc3AttachPoint.ms" />
+        <ComponentEntry ModuleName="./src/scripted_plugins/Wc3CollisionShapes.ms" />
+        <ComponentEntry ModuleName="./src/scripted_plugins/Wc3VertexColor.ms" />
+        <ComponentEntry ModuleName="./src/scripted_plugins/Wc3RefEvent.ms" />
+        <ComponentEntry ModuleName="./src/scripted_plugins/Wc3Light.ms" />
+        <ComponentEntry ModuleName="./src/scripted_plugins/Wc3Material.ms" />
+        <ComponentEntry ModuleName="./src/scripted_plugins/Wc3Bitmap.ms" />
+
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/UtilityFunctions.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/ErrorReporter.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/GeometryUtilities.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/Wc3Model.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/Wc3Animation.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/ProgressUtility.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/Graph.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/Octree.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexIO.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexMDXReader.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexReaderReforge1200.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexMDLWriter.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexMDXWriter.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexModelRelinker.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexOptimize.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexNativeHelper.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexSceneRebuilder.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexSceneParser.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexImportFunctions.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexExportFunctions.ms" />
+        
+    </Components>
+
+    <!-- ================================================================
+         MAXSCRIPT: Menu system (version-specific)
+         ================================================================ -->
+
+    <Components Description="pre_startup_scripts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2025" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexMenuCallback.ms" />
+    </Components>
+
+    <Components Description="post_startup_scripts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2022" SeriesMax="2024" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/WhiteoutDexMenuInstaller.ms" />
+    </Components>
+
+    <!-- ================================================================
+         MAXSCRIPT: Post-start-up tools (all versions)
+         ================================================================ -->
+
+    <Components Description="post_startup_scripts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2022" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/AnimTools.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/GridAndDummyCreator.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/NodeManager.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/ObjectManipulationTools.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/ObjectSettings.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/SequenceManager.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/GlobalSequenceManager.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/SkinChanger.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/TeamColorManager.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/VisibilityKeyer.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/Wc3AttachPointCallback.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/Wc3RefEventCallback.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/WhiteoutDexSidebar.ms" />
+        <ComponentEntry ModuleName="./src/post_startup_scripts/WhiteoutDexAutoUpdater.ms" />
+    </Components>
+    
+    <!-- ================================================================
+         MAXSCRIPT: Macroscripts (all versions)
+         ================================================================ -->
+
+    <Components Description="macroscripts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2022" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./src/macroscripts/WhiteoutDex Toolkit-WhiteoutDex_Importer.mcr" />
+        <ComponentEntry ModuleName="./src/macroscripts/WhiteoutDex Toolkit-WhiteoutDex_Exporter.mcr" />
+        <ComponentEntry ModuleName="./src/macroscripts/WhiteoutDex Toolkit-WhiteoutDex_Manager.mcr" />
+        <ComponentEntry ModuleName="./src/macroscripts/WhiteoutDex Toolkit-WhiteoutDex_Settings.mcr" />
+        <ComponentEntry ModuleName="./src/macroscripts/WhiteoutDex Toolkit-WhiteoutDex_About.mcr" />
+    </Components>
+
+</ApplicationPackage>

@@ -1,0 +1,321 @@
+/**
+ * @file Wc3Particles2.rc
+ * @brief Dialog and string-table resources for the Wc3Particles2 3ds Max plugin.
+ *
+ * Contains six collapsible rollout panels and the string table used by
+ * the PB2 descriptor and DLL entry points.
+ */
+
+#include "resource.h"
+#include <windows.h>
+
+#ifdef _WIN32
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
+#endif
+
+/* Particle Configuration rollout (Import/Export) */
+IDD_ROLLOUT_CONFIG DIALOG 0, 0, 110, 44
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
+FONT 8, "MS Sans Serif"
+BEGIN
+    PUSHBUTTON      "Import", IDC_BUTTON_IMPORT, 7, 4, 45, 14
+    PUSHBUTTON      "Export", IDC_BUTTON_EXPORT, 57, 4, 45, 14
+    CONTROL         "Load Dynamic Values", IDC_CHECK_LOAD_DYNAMIC, "Button",
+                    BS_AUTOCHECKBOX | BS_LEFTTEXT | WS_TABSTOP, 7, 24, 90, 10
+END
+
+/* Emitter Options rollout */
+IDD_ROLLOUT_EMITTER DIALOG 0, 0, 110, 134
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "Count:", -1, 7, 6, 50, 8
+    CONTROL         "", IDC_EDIT_COUNT, "CustEdit", WS_TABSTOP, 60, 5, 34, 10
+    CONTROL         "", IDC_SPIN_COUNT, "SpinnerControl", 0, 95, 5, 7, 10
+
+    LTEXT           "Speed ...............", -1, 7, 22, 52, 8
+    CONTROL         "", IDC_EDIT_SPEED, "CustEdit", WS_TABSTOP, 60, 21, 34, 10
+    CONTROL         "", IDC_SPIN_SPEED, "SpinnerControl", 0, 95, 21, 7, 10
+    LTEXT           "Control:", -1, 7, 35, 28, 8
+    COMBOBOX        IDC_CTRL_SPEED, 60, 34, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    LTEXT           "Variation ..........", -1, 7, 50, 52, 8
+    CONTROL         "", IDC_EDIT_VARIATION, "CustEdit", WS_TABSTOP, 60, 49, 34, 10
+    CONTROL         "", IDC_SPIN_VARIATION, "SpinnerControl", 0, 95, 49, 7, 10
+    LTEXT           "Control:", -1, 7, 63, 28, 8
+    COMBOBOX        IDC_CTRL_VARIATION, 60, 62, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    LTEXT           "Cone Angle .....", -1, 7, 78, 52, 8
+    CONTROL         "", IDC_EDIT_ANGLE_Y, "CustEdit", WS_TABSTOP, 60, 77, 34, 10
+    CONTROL         "", IDC_SPIN_ANGLE_Y, "SpinnerControl", 0, 95, 77, 7, 10
+    LTEXT           "Control:", -1, 7, 91, 28, 8
+    COMBOBOX        IDC_CTRL_ANGLE_Y, 60, 90, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    LTEXT           "Gravity ............", -1, 7, 106, 52, 8
+    CONTROL         "", IDC_EDIT_GRAVITY, "CustEdit", WS_TABSTOP, 60, 105, 34, 10
+    CONTROL         "", IDC_SPIN_GRAVITY, "SpinnerControl", 0, 95, 105, 7, 10
+    LTEXT           "Control:", -1, 7, 119, 28, 8
+    COMBOBOX        IDC_CTRL_GRAVITY, 60, 118, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
+END
+
+/* Timing Options rollout */
+IDD_ROLLOUT_TIMING DIALOG 0, 0, 110, 58
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "Lifespan:", -1, 7, 6, 48, 8
+    CONTROL         "", IDC_EDIT_LIFE, "CustEdit", WS_TABSTOP, 60, 5, 34, 10
+    CONTROL         "", IDC_SPIN_LIFE, "SpinnerControl", 0, 95, 5, 7, 10
+
+    LTEXT           "Emission Rate:", -1, 7, 21, 52, 8
+    CONTROL         "", IDC_EDIT_INITVEL, "CustEdit", WS_TABSTOP, 60, 20, 34, 10
+    CONTROL         "", IDC_SPIN_INITVEL, "SpinnerControl", 0, 95, 20, 7, 10
+    LTEXT           "Control:", -1, 7, 34, 28, 8
+    COMBOBOX        IDC_CTRL_INITVEL, 60, 33, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    CONTROL         "Squirt Particles", IDC_CHECKBOX_SQUIRT, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 28, 48, 60, 10
+END
+
+/* Size Options rollout */
+IDD_ROLLOUT_SIZE DIALOG 0, 0, 110, 78
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "Width ...............", -1, 7, 6, 48, 8
+    CONTROL         "", IDC_EDIT_WIDTH, "CustEdit", WS_TABSTOP, 60, 5, 34, 10
+    CONTROL         "", IDC_SPIN_WIDTH, "SpinnerControl", 0, 95, 5, 7, 10
+    LTEXT           "Control:", -1, 7, 19, 28, 8
+    COMBOBOX        IDC_CTRL_WIDTH, 60, 18, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    LTEXT           "Length ..............", -1, 7, 34, 48, 8
+    CONTROL         "", IDC_EDIT_HEIGHT, "CustEdit", WS_TABSTOP, 60, 33, 34, 10
+    CONTROL         "", IDC_SPIN_HEIGHT, "SpinnerControl", 0, 95, 33, 7, 10
+    LTEXT           "Control:", -1, 7, 47, 28, 8
+    COMBOBOX        IDC_CTRL_HEIGHT, 60, 46, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    CONTROL         "Line Emitter", IDC_CHECKBOX_LINE_EMITTER, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 28, 64, 53, 10
+END
+
+/* Texture Options rollout */
+IDD_ROLLOUT_TEXTURE DIALOG 0, 0, 110, 248
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "- Texture Path Prefix -", -1, 18, 5, 74, 8
+    CONTROL         "", IDC_EDIT_PATH_PREFIX, "CustEdit",
+                    WS_TABSTOP, 7, 16, 95, 11
+
+    LTEXT           "- Particle Texture File -", -1, 17, 33, 76, 8
+    CONTROL         "", IDC_CUSTOMEDIT_PATH, "CustEdit",
+                    WS_TABSTOP, 7, 44, 95, 11
+
+    PUSHBUTTON      "Import Particle Texture", IDC_BUTTON_IMPORT_TEX, 7, 60, 95, 14
+    PUSHBUTTON      "Browse MPQ / CASC", IDC_BUTTON_BROWSE_CASC, 7, 77, 95, 14
+
+    LTEXT           "- Texture Blend Mode -", -1, 20, 98, 74, 8
+    COMBOBOX        IDC_COMBO_BLEND, 7, 109, 95, 74,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Unshaded .......................", -1, 7, 128, 82, 8
+    CONTROL         "", IDC_CHECKBOX_UNSHADED, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 93, 127, 10, 10
+
+    LTEXT           "Unfogged .......................", -1, 7, 142, 82, 8
+    CONTROL         "", IDC_CHECKBOX_UNFOGGED, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 93, 141, 10, 10
+
+    LTEXT           "Sort Z-Axis Geometry .....", -1, 7, 156, 82, 8
+    CONTROL         "", IDC_CHECKBOX_SORT, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 93, 155, 10, 10
+
+    LTEXT           "- Replaceable Texture -", -1, 17, 173, 76, 8
+    COMBOBOX        IDC_COMBO_TEXTURE_CAT, 7, 184, 95, 74,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    GROUPBOX        "Sequence", -1, 4, 203, 102, 32
+    LTEXT           "Rows:", -1, 9, 218, 20, 8
+    CONTROL         "", IDC_EDIT_ROWS, "CustEdit", WS_TABSTOP, 30, 217, 18, 10
+    CONTROL         "", IDC_SPIN_ROWS, "SpinnerControl", 0, 49, 217, 7, 10
+    LTEXT           "Cols:", -1, 59, 218, 16, 8
+    CONTROL         "", IDC_EDIT_COLS, "CustEdit", WS_TABSTOP, 76, 217, 18, 10
+    CONTROL         "", IDC_SPIN_COLS, "SpinnerControl", 0, 95, 217, 7, 10
+END
+
+/* Particle Options rollout */
+IDD_ROLLOUT_PARTICLE DIALOG 0, 0, 110, 370
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
+FONT 8, "MS Sans Serif"
+BEGIN
+    /* Particle Type */
+    CONTROL         "Head", IDC_RADIO_TYPE_HEAD, "Button",
+                    BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 7, 4, 31, 10
+    CONTROL         "Tail", IDC_RADIO_TYPE_TAIL, "Button",
+                    BS_AUTORADIOBUTTON, 41, 4, 26, 10
+    CONTROL         "Both", IDC_RADIO_TYPE_BOTH, "Button",
+                    BS_AUTORADIOBUTTON, 72, 4, 29, 10
+
+    LTEXT           "Tail Length:", -1, 11, 19, 38, 8
+    CONTROL         "", IDC_EDIT_TAILLEN, "CustEdit", WS_TABSTOP, 51, 18, 28, 10
+    CONTROL         "", IDC_SPIN_TAILLEN, "SpinnerControl", 0, 81, 18, 7, 10
+
+    /* Time (Parametric) */
+    GROUPBOX        "Time (Parametric)", -1, 4, 32, 102, 36
+    LTEXT           "Start", -1, 11, 43, 16, 8
+    LTEXT           "Middle", -1, 44, 43, 22, 8
+    LTEXT           "End", -1, 82, 43, 14, 8
+    LTEXT           "0", -1, 14, 53, 8, 10
+    CONTROL         "", IDC_EDIT_MIDTIME, "CustEdit", WS_TABSTOP, 40, 53, 21, 10
+    CONTROL         "", IDC_SPIN_MIDTIME, "SpinnerControl", 0, 63, 53, 7, 10
+    LTEXT           "1", -1, 85, 53, 8, 10
+
+    /* Color */
+    GROUPBOX        "Color", -1, 4, 68, 102, 37
+    LTEXT           "Start", -1, 11, 79, 16, 8
+    LTEXT           "Middle", -1, 42, 79, 22, 8
+    LTEXT           "End", -1, 82, 79, 14, 8
+    CONTROL         "Custom1", IDC_COLOR_START, "ColorSwatch", WS_TABSTOP, 10, 89, 21, 12
+    CONTROL         "Custom1", IDC_COLOR_MID, "ColorSwatch", WS_TABSTOP, 41, 89, 21, 12
+    CONTROL         "Custom1", IDC_COLOR_END, "ColorSwatch", WS_TABSTOP, 74, 89, 21, 12
+
+    /* Alpha */
+    GROUPBOX        "Alpha", -1, 4, 109, 102, 35
+    LTEXT           "Start", -1, 11, 120, 16, 8
+    LTEXT           "Middle", -1, 42, 120, 22, 8
+    LTEXT           "End", -1, 82, 120, 14, 8
+    CONTROL         "", IDC_EDIT_START_COLOR_R, "CustEdit", WS_TABSTOP, 6, 130, 21, 10
+    CONTROL         "", IDC_SPIN_START_COLOR_R, "SpinnerControl", 0, 29, 130, 7, 10
+    CONTROL         "", IDC_EDIT_START_COLOR_G, "CustEdit", WS_TABSTOP, 40, 130, 21, 10
+    CONTROL         "", IDC_SPIN_START_COLOR_G, "SpinnerControl", 0, 63, 130, 7, 10
+    CONTROL         "", IDC_EDIT_START_COLOR_B, "CustEdit", WS_TABSTOP, 73, 130, 21, 10
+    CONTROL         "", IDC_SPIN_START_COLOR_B, "SpinnerControl", 0, 96, 130, 7, 10
+
+    /* Scale */
+    GROUPBOX        "Scale", -1, 4, 148, 102, 35
+    LTEXT           "Start", -1, 11, 159, 16, 8
+    LTEXT           "Middle", -1, 42, 159, 22, 8
+    LTEXT           "End", -1, 82, 159, 14, 8
+    CONTROL         "", IDC_EDIT_STARTSIZE, "CustEdit", WS_TABSTOP, 6, 169, 24, 10
+    CONTROL         "", IDC_SPIN_STARTSIZE, "SpinnerControl", 0, 31, 169, 7, 10
+    CONTROL         "", IDC_EDIT_MIDSIZE, "CustEdit", WS_TABSTOP, 40, 169, 23, 10
+    CONTROL         "", IDC_SPIN_MIDSIZE, "SpinnerControl", 0, 64, 169, 7, 10
+    CONTROL         "", IDC_EDIT_ENDSIZE, "CustEdit", WS_TABSTOP, 73, 169, 23, 10
+    CONTROL         "", IDC_SPIN_ENDSIZE, "SpinnerControl", 0, 97, 169, 7, 10
+
+    /* Lifespan Head UV Anim */
+    GROUPBOX        "Lifespan Head UV Anim", -1, 4, 187, 102, 35
+    LTEXT           "Start:", -1, 9, 198, 18, 8
+    LTEXT           "End:", -1, 44, 198, 16, 8
+    LTEXT           "Repeat:", -1, 75, 198, 26, 8
+    CONTROL         "", IDC_EDIT_START_ALPHA, "CustEdit", WS_TABSTOP, 6, 208, 21, 10
+    CONTROL         "", IDC_SPIN_START_ALPHA, "SpinnerControl", 0, 29, 208, 7, 10
+    CONTROL         "", IDC_EDIT_END_ALPHA, "CustEdit", WS_TABSTOP, 41, 208, 21, 10
+    CONTROL         "", IDC_SPIN_END_ALPHA, "SpinnerControl", 0, 63, 208, 7, 10
+    CONTROL         "", IDC_EDIT_MID_ALPHA, "CustEdit", WS_TABSTOP, 74, 208, 21, 10
+    CONTROL         "", IDC_SPIN_MID_ALPHA, "SpinnerControl", 0, 96, 208, 7, 10
+
+    /* Decay Head UV Anim */
+    GROUPBOX        "Decay Head UV Anim", -1, 4, 226, 102, 35
+    LTEXT           "Start:", -1, 9, 237, 18, 8
+    LTEXT           "End:", -1, 44, 237, 16, 8
+    LTEXT           "Repeat:", -1, 75, 237, 26, 8
+    CONTROL         "", IDC_EDIT_START_SCALE_X, "CustEdit", WS_TABSTOP, 6, 247, 21, 10
+    CONTROL         "", IDC_SPIN_START_SCALE_X, "SpinnerControl", 0, 29, 247, 7, 10
+    CONTROL         "", IDC_EDIT_START_SCALE_Y, "CustEdit", WS_TABSTOP, 40, 247, 22, 10
+    CONTROL         "", IDC_SPIN_START_SCALE_Y, "SpinnerControl", 0, 63, 247, 7, 10
+    CONTROL         "", IDC_EDIT_END_SCALE_X, "CustEdit", WS_TABSTOP, 73, 247, 22, 10
+    CONTROL         "", IDC_SPIN_END_SCALE_X, "SpinnerControl", 0, 96, 247, 7, 10
+
+    /* Lifespan Tail UV Anim */
+    GROUPBOX        "Lifespan Tail UV Anim", -1, 4, 265, 102, 35
+    LTEXT           "Start:", -1, 9, 276, 18, 8
+    LTEXT           "End:", -1, 44, 276, 16, 8
+    LTEXT           "Repeat:", -1, 75, 276, 26, 8
+    CONTROL         "", IDC_EDIT_END_COLOR_R, "CustEdit", WS_TABSTOP, 6, 286, 21, 10
+    CONTROL         "", IDC_SPIN_END_COLOR_R, "SpinnerControl", 0, 29, 286, 7, 10
+    CONTROL         "", IDC_EDIT_MID_COLOR_R, "CustEdit", WS_TABSTOP, 41, 286, 21, 10
+    CONTROL         "", IDC_SPIN_MID_COLOR_R, "SpinnerControl", 0, 63, 286, 7, 10
+    CONTROL         "", IDC_EDIT_END_COLOR_G, "CustEdit", WS_TABSTOP, 74, 286, 21, 10
+    CONTROL         "", IDC_SPIN_END_COLOR_G, "SpinnerControl", 0, 96, 286, 7, 10
+
+    /* Decay Tail UV Anim */
+    GROUPBOX        "Decay Tail UV Anim", -1, 4, 304, 102, 35
+    LTEXT           "Start:", -1, 9, 315, 18, 8
+    LTEXT           "End:", -1, 44, 315, 16, 8
+    LTEXT           "Repeat:", -1, 75, 315, 26, 8
+    CONTROL         "", IDC_EDIT_MID_COLOR_G, "CustEdit", WS_TABSTOP, 6, 325, 21, 10
+    CONTROL         "", IDC_SPIN_MID_COLOR_G, "SpinnerControl", 0, 29, 325, 7, 10
+    CONTROL         "", IDC_EDIT_MID_COLOR_B, "CustEdit", WS_TABSTOP, 41, 325, 21, 10
+    CONTROL         "", IDC_SPIN_MID_COLOR_B, "SpinnerControl", 0, 63, 325, 7, 10
+    CONTROL         "", IDC_EDIT_END_COLOR_B, "CustEdit", WS_TABSTOP, 74, 325, 21, 10
+    CONTROL         "", IDC_SPIN_END_COLOR_B, "SpinnerControl", 0, 96, 325, 7, 10
+END
+
+/* Other Options rollout */
+IDD_ROLLOUT_OTHER DIALOG 0, 0, 110, 42
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
+FONT 8, "MS Sans Serif"
+BEGIN
+    LTEXT           "Priority Plane:", -1, 9, 6, 47, 8
+    CONTROL         "", IDC_EDIT_PRIORITY, "CustEdit",
+                    WS_TABSTOP, 61, 5, 28, 10
+    CONTROL         "", IDC_SPIN_PRIORITY, "SpinnerControl",
+                    0, 91, 5, 7, 10
+    CONTROL         "Particles in Model Space", IDC_CHECKBOX_MODELSPACE, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 13, 18, 94, 10
+    CONTROL         "XY Quads", IDC_CHECKBOX_XYQUAD, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 13, 28, 48, 10
+END
+
+/* String table */
+STRINGTABLE
+BEGIN
+    IDS_GENERAL                     "General"
+    IDS_HEIGHT                      "Length"
+    IDS_WIDTH                       "Width"
+    IDS_CLASS_NAME                  "Wc3Particles2"
+    IDS_OBJECT_NAME                 "Wc3Particles2"
+    IDS_CATEGORY                    "Particle Systems"
+    IDS_PARAM_COUNT                 "Viewport Particles"
+    IDS_PARAM_SPEED                 "Speed"
+    IDS_PARAM_VARIATION             "Variation"
+    IDS_PARAM_LIFE                  "Life Time"
+    IDS_PARAM_INITVEL               "Parts/Sec"
+    IDS_LIB_DESCRIPTION             "Warcraft III Particle objects"
+    IDS_PARAM_ANGLE_Y               "Cone Angle"
+    IDS_PARAM_MIDTIME               "Time Middle"
+    IDS_PARAM_COLOR_START           "Color Start"
+    IDS_PARAM_COLOR_MID             "Color Middle"
+    IDS_PARAM_COLOR_END             "Color End"
+    IDS_PARAM_ALPHA_START           "Alpha Start"
+    IDS_PARAM_ALPHA_MID             "Alpha Middle"
+    IDS_PARAM_ALPHA_END             "Alpha End"
+    IDS_PARAM_SCALE_START           "Scale Start"
+    IDS_PARAM_SCALE_MID             "Scale Middle"
+    IDS_PARAM_SCALE_END             "Scale End"
+    IDS_PARAM_HEAD_LIFE_START       "Head Lifespan UV Anim Start Frame"
+    IDS_PARAM_HEAD_LIFE_REPEAT      "Head Lifespan UV Anim Repeat Count"
+    IDS_PARAM_HEAD_LIFE_END         "Head Lifespan UV Anim End Frame"
+    IDS_PARAM_HEAD_DECAY_START      "Head Decay UV Anim Start Frame"
+    IDS_PARAM_HEAD_DECAY_REPEAT     "Head Decay UV Anim Repeat Count"
+    IDS_PARAM_HEAD_DECAY_END        "Head Decay UV Anim End Frame"
+    IDS_PARAM_TAIL_LEN              "Tail Length Multiplier"
+    IDS_PARAM_TYPE                  "Particle Type"
+    IDS_PARAM_TAIL_DECAY_START      "Tail Decay UV Anim Start Frame"
+    IDS_PARAM_TAIL_DECAY_END        "Tail Decay UV Anim End Frame"
+    IDS_PARAM_TAIL_DECAY_REPEAT     "Tail Decay UV Anim Repeat Count"
+    IDS_PARAM_TAIL_LIFE_START       "Tail Lifespan UV Anim Start Frame"
+    IDS_PARAM_TAIL_LIFE_END         "Tail Lifespan UV Anim End Frame"
+    IDS_PARAM_TAIL_LIFE_REPEAT      "Tail Lifespan UV Anim Repeat Count"
+    IDS_PARAM_GRAVITY               "Gravity"
+    IDS_PARAM_SQUIRT                "Squirt!"
+    IDS_ROLLOUT_EMITTER             "Emitter Options"
+    IDS_ROLLOUT_TIMING              "Timing Options"
+    IDS_ROLLOUT_SIZE                "Size Options"
+    IDS_ROLLOUT_TEXTURE             "Texture Options"
+    IDS_ROLLOUT_PARTICLE            "Particle Options"
+    IDS_ROLLOUT_OTHER               "Other Options"
+    IDS_ROLLOUT_CONFIG              "Particle Configuration"
+END

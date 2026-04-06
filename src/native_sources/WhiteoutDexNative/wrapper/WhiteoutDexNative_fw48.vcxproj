@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WhiteoutDexNative — C++/CLI Managed Wrapper
+  Target: .NET Framework 4.8 (3ds Max 2022, 2023, 2024, 2025)
+  
+  Compiles ManagedWrapper.cpp + TextureBrowserForm.cpp with /clr
+  and links against the native static lib (WhiteoutDexNative_native.lib)
+  from the CMake build.
+  
+  Build: msbuild WhiteoutDexNative_fw48.vcxproj /p:Configuration=Release
+-->
+<Project DefaultTargets="Build" ToolsVersion="Current"
+         xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A1B2C3D4-1111-2222-3333-444455556666}</ProjectGuid>
+    <RootNamespace>WhiteoutDex</RootNamespace>
+    <ProjectName>WhiteoutDexNative_fw48</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <Keyword>ManagedCProj</Keyword>
+    <TargetFrameworkVersion>v4.8.1</TargetFrameworkVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <!-- Release x64 -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CLRSupport>true</CLRSupport>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+
+  <!-- Debug x64 -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CLRSupport>true</CLRSupport>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <!-- ================================================================== -->
+  <!--  Pfade zum CMake-Build-Output und WhiteoutLib                      -->
+  <!--  NATIVE_BUILD_DIR wird von BAUE_DLL.bat gesetzt                   -->
+  <!-- ================================================================== -->
+  <PropertyGroup>
+    <NativeBuildDir Condition="'$(NativeBuildDir)'==''">$(ProjectDir)..\build</NativeBuildDir>
+    <SourceDir>$(ProjectDir)..\Source</SourceDir>
+    <WhiteoutDir>$(ProjectDir)..\..\..\..\external\WhiteoutLib</WhiteoutDir>
+  </PropertyGroup>
+
+  <!-- Output -->
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)..\output\Max2016-2025\</OutDir>
+    <IntDir>$(ProjectDir)..\build\managed_fw48\</IntDir>
+    <TargetName>WhiteoutDexNative</TargetName>
+    <TargetExt>.dll</TargetExt>
+  </PropertyGroup>
+
+  <!-- Compiler -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;NOMINMAX;WHITEOUT_HAS_CASC=1;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SourceDir);$(WhiteoutDir)\include;$(NativeBuildDir)\_deps\zlib-src;$(NativeBuildDir)\_deps\zlib-build;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <ExceptionHandling>Async</ExceptionHandling>
+      <StructMemberAlignment>8Bytes</StructMemberAlignment>
+      <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(NativeBuildDir)\Release\WhiteoutDexNative_native.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_casc.lib;$(NativeBuildDir)\_deps\zlib-build\Release\zlibstatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;NOMINMAX;WHITEOUT_HAS_CASC=1;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SourceDir);$(WhiteoutDir)\include;$(NativeBuildDir)\_deps\zlib-src;$(NativeBuildDir)\_deps\zlib-build;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <ExceptionHandling>Async</ExceptionHandling>
+      <StructMemberAlignment>8Bytes</StructMemberAlignment>
+      <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(NativeBuildDir)\Debug\WhiteoutDexNative_native.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_casc.lib;$(NativeBuildDir)\_deps\zlib-build\Debug\zlibstaticd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <!-- .NET References -->
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+  </ItemGroup>
+
+  <!-- Source Files -->
+  <ItemGroup>
+    <ClCompile Include="$(SourceDir)\ManagedWrapper.cpp" />
+    <ClCompile Include="$(SourceDir)\TextureBrowserForm.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="$(SourceDir)\ManagedWrapper.h" />
+    <ClInclude Include="$(SourceDir)\TextureBrowserForm.h" />
+    <ClInclude Include="$(SourceDir)\MPQReader.h" />
+    <ClInclude Include="$(SourceDir)\CASCReader.h" />
+    <ClInclude Include="$(SourceDir)\BLPDecoder.h" />
+    <ClInclude Include="$(SourceDir)\DDSDecoder.h" />
+    <ClInclude Include="$(SourceDir)\ThumbnailEngine.h" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

@@ -1,0 +1,7 @@
+LIBRARY Wc3Ribbon
+EXPORTS
+    LibVersion          PRIVATE
+    LibDescription      PRIVATE
+    LibNumberClasses    PRIVATE
+    LibClassDesc        PRIVATE
+    CanAutoDefer        PRIVATE

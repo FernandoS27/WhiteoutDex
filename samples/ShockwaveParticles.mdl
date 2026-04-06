@@ -1,0 +1,50 @@
+// Converted Wed Jul 31 18:42:07 2013
+// MdlxConv Version Mar  3 2007.
+Version {
+	FormatVersion 800,
+}
+Model "ShockwaveParticles" {
+	BlendTime 150,
+}
+Sequences 1 {
+	Anim "Stand" {
+		Interval { 333, 2000 },
+	}
+}
+PivotPoints 1 {
+	{ -0.754791, 0.754791, 139.591705 },
+}
+ParticleEmitter "SuperSpray01" {
+	ObjectId 0,
+	EmitterUsesMDL,
+	EmissionRate 6 {
+		Bezier,
+		0: 0.000000,
+			InTan 0.000000,
+			OutTan 0.000000,
+		333: 0.000000,
+			InTan 0.000000,
+			OutTan 0.000000,
+		666: 0.000000,
+			InTan 0.000000,
+			OutTan -0.014420,
+		833: 100.000000,
+			InTan 99.718933,
+			OutTan 99.519432,
+		1000: 0.000000,
+			InTan 0.000000,
+			OutTan 0.000000,
+		2000: 0.000000,
+			InTan 0.000000,
+			OutTan 0.000000,
+	}
+	static Gravity 50.000046,
+	static Longitude 0.000000,
+	static Latitude 3.141593,
+	static Visibility 0.000000,
+	Particle {
+		static LifeSpan 0.666667,
+		static InitVelocity 300.000000,
+		Path "Abilities\Weapons\DragonHawkMissile\DragonHawkMissile.MDL",
+	}
+}
