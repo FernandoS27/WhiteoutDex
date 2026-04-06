@@ -1,0 +1,129 @@
+// MDLXImporter — Import options dialog resource
+#include "resource.h"
+#include <windows.h>
+
+#ifdef _WIN32
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
+#endif
+
+// ============================================================================
+// Import Options Dialog
+// Layout mirrors the WhiteoutDex_Toolkit-Importer.mcr macroscript UI.
+// Uses dialog units (DLU). Approx conversion: 1 DLU ~ 1.5-1.75 px.
+// ============================================================================
+IDD_IMPORT_OPTIONS DIALOGEX 0, 0, 272, 365
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "WhiteoutDex MDX Importer"
+FONT 8, "MS Sans Serif"
+BEGIN
+    // ── Geometry group (top-left) ──
+    GROUPBOX        "Geometry", IDC_GRP_GEOMETRY, 7, 5, 66, 30
+    CONTROL         "Skinned", IDC_CHK_SKINNED, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 16, 17, 50, 10
+
+    // ── Materials group (below Geometry) ──
+    GROUPBOX        "Materials", IDC_GRP_MATERIALS, 7, 38, 66, 37
+    CONTROL         "Import Materials", IDC_CHK_IMPORT_MATERIALS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 50, 56, 10
+    CONTROL         "Import Textures", IDC_CHK_IMPORT_TEXTURES, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 62, 56, 10
+
+    // ── Animations group (top-right) ──
+    GROUPBOX        "Animations", IDC_GRP_ANIMATIONS, 80, 5, 185, 70
+    CONTROL         "Import Animations", IDC_CHK_IMPORT_ANIMATIONS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 88, 17, 72, 10
+    CONTROL         "Translation", IDC_CHK_TRANSLATION, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 95, 30, 50, 10
+    CONTROL         "Rotations", IDC_CHK_ROTATIONS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 95, 41, 50, 10
+    CONTROL         "Scale", IDC_CHK_SCALE, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 95, 52, 50, 10
+    CONTROL         "Visibility", IDC_CHK_VISIBILITY, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 95, 63, 50, 10
+    CONTROL         "Parameter", IDC_CHK_PARAMETER, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 165, 30, 60, 10
+    CONTROL         "Unwrap Animations", IDC_CHK_UNWRAP_ANIMS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 165, 41, 74, 10
+    CONTROL         "Texture Animations", IDC_CHK_TEXTURE_ANIMS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 165, 52, 74, 10
+    CONTROL         "Color", IDC_CHK_COLOR, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 165, 63, 50, 10
+
+    // ── Objects group (mid-left) ──
+    GROUPBOX        "Objects", IDC_GRP_OBJECTS, 7, 78, 154, 118
+    CONTROL         "Import Objects", IDC_CHK_IMPORT_OBJECTS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 90, 60, 10
+    CONTROL         "Bones", IDC_CHK_BONES, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 20, 104, 52, 10
+    CONTROL         "Helpers", IDC_CHK_HELPERS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 20, 115, 52, 10
+    CONTROL         "Lights", IDC_CHK_LIGHTS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 20, 126, 52, 10
+    CONTROL         "Attachments", IDC_CHK_ATTACHMENTS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 20, 137, 52, 10
+    CONTROL         "Particle Emitters 1", IDC_CHK_PE1, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 82, 104, 72, 10
+    CONTROL         "Particle Emitters 2", IDC_CHK_PE2, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 82, 115, 72, 10
+    CONTROL         "Ribbon Emitters", IDC_CHK_RIBBON_EMITTERS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 82, 126, 72, 10
+    CONTROL         "Collision Shapes", IDC_CHK_COLLISION_SHAPES, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 82, 137, 72, 10
+    CONTROL         "Event Objects", IDC_CHK_EVENT_OBJECTS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 20, 148, 56, 10
+    CONTROL         "Cameras", IDC_CHK_CAMERAS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 82, 148, 52, 10
+    // v1200 Reforged objects (hidden for v800)
+    CONTROL         "Corn Emitters", IDC_CHK_CORN_EMITTERS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 20, 160, 56, 10
+    CONTROL         "FaceFX", IDC_CHK_FACEFX, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 82, 160, 52, 10
+
+    // ── Settings group (mid-right) ──
+    GROUPBOX        "Settings", IDC_GRP_SETTINGS, 167, 78, 98, 118
+    LTEXT           "Fast Settings", IDC_LBL_FAST_SETTINGS, 175, 90, 50, 8
+    CONTROL         "Custom", IDC_RDO_CUSTOM, "Button",
+                    BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 175, 101, 82, 10
+    CONTROL         "Static No Materials", IDC_RDO_STATIC_NO_MAT, "Button",
+                    BS_AUTORADIOBUTTON, 175, 111, 82, 10
+    CONTROL         "Static Materials", IDC_RDO_STATIC_MAT, "Button",
+                    BS_AUTORADIOBUTTON, 175, 121, 82, 10
+    CONTROL         "Animated No Skinning", IDC_RDO_ANIM_NO_SKIN, "Button",
+                    BS_AUTORADIOBUTTON, 175, 131, 84, 10
+    CONTROL         "Animated No Objects", IDC_RDO_ANIM_NO_OBJ, "Button",
+                    BS_AUTORADIOBUTTON, 175, 141, 82, 10
+    CONTROL         "All", IDC_RDO_ALL, "Button",
+                    BS_AUTORADIOBUTTON, 175, 151, 82, 10
+    LTEXT           "Mode:", IDC_LBL_MODE, 175, 165, 24, 8
+    CONTROL         "New Scene", IDC_RDO_NEW_SCENE, "Button",
+                    BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 175, 175, 82, 10
+    CONTROL         "Merge", IDC_RDO_MERGE, "Button",
+                    BS_AUTORADIOBUTTON, 175, 185, 82, 10
+
+    // ── Helper Options ──
+    GROUPBOX        "Helper Options", IDC_GRP_HELPER_OPTIONS, 7, 200, 258, 26
+    CONTROL         "Import Helpers as Point Helpers", IDC_CHK_POINT_HELPERS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 16, 212, 140, 10
+
+    // ── Optimizer ──
+    GROUPBOX        "Optimizer", IDC_GRP_OPTIMIZER, 7, 230, 258, 38
+    CONTROL         "Optimize Geometry", IDC_CHK_OPT_GEOMETRY, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 16, 242, 100, 10
+    CONTROL         "Optimize Bones and Helpers", IDC_CHK_OPT_BONES, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 16, 254, 120, 10
+
+    // ── Texture Search ──
+    GROUPBOX        "Textures", IDC_GRP_TEXTURES, 7, 272, 258, 26
+    CONTROL         "Search Archives for Textures", IDC_CHK_SEARCH_TEXTURES, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 16, 284, 140, 10
+
+    // ── Progress ──
+    GROUPBOX        "Progress", IDC_GRP_PROGRESS, 7, 302, 258, 34
+    LTEXT           "Idle...", IDC_LBL_STATUS, 16, 314, 130, 8
+    CONTROL         "", IDC_PROGRESS_BAR, "msctls_progress32", WS_BORDER, 16, 324, 240, 8
+
+    // ── Buttons ──
+    DEFPUSHBUTTON   "Import", IDOK, 97, 344, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 155, 344, 50, 14
+END

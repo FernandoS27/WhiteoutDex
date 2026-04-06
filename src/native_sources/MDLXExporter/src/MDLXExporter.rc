@@ -1,0 +1,72 @@
+// MDLXExporter — Export options dialog resource
+#include "resource.h"
+#include <windows.h>
+
+#ifdef _WIN32
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
+#endif
+
+// ============================================================================
+// Export Options Dialog
+// Layout mirrors WhiteoutDex_Toolkit-Exporter.mcr macroscript UI.
+// Uses dialog units (DLU). Approx conversion: 1 DLU ~ 1.5-1.75 px.
+// ============================================================================
+IDD_EXPORT_OPTIONS DIALOGEX 0, 0, 180, 293
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "WhiteoutDex MDX Exporter"
+FONT 8, "MS Sans Serif"
+BEGIN
+    // ── Model Name ──
+    GROUPBOX        "Model Name", IDC_GRP_MODEL_NAME, 7, 5, 166, 28
+    EDITTEXT        IDC_EDT_MODEL_NAME, 14, 17, 152, 12, ES_AUTOHSCROLL
+
+    // ── Format Version ──
+    GROUPBOX        "Format Version", IDC_GRP_FORMAT_VERSION, 7, 37, 166, 26
+    CONTROL         "Classic (v800)", IDC_RDO_CLASSIC, "Button",
+                    BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 14, 49, 72, 10
+    CONTROL         "Reforged (v1200)", IDC_RDO_REFORGED, "Button",
+                    BS_AUTORADIOBUTTON, 92, 49, 72, 10
+
+    // ── Options ──
+    GROUPBOX        "Options", IDC_GRP_OPTIONS, 7, 67, 166, 121
+    CONTROL         "Merge similar meshes", IDC_CHK_MERGE_SIMILAR, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 79, 152, 10
+    CONTROL         "AT Skinning Fix normals", IDC_CHK_FIX_NORMALS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 92, 100, 10
+    LTEXT           "Threshold:", IDC_LBL_THRESHOLD, 24, 106, 40, 8
+    EDITTEXT        IDC_EDT_THRESHOLD, 68, 104, 40, 12, ES_AUTOHSCROLL | ES_RIGHT
+    CONTROL         "", IDC_SPIN_THRESHOLD, "msctls_updown32",
+                    UDS_AUTOBUDDY | UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_SETBUDDYINT,
+                    96, 104, 11, 12
+    CONTROL         "Export Smoothgroups", IDC_CHK_EXPORT_SMOOTHGROUPS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 120, 152, 10
+    CONTROL         "Fix shared normals", IDC_CHK_FIX_SHARED_NORMALS, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 133, 152, 10
+    CONTROL         "Keep unused Bones/Helpers", IDC_CHK_KEEP_UNUSED_BH, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 146, 152, 10
+    CONTROL         "Disable Skin Quantize", IDC_CHK_DISABLE_SKINQUANT, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 159, 152, 10
+    CONTROL         "", -1, "Static", SS_ETCHEDHORZ, 14, 173, 152, 1
+
+    // ── Extents Calculation ──
+    GROUPBOX        "Extents Calculation", IDC_GRP_EXTENTS, 7, 192, 166, 40
+    CONTROL         "Animation Dependent", IDC_RDO_EXTENTS_ANIM, "Button",
+                    BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 14, 204, 82, 10
+    CONTROL         "Global", IDC_RDO_EXTENTS_GLOBAL, "Button",
+                    BS_AUTORADIOBUTTON, 100, 204, 66, 10
+    LTEXT           "Precision:", IDC_LBL_EXTENTS_PREC, 24, 218, 40, 8
+    EDITTEXT        IDC_EDT_EXTENTS_PREC, 68, 216, 30, 12, ES_AUTOHSCROLL | ES_RIGHT | ES_NUMBER
+    CONTROL         "", IDC_SPIN_EXTENTS_PREC, "msctls_updown32",
+                    UDS_AUTOBUDDY | UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_SETBUDDYINT,
+                    86, 216, 11, 12
+
+    // ── Progress ──
+    GROUPBOX        "Progress", IDC_GRP_PROGRESS, 7, 236, 166, 28
+    LTEXT           "Idle", IDC_LBL_STATUS, 14, 248, 60, 8
+    CONTROL         "", IDC_PROGRESS_BAR, "msctls_progress32", WS_BORDER, 76, 246, 90, 10
+
+    // ── Buttons ──
+    DEFPUSHBUTTON   "Export", IDOK, 65, 271, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 120, 271, 50, 14
+END

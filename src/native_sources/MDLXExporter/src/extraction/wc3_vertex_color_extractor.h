@@ -1,0 +1,15 @@
+// MDLXExporter — Wc3VertexColor modifier extractor
+#pragma once
+
+#include <scene/node_classifier.h>
+#include <core/intermediate_types.h>
+#include <util/error_reporter.h>
+#include <vector>
+
+namespace mdx_extract {
+
+void extractVertexColors(const std::vector<core::SceneNode>& nodes,
+                         ir::IRModel& model,
+                         core::ExportErrorReporter& reporter);
+
+} // namespace mdx_extract
