@@ -36,7 +36,10 @@
 CoreExport int Perm(int v);
 
 // ---------- SDK version compatibility shims ----------
-#if MAX_PRODUCT_YEAR_NUMBER >= 2018
+// In Max 2022 the SDK sealed the old no-localized overloads and introduced new
+// 'bool localized' variants that plugins must override instead.
+// NonLocalizedClassName() was also added to ClassDesc2 (pure virtual) in Max 2022.
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
   #define SUBANIM_NAME_SIG(i)        MSTR SubAnimName(int i, bool localized = true) override
   #define GET_PARAM_NAME_SIG(idx)    MSTR GetParameterName(int idx, bool localized = true) override
   #define GET_OBJECT_NAME_SIG        const MCHAR* GetObjectName(bool localized = true) const override
@@ -45,7 +48,7 @@ CoreExport int Perm(int v);
   #define SUBANIM_NAME_SIG(i)        MSTR SubAnimName(int i) override
   #define GET_PARAM_NAME_SIG(idx)    MSTR GetParameterName(int idx) override
   #define GET_OBJECT_NAME_SIG        const MCHAR* GetObjectName() override
-  #define NONLOCALIZED_CLASSNAME_DECL  /* not available before Max 2018 */
+  #define NONLOCALIZED_CLASSNAME_DECL  /* not available before Max 2022 */
 #endif
 
 // Standard library

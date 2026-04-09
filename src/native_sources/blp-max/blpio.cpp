@@ -240,11 +240,9 @@ BitmapStorage* BlpBitmapIO::Load(BitmapInfo* pbi, Bitmap* pmap, BMMRES* status) 
         return nullptr;
     }
 
-    // Convert to RGBA8 if needed (e.g. DXT/BC1-3 from BLP2)
-    // Uses thread pool for parallel BCn block decoding
-    if (texture->format() != PixelFormat::RGBA8) {
-        *texture = texture->copyAsFormat(PixelFormat::RGBA8, getPool());
-    }
+    // Always convert to RGBA8 — ensures the mip data is in a
+    // normalized pixel layout regardless of BLP internal encoding.
+    *texture = texture->copyAsFormat(PixelFormat::RGBA8, getPool());
 
     const int w = static_cast<int>(texture->width());
     const int h = static_cast<int>(texture->height());

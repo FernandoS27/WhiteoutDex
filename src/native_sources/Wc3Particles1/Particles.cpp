@@ -182,7 +182,7 @@ const TCHAR* Wc3Particles1ClassDesc::ClassName()
     return GetString(IDS_P1_CLASS_NAME);
 }
 
-#if MAX_PRODUCT_YEAR_NUMBER >= 2018
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
 const MCHAR* Wc3Particles1ClassDesc::NonLocalizedClassName()
 {
     return GetString(IDS_P1_CLASS_NAME);
@@ -850,7 +850,7 @@ Animatable* GenParticle1::SubAnim(int i)
     return (i == 0) ? pblock2 : nullptr;
 }
 
-#if MAX_PRODUCT_YEAR_NUMBER >= 2018
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
 MSTR GenParticle1::SubAnimName(int i, bool localized)
 #else
 MSTR GenParticle1::SubAnimName(int i)
@@ -933,7 +933,7 @@ void GenParticle1::BirthParticle(INode* node, TimeValue bt, int index)
     Matrix3 tm = node->GetObjTMBeforeWSM(bt);
 
     // Unit conversion matching Wc3Particles2 convention
-    speed *= -0.0025f;
+    speed /= -static_cast<float>(P1_TICKS_PER_SEC);
 
     // Initial velocity along +Z (after double negation: -(-speed) = +speed)
     Point3 vel(0.0f, 0.0f, -speed);
@@ -1092,7 +1092,7 @@ void GenParticle1::UpdateParticles(TimeValue t, INode* node)
             float accel = 0.0f;
             pblock2->GetValue(P1_PB_ACCELERATION, tvalid, accel, forever);
             if (accel != 0.0f) {
-                float gAccel = accel * -0.0025f / static_cast<float>(P1_TICKS_PER_SEC);
+                float gAccel = -accel / (static_cast<float>(P1_TICKS_PER_SEC) * static_cast<float>(P1_TICKS_PER_SEC));
                 for (int g = 0; g < parts.Count(); g++) {
                     if (!parts.Alive(g)) continue;
                     parts.vels[g].z += gAccel * static_cast<float>(dt);
@@ -1287,7 +1287,7 @@ ParamDimension* GenParticle1::GetParameterDim(int pbIndex)
     return defaultDim;
 }
 
-#if MAX_PRODUCT_YEAR_NUMBER >= 2018
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
 MSTR GenParticle1::GetParameterName(int pbIndex, bool localized)
 #else
 MSTR GenParticle1::GetParameterName(int pbIndex)
@@ -1441,7 +1441,7 @@ Class_ID Wc3Particles1Particle::ClassID()
     return WC3PARTICLES1_CLASS_ID;
 }
 
-#if MAX_PRODUCT_YEAR_NUMBER >= 2018
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
 const MCHAR* Wc3Particles1Particle::GetObjectName(bool localized) const
 #else
 const MCHAR* Wc3Particles1Particle::GetObjectName()

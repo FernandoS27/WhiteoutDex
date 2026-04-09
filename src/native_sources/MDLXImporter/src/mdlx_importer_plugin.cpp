@@ -10,6 +10,7 @@
 // Scene builders (IR → Wc3 scripted plugin nodes)
 #include "scene/wc3_material_builder.h"
 #include "scene/wc3_scene_builders.h"
+#include "scene/texture_resolver.h"
 
 // Core (MaxCore)
 #include <core/intermediate_types.h>
@@ -30,10 +31,33 @@
 #include <istdplug.h>
 
 #include <algorithm>
+#include <map>
 #include <string>
 #include <vector>
 #include <set>
 #include <unordered_map>
+#include <fstream>
+
+// Narrow-string helper for Max's wchar_t names
+static std::string narrow(const MCHAR* ws) {
+    if (!ws) return "";
+    std::string s;
+    while (*ws) { s += static_cast<char>(*ws > 127 ? '?' : *ws); ++ws; }
+    return s;
+}
+
+static std::ofstream& importLog() {
+    static std::ofstream s_log;
+    if (!s_log.is_open()) {
+        wchar_t tmp[MAX_PATH];
+        GetTempPathW(MAX_PATH, tmp);
+        std::wstring p(tmp);
+        p += L"mdlx_import_debug.log";
+        s_log.open(p, std::ios::app);
+    }
+    return s_log;
+}
+#define ILOG importLog()
 
 // Forward declarations for INI loading
 void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts);
@@ -148,6 +172,7 @@ INode* createMeshNode(const ir::Mesh& irMesh, Interface* gi) {
 
     // UV mapping (channel 1)
     if (irMesh.vertices[0].uvSetCount > 0) {
+        mesh.setMapSupport(1, TRUE);
         mesh.setNumMapVerts(1, vertCount);
         mesh.setNumMapFaces(1, faceCount);
 
@@ -179,6 +204,7 @@ INode* createMeshNode(const ir::Mesh& irMesh, Interface* gi) {
     // Additional UV sets (channels 2-4)
     for (int uvSet = 1; uvSet < irMesh.vertices[0].uvSetCount && uvSet < 4; ++uvSet) {
         int channel = uvSet + 1;
+        mesh.setMapSupport(channel, TRUE);
         mesh.setNumMapVerts(channel, vertCount);
         mesh.setNumMapFaces(channel, faceCount);
 
@@ -313,108 +339,39 @@ void insertTranslationKeys(INode* node, const ir::Vec3Track& track,
     Control* tmCtrl = node->GetTMController();
     if (!tmCtrl) return;
 
-    // MaxScript: obj.pos.controller = typeToController smoothType #position
-    // Linear → linear_position; Bezier → bezier_position; Hermite → tcb_position
-    Control* posCtrl = nullptr;
-    switch (track.interpolation) {
-    case ir::InterpolationType::Linear:
-        posCtrl = static_cast<Control*>(
-            CreateInstance(CTRL_POSITION_CLASS_ID, Class_ID(LININTERP_POSITION_CLASS_ID, 0)));
-        break;
-    case ir::InterpolationType::Hermite:
-        posCtrl = static_cast<Control*>(
-            CreateInstance(CTRL_POSITION_CLASS_ID, Class_ID(TCBINTERP_POSITION_CLASS_ID, 0)));
-        break;
-    default: // Bezier
-        posCtrl = static_cast<Control*>(
-            CreateInstance(CTRL_POSITION_CLASS_ID, Class_ID(HYBRIDINTERP_POSITION_CLASS_ID, 0)));
-        break;
-    }
+    // DON'T replace the position controller!
+    // The existing one (from AttachChild) is "Position XYZ" with 3 float sub-controllers.
+    // Replacing it with bezier_position causes the X channel to be lost (IBezPoint3Key bug).
+    // Instead, use SetValue() on the existing controller — the SDK-recommended approach.
+    Control* posCtrl = tmCtrl->GetPositionController();
     if (!posCtrl) return;
-    tmCtrl->SetPositionController(posCtrl);
 
-    IKeyControl* kc = GetKeyControlInterface(posCtrl);
-    if (!kc) return;
+    ILOG << "    TRANS '" << narrow(node->GetName()) << "'"
+         << " stub=(" << stubVal.x << "," << stubVal.y << "," << stubVal.z
+         << ") keys=" << track.keys.size() << "\n";
+    if (track.keys.size() > 0) {
+        auto& k0 = track.keys[0];
+        ILOG << "      key[0] time=" << k0.time
+             << " val=(" << k0.value.x << "," << k0.value.y << "," << k0.value.z << ")\n";
+    }
+    ILOG.flush();
 
-    float bezConst = getBezierConstant();
     int numKeys = static_cast<int>(track.keys.size());
 
-    // Insert bind-pose local position at frame 0 so the skeleton displays
-    // correctly before the first animation key (frame 10+).
+    // Set bind-pose position at frame 0
     bool needStub = (numKeys == 0 || track.keys[0].time > 0);
     if (needStub) {
-        if (track.interpolation == ir::InterpolationType::Linear) {
-            ILinPoint3Key k0; k0.time = 0; k0.val = stubVal;
-            kc->AppendKey(&k0);
-        } else if (track.interpolation == ir::InterpolationType::Bezier) {
-            IBezPoint3Key k0; memset(&k0, 0, sizeof(k0));
-            k0.time = 0; k0.val = stubVal;
-            k0.flags = (BEZKEY_USER << BEZKEY_INTYPESHIFT) | (BEZKEY_USER << BEZKEY_OUTTYPESHIFT);
-            k0.inLength = Point3(0.333333f, 0.333333f, 0.333333f);
-            k0.outLength = Point3(0.333333f, 0.333333f, 0.333333f);
-            kc->AppendKey(&k0);
-        } else {
-            ITCBPoint3Key k0; memset(&k0, 0, sizeof(k0));
-            k0.time = 0; k0.val = stubVal;
-            kc->AppendKey(&k0);
-        }
+        Point3 sv = stubVal;
+        posCtrl->SetValue(0, &sv, 1, CTRL_ABSOLUTE);
     }
 
+    // Set animation keys via SetValue — Max creates the right key type internally
     for (int i = 0; i < numKeys; ++i) {
-        const auto& key = track.keys[i];
-        Point3 val = key.value;
-
-        if (track.interpolation == ir::InterpolationType::Linear) {
-            ILinPoint3Key linKey;
-            linKey.time = key.time;
-            linKey.val = val;
-            kc->AppendKey(&linKey);
-        } else if (track.interpolation == ir::InterpolationType::Bezier) {
-            IBezPoint3Key bezKey;
-            memset(&bezKey, 0, sizeof(bezKey));
-            bezKey.time = key.time;
-            bezKey.val = val;
-
-            // MaxScript bezier tangent conversion:
-            // key.inTangent = bezierConstant * (k.intan - k.value) / delta
-            // key.outTangent = bezierConstant * (k.outtan - k.value) / delta
-            // key.inTangentLength = key.outTangentLength = [0.333,0.333,0.333]
-            if (key.hasTangents) {
-                Point3 inOff = key.inTangent;
-                Point3 outOff = key.outTangent;
-
-                if (i > 0) {
-                    float delta = static_cast<float>(key.time - track.keys[i - 1].time);
-                    if (delta != 0.0f)
-                        bezKey.intan = bezConst * (inOff - val) / delta;
-                }
-                if (i < numKeys - 1) {
-                    float delta = static_cast<float>(track.keys[i + 1].time - key.time);
-                    if (delta != 0.0f)
-                        bezKey.outtan = bezConst * (outOff - val) / delta;
-                }
-            }
-            bezKey.flags = (BEZKEY_USER << BEZKEY_INTYPESHIFT) | (BEZKEY_USER << BEZKEY_OUTTYPESHIFT);
-            bezKey.inLength = Point3(0.333333f, 0.333333f, 0.333333f);
-            bezKey.outLength = Point3(0.333333f, 0.333333f, 0.333333f);
-            kc->AppendKey(&bezKey);
-        } else {
-            // Hermite / TCB — write value only, tangents handled by TCB controller
-            ITCBPoint3Key tcbKey;
-            memset(&tcbKey, 0, sizeof(tcbKey));
-            tcbKey.time = key.time;
-            tcbKey.val = val;
-            tcbKey.tens = 0.0f;
-            tcbKey.cont = 0.0f;
-            tcbKey.bias = 0.0f;
-            tcbKey.easeIn = 0.0f;
-            tcbKey.easeOut = 0.0f;
-            kc->AppendKey(&tcbKey);
-        }
+        Point3 val = track.keys[i].value;
+        posCtrl->SetValue(track.keys[i].time, &val, 1, CTRL_ABSOLUTE);
     }
-    kc->SortKeys();
 
-    // MaxScript: global sequences get ORT cycle
+    // ORT cycle for global sequences
     if (track.globalSequenceIndex >= 0) {
         posCtrl->SetORT(ORT_CYCLE, ORT_AFTER);
         posCtrl->EnableORTs(TRUE);
@@ -428,21 +385,14 @@ void insertRotationKeys(INode* node, const ir::QuatTrack& track,
     Control* tmCtrl = node->GetTMController();
     if (!tmCtrl) return;
 
-    // MaxScript: obj.rotation.controller = linear_rotation()
-    // Always use linear rotation regardless of interpolation type.
-    // Hermite/Bezier rotation objects get post-processed to TCB later.
+    // Replace rotation controller with linear_rotation for quaternion SLERP.
+    // Unlike position, we MUST replace because Euler XYZ can't do quaternion interpolation.
     Control* rotCtrl = static_cast<Control*>(
         CreateInstance(CTRL_ROTATION_CLASS_ID, Class_ID(LININTERP_ROTATION_CLASS_ID, 0)));
     if (!rotCtrl) return;
     tmCtrl->SetRotationController(rotCtrl);
 
-    IKeyControl* kc = GetKeyControlInterface(rotCtrl);
-    if (!kc) return;
-
     int numRotKeys = static_cast<int>(track.keys.size());
-
-    // Insert bind-pose rotation at frame 0.
-    bool needRotStub = (numRotKeys == 0 || track.keys[0].time > 0);
 
     // MaxScript fixQuaternions: ensure consecutive keys are in the same
     // hemisphere so SLERP takes the shortest arc.
@@ -456,25 +406,20 @@ void insertRotationKeys(INode* node, const ir::QuatTrack& track,
         prevQ = q;
     }
 
+    // Use SetValue for key creation — SDK-recommended approach
+    // SetValue for rotation expects CONJUGATE quaternion compared to ILinRotKey.val
+    // Conjugate: negate x,y,z; keep w
+    bool needRotStub = (numRotKeys == 0 || track.keys[0].time > 0);
     if (needRotStub) {
-        ILinRotKey k0;
-        k0.time = 0;
-        k0.val = stubVal;
-        kc->AppendKey(&k0);
+        Quat sv(-stubVal.x, -stubVal.y, -stubVal.z, stubVal.w);
+        rotCtrl->SetValue(0, &sv, 1, CTRL_ABSOLUTE);
     }
 
-    // MaxScript: writeKeys rotData.keys controller #Linear
-    // Rotation keys are written as linear keys (value only, no tangents)
     for (int i = 0; i < numRotKeys; ++i) {
-        const auto& key = track.keys[i];
-        ILinRotKey linKey;
-        linKey.time = key.time;
-        linKey.val = fixedKeys[i];
-        kc->AppendKey(&linKey);
+        Quat q(-fixedKeys[i].x, -fixedKeys[i].y, -fixedKeys[i].z, fixedKeys[i].w);
+        rotCtrl->SetValue(track.keys[i].time, &q, 1, CTRL_ABSOLUTE);
     }
-    kc->SortKeys();
 
-    // MaxScript: global sequences get ORT cycle
     if (track.globalSequenceIndex >= 0) {
         rotCtrl->SetORT(ORT_CYCLE, ORT_AFTER);
         rotCtrl->EnableORTs(TRUE);
@@ -489,105 +434,477 @@ void insertScaleKeys(INode* node, const ir::Vec3Track& track,
     Control* tmCtrl = node->GetTMController();
     if (!tmCtrl) return;
 
-    // MaxScript: obj.scale.controller = typeToController smoothType #scale
-    Control* scaleCtrl = nullptr;
-    switch (track.interpolation) {
-    case ir::InterpolationType::Linear:
-        scaleCtrl = static_cast<Control*>(
-            CreateInstance(CTRL_SCALE_CLASS_ID, Class_ID(LININTERP_SCALE_CLASS_ID, 0)));
-        break;
-    case ir::InterpolationType::Hermite:
-        scaleCtrl = static_cast<Control*>(
-            CreateInstance(CTRL_SCALE_CLASS_ID, Class_ID(TCBINTERP_SCALE_CLASS_ID, 0)));
-        break;
-    default: // Bezier
-        scaleCtrl = static_cast<Control*>(
-            CreateInstance(CTRL_SCALE_CLASS_ID, Class_ID(HYBRIDINTERP_SCALE_CLASS_ID, 0)));
-        break;
-    }
+    // Use existing scale controller + SetValue (same approach as position)
+    Control* scaleCtrl = tmCtrl->GetScaleController();
     if (!scaleCtrl) return;
-    tmCtrl->SetScaleController(scaleCtrl);
 
-    IKeyControl* kc = GetKeyControlInterface(scaleCtrl);
-    if (!kc) return;
-
-    // Insert bind-pose scale at frame 0.
-    float bezConst = getBezierConstant();
     int numKeys = static_cast<int>(track.keys.size());
 
+    // Set bind-pose scale at frame 0
     bool needStub = (numKeys == 0 || track.keys[0].time > 0);
     if (needStub) {
-        if (track.interpolation == ir::InterpolationType::Linear) {
-            ILinScaleKey k0; k0.time = 0; k0.val = ScaleValue(stubVal);
-            kc->AppendKey(&k0);
-        } else if (track.interpolation == ir::InterpolationType::Bezier) {
-            IBezScaleKey k0; memset(&k0, 0, sizeof(k0));
-            k0.time = 0; k0.val = ScaleValue(stubVal);
-            k0.flags = (BEZKEY_USER << BEZKEY_INTYPESHIFT) | (BEZKEY_USER << BEZKEY_OUTTYPESHIFT);
-            k0.inLength = Point3(0.333333f, 0.333333f, 0.333333f);
-            k0.outLength = Point3(0.333333f, 0.333333f, 0.333333f);
-            kc->AppendKey(&k0);
-        } else {
-            ITCBScaleKey k0; memset(&k0, 0, sizeof(k0));
-            k0.time = 0; k0.val = ScaleValue(stubVal);
-            kc->AppendKey(&k0);
-        }
+        ScaleValue sv(stubVal);
+        scaleCtrl->SetValue(0, &sv, 1, CTRL_ABSOLUTE);
     }
 
+    // Set animation keys
     for (int i = 0; i < numKeys; ++i) {
-        const auto& key = track.keys[i];
-        Point3 val = key.value;
-
-        if (track.interpolation == ir::InterpolationType::Linear) {
-            ILinScaleKey linKey;
-            linKey.time = key.time;
-            linKey.val = ScaleValue(val);
-            kc->AppendKey(&linKey);
-        } else if (track.interpolation == ir::InterpolationType::Bezier) {
-            IBezScaleKey bezKey;
-            memset(&bezKey, 0, sizeof(bezKey));
-            bezKey.time = key.time;
-            bezKey.val = ScaleValue(val);
-
-            if (key.hasTangents) {
-                Point3 inOff = key.inTangent;
-                Point3 outOff = key.outTangent;
-
-                if (i > 0) {
-                    float delta = static_cast<float>(key.time - track.keys[i - 1].time);
-                    if (delta != 0.0f)
-                        bezKey.intan = bezConst * (inOff - val) / delta;
-                }
-                if (i < numKeys - 1) {
-                    float delta = static_cast<float>(track.keys[i + 1].time - key.time);
-                    if (delta != 0.0f)
-                        bezKey.outtan = bezConst * (outOff - val) / delta;
-                }
-            }
-            bezKey.flags = (BEZKEY_USER << BEZKEY_INTYPESHIFT) | (BEZKEY_USER << BEZKEY_OUTTYPESHIFT);
-            bezKey.inLength = Point3(0.333333f, 0.333333f, 0.333333f);
-            bezKey.outLength = Point3(0.333333f, 0.333333f, 0.333333f);
-            kc->AppendKey(&bezKey);
-        } else {
-            // Hermite / TCB
-            ITCBScaleKey tcbKey;
-            memset(&tcbKey, 0, sizeof(tcbKey));
-            tcbKey.time = key.time;
-            tcbKey.val = ScaleValue(val);
-            tcbKey.tens = 0.0f;
-            tcbKey.cont = 0.0f;
-            tcbKey.bias = 0.0f;
-            tcbKey.easeIn = 0.0f;
-            tcbKey.easeOut = 0.0f;
-            kc->AppendKey(&tcbKey);
-        }
+        ScaleValue sv(track.keys[i].value);
+        scaleCtrl->SetValue(track.keys[i].time, &sv, 1, CTRL_ABSOLUTE);
     }
-    kc->SortKeys();
 
-    // MaxScript: global sequences get ORT cycle
     if (track.globalSequenceIndex >= 0) {
         scaleCtrl->SetORT(ORT_CYCLE, ORT_AFTER);
         scaleCtrl->EnableORTs(TRUE);
+    }
+}
+
+// ── Parameter animation helpers ─────────────────────────────
+// Matches MaxScript applyFloatParamAnimations / applyColorParamAnimations.
+// Creates a controller of the appropriate type, writes keys via IKeyControl,
+// then assigns the controller to a paramblock param via SetController.
+
+// Paramblock param locator (same as scene builders)
+struct PBParam {
+    IParamBlock2* pb = nullptr;
+    ParamID id = -1;
+    explicit operator bool() const { return pb != nullptr; }
+};
+
+PBParam findPBParam(ReferenceTarget* target, const wchar_t* name) {
+    if (!target) return {};
+    for (int i = 0; i < target->NumRefs(); i++) {
+        auto* ref = target->GetReference(i);
+        auto* pb = dynamic_cast<IParamBlock2*>(ref);
+        if (!pb) continue;
+        auto* desc = pb->GetDesc();
+        if (!desc) continue;
+        for (int j = 0; j < desc->Count(); j++) {
+            ParamID pid = desc->IndextoID(j);
+            const ParamDef& pd = desc->GetParamDef(pid);
+            if (pd.int_name && _wcsicmp(pd.int_name, name) == 0)
+                return { pb, pid };
+        }
+    }
+    return {};
+}
+
+// Write float keys onto a controller and return it.  Caller assigns to PB.
+Control* createFloatController(const ir::FloatTrack& track) {
+    if (track.empty()) return nullptr;
+
+    Class_ID cid;
+    switch (track.interpolation) {
+    case ir::InterpolationType::Linear:  cid = Class_ID(LININTERP_FLOAT_CLASS_ID, 0); break;
+    case ir::InterpolationType::Hermite: cid = Class_ID(TCBINTERP_FLOAT_CLASS_ID, 0); break;
+    default:                             cid = Class_ID(HYBRIDINTERP_FLOAT_CLASS_ID, 0); break;
+    }
+
+    Control* ctrl = static_cast<Control*>(CreateInstance(CTRL_FLOAT_CLASS_ID, cid));
+    if (!ctrl) return nullptr;
+
+    IKeyControl* ikc = GetKeyControlInterface(ctrl);
+    if (!ikc) { ctrl->DeleteThis(); return nullptr; }
+
+    float bezConst = getBezierConstant();
+    int numKeys = static_cast<int>(track.keys.size());
+
+    for (int i = 0; i < numKeys; ++i) {
+        const auto& kf = track.keys[i];
+        switch (track.interpolation) {
+        case ir::InterpolationType::Linear: {
+            ILinFloatKey key;
+            memset(&key, 0, sizeof(key));
+            key.time = kf.time;
+            key.val = kf.value;
+            ikc->AppendKey(&key);
+            break;
+        }
+        case ir::InterpolationType::Hermite: {
+            ITCBFloatKey key;
+            memset(&key, 0, sizeof(key));
+            key.time = kf.time;
+            key.val = kf.value;
+            ikc->AppendKey(&key);
+            break;
+        }
+        default: { // Bezier (also used for None/DontInterp on float params)
+            IBezFloatKey key;
+            memset(&key, 0, sizeof(key));
+            key.time = kf.time;
+            key.val = kf.value;
+
+            if (track.interpolation == ir::InterpolationType::None) {
+                SetInTanType(key.flags, BEZKEY_STEP);
+                SetOutTanType(key.flags, BEZKEY_STEP);
+            } else if (kf.hasTangents) {
+                SetInTanType(key.flags, BEZKEY_USER);
+                SetOutTanType(key.flags, BEZKEY_USER);
+                if (i > 0) {
+                    float dt = static_cast<float>(kf.time - track.keys[i-1].time);
+                    if (dt > 0.0f) key.intan = bezConst * (kf.inTangent - kf.value) / dt;
+                }
+                if (i < numKeys - 1) {
+                    float dt = static_cast<float>(track.keys[i+1].time - kf.time);
+                    if (dt > 0.0f) key.outtan = bezConst * (kf.outTangent - kf.value) / dt;
+                }
+            }
+            ikc->AppendKey(&key);
+            break;
+        }
+        }
+    }
+    ikc->SortKeys();
+
+    if (track.globalSequenceIndex >= 0) {
+        ctrl->SetORT(ORT_CYCLE, ORT_AFTER);
+        ctrl->EnableORTs(TRUE);
+    }
+    return ctrl;
+}
+
+// Write Point3 (color) keys onto a controller and return it.
+Control* createColorController(const ir::ColorTrack& track) {
+    if (track.empty()) return nullptr;
+
+    // MaxScript maps: #linear → bezier_point3, #hermite → tcb_point3,
+    //                 #bezier → bezier_color (same as bezier_point3)
+    Class_ID cid;
+    switch (track.interpolation) {
+    case ir::InterpolationType::Hermite: cid = Class_ID(TCBINTERP_POINT3_CLASS_ID, 0); break;
+    default:                             cid = Class_ID(HYBRIDINTERP_POINT3_CLASS_ID, 0); break;
+    }
+
+    Control* ctrl = static_cast<Control*>(CreateInstance(CTRL_POINT3_CLASS_ID, cid));
+    if (!ctrl) return nullptr;
+
+    IKeyControl* ikc = GetKeyControlInterface(ctrl);
+    if (!ikc) { ctrl->DeleteThis(); return nullptr; }
+
+    float bezConst = getBezierConstant();
+    int numKeys = static_cast<int>(track.keys.size());
+
+    for (int i = 0; i < numKeys; ++i) {
+        const auto& kf = track.keys[i];
+        Point3 val(kf.value.r, kf.value.g, kf.value.b);
+
+        if (track.interpolation == ir::InterpolationType::Hermite) {
+            ITCBPoint3Key key;
+            memset(&key, 0, sizeof(key));
+            key.time = kf.time;
+            key.val = val;
+            ikc->AppendKey(&key);
+        } else {
+            // Bezier, Linear, None all use IBezPoint3Key
+            IBezPoint3Key key;
+            memset(&key, 0, sizeof(key));
+            key.time = kf.time;
+            key.val = val;
+
+            if (track.interpolation == ir::InterpolationType::None) {
+                SetInTanType(key.flags, BEZKEY_STEP);
+                SetOutTanType(key.flags, BEZKEY_STEP);
+            } else if (kf.hasTangents && track.interpolation == ir::InterpolationType::Bezier) {
+                SetInTanType(key.flags, BEZKEY_USER);
+                SetOutTanType(key.flags, BEZKEY_USER);
+                Point3 inT(kf.inTangent.r, kf.inTangent.g, kf.inTangent.b);
+                Point3 outT(kf.outTangent.r, kf.outTangent.g, kf.outTangent.b);
+                if (i > 0) {
+                    float dt = static_cast<float>(kf.time - track.keys[i-1].time);
+                    if (dt > 0.0f) key.intan = bezConst * (inT - val) / dt;
+                }
+                if (i < numKeys - 1) {
+                    float dt = static_cast<float>(track.keys[i+1].time - kf.time);
+                    if (dt > 0.0f) key.outtan = bezConst * (outT - val) / dt;
+                }
+            }
+            ikc->AppendKey(&key);
+        }
+    }
+    ikc->SortKeys();
+
+    if (track.globalSequenceIndex >= 0) {
+        ctrl->SetORT(ORT_CYCLE, ORT_AFTER);
+        ctrl->EnableORTs(TRUE);
+    }
+    return ctrl;
+}
+
+// Animate a float paramblock param from an IR float track index.
+void animateFloatPB(IParamBlock2* pb, ParamID pid,
+                    int32_t trackIndex, const ir::IRModel& irModel)
+{
+    if (!pb || trackIndex < 0 ||
+        trackIndex >= static_cast<int32_t>(irModel.floatTracks.size()))
+        return;
+    const auto& track = irModel.floatTracks[trackIndex];
+    Control* ctrl = createFloatController(track);
+    if (ctrl)
+        pb->SetControllerByID(pid, 0, ctrl, FALSE);
+}
+
+// Animate a float param by name on a scripted plugin.
+void animateFloatNamed(ReferenceTarget* ref, const wchar_t* name,
+                       int32_t trackIndex, const ir::IRModel& irModel)
+{
+    if (!ref || trackIndex < 0 ||
+        trackIndex >= static_cast<int32_t>(irModel.floatTracks.size()))
+        return;
+    auto p = findPBParam(ref, name);
+    if (!p) return;
+    const auto& track = irModel.floatTracks[trackIndex];
+    Control* ctrl = createFloatController(track);
+    if (ctrl)
+        p.pb->SetControllerByID(p.id, 0, ctrl, FALSE);
+}
+
+// Animate a color param by name on a scripted plugin.
+void animateColorNamed(ReferenceTarget* ref, const wchar_t* name,
+                       int32_t trackIndex, const ir::IRModel& irModel)
+{
+    if (!ref || trackIndex < 0 ||
+        trackIndex >= static_cast<int32_t>(irModel.colorTracks.size()))
+        return;
+    auto p = findPBParam(ref, name);
+    if (!p) return;
+    const auto& track = irModel.colorTracks[trackIndex];
+    Control* ctrl = createColorController(track);
+    if (ctrl)
+        p.pb->SetControllerByID(p.id, 0, ctrl, FALSE);
+}
+
+// Animate a color paramblock param from an IR color track index.
+void animateColorPB(IParamBlock2* pb, ParamID pid,
+                    int32_t trackIndex, const ir::IRModel& irModel)
+{
+    if (!pb || trackIndex < 0 ||
+        trackIndex >= static_cast<int32_t>(irModel.colorTracks.size()))
+        return;
+    const auto& track = irModel.colorTracks[trackIndex];
+    Control* ctrl = createColorController(track);
+    if (ctrl)
+        pb->SetControllerByID(pid, 0, ctrl, FALSE);
+}
+
+// ParamIDs for native plugins (mirrored from scene builders)
+enum P1Params : ParamID {
+    P1_PB_COUNT = 0, P1_PB_SPEED = 1, P1_PB_EMISSION_RATE = 2,
+    P1_PB_LIFE = 3, P1_PB_ACCELERATION = 4,
+    P1_PB_LATITUDE = 5, P1_PB_LONGITUDE = 6,
+};
+enum P2Params : ParamID {
+    P2_PB_COUNT = 0, P2_PB_SPEED = 1, P2_PB_VARIATION = 2,
+    P2_PB_WIDTH = 4, P2_PB_HEIGHT = 5,
+    P2_PB_GRAVITY = 36, P2_PB_LATITUDE = 40,
+};
+enum RibbonParams : ParamID {
+    RB_PB_HEIGHT_ABOVE = 0, RB_PB_HEIGHT_BELOW = 1,
+    RB_PB_TEX_SLOT = 6, RB_PB_COLOR = 8, RB_PB_ALPHA = 9,
+};
+
+// ── Visibility key insertion ────────────────────────────────
+// Matches MaxScript applyVisibilityAnimations:
+//   None (DontInterp) → On_Off (boolean toggle) controller
+//   Linear            → linear_float
+//   Hermite           → tcb_float
+//   Bezier            → bezier_float with custom tangents
+
+void insertVisibilityKeys(INode* node, const ir::FloatTrack& track,
+                          const std::vector<ir::Sequence>& sequences)
+{
+    if (track.empty()) return;
+
+    int numKeys = static_cast<int>(track.keys.size());
+
+    // Ensure frame 0 exists
+    bool hasFrameZero = false;
+    for (const auto& k : track.keys)
+        if (k.time == 0) { hasFrameZero = true; break; }
+
+    Control* visCtrl = nullptr;
+
+    switch (track.interpolation) {
+    case ir::InterpolationType::None: {
+        // DontInterp → On/Off toggle controller (BOOL_CONTROL_CLASS_ID).
+        // On/Off default state is ON (visible=1.0). Each key toggles state.
+        // Output is 1.0 (visible) or -1.0 (hidden).
+        //
+        // Critical: MDX sequences are independent — visibility resets to ON
+        // at the start of every sequence UNLESS there's an explicit 0 key
+        // at that time. Since On/Off accumulates toggles across the whole
+        // timeline, we must insert correction toggles at sequence boundaries.
+        static const Class_ID ON_OFF_CLASS_ID(0x984b8d27, 0x938f3e43);
+        visCtrl = static_cast<Control*>(
+            CreateInstance(CTRL_FLOAT_CLASS_ID, ON_OFF_CLASS_ID));
+        if (!visCtrl) return;
+        node->SetVisController(visCtrl);
+
+        // Build ordered lookup: time → MDX value
+        std::map<TimeValue, float> keyMap;
+        for (const auto& k : track.keys)
+            keyMap[k.time] = k.value;
+
+        // On/Off starts ON. Track accumulated state.
+        bool state = true;
+
+        // AddNewKey inserts a toggle point at time t.
+        auto emitToggle = [&](TimeValue t) {
+            visCtrl->AddNewKey(t, 0);
+            state = !state;
+        };
+
+        if (!sequences.empty()) {
+            // Process sequence by sequence.
+            for (const auto& seq : sequences) {
+                // Expected state at sequence start: ON unless explicit 0 key
+                bool startVis = true;
+                auto it = keyMap.find(seq.startTime);
+                if (it != keyMap.end() && it->second < 0.5f)
+                    startVis = false;
+
+                // Correct accumulated state if it doesn't match
+                if (state != startVis)
+                    emitToggle(seq.startTime);
+
+                // Process keys within (startTime, endTime)
+                auto kit = keyMap.upper_bound(seq.startTime);
+                for (; kit != keyMap.end() && kit->first < seq.endTime; ++kit) {
+                    bool desired = (kit->second >= 0.5f);
+                    if (state != desired)
+                        emitToggle(kit->first);
+                }
+            }
+        } else {
+            // No sequences — process all keys linearly
+            for (const auto& [t, v] : keyMap) {
+                bool desired = (v >= 0.5f);
+                if (state != desired)
+                    emitToggle(t);
+            }
+        }
+        break;
+    }
+    case ir::InterpolationType::Linear: {
+        visCtrl = static_cast<Control*>(
+            CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(LININTERP_FLOAT_CLASS_ID, 0)));
+        if (!visCtrl) return;
+        node->SetVisController(visCtrl);
+
+        IKeyControl* ikc = GetKeyControlInterface(visCtrl);
+        if (!ikc) return;
+
+        if (!hasFrameZero) {
+            ILinFloatKey stubKey;
+            memset(&stubKey, 0, sizeof(stubKey));
+            stubKey.time = 0;
+            stubKey.val = track.keys[0].value;
+            ikc->AppendKey(&stubKey);
+        }
+
+        for (int i = 0; i < numKeys; ++i) {
+            ILinFloatKey key;
+            memset(&key, 0, sizeof(key));
+            key.time = track.keys[i].time;
+            key.val = track.keys[i].value;
+            ikc->AppendKey(&key);
+        }
+        ikc->SortKeys();
+        break;
+    }
+    case ir::InterpolationType::Hermite: {
+        visCtrl = static_cast<Control*>(
+            CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(TCBINTERP_FLOAT_CLASS_ID, 0)));
+        if (!visCtrl) return;
+        node->SetVisController(visCtrl);
+
+        IKeyControl* ikc = GetKeyControlInterface(visCtrl);
+        if (!ikc) return;
+
+        if (!hasFrameZero) {
+            ITCBFloatKey stubKey;
+            memset(&stubKey, 0, sizeof(stubKey));
+            stubKey.time = 0;
+            stubKey.val = track.keys[0].value;
+            stubKey.tens = 0.0f;
+            stubKey.cont = 0.0f;
+            stubKey.bias = 0.0f;
+            stubKey.easeIn = 0.0f;
+            stubKey.easeOut = 0.0f;
+            ikc->AppendKey(&stubKey);
+        }
+
+        for (int i = 0; i < numKeys; ++i) {
+            ITCBFloatKey key;
+            memset(&key, 0, sizeof(key));
+            key.time = track.keys[i].time;
+            key.val = track.keys[i].value;
+            key.tens = 0.0f;
+            key.cont = 0.0f;
+            key.bias = 0.0f;
+            key.easeIn = 0.0f;
+            key.easeOut = 0.0f;
+            ikc->AppendKey(&key);
+        }
+        ikc->SortKeys();
+        break;
+    }
+    case ir::InterpolationType::Bezier: {
+        visCtrl = static_cast<Control*>(
+            CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(HYBRIDINTERP_FLOAT_CLASS_ID, 0)));
+        if (!visCtrl) return;
+        node->SetVisController(visCtrl);
+
+        IKeyControl* ikc = GetKeyControlInterface(visCtrl);
+        if (!ikc) return;
+
+        if (!hasFrameZero) {
+            IBezFloatKey stubKey;
+            memset(&stubKey, 0, sizeof(stubKey));
+            stubKey.time = 0;
+            stubKey.val = track.keys[0].value;
+            stubKey.intan = 0.0f;
+            stubKey.outtan = 0.0f;
+            ikc->AppendKey(&stubKey);
+        }
+
+        float bezConst = getBezierConstant();
+
+        for (int i = 0; i < numKeys; ++i) {
+            IBezFloatKey key;
+            memset(&key, 0, sizeof(key));
+            key.time = track.keys[i].time;
+            key.val = track.keys[i].value;
+
+            // Custom tangents from MDX data
+            SetInTanType(key.flags, BEZKEY_USER);
+            SetOutTanType(key.flags, BEZKEY_USER);
+
+            if (track.keys[i].hasTangents) {
+                // In tangent: relative to previous key time
+                if (i > 0) {
+                    float dt = static_cast<float>(track.keys[i].time - track.keys[i-1].time);
+                    if (dt > 0.0f)
+                        key.intan = bezConst * (track.keys[i].inTangent - key.val) / dt;
+                }
+                // Out tangent: relative to next key time
+                if (i < numKeys - 1) {
+                    float dt = static_cast<float>(track.keys[i+1].time - track.keys[i].time);
+                    if (dt > 0.0f)
+                        key.outtan = bezConst * (track.keys[i].outTangent - key.val) / dt;
+                }
+            }
+
+            ikc->AppendKey(&key);
+        }
+        ikc->SortKeys();
+        break;
+    }
+    }
+
+    // ORT cycle for global sequences
+    if (visCtrl && track.globalSequenceIndex >= 0) {
+        visCtrl->SetORT(ORT_CYCLE, ORT_AFTER);
+        visCtrl->EnableORTs(TRUE);
     }
 }
 
@@ -823,6 +1140,21 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     // 4b. Compact timeline (MaxScript convertSequences + preProcessKeys)
     remapTimeline(irModel);
 
+    // 4c. For v1200 (Reforged), pivot points from PIVT may be zero.
+    // The authoritative world-space positions come from the BPOS bind pose
+    // matrix translations.  Patch pivots so all downstream code (bone
+    // positioning, animation offsets, scene builders) uses correct values.
+    if (opts.detectedVersion >= 1200) {
+        for (auto& bone : irModel.bones) {
+            Point3 bposPos = bone.bindPose.GetTrans();
+            bone.pivotPoint = bposPos;
+            if (bone.nodeIndex >= 0
+                && bone.nodeIndex < static_cast<int32_t>(irModel.nodes.size())) {
+                irModel.nodes[bone.nodeIndex].pivotPoint = bposPos;
+            }
+        }
+    }
+
     // 5. Handle import mode
     if (opts.core.mode == ir::CoreImportOptions::ImportMode::NewScene) {
         ii->NewScene();
@@ -840,6 +1172,10 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     }
 
     // 7. Build skeleton (bones and helpers)
+    // SuspendAnimate prevents auto-keying during SetNodeTM + AttachChild
+    SuspendAnimate();
+    AnimateOff();
+
     std::vector<INode*> nodeMap(irModel.nodes.size(), nullptr);
     std::vector<INode*> boneNodes;
 
@@ -894,7 +1230,14 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 }
             }
 
-            Matrix3 tm = bone.bindPose;
+            // Position bone at pivot with identity rotation — matching MaxScript.
+            // The full BPOS bind pose matrix (v1200) is metadata for round-trip
+            // export, NOT for skeleton transforms.  Using it here would give bones
+            // non-identity rest rotations, breaking the animation key math which
+            // assumes local position = pivotDiff and rest rotation = identity.
+            Matrix3 tm;
+            tm.IdentityMatrix();
+            tm.SetTrans(bone.pivotPoint);
             boneNode->SetNodeTM(0, tm);
 
             // MaxScript setupNode: apply DontInherit flags
@@ -945,6 +1288,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         }
     }
 
+    ResumeAnimate();  // ← skeleton setup done, restore animate state
+
     // 8. Build meshes
     std::vector<INode*> meshNodes;
     meshNodes.reserve(irModel.meshes.size());
@@ -960,20 +1305,26 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     // modifier evaluates lazily on the first viewport refresh, which occurs
     // after all controllers have been replaced.
 
+    // Extract model directory for texture path resolution
+    std::wstring modelDir;
+    {
+        std::wstring fullPath(name);
+        auto lastSep = fullPath.find_last_of(L"\\/");
+        if (lastSep != std::wstring::npos)
+            modelDir = fullPath.substr(0, lastSep + 1);
+    }
+
+    // Open CASC storage once (shared between material builder and PE2 builder)
+    void* cascPtr = nullptr;
+    if (opts.core.importTextures && opts.searchCASC)
+        cascPtr = mdx_scene::openCascStorage(opts.cascDirectory);
+
     // 10. Build materials and assign to meshes
     std::vector<Mtl*> materials;
     if (opts.core.importMaterials) {
-        // Extract model directory for texture path resolution
-        std::wstring modelDir;
-        {
-            std::wstring fullPath(name);
-            auto lastSep = fullPath.find_last_of(L"\\/");
-            if (lastSep != std::wstring::npos)
-                modelDir = fullPath.substr(0, lastSep + 1);
-        }
-
         mdx_scene::Wc3MaterialBuilder matBuilder;
-        materials = matBuilder.buildMaterials(irModel, opts.core.importTextures, modelDir, gi, reporter);
+        materials = matBuilder.buildMaterials(
+            irModel, opts.core.importTextures, modelDir, cascPtr, gi, reporter);
 
         for (size_t mi = 0; mi < irModel.meshes.size(); ++mi) {
             int32_t matIdx = irModel.meshes[mi].materialIndex;
@@ -998,7 +1349,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         }
         if (opts.core.importParticleEmitters2) {
             mdx_scene::Wc3Particle2Builder pe2Builder;
-            pe2Builder.buildParticles(irModel, nodeMap, gi, reporter);
+            pe2Builder.buildParticles(irModel, nodeMap, modelDir, cascPtr, gi, reporter);
         }
         if (opts.core.importRibbonEmitters) {
             mdx_scene::Wc3RibbonBuilder ribBuilder;
@@ -1030,17 +1381,52 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         vcBuilder.applyVertexColors(irModel, meshNodes, gi, reporter);
     }
 
-    // 12. Insert animation keyframes
-    // MaxScript order: Rotation → Translation → Scale (per node)
+    // Close CASC storage (no longer needed after materials + PE2)
+    if (cascPtr) {
+        mdx_scene::closeCascStorage(cascPtr);
+        cascPtr = nullptr;
+    }
+
+    // 12. Apply skin modifiers BEFORE animation (MaxScript order)
+    ILOG << "\n==== Skinning (before animation) ====\n";
+    if (opts.core.importSkinning) {
+        for (size_t mi = 0; mi < irModel.meshes.size(); ++mi) {
+            if (meshNodes[mi])
+                applySkinModifier(meshNodes[mi], irModel.meshes[mi], nodeMap, gi);
+        }
+    }
+    ILOG << "==== end skinning ====\n";
+
+    // 13. Insert animation keyframes (AFTER skinning)
+    // 
+    // SuspendAnimate()/AnimateOn() is required for SetValue() to create keys.
+    // SDK docs: "the animate button should be turned on"
     //
-    // Frame-0 stubs use fixed identity values matching MaxScript's
-    // preProcessKeys defaults: [0,0,0] position, identity rotation,
-    // [1,1,1] scale.  MDX animation keys are parent-relative absolute
-    // values, so [0,0,0] means "at parent origin".
+    ILOG << "\n==== Animation Keys ====\n";
     if (opts.core.importAnimations) {
-        const Point3 stubPos(0.0f, 0.0f, 0.0f);
-        const Quat   stubRot(0.0f, 0.0f, 0.0f, 1.0f);
-        const Point3 stubScale(1.0f, 1.0f, 1.0f);
+        SuspendAnimate();
+        AnimateOn();  // ← CRITICAL: SetValue needs this to create keys
+
+        const Quat stubRot(0.0f, 0.0f, 0.0f, 1.0f);
+
+        // Read local positions from actual Max node transforms after hierarchy
+        // setup.  This matches MaxScript's "in coordsys parent subPos = obj.pos"
+        // and correctly handles v1200 where PIVT may differ from BPOS.
+        std::vector<Point3> nodeLocalPos(irModel.nodes.size(), Point3(0,0,0));
+        for (size_t i = 0; i < irModel.nodes.size(); ++i) {
+            INode* nd = (i < nodeMap.size()) ? nodeMap[i] : nullptr;
+            if (!nd) continue;
+
+            Matrix3 worldTM = nd->GetNodeTM(0);
+            INode* par = nd->GetParentNode();
+            if (par && !par->IsRootNode()) {
+                Matrix3 parentTM = par->GetNodeTM(0);
+                Matrix3 localTM = worldTM * Inverse(parentTM);
+                nodeLocalPos[i] = localTM.GetTrans();
+            } else {
+                nodeLocalPos[i] = worldTM.GetTrans();
+            }
+        }
 
         for (const auto& na : irModel.nodeAnimations) {
             if (na.nodeIndex < 0 || na.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
@@ -1048,36 +1434,261 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             INode* node = nodeMap[na.nodeIndex];
             if (!node) continue;
 
+            Point3 localPos = (na.nodeIndex < static_cast<int32_t>(nodeLocalPos.size()))
+                ? nodeLocalPos[na.nodeIndex] : Point3(0,0,0);
+
+            ILOG << "  ANIM node[" << na.nodeIndex << "]"
+                 << " localPos=(" << localPos.x << "," << localPos.y << "," << localPos.z
+                 << ") KGTR=" << na.translation.keys.size()
+                 << " KGRT=" << na.rotation.keys.size()
+                 << " KGSC=" << na.scale.keys.size() << "\n";
+
+            // Rotation: write raw keys (no offset needed)
             if (opts.core.importRotation && !na.rotation.empty())
                 insertRotationKeys(node, na.rotation, stubRot);
-            if (opts.core.importTranslation && !na.translation.empty())
-                insertTranslationKeys(node, na.translation, stubPos);
+
+            // Translation: add localPos to every key value + stub
+            if (opts.core.importTranslation && !na.translation.empty()) {
+                ir::Vec3Track adjustedTrack = na.translation;
+                for (auto& k : adjustedTrack.keys) {
+                    k.value += localPos;
+                    if (k.hasTangents) {
+                        k.inTangent += localPos;
+                        k.outTangent += localPos;
+                    }
+                }
+                insertTranslationKeys(node, adjustedTrack, localPos);
+            }
+
+            // Scale: write raw keys
             if (opts.core.importScale && !na.scale.empty())
-                insertScaleKeys(node, na.scale, stubScale);
+                insertScaleKeys(node, na.scale, Point3(1.0f, 1.0f, 1.0f));
         }
-    }
 
-    // 12b. Apply skin modifiers (AFTER animation so AddBoneEx captures
-    //      the controller-defined bone TMs, not the pre-animation TMs).
-    if (opts.core.importSkinning) {
-        for (size_t mi = 0; mi < irModel.meshes.size(); ++mi) {
-            if (meshNodes[mi])
-                applySkinModifier(meshNodes[mi], irModel.meshes[mi], nodeMap, gi);
+        ResumeAnimate();  // ← restore animate state
+
+        // Visibility animations (uses IKeyControl directly, not SetValue)
+        if (opts.core.importVisibility) {
+            ILOG << "\n==== Visibility Animations ====\n";
+
+            // Geoset animations: alpha track → mesh node visibility
+            for (const auto& ga : irModel.geosetAnims) {
+                if (ga.alphaTrackIndex < 0 ||
+                    ga.alphaTrackIndex >= static_cast<int32_t>(irModel.floatTracks.size()))
+                    continue;
+                const auto& track = irModel.floatTracks[ga.alphaTrackIndex];
+                if (track.empty()) continue;
+
+                // Find the mesh node for this geoset
+                if (ga.meshIndex < 0 ||
+                    ga.meshIndex >= static_cast<int32_t>(meshNodes.size()))
+                    continue;
+                INode* meshNode = meshNodes[ga.meshIndex];
+                if (!meshNode) continue;
+
+                ILOG << "  geosetAnim mesh[" << ga.meshIndex << "] '"
+                     << narrow(meshNode->GetName()) << "' keys=" << track.keys.size()
+                     << " interp=" << static_cast<int>(track.interpolation) << "\n";
+                insertVisibilityKeys(meshNode, track, irModel.sequences);
+            }
+
+            // Object visibility: lights, attachments, PE1, PE2, ribbons
+            auto applyObjVis = [&](int32_t nodeIndex, int32_t trackIndex, const char* type) {
+                if (trackIndex < 0 ||
+                    trackIndex >= static_cast<int32_t>(irModel.floatTracks.size()))
+                    return;
+                const auto& track = irModel.floatTracks[trackIndex];
+                if (track.empty()) return;
+                if (nodeIndex < 0 || nodeIndex >= static_cast<int32_t>(nodeMap.size()))
+                    return;
+                INode* node = nodeMap[nodeIndex];
+                if (!node) return;
+
+                ILOG << "  " << type << " node[" << nodeIndex << "] '"
+                     << narrow(node->GetName()) << "' keys=" << track.keys.size()
+                     << " interp=" << static_cast<int>(track.interpolation) << "\n";
+                insertVisibilityKeys(node, track, irModel.sequences);
+            };
+
+            for (const auto& light : irModel.lights)
+                applyObjVis(light.nodeIndex, light.visibilityTrackIndex, "light");
+            for (const auto& att : irModel.attachments)
+                applyObjVis(att.nodeIndex, att.visibilityTrackIndex, "attachment");
+            for (const auto& pe : irModel.particleEmitters)
+                applyObjVis(pe.nodeIndex, pe.visibilityTrackIndex,
+                            pe.variant == 2 ? "pe2" : "pe1");
+            for (const auto& rib : irModel.ribbonEmitters)
+                applyObjVis(rib.nodeIndex, rib.visibilityTrackIndex, "ribbon");
+
+            ILOG << "==== end visibility ====\n";
+            ILOG.flush();
         }
-    }
 
-    // 13. Build sequences (Note Track entries)
+        // Parameter animations on plugin objects
+        if (opts.core.importParameterAnimations) {
+            ILOG << "\n==== Parameter Animations ====\n";
+
+            // Helper: get the first IParamBlock2 on a node's base object
+            auto getNodePB = [](INode* node) -> IParamBlock2* {
+                if (!node) return nullptr;
+                Object* obj = node->GetObjectRef();
+                if (!obj) return nullptr;
+                auto* ref = dynamic_cast<ReferenceTarget*>(obj);
+                if (!ref) return nullptr;
+                for (int i = 0; i < ref->NumRefs(); i++) {
+                    auto* pb = dynamic_cast<IParamBlock2*>(ref->GetReference(i));
+                    if (pb) return pb;
+                }
+                return nullptr;
+            };
+
+            auto getNodeRef = [](INode* node) -> ReferenceTarget* {
+                if (!node) return nullptr;
+                Object* obj = node->GetObjectRef();
+                return obj ? dynamic_cast<ReferenceTarget*>(obj) : nullptr;
+            };
+
+            // PE1: speed, emissionRate, lifespan, gravity, latitude, longitude
+            for (const auto& pe : irModel.particleEmitters) {
+                if (pe.variant != 1) continue;
+                if (pe.nodeIndex < 0 || pe.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
+                    continue;
+                IParamBlock2* pb = getNodePB(nodeMap[pe.nodeIndex]);
+                if (!pb) continue;
+                ILOG << "  PE1 node[" << pe.nodeIndex << "]\n";
+                animateFloatPB(pb, P1_PB_SPEED,          pe.speedTrackIndex, irModel);
+                animateFloatPB(pb, P1_PB_EMISSION_RATE,  pe.emissionRateTrackIndex, irModel);
+                animateFloatPB(pb, P1_PB_LIFE,           pe.lifespanTrackIndex, irModel);
+                animateFloatPB(pb, P1_PB_ACCELERATION,   pe.gravityTrackIndex, irModel);
+                animateFloatPB(pb, P1_PB_LATITUDE,       pe.latitudeTrackIndex, irModel);
+                animateFloatPB(pb, P1_PB_LONGITUDE,      pe.longitudeTrackIndex, irModel);
+            }
+
+            // PE2: speed, variation, latitude, gravity, emissionRate, width, length
+            for (const auto& pe : irModel.particleEmitters) {
+                if (pe.variant != 2) continue;
+                if (pe.nodeIndex < 0 || pe.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
+                    continue;
+                IParamBlock2* pb = getNodePB(nodeMap[pe.nodeIndex]);
+                if (!pb) continue;
+                ILOG << "  PE2 node[" << pe.nodeIndex << "]\n";
+                animateFloatPB(pb, P2_PB_SPEED,      pe.speedTrackIndex, irModel);
+                animateFloatPB(pb, P2_PB_VARIATION,  pe.variationTrackIndex, irModel);
+                animateFloatPB(pb, P2_PB_LATITUDE,   pe.latitudeTrackIndex, irModel);
+                animateFloatPB(pb, P2_PB_GRAVITY,    pe.gravityTrackIndex, irModel);
+                animateFloatPB(pb, P2_PB_COUNT,      pe.emissionRateTrackIndex, irModel);
+                animateFloatPB(pb, P2_PB_WIDTH,      pe.widthTrackIndex, irModel);
+                animateFloatPB(pb, P2_PB_HEIGHT,     pe.lengthTrackIndex, irModel);
+            }
+
+            // Ribbons: heightAbove, heightBelow, alpha, color, textureSlot
+            for (const auto& rib : irModel.ribbonEmitters) {
+                if (rib.nodeIndex < 0 || rib.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
+                    continue;
+                IParamBlock2* pb = getNodePB(nodeMap[rib.nodeIndex]);
+                if (!pb) continue;
+                ILOG << "  Ribbon node[" << rib.nodeIndex << "]\n";
+                animateFloatPB(pb, RB_PB_HEIGHT_ABOVE, rib.heightAboveTrackIndex, irModel);
+                animateFloatPB(pb, RB_PB_HEIGHT_BELOW, rib.heightBelowTrackIndex, irModel);
+                animateFloatPB(pb, RB_PB_ALPHA,        rib.alphaTrackIndex, irModel);
+                animateColorPB(pb, RB_PB_COLOR,        rib.colorTrackIndex, irModel);
+                animateFloatPB(pb, RB_PB_TEX_SLOT,     rib.textureSlotTrackIndex, irModel);
+            }
+
+            // Lights: attStart, attEnd, color, intensity, ambColor, ambIntensity
+            for (const auto& light : irModel.lights) {
+                if (light.nodeIndex < 0 || light.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
+                    continue;
+                auto* ref = getNodeRef(nodeMap[light.nodeIndex]);
+                if (!ref) continue;
+                ILOG << "  Light node[" << light.nodeIndex << "]\n";
+                animateFloatNamed(ref, L"DecayStart",   light.attStartTrackIndex, irModel);
+                animateFloatNamed(ref, L"DecayEnd",     light.attEndTrackIndex, irModel);
+                animateColorNamed(ref, L"ShadowColor",  light.colorTrackIndex, irModel);
+                animateFloatNamed(ref, L"ShadowValue",  light.intensityTrackIndex, irModel);
+                animateColorNamed(ref, L"AmbColor",     light.ambColorTrackIndex, irModel);
+                animateFloatNamed(ref, L"AmbValue",     light.ambIntensityTrackIndex, irModel);
+            }
+
+            ILOG << "==== end parameter animations ====\n";
+            ILOG.flush();
+        }
+
+        // POST-ANIMATION VERIFICATION: Check actual bone positions AND rotations at frame 0
+        ILOG << "\n==== Post-Animation Verify (frame 0) ====\n";
+        for (const auto& bone : irModel.bones) {
+            if (bone.nodeIndex < 0 || bone.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
+                continue;
+            INode* boneNode = nodeMap[bone.nodeIndex];
+            if (!boneNode) continue;
+
+            Matrix3 wTM = boneNode->GetNodeTM(0);
+            Point3 wp = wTM.GetTrans();
+            Point3 expectedWP = bone.pivotPoint;
+
+            // Extract rotation from world TM
+            Matrix3 rotOnly = wTM;
+            rotOnly.NoTrans();  // remove translation, keep rotation+scale
+            Point3 r0 = rotOnly.GetRow(0);
+            Point3 r1 = rotOnly.GetRow(1);
+            Point3 r2 = rotOnly.GetRow(2);
+
+            // Also get local TM rotation
+            Matrix3 localTM;
+            localTM.IdentityMatrix();
+            INode* par = boneNode->GetParentNode();
+            if (par && !par->IsRootNode()) {
+                Matrix3 pTM = par->GetNodeTM(0);
+                localTM = wTM * Inverse(pTM);
+            } else {
+                localTM = wTM;
+            }
+            Matrix3 localRot = localTM;
+            localRot.NoTrans();
+            Point3 lr0 = localRot.GetRow(0);
+            Point3 lr1 = localRot.GetRow(1);
+            Point3 lr2 = localRot.GetRow(2);
+
+            // Check if rotation is identity
+            bool rotIsIdentity = (fabs(lr0.x-1)<0.01f && fabs(lr0.y)<0.01f && fabs(lr0.z)<0.01f
+                               && fabs(lr1.x)<0.01f && fabs(lr1.y-1)<0.01f && fabs(lr1.z)<0.01f
+                               && fabs(lr2.x)<0.01f && fabs(lr2.y)<0.01f && fabs(lr2.z-1)<0.01f);
+
+            Point3 diff = wp - expectedWP;
+            float err = Length(diff);
+
+            ILOG << "  bone[" << bone.nodeIndex << "] '" << bone.name
+                 << "' pos=(" << wp.x << "," << wp.y << "," << wp.z
+                 << ") exp=(" << expectedWP.x << "," << expectedWP.y << "," << expectedWP.z
+                 << ") err=" << err;
+
+            if (!rotIsIdentity) {
+                ILOG << " ROT=[(" << lr0.x << "," << lr0.y << "," << lr0.z
+                     << ")(" << lr1.x << "," << lr1.y << "," << lr1.z
+                     << ")(" << lr2.x << "," << lr2.y << "," << lr2.z << ")]";
+            }
+            ILOG << (err > 0.1f ? " *** BAD ***" : " OK") << "\n";
+        }
+        ILOG.flush();
+    }
+    ILOG << "==== end animation ====\n";
+    ILOG.flush();
+
+    // 14. Build sequences (Note Track entries)
     {
         mdx_scene::Wc3SequenceBuilder seqBuilder;
         seqBuilder.buildSequences(irModel, gi, reporter);
     }
 
-    // 14. Report
+    // 15. Report
     if (reporter.hasWarnings() || reporter.hasErrors()) {
         reporter.showSummaryDialog(gi->GetMAXHWnd());
     }
 
     gi->ForceCompleteRedraw();
+
+    ILOG << "\n==== Import Complete ====\n";
+    ILOG.flush();
 
     return IMPEXP_SUCCESS;
 }

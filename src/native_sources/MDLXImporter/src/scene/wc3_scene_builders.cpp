@@ -6,6 +6,7 @@
 // is deferred to Phase 5 (parameter animation pipeline).
 
 #include "wc3_scene_builders.h"
+#include "texture_resolver.h"
 #include "../mdlx_class_ids.h"
 
 #include <scene/paramblock_reader.h>
@@ -69,6 +70,19 @@ std::wstring toWstr(const std::string& u8) {
     return r;
 }
 
+// Position a node at its pivot point before parenting.
+// MaxScript: pos:obj.pivot — every scene object must be placed
+// at its MDX pivot point so AttachChild(keepPos=1) computes correct local offset.
+void positionAtPivot(INode* node, int32_t nodeIndex,
+                     const ir::IRModel& irModel) {
+    if (nodeIndex < 0 || nodeIndex >= static_cast<int32_t>(irModel.nodes.size()))
+        return;
+    Matrix3 tm;
+    tm.IdentityMatrix();
+    tm.SetTrans(irModel.nodes[nodeIndex].pivotPoint);
+    node->SetNodeTM(0, tm);
+}
+
 // Walk up the parent chain until we find one that exists in nodeMap,
 // matching MaxScript relinkObjects behavior.
 void attachToParent(INode* node, int32_t nodeIndex,
@@ -120,6 +134,8 @@ enum RibbonParams : ParamID {
 };
 
 constexpr ULONG WC3P1_MODEL_PATH_IID = 0x7B3C8D01;
+constexpr ULONG WC3P2_TEXTURE_PATH_IID   = 0x7B3C8D10;
+constexpr ULONG WC3P2_TEXTURE_PREFIX_IID = 0x7B3C8D11;
 
 } // anonymous namespace
 
@@ -148,6 +164,7 @@ void Wc3LightBuilder::buildLights(
         node->SetName(name);
 
         // Set parent (walk chain like MaxScript relinkObjects)
+        positionAtPivot(node, irLight.nodeIndex, irModel);
         attachToParent(node, irLight.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup
@@ -196,6 +213,7 @@ void Wc3AttachmentBuilder::buildAttachments(
         name.printf(_T("%hs"), irAtt.name.c_str());
         node->SetName(name);
 
+        positionAtPivot(node, irAtt.nodeIndex, irModel);
         attachToParent(node, irAtt.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup
@@ -242,6 +260,7 @@ void Wc3Particle1Builder::buildParticles(
             name = _T("Wc3PE1");
         node->SetName(name);
 
+        positionAtPivot(node, irPE.nodeIndex, irModel);
         attachToParent(node, irPE.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup
@@ -275,6 +294,7 @@ void Wc3Particle1Builder::buildParticles(
 
 void Wc3Particle2Builder::buildParticles(
     const ir::IRModel& irModel, std::vector<INode*>& nodeMap,
+    const std::wstring& modelDir, void* cascStorage,
     Interface* gi, core::ExportErrorReporter& reporter)
 {
     for (const auto& irPE : irModel.particleEmitters) {
@@ -295,6 +315,7 @@ void Wc3Particle2Builder::buildParticles(
             name = _T("Wc3PE2");
         node->SetName(name);
 
+        positionAtPivot(node, irPE.nodeIndex, irModel);
         attachToParent(node, irPE.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup — all 47 PE2 parameters
@@ -363,6 +384,30 @@ void Wc3Particle2Builder::buildParticles(
             pb->SetValue(PB_SQUIRT, 0, (f & 1) ? 1 : 0);
         }
 
+        // Texture path via custom interface.
+        //
+        // The Wc3Particles2 plugin stores two fields: m_texturePrefix and
+        // m_particlePath. The renderer concatenates them with the .max file
+        // directory as: basePath + texPrefix + texFile. For a freshly imported
+        // file (unsaved .max), basePath is empty, so the natural fallback is
+        // to put the absolute resolved path in m_particlePath and leave the
+        // prefix empty — the renderer's Try3 fallback then uses texFile as-is.
+        // CASC extraction (inside resolveTexturePathFull) will extract the
+        // texture to <modelDir>\<relPath> and return that absolute path.
+        if (irPE.textureIndex >= 0 &&
+            irPE.textureIndex < static_cast<int32_t>(irModel.textures.size()))
+        {
+            const auto& irTex = irModel.textures[irPE.textureIndex];
+            if (!irTex.filePath.empty()) {
+                auto wpath = mdx_scene::resolveTexturePathFull(
+                    modelDir, toWstr(irTex.filePath), cascStorage);
+                auto* pathPtr = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PATH_IID));
+                if (pathPtr) *pathPtr = wpath.c_str();
+                auto* prefixPtr = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PREFIX_IID));
+                if (prefixPtr) *prefixPtr = _T("");
+            }
+        }
+
         // Register for animation key insertion
         if (irPE.nodeIndex >= 0 && irPE.nodeIndex < static_cast<int32_t>(nodeMap.size()))
             nodeMap[irPE.nodeIndex] = node;
@@ -396,6 +441,7 @@ void Wc3RibbonBuilder::buildRibbons(
         if (irRib.materialIndex >= 0 && irRib.materialIndex < static_cast<int32_t>(materials.size()))
             node->SetMtl(materials[irRib.materialIndex]);
 
+        positionAtPivot(node, irRib.nodeIndex, irModel);
         attachToParent(node, irRib.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup
@@ -453,6 +499,7 @@ void Wc3EventBuilder::buildEvents(
             name.printf(_T("%hs%hs"), irEvt.eventCode.c_str(), irEvt.eventData.c_str());
         node->SetName(name);
 
+        positionAtPivot(node, irEvt.nodeIndex, irModel);
         attachToParent(node, irEvt.nodeIndex, irModel, nodeMap);
 
         // Set event key times via IntTab paramblock
@@ -497,6 +544,7 @@ void Wc3CollisionBuilder::buildCollisions(
             name = _T("Wc3Collision");
         node->SetName(name);
 
+        positionAtPivot(node, irCol.nodeIndex, irModel);
         attachToParent(node, irCol.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup: dimensions from collision vertices
@@ -552,6 +600,7 @@ void Wc3PopcornBuilder::buildPopcorn(
             name = _T("BlizzPopcorn");
         node->SetName(name);
 
+        positionAtPivot(node, irPE.nodeIndex, irModel);
         attachToParent(node, irPE.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup

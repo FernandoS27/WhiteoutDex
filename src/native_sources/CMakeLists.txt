@@ -89,6 +89,16 @@ if(PREBUILT_COMMON_DIR)
         IMPORTED_LOCATION "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_lib.lib"
         INTERFACE_INCLUDE_DIRECTORIES "${WHITEOUT_DIR}/include"
     )
+
+    if(EXISTS "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_casc.lib")
+        add_library(whiteout_casc STATIC IMPORTED GLOBAL)
+        set_target_properties(whiteout_casc PROPERTIES
+            IMPORTED_LOCATION "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_casc.lib"
+            INTERFACE_INCLUDE_DIRECTORIES "${WHITEOUT_DIR}/include"
+            INTERFACE_LINK_LIBRARIES whiteout_lib
+            INTERFACE_COMPILE_DEFINITIONS "WHITEOUT_HAS_CASC=1"
+        )
+    endif()
 else()
     # -----------------------------------------------------------------
     # Build from source

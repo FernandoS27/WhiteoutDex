@@ -56,14 +56,18 @@ struct GeosetInfo {
     int expandedVertCount = 0;
 };
 
-struct MaterialInfo {
-    int materialId = 0;
-    Mtl* mtl = nullptr;
+struct MaterialLayerInfo {
     int filterMode = 0;
     int textureId = -1;
     float alpha = 1.0f;
     int replaceableTexture = 0;
     int flags = 0;
+};
+
+struct MaterialInfo {
+    int materialId = 0;
+    Mtl* mtl = nullptr;
+    std::vector<MaterialLayerInfo> layers;  // one per layer (composite sub-materials)
     int priorityPlane = 0;
     int sortOrder = 0;
 };
@@ -142,6 +146,7 @@ private:
     static Object* GetBaseObject(INode* node);
     static Modifier* FindSkinModifier(INode* node);
     static Modifier* FindModifierByClassID(INode* node, Class_ID cid);
+    MaterialLayerInfo ExtractWc3MaterialLayer(Mtl* mtl);
     static int MapMaterialFilterMode(int wc3fm);
     static int MapParticleFilterMode(int bpfm);
     static int MapRibbonFilterMode(int rbfm);

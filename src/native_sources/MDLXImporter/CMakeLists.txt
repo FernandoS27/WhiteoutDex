@@ -22,6 +22,10 @@ target_link_libraries(MDLXImporter PRIVATE
     maxscrpt.lib
 )
 
+if(TARGET whiteout_casc)
+    target_link_libraries(MDLXImporter PRIVATE whiteout_casc)
+endif()
+
 target_compile_options(MDLXImporter PRIVATE
     /W3 /EHsc /Zp8 /bigobj /utf-8
     /wd4100 /wd4127 /wd4244 /wd4267

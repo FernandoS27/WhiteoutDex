@@ -190,10 +190,9 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
 // ============================================================================
 
 int MdxModelAdapter::MapLayerFilterMode(Layer::FilterMode fm) const {
-    // Layer::FilterMode maps 1:1 to renderer FilterMode for values 0-5
+    // Layer::FilterMode maps 1:1 to renderer FilterMode for values 0-6
     int v = (int)fm;
-    if (v >= 0 && v <= 5) return v;
-    if (v == 6) return FILTER_MODULATE; // Modulate2x → Modulate
+    if (v >= 0 && v <= 6) return v;
     return FILTER_NONE;
 }
 
@@ -327,12 +326,13 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
 
 int MdxModelAdapter::MapPE2FilterMode(u32 mdxMode) const {
     // MDX PE2 filterMode: 0=Blend, 1=Additive, 2=Modulate, 3=Modulate2x, 4=AlphaKey
-    // Renderer FilterMode: 0=None, 1=Transparent, 2=Blend, 3=Additive, 4=AddAlpha, 5=Modulate
+    // Renderer FilterMode: 0=None, 1=Transparent, 2=Blend, 3=Additive,
+    //                      4=AddAlpha, 5=Modulate, 6=Modulate2x
     switch (mdxMode) {
         case 0: return FILTER_BLEND;       // Blend
         case 1: return FILTER_ADDITIVE;    // Additive
         case 2: return FILTER_MODULATE;    // Modulate
-        case 3: return FILTER_MODULATE;    // Modulate2x → Modulate
+        case 3: return FILTER_MODULATE_2X; // Modulate2x
         case 4: return FILTER_TRANSPARENT; // AlphaKey → Transparent
         default: return FILTER_BLEND;
     }

@@ -470,7 +470,7 @@ const TCHAR* Wc3Particles2ClassDesc::ClassName()
     return GetString(IDS_CLASS_NAME);
 }
 
-#if MAX_PRODUCT_YEAR_NUMBER >= 2018
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
 const MCHAR* Wc3Particles2ClassDesc::NonLocalizedClassName()
 {
     return GetString(IDS_CLASS_NAME);
@@ -799,7 +799,7 @@ INT_PTR Wc3Particles2DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
                        "::WhiteoutDexTexBrowser.show()\n"
                        "if ::WhiteoutDexTexBrowser.form != undefined do "
                        "dotNet.addEventHandler ::WhiteoutDexTexBrowser.form \"TextureApply\" __wc3p2CB\n"),
-#if MAX_PRODUCT_YEAR_NUMBER >= 2018
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
                     MAXScript::ScriptSource::NonEmbedded,
 #endif
                     FALSE);
@@ -886,7 +886,7 @@ INT_PTR Wc3Particles2DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
                    "local r = ::__wc3p2_texResult;"
                    "::__wc3p2_texResult = undefined;"
                    "r)"),
-#if MAX_PRODUCT_YEAR_NUMBER >= 2018
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
                 MAXScript::ScriptSource::NonEmbedded,
 #endif
                 TRUE, &result);
@@ -1563,7 +1563,7 @@ Animatable* GenParticle::SubAnim(int i)
     return (i == 0) ? pblock2 : nullptr;
 }
 
-#if MAX_PRODUCT_YEAR_NUMBER >= 2018
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
 MSTR GenParticle::SubAnimName(int i, bool localized)
 #else
 MSTR GenParticle::SubAnimName(int i)
@@ -1659,7 +1659,7 @@ void GenParticle::BirthParticle(INode* node, TimeValue bt, int index, TimeValue 
 
     // Speed with variation: speed * (1 + random[-1,1] * variation)
     float speed = initVel * (1.0f + randSigned() * var);
-    speed *= 0.0025f;  // unit conversion: PB units to world-units-per-tick
+    speed /= static_cast<float>(TICKS_PER_SEC);  // unit conversion: PB units to world-units-per-tick
 
     // Rotation angles (symmetric random, degrees to radians)
     float rotLat = latitude * randSigned() * kDegToRad;
@@ -1868,7 +1868,7 @@ void GenParticle::UpdateParticles(TimeValue t, INode* node)
         {
             float gravity = 0.0f;
             pblock2->GetValue(PB_GRAVITY, tvalid, gravity, forever);
-            float gAccel = gravity * -0.0025f / static_cast<float>(TICKS_PER_SEC);
+            float gAccel = -gravity / (static_cast<float>(TICKS_PER_SEC) * static_cast<float>(TICKS_PER_SEC));
             float fdt = static_cast<float>(dt);
             for (int n = 0; n < parts.Count(); n++) {
                 if (!parts.Alive(n)) continue;
@@ -2116,7 +2116,7 @@ ParamDimension* GenParticle::GetParameterDim(int pbIndex)
     }
 }
 
-#if MAX_PRODUCT_YEAR_NUMBER >= 2018
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
 MSTR GenParticle::GetParameterName(int pbIndex, bool localized)
 #else
 MSTR GenParticle::GetParameterName(int pbIndex)
@@ -2331,7 +2331,7 @@ Class_ID Wc3Particles2Particle::ClassID()
     return WC3PARTICLES2_CLASS_ID;
 }
 
-#if MAX_PRODUCT_YEAR_NUMBER >= 2018
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
 const MCHAR* Wc3Particles2Particle::GetObjectName(bool localized) const
 #else
 const MCHAR* Wc3Particles2Particle::GetObjectName()

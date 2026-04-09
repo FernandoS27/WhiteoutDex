@@ -14,7 +14,7 @@
 plugin material Wc3Material
 name:"Wc3Material"
 classID:#(0x4b8e20a3, 0x1f6c3d57)
-extends:Standard replaceUI:true version:10
+extends:Standard replaceUI:true version:11
 (
 	local isLoading = false
 	
@@ -91,6 +91,7 @@ extends:Standard replaceUI:true version:10
 			this.texMapRollout.mbNormal.enabled		= not isSD
 			this.texMapRollout.mbORM.enabled			= not isSD
 			this.texMapRollout.mbEmissive.enabled	= not isSD
+			this.texMapRollout.mbTeamColor.enabled	= not isSD
 			this.texMapRollout.mbEnv.enabled			= not isSD
 		) catch()
 		try (
@@ -251,7 +252,6 @@ extends:Standard replaceUI:true version:10
 	---------------------------------------------------------------------------
 	parameters layerAnim rollout:layerAnimRollout
 	(
-		opacityTex		type:#texturemap
 		opacity			type:#float		animatable:true		default:100.0	ui:spnOpacity
 		opacityCtrl		type:#integer	animatable:false	default:1		ui:ddOpacCtrl
 		flipbook		type:#boolean	animatable:false	default:false	ui:chkFlipbook
@@ -284,13 +284,14 @@ extends:Standard replaceUI:true version:10
 		normalMap		type:#texturemap	animatable:false	ui:mbNormal
 		ormMap			type:#texturemap	animatable:false	ui:mbORM
 		emissiveMap		type:#texturemap	animatable:false	ui:mbEmissive
+		teamColorMap	type:#texturemap	animatable:false	ui:mbTeamColor
 		environmentMap	type:#texturemap	animatable:false	ui:mbEnv
 		
 		on diffuseMap set val do
 		(
 			try (
 				delegate.diffuseMap = val
-				this.opacityTex = generateOpacity val
+				generateOpacity val
 				applyFilterMode()
 				try ( this.texMapRollout.mbDiffuse.text = getMapName val ) catch()
 				-- Sync current UV values from texture to material spinners
@@ -310,6 +311,7 @@ extends:Standard replaceUI:true version:10
 		on normalMap set val do ( try ( this.texMapRollout.mbNormal.text = getMapName val ) catch() )
 		on ormMap set val do ( try ( this.texMapRollout.mbORM.text = getMapName val ) catch() )
 		on emissiveMap set val do ( try ( this.texMapRollout.mbEmissive.text = getMapName val ) catch() )
+		on teamColorMap set val do ( try ( this.texMapRollout.mbTeamColor.text = getMapName val ) catch() )
 		on environmentMap set val do ( try ( this.texMapRollout.mbEnv.text = getMapName val ) catch() )
 	)
 	
@@ -333,7 +335,7 @@ extends:Standard replaceUI:true version:10
 	rollout basicRollout "Material Basic Parameters"
 	(
 		dropdownlist	ddShader		"Shader ........................................................" items:#("SD", "HD", "SD on HD", "Crystal") width:300 align:#center
-		dropdownlist	ddFilterMode	"Filter Mode ................................................." items:#("None", "Transparent", "Blend", "Additive", "Additive 2x", "Modulate", "Modulate 2x") width:300 align:#center
+		dropdownlist	ddFilterMode	"Filter Mode ................................................." items:#("None", "Transparent", "Blend", "Additive", "AddAlpha", "Modulate", "Modulate 2x") width:300 align:#center
 		label			lblSep1		"" height:2
 		checkbox	chkTwoSided		"Two Sided"		align:#left across:3
 		checkbox	chkUnshaded		"Unshaded"		align:#left
@@ -400,17 +402,21 @@ extends:Standard replaceUI:true version:10
 		label		lblSep5		"" height:2
 		label		lblEmis		"Emissive ........................................................." align:#left height:16
 		mapbutton	mbEmissive	"(None)" width:300 height:20 align:#center
+		label		lblSepTC	"" height:2
+		label		lblTeamCol	"Team Color (HD, optional) ..........................." align:#left height:16
+		mapbutton	mbTeamColor	"(None)" width:300 height:20 align:#center
 		label		lblSep6		"" height:2
 		label		lblEnv		"Environment ................................................." align:#left height:16
 		mapbutton	mbEnv		"(None)" width:300 height:20 align:#center
-		
+
 		on texMapRollout open do
 		(
-			mbDiffuse.text	= getMapName this.diffuseMap
-			mbNormal.text	= getMapName this.normalMap
-			mbORM.text		= getMapName this.ormMap
-			mbEmissive.text	= getMapName this.emissiveMap
-			mbEnv.text		= getMapName this.environmentMap
+			mbDiffuse.text		= getMapName this.diffuseMap
+			mbNormal.text		= getMapName this.normalMap
+			mbORM.text			= getMapName this.ormMap
+			mbEmissive.text		= getMapName this.emissiveMap
+			mbTeamColor.text	= getMapName this.teamColorMap
+			mbEnv.text			= getMapName this.environmentMap
 			updateShaderState()
 		)
 	)

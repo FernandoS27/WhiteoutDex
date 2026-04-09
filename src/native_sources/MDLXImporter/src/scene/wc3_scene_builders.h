@@ -45,6 +45,8 @@ public:
     void buildParticles(
         const ir::IRModel& irModel,
         std::vector<INode*>& nodeMap,
+        const std::wstring& modelDir,
+        void* cascStorage,
         Interface* gi,
         core::ExportErrorReporter& reporter);
 };

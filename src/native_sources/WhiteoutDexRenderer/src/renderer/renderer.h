@@ -67,6 +67,7 @@ struct GPUGeoset {
     bool hasSkinning    = false;
     float geosetAlpha   = 1.0f;      // visibility: 0=hidden, 1=visible
     XMFLOAT3 geosetColor = {1,1,1};  // color tint: RGB 0-1
+    XMMATRIX worldMatrix = XMMatrixIdentity();  // node world transform (used for unskinned meshes)
     int priorityPlane   = 0;         // render order within same filter pass
 
     void Release() {
@@ -81,6 +82,21 @@ struct GPUTexture {
     ID3D11ShaderResourceView* srv = nullptr;
 
     void Release() { SafeRelease(srv); SafeRelease(tex); }
+};
+
+// Per-material packed Texture2DArray (one slice per layer) for in-shader compositing.
+struct GPUMaterial {
+    StagedMaterial            cpu;
+    ID3D11Texture2D*          texArray    = nullptr;
+    ID3D11ShaderResourceView* texArraySRV = nullptr;
+    int                       arrayW      = 0;
+    int                       arrayH      = 0;
+
+    void Release() {
+        SafeRelease(texArraySRV);
+        SafeRelease(texArray);
+        arrayW = arrayH = 0;
+    }
 };
 
 // ============================================================================
@@ -245,7 +261,14 @@ private:
     // ---- GPU model data (render thread only) ----
     std::vector<GPUGeoset>                  gpuGeosets_;
     std::unordered_map<int, GPUTexture>     gpuTextures_;
-    std::vector<StagedMaterial>             gpuMaterials_;
+    std::vector<GPUMaterial>                gpuMaterials_;
+
+    // CPU-side cache of texture pixels (kept so per-material Texture2DArrays
+    // can be rebuilt whenever materials change without re-uploading textures).
+    std::unordered_map<int, StagedTexture>  texturePixels_;
+
+    // Per-material texture-array rebuild helper (render thread only).
+    bool BuildMaterialTextureArray(GPUMaterial& gm);
 
     // ---- DX11 core ----
     ID3D11Device*           device_       = nullptr;
@@ -256,15 +279,17 @@ private:
     ID3D11Texture2D*        depthBuffer_  = nullptr;
 
     // Shaders
-    ID3D11VertexShader*     vertexShader_     = nullptr;
-    ID3D11PixelShader*      pixelShader_      = nullptr;
-    ID3D11InputLayout*      inputLayout_      = nullptr;
-    ID3D11VertexShader*     lineVertexShader_ = nullptr;
-    ID3D11PixelShader*      linePixelShader_  = nullptr;
-    ID3D11InputLayout*      lineInputLayout_  = nullptr;
+    ID3D11VertexShader*     vertexShader_       = nullptr;
+    ID3D11PixelShader*      pixelShader_        = nullptr;  // particles/ribbons/viewcube (Texture2D)
+    ID3D11PixelShader*      geosetPixelShader_  = nullptr;  // geosets (Texture2DArray + CBLayers)
+    ID3D11InputLayout*      inputLayout_        = nullptr;
+    ID3D11VertexShader*     lineVertexShader_   = nullptr;
+    ID3D11PixelShader*      linePixelShader_    = nullptr;
+    ID3D11InputLayout*      lineInputLayout_    = nullptr;
 
-    // Constant buffer
+    // Constant buffers
     ID3D11Buffer*           cbPerFrame_ = nullptr;
+    ID3D11Buffer*           cbLayers_   = nullptr;  // b1 for geoset PS
 
     // Grid
     ID3D11Buffer*           gridVB_       = nullptr;
@@ -284,6 +309,7 @@ private:
     ID3D11RasterizerState*    rsNoCull_     = nullptr;
     ID3D11DepthStencilState*  dsDefault_    = nullptr;
     ID3D11DepthStencilState*  dsNoWrite_    = nullptr;
+    ID3D11DepthStencilState*  dsNoWriteLeq_ = nullptr;  // LESS_EQUAL + no write, for internal layers
     ID3D11DepthStencilState*  dsDisabled_   = nullptr;
     ID3D11BlendState*         bsOpaque_     = nullptr;
     ID3D11BlendState*         bsAlphaTest_  = nullptr;
@@ -291,6 +317,7 @@ private:
     ID3D11BlendState*         bsAdditive_   = nullptr;
     ID3D11BlendState*         bsAddAlpha_   = nullptr;
     ID3D11BlendState*         bsModulate_   = nullptr;
+    ID3D11BlendState*         bsModulate2x_ = nullptr;
     ID3D11SamplerState*       samplerLinear_ = nullptr;
 
     // 1x1 white default texture

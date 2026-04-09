@@ -207,6 +207,11 @@ void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
         skinning_.UpdateBoneMatrices(bc, worldFlat.data());
     }
 
+    // Geoset world transforms (used for unskinned meshes; skinned ones ignore this)
+    for (int i = 0; i < (int)state.geosetTransforms.size() && i < (int)gpuGeosets_.size(); i++) {
+        gpuGeosets_[i].worldMatrix = state.geosetTransforms[i];
+    }
+
     // Geoset visibility
     for (int i = 0; i < (int)state.geosetAlphas.size() && i < (int)gpuGeosets_.size(); i++) {
         gpuGeosets_[i].geosetAlpha = state.geosetAlphas[i];
@@ -273,7 +278,8 @@ void Renderer::ProcessStagedData() {
     }
 
     if (stagedDirty_) {
-        // Upload textures
+        // Upload textures (individual Texture2D — used by particles/ribbons and as
+        // source pixels for per-material Texture2DArrays)
         for (auto& [id, st] : stagedTextures_) {
             if (st.width <= 0 || st.height <= 0) continue;
 
@@ -299,13 +305,18 @@ void Renderer::ProcessStagedData() {
                 device_->CreateShaderResourceView(gt.tex, nullptr, &gt.srv);
             }
             gpuTextures_[id] = gt;
+
+            // Cache the CPU pixels so future material rebuilds don't need re-upload
+            texturePixels_[id] = st;
         }
         stagedTextures_.clear();
 
-        // Copy materials (CPU data for render logic)
+        // Copy materials (CPU data for render logic) and build per-material Texture2DArrays
         for (auto& [id, sm] : stagedMaterials_) {
-            gpuMaterials_.resize((std::max)((int)gpuMaterials_.size(), id + 1));
-            gpuMaterials_[id] = sm;
+            if ((int)gpuMaterials_.size() <= id) gpuMaterials_.resize(id + 1);
+            gpuMaterials_[id].Release();
+            gpuMaterials_[id].cpu = sm;
+            BuildMaterialTextureArray(gpuMaterials_[id]);
         }
         stagedMaterials_.clear();
 
@@ -321,7 +332,7 @@ void Renderer::ProcessStagedData() {
 
             // Copy priorityPlane from material for render sorting
             if (sg.materialId >= 0 && sg.materialId < (int)gpuMaterials_.size())
-                gg.priorityPlane = gpuMaterials_[sg.materialId].priorityPlane;
+                gg.priorityPlane = gpuMaterials_[sg.materialId].cpu.priorityPlane;
 
             // Vertex buffer — DYNAMIC for skinning updates
             D3D11_BUFFER_DESC bd = {};
@@ -360,7 +371,97 @@ void Renderer::ReleaseModelGPU() {
     gpuGeosets_.clear();
     for (auto& [id, t] : gpuTextures_) t.Release();
     gpuTextures_.clear();
+    for (auto& m : gpuMaterials_) m.Release();
     gpuMaterials_.clear();
+    texturePixels_.clear();
+}
+
+// Build a packed Texture2DArray for a material.
+// All layer textures are CPU-resized (nearest-neighbor) to the max (w,h) found
+// across that material's layers, then uploaded as a single ArraySize=numLayers
+// immutable texture. Missing/unknown textures become opaque white slices.
+bool Renderer::BuildMaterialTextureArray(GPUMaterial& gm) {
+    if (!device_) return false;
+    int numLayers = (int)gm.cpu.layers.size();
+    if (numLayers <= 0) return false;
+    if (numLayers > MAX_LAYERS) numLayers = MAX_LAYERS;
+
+    // Determine common size: max dimensions of valid layer textures
+    int maxW = 0, maxH = 0;
+    for (int li = 0; li < numLayers; ++li) {
+        int tid = gm.cpu.layers[li].textureId;
+        auto it = texturePixels_.find(tid);
+        if (it == texturePixels_.end()) continue;
+        if (it->second.width  > maxW) maxW = it->second.width;
+        if (it->second.height > maxH) maxH = it->second.height;
+    }
+    if (maxW <= 0 || maxH <= 0) { maxW = 1; maxH = 1; }
+
+    // Allocate packed pixel buffer: numLayers slices of maxW*maxH RGBA8
+    std::vector<uint8_t> packed((size_t)numLayers * maxW * maxH * 4, 0xFF);
+
+    for (int li = 0; li < numLayers; ++li) {
+        int tid = gm.cpu.layers[li].textureId;
+        auto it = texturePixels_.find(tid);
+        uint8_t* dst = packed.data() + (size_t)li * maxW * maxH * 4;
+        if (it == texturePixels_.end() || it->second.pixels.empty()) {
+            // Leave slice as opaque white
+            continue;
+        }
+        const auto& src = it->second;
+        // Nearest-neighbor resample src (srcW x srcH) → (maxW x maxH)
+        for (int y = 0; y < maxH; ++y) {
+            int sy = (y * src.height) / maxH;
+            if (sy >= src.height) sy = src.height - 1;
+            const uint8_t* srcRow = src.pixels.data() + (size_t)sy * src.width * 4;
+            uint8_t* dstRow = dst + (size_t)y * maxW * 4;
+            for (int x = 0; x < maxW; ++x) {
+                int sx = (x * src.width) / maxW;
+                if (sx >= src.width) sx = src.width - 1;
+                const uint8_t* sp = srcRow + sx * 4;
+                uint8_t* dp = dstRow + x * 4;
+                dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3];
+            }
+        }
+    }
+
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width     = maxW;
+    td.Height    = maxH;
+    td.MipLevels = 1;
+    td.ArraySize = numLayers;
+    td.Format    = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage     = D3D11_USAGE_IMMUTABLE;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    std::vector<D3D11_SUBRESOURCE_DATA> srds((size_t)numLayers);
+    for (int li = 0; li < numLayers; ++li) {
+        srds[li].pSysMem          = packed.data() + (size_t)li * maxW * maxH * 4;
+        srds[li].SysMemPitch      = maxW * 4;
+        srds[li].SysMemSlicePitch = 0;
+    }
+
+    if (FAILED(device_->CreateTexture2D(&td, srds.data(), &gm.texArray))) {
+        gm.texArray = nullptr;
+        return false;
+    }
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC svd = {};
+    svd.Format                         = DXGI_FORMAT_R8G8B8A8_UNORM;
+    svd.ViewDimension                  = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+    svd.Texture2DArray.MostDetailedMip = 0;
+    svd.Texture2DArray.MipLevels       = 1;
+    svd.Texture2DArray.FirstArraySlice = 0;
+    svd.Texture2DArray.ArraySize       = numLayers;
+
+    if (FAILED(device_->CreateShaderResourceView(gm.texArray, &svd, &gm.texArraySRV))) {
+        SafeRelease(gm.texArray);
+        return false;
+    }
+    gm.arrayW = maxW;
+    gm.arrayH = maxH;
+    return true;
 }
 
 // ============================================================================
@@ -1119,6 +1220,8 @@ bool Renderer::InitD3D() {
         device_->CreateDepthStencilState(&dd, &dsDefault_);
         dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
         device_->CreateDepthStencilState(&dd, &dsNoWrite_);
+        dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+        device_->CreateDepthStencilState(&dd, &dsNoWriteLeq_);
         dd.DepthEnable = FALSE;
         device_->CreateDepthStencilState(&dd, &dsDisabled_);
     }
@@ -1161,6 +1264,12 @@ bool Renderer::InitD3D() {
         rt.SrcBlend = D3D11_BLEND_ZERO;
         rt.DestBlend = D3D11_BLEND_SRC_COLOR;
         device_->CreateBlendState(&bd, &bsModulate_);
+
+        // Modulate 2x (FILTER_MODULATE_2X) — out = 2 * src * dst
+        // via DestColor + SrcColor → src*dst + dst*src = 2*src*dst
+        rt.SrcBlend = D3D11_BLEND_DEST_COLOR;
+        rt.DestBlend = D3D11_BLEND_SRC_COLOR;
+        device_->CreateBlendState(&bd, &bsModulate2x_);
     }
 
     // Sampler
@@ -1174,7 +1283,7 @@ bool Renderer::InitD3D() {
         device_->CreateSamplerState(&sd, &samplerLinear_);
     }
 
-    // Constant buffer
+    // Constant buffers
     {
         D3D11_BUFFER_DESC bd = {};
         bd.ByteWidth = sizeof(CBPerFrame);
@@ -1182,6 +1291,9 @@ bool Renderer::InitD3D() {
         bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         device_->CreateBuffer(&bd, nullptr, &cbPerFrame_);
+
+        bd.ByteWidth = sizeof(CBLayers);
+        device_->CreateBuffer(&bd, nullptr, &cbLayers_);
     }
 
     // 1x1 white default texture
@@ -1232,15 +1344,17 @@ void Renderer::CleanupD3D() {
     if (context_) context_->ClearState();
     SafeRelease(defaultTexSRV_); SafeRelease(defaultTex_);
     SafeRelease(samplerLinear_);
-    SafeRelease(bsModulate_); SafeRelease(bsAddAlpha_); SafeRelease(bsAdditive_);
+    SafeRelease(bsModulate2x_); SafeRelease(bsModulate_); SafeRelease(bsAddAlpha_); SafeRelease(bsAdditive_);
     SafeRelease(bsAlphaBlend_); SafeRelease(bsAlphaTest_); SafeRelease(bsOpaque_);
-    SafeRelease(dsDisabled_); SafeRelease(dsNoWrite_); SafeRelease(dsDefault_);
+    SafeRelease(dsDisabled_); SafeRelease(dsNoWriteLeq_); SafeRelease(dsNoWrite_); SafeRelease(dsDefault_);
     SafeRelease(rsNoCull_); SafeRelease(rsDefault_);
-    SafeRelease(cbPerFrame_); SafeRelease(gridVB_); SafeRelease(particleVB_); SafeRelease(ribbonVB_);
+    SafeRelease(cbLayers_); SafeRelease(cbPerFrame_);
+    SafeRelease(gridVB_); SafeRelease(particleVB_); SafeRelease(ribbonVB_);
     SafeRelease(vcCubeVB_); SafeRelease(vcCubeIB_); SafeRelease(vcOutlineVB_);
     SafeRelease(vcFaceTexSRV_); SafeRelease(vcFaceTex_);
     SafeRelease(lineInputLayout_); SafeRelease(linePixelShader_); SafeRelease(lineVertexShader_);
-    SafeRelease(inputLayout_); SafeRelease(pixelShader_); SafeRelease(vertexShader_);
+    SafeRelease(inputLayout_);
+    SafeRelease(geosetPixelShader_); SafeRelease(pixelShader_); SafeRelease(vertexShader_);
     SafeRelease(dsv_); SafeRelease(depthBuffer_); SafeRelease(rtv_);
     SafeRelease(swapChain_); SafeRelease(context_); SafeRelease(device_);
 }
@@ -1267,7 +1381,7 @@ static ID3DBlob* CompileShader(const char* src, const char* entry, const char* t
 }
 
 bool Renderer::CreateShaders() {
-    // Mesh shader
+    // Mesh shader (VS + particle/ribbon PS)
     {
         ID3DBlob* vs = CompileShader(g_vertexShaderSrc, "VSMain", "vs_5_0");
         ID3DBlob* ps = CompileShader(g_pixelShaderSrc,  "PSMain", "ps_5_0");
@@ -1282,6 +1396,13 @@ bool Renderer::CreateShaders() {
         };
         device_->CreateInputLayout(layout, 4, vs->GetBufferPointer(), vs->GetBufferSize(), &inputLayout_);
         vs->Release(); ps->Release();
+    }
+    // Geoset pixel shader (Texture2DArray + in-shader layer compositing)
+    {
+        ID3DBlob* ps = CompileShader(g_geosetPixelShaderSrc, "PSGeoset", "ps_5_0");
+        if (!ps) return false;
+        device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &geosetPixelShader_);
+        ps->Release();
     }
     // Line shader
     {
@@ -1376,6 +1497,10 @@ void Renderer::ApplyFilterMode(int filterMode, int matFlags) {
         context_->OMSetBlendState(bsModulate_, blend, 0xFFFFFFFF);
         context_->OMSetDepthStencilState(dsNoWrite_, 0);
         break;
+    case FILTER_MODULATE_2X:
+        context_->OMSetBlendState(bsModulate2x_, blend, 0xFFFFFFFF);
+        context_->OMSetDepthStencilState(dsNoWrite_, 0);
+        break;
     }
 
     // Override depth if material flags say so
@@ -1459,13 +1584,14 @@ void Renderer::RenderGrid() {
 void Renderer::RenderGeosets() {
     if (gpuGeosets_.empty()) return;
 
-    // Set mesh shader pipeline
+    // Set mesh shader pipeline: VS + geoset PS (Texture2DArray + in-shader compositing)
     context_->IASetInputLayout(inputLayout_);
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context_->VSSetShader(vertexShader_, nullptr, 0);
-    context_->PSSetShader(pixelShader_, nullptr, 0);
+    context_->PSSetShader(geosetPixelShader_, nullptr, 0);
     context_->VSSetConstantBuffers(0, 1, &cbPerFrame_);
-    context_->PSSetConstantBuffers(0, 1, &cbPerFrame_);
+    ID3D11Buffer* psCBs[] = { cbPerFrame_, cbLayers_ };
+    context_->PSSetConstantBuffers(0, 2, psCBs);
     context_->PSSetSamplers(0, 1, &samplerLinear_);
 
     // Build sort indices: sort by (renderPass, priorityPlane, geosetId)
@@ -1476,39 +1602,44 @@ void Renderer::RenderGeosets() {
         auto& gb = gpuGeosets_[b];
         int matIdA = ga.materialId, matIdB = gb.materialId;
         int roA = 1, roB = 1;
-        if (matIdA >= 0 && matIdA < (int)gpuMaterials_.size())
-            for (auto& l : gpuMaterials_[matIdA].layers) roA = (std::max)(roA, GetRenderOrder(l.filterMode));
-        if (matIdB >= 0 && matIdB < (int)gpuMaterials_.size())
-            for (auto& l : gpuMaterials_[matIdB].layers) roB = (std::max)(roB, GetRenderOrder(l.filterMode));
+        if (matIdA >= 0 && matIdA < (int)gpuMaterials_.size() && !gpuMaterials_[matIdA].cpu.layers.empty())
+            roA = GetRenderOrder(gpuMaterials_[matIdA].cpu.layers[0].filterMode);
+        if (matIdB >= 0 && matIdB < (int)gpuMaterials_.size() && !gpuMaterials_[matIdB].cpu.layers.empty())
+            roB = GetRenderOrder(gpuMaterials_[matIdB].cpu.layers[0].filterMode);
         if (roA != roB) return roA < roB;
         if (ga.priorityPlane != gb.priorityPlane) return ga.priorityPlane < gb.priorityPlane;
         return ga.geosetId < gb.geosetId;
     });
 
-    // 4-bucket render order (Magos style), sorted by priorityPlane within each bucket
+    // Snapshot view matrix once per frame
+    XMMATRIX view2;
+    { std::lock_guard<std::mutex> lock(dataMutex_); view2 = camera_.GetViewMatrix(); }
+    float aspect2 = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
+    XMMATRIX proj2 = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect2, 1.0f, 10000.0f);
+
+    // 4-bucket render order (Magos style), sorted by priorityPlane within each bucket.
+    // Single draw call per geoset — all layers composited inside the pixel shader.
     for (int pass = 1; pass <= 4; ++pass) {
         for (int si : sortedIdx) {
             auto& geo = gpuGeosets_[si];
             if (!geo.vb || !geo.ib || geo.indexCount == 0) continue;
 
-            // Get material layers — determine render order from MAX of all layers (Magos style)
             int matId = geo.materialId;
-            StagedMaterial* mat = nullptr;
+            GPUMaterial* mat = nullptr;
             if (matId >= 0 && matId < (int)gpuMaterials_.size())
                 mat = &gpuMaterials_[matId];
 
-            // Render order = max of all layer render orders
-            int matRenderOrder = 1;
-            if (mat) {
-                for (auto& layer : mat->layers) {
-                    int ro = GetRenderOrder(layer.filterMode);
-                    if (ro > matRenderOrder) matRenderOrder = ro;
-                }
+            // Render order from layer 0 (base layer determines scene blending;
+            // subsequent layers are composited in-shader on top of the base)
+            int baseFilter = FILTER_NONE;
+            int baseFlags  = 0;
+            if (mat && !mat->cpu.layers.empty()) {
+                baseFilter = mat->cpu.layers[0].filterMode;
+                baseFlags  = mat->cpu.layers[0].flags;
             }
-
+            int matRenderOrder = GetRenderOrder(baseFilter);
             if (matRenderOrder != pass) continue;
 
-            // Phase 4: Skip fully invisible geosets
             float geoAlpha = geo.geosetAlpha;
             if (geoAlpha < 0.01f) continue;
             XMFLOAT3 geoColor = geo.geosetColor;
@@ -1518,78 +1649,78 @@ void Renderer::RenderGeosets() {
             context_->IASetVertexBuffers(0, 1, &geo.vb, &stride, &offset);
             context_->IASetIndexBuffer(geo.ib, DXGI_FORMAT_R32_UINT, 0);
 
-            // Render each material layer
-            int numLayers = mat ? (int)mat->layers.size() : 1;
-            int layerFilterMode = FILTER_NONE;
-            int layerTexId = -1;
-            float layerAlpha = 1.0f;
-            int layerFlags = 0;
-            for (int li = 0; li < numLayers; ++li) {
-                if (mat && li < (int)mat->layers.size()) {
-                    auto& layer = mat->layers[li];
-                    layerFilterMode = layer.filterMode;
-                    layerTexId      = layer.textureId;
-                    layerAlpha      = layer.alpha;
-                    layerFlags      = layer.flags;
-                }
+            // Hardware blend/depth for the *base* layer only.
+            // In-shader compositing handles all subsequent layers.
+            ApplyFilterMode(baseFilter, baseFlags);
 
-                // Apply filter mode (blend state + depth state)
-                ApplyFilterMode(layerFilterMode, layerFlags);
-
-                // Phase 4: Force alpha blend when geoset is fading (0 < alpha < 1)
-                if (geoAlpha < 0.99f) {
-                    float blend[] = {0,0,0,0};
-                    context_->OMSetBlendState(bsAlphaBlend_, blend, 0xFFFFFFFF);
-                    context_->OMSetDepthStencilState(dsNoWrite_, 0);
-                }
-
-                // Set alpha test threshold + geoset alpha in constant buffer
-                {
-                    float alphaRef = (layerFilterMode == FILTER_TRANSPARENT) ? 0.745f : 0.0f;
-                    D3D11_MAPPED_SUBRESOURCE mapped;
-                    context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-                    CBPerFrame* cb = (CBPerFrame*)mapped.pData;
-                    cb->world      = XMMatrixTranspose(XMMatrixIdentity());
-
-                    XMMATRIX view2;
-                    { std::lock_guard<std::mutex> lock(dataMutex_); view2 = camera_.GetViewMatrix(); }
-                    float aspect2 = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-                    XMMATRIX proj2 = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect2, 1.0f, 10000.0f);
-                    cb->view       = XMMatrixTranspose(view2);
-                    cb->projection = XMMatrixTranspose(proj2);
-
-                    XMVECTOR ld = XMVector3Normalize(XMVectorSet(0.0f, -0.3f, -0.8f, 0.0f));
-                    XMStoreFloat4(&cb->lightDir, ld);
-                    cb->lightColor   = {0.50f, 0.50f, 0.48f, 1.0f};
-                    cb->ambientColor = {0.60f, 0.60f, 0.65f, alphaRef};
-                    cb->extraParams  = {geoAlpha, geoColor.x, geoColor.y, geoColor.z};
-                    // Material flags for shader: unshaded + constantColor
-                    cb->materialFlags = {
-                        (layerFlags & MAT_UNSHADED) ? 1.0f : 0.0f,
-                        (layerFlags & MAT_CONSTANT_COLOR) ? 1.0f : 0.0f,
-                        0.0f, 0.0f
-                    };
-                    // Per-material texture animation
-                    {
-                        auto ta = matTexAnim_.find(geo.materialId);
-                        if (ta != matTexAnim_.end())
-                            cb->texAnimParams = {ta->second.uOff, ta->second.vOff, ta->second.uTile, ta->second.vTile};
-                        else
-                            cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
-                    }
-                    context_->Unmap(cbPerFrame_, 0);
-                }
-
-                // Bind texture
-                ID3D11ShaderResourceView* srv = defaultTexSRV_;
-                if (layerTexId >= 0 && gpuTextures_.count(layerTexId))
-                    srv = gpuTextures_[layerTexId].srv;
-                if (!srv) srv = defaultTexSRV_;
-                context_->PSSetShaderResources(0, 1, &srv);
-
-                // Draw
-                context_->DrawIndexed(geo.indexCount, 0, 0);
+            // Force alpha blend when geoset is fading (0 < alpha < 1)
+            if (geoAlpha < 0.99f) {
+                float blend[] = {0,0,0,0};
+                context_->OMSetBlendState(bsAlphaBlend_, blend, 0xFFFFFFFF);
+                context_->OMSetDepthStencilState(dsNoWrite_, 0);
             }
+
+            // Update CBPerFrame (no per-layer state — PS handles that via CBLayers)
+            {
+                D3D11_MAPPED_SUBRESOURCE mapped;
+                context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+                CBPerFrame* cb = (CBPerFrame*)mapped.pData;
+                // Skinned meshes: identity (vertices already transformed by CPU skinning)
+                // Unskinned meshes: node world transform so they animate with their node
+                cb->world      = XMMatrixTranspose(geo.hasSkinning ? XMMatrixIdentity() : geo.worldMatrix);
+                cb->view       = XMMatrixTranspose(view2);
+                cb->projection = XMMatrixTranspose(proj2);
+
+                XMVECTOR ld = XMVector3Normalize(XMVectorSet(0.0f, -0.3f, -0.8f, 0.0f));
+                XMStoreFloat4(&cb->lightDir, ld);
+                cb->lightColor    = {0.50f, 0.50f, 0.48f, 1.0f};
+                cb->ambientColor  = {0.60f, 0.60f, 0.65f, 0.0f};
+                cb->extraParams   = {geoAlpha, geoColor.x, geoColor.y, geoColor.z};
+                cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};   // unused in geoset PS
+                cb->materialFlags = {0.0f, 0.0f, 0.0f, 0.0f};   // unused in geoset PS
+                context_->Unmap(cbPerFrame_, 0);
+            }
+
+            // Update CBLayers — per-material layer descriptors for in-shader compositing
+            {
+                D3D11_MAPPED_SUBRESOURCE mapped;
+                context_->Map(cbLayers_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+                CBLayers* cl = (CBLayers*)mapped.pData;
+                memset(cl, 0, sizeof(CBLayers));
+
+                int n = 0;
+                if (mat) n = (int)mat->cpu.layers.size();
+                if (n > MAX_LAYERS) n = MAX_LAYERS;
+                cl->layerCount[0] = n;
+
+                // Per-material texture animation (applied to all layers of this material)
+                float uOff = 0, vOff = 0, uTile = 1, vTile = 1;
+                auto taIt = matTexAnim_.find(geo.materialId);
+                if (taIt != matTexAnim_.end()) {
+                    uOff = taIt->second.uOff; vOff = taIt->second.vOff;
+                    uTile = taIt->second.uTile; vTile = taIt->second.vTile;
+                }
+
+                for (int li = 0; li < n; ++li) {
+                    const auto& L = mat->cpu.layers[li];
+                    cl->layerParams[li]  = {
+                        (float)L.filterMode,
+                        L.alpha,
+                        (L.flags & MAT_UNSHADED)       ? 1.0f : 0.0f,
+                        (L.flags & MAT_CONSTANT_COLOR) ? 1.0f : 0.0f
+                    };
+                    cl->layerTexAnim[li] = { uOff, vOff, uTile, vTile };
+                }
+                context_->Unmap(cbLayers_, 0);
+            }
+
+            // Bind per-material Texture2DArray (or default white if none)
+            ID3D11ShaderResourceView* srv = defaultTexSRV_;
+            if (mat && mat->texArraySRV) srv = mat->texArraySRV;
+            context_->PSSetShaderResources(0, 1, &srv);
+
+            // Single draw call — all layers composited inside PSGeoset
+            context_->DrawIndexed(geo.indexCount, 0, 0);
         }
     }
 }

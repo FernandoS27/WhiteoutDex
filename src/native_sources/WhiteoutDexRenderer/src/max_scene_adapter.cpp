@@ -41,30 +41,35 @@ void MaxSceneAdapter::PackMatrix(const Matrix3& tm, float* dst) {
 // ============================================================================
 
 int MaxSceneAdapter::MapMaterialFilterMode(int wc3fm) {
+    // Wc3Material.ms dropdown (1-based): 1=None, 2=Transparent, 3=Blend,
+    //   4=Additive, 5=AddAlpha, 6=Modulate, 7=Modulate2x
+    // Renderer FilterMode (0-based): 0=None .. 6=Modulate2x
     int fm = wc3fm - 1;
     if (fm < 0) fm = 0;
-    if (fm > 5) fm = 5;
+    if (fm > 6) fm = 6;
     return fm;
 }
 
 int MaxSceneAdapter::MapParticleFilterMode(int bpfm) {
     // Wc3Particles2 PB_BLEND: 0=Blend,1=Add,2=Modulate,3=Mod2X,4=AlphaKey
-    // Renderer FilterMode: 0=None,1=Transparent,2=Blend,3=Additive,4=AddAlpha,5=Modulate
+    // Renderer FilterMode:    0=None,1=Transparent,2=Blend,3=Additive,
+    //                         4=AddAlpha,5=Modulate,6=Modulate2x
     switch (bpfm) {
         case 0: return 2;  // Blend
         case 1: return 3;  // Add → Additive
         case 2: return 5;  // Modulate
-        case 3: return 5;  // Mod2X → Modulate
+        case 3: return 6;  // Mod2X → Modulate2x
         case 4: return 1;  // AlphaKey → Transparent
         default: return 2; // fallback Blend
     }
 }
 
 int MaxSceneAdapter::MapRibbonFilterMode(int rbfm) {
+    // Matches Wc3Material-style 1-based dropdown → 0-based renderer enum
     switch (rbfm) {
         case 1: return 0; case 2: return 1; case 3: return 2;
         case 4: return 3; case 5: return 4; case 6: return 5;
-        case 7: return 5; default: return 2;
+        case 7: return 6; default: return 2;
     }
 }
 
@@ -454,7 +459,93 @@ void MaxSceneAdapter::CollectGeometry() {
 }
 
 // ============================================================================
-// Collect materials (identical logic)
+// Extract a single Wc3Material into a MaterialLayerInfo
+// ============================================================================
+
+MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
+    MaterialLayerInfo layer;
+
+    int wc3fm = 1; PB2Int(mtl, L"filterMode", 0, wc3fm);
+    layer.filterMode = MapMaterialFilterMode(wc3fm);
+    float opacity = 100; PB2Float(mtl, L"opacity", 0, opacity);
+    layer.alpha = std::min(opacity / 100.0f, 1.0f);
+
+    Texmap* texmap = nullptr;
+    PB2Texmap(mtl, L"diffuseMap", texmap);
+    int retex = 0;
+    if (texmap && texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
+        int replId = 1; PB2Int(texmap, L"replaceableId", 0, replId);
+        retex = std::max(0, replId - 1);
+    }
+    layer.replaceableTexture = retex;
+
+    BOOL flag = FALSE; int flags = 0;
+    if (PB2Bool(mtl,L"twoSided",0,flag) && flag)    flags|=1;
+    if (PB2Bool(mtl,L"unshaded",0,flag) && flag)    flags|=2;
+    if (PB2Bool(mtl,L"unfogged",0,flag) && flag)    flags|=4;
+    if (PB2Bool(mtl,L"noDepthTest",0,flag) && flag)  flags|=8;
+    if (PB2Bool(mtl,L"noDepthSet",0,flag) && flag)   flags|=16;
+    if (PB2Bool(mtl,L"constantColor",0,flag) && flag) flags|=32;
+    layer.flags = flags;
+
+    int baseTexId = -1;
+    std::wstring baseTexPath;
+    if (texmap) {
+        mprintf(_M("    \x2192 texmap found, ClassID=0x%x,0x%x\n"),
+                texmap->ClassID().PartA(), texmap->ClassID().PartB());
+        BitmapTex* bmtex = nullptr;
+        if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+            bmtex = static_cast<BitmapTex*>(texmap);
+        } else if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
+            for (int ri = 0; ri < texmap->NumRefs(); ri++) {
+                ReferenceTarget* ref = texmap->GetReference(ri);
+                if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+                    bmtex = static_cast<BitmapTex*>(ref);
+                    break;
+                }
+            }
+        }
+        if (bmtex) {
+            const MCHAR* fname = bmtex->GetMapName();
+            if (fname && fname[0]) {
+                baseTexPath = std::wstring(fname);
+                mprintf(_M("    \x2192 texture path: '%s'\n"), baseTexPath.c_str());
+                baseTexId = LoadTexture(baseTexPath, 0);
+            } else {
+                mprintf(_M("    \x2192 texture has no filename!\n"));
+            }
+        } else {
+            mprintf(_M("    \x2192 texmap is NOT a BitmapTexture (e.g. Mix/Composite)\n"));
+        }
+    } else {
+        mprintf(_M("    \x2192 NO texmap found for 'diffuseMap' property\n"));
+    }
+
+    if (layer.replaceableTexture == 1 && !baseTexPath.empty()) {
+        mprintf(_M("    \x2192 TEAMCOLOR branch: compositing '%s'\n"), baseTexPath.c_str());
+        layer.textureId = LoadTextureWithTeamColor(baseTexPath, 255, 0, 0);
+        layer.filterMode = 0; layer.alpha = 1.0f;
+    } else if (layer.replaceableTexture == 2) {
+        mprintf(_M("    \x2192 TEAMGLOW branch: generating glow texture\n"));
+        layer.textureId = GenerateTeamGlowTexture(255, 0, 0);
+        layer.filterMode = 3;
+        layer.alpha = 1.0f;
+        layer.flags |= 2 | 16;
+    } else if (layer.replaceableTexture >= 1 && baseTexId >= 0) {
+        mprintf(_M("    \x2192 REPLACEABLE branch: replTex=%d, baseTexId=%d\n"), layer.replaceableTexture, baseTexId);
+        layer.textureId = baseTexId; layer.filterMode = 0; layer.alpha = 1.0f;
+    } else if (layer.replaceableTexture >= 1 && baseTexId < 0) {
+        mprintf(_M("    \x2192 SOLID REPLACEABLE branch: replTex=%d\n"), layer.replaceableTexture);
+        layer.textureId = LoadTexture(L"", layer.replaceableTexture);
+    } else {
+        layer.textureId = baseTexId;
+    }
+
+    return layer;
+}
+
+// ============================================================================
+// Collect materials — supports single Wc3Material and Composite materials
 // ============================================================================
 
 void MaxSceneAdapter::CollectMaterials() {
@@ -469,97 +560,72 @@ void MaxSceneAdapter::CollectMaterials() {
         gs.materialId = mi.materialId; mtlToId_[mtl] = mi.materialId;
 
         if (mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
-            int wc3fm = 1; PB2Int(mtl, L"filterMode", 0, wc3fm);
-            mi.filterMode = MapMaterialFilterMode(wc3fm);
-            float opacity = 100; PB2Float(mtl, L"opacity", 0, opacity);
-            mi.alpha = std::min(opacity / 100.0f, 1.0f);
-
-            Texmap* texmap = nullptr;
-            PB2Texmap(mtl, L"diffuseMap", texmap);
-            int retex = 0;
-            if (texmap && texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-                int replId = 1; PB2Int(texmap, L"replaceableId", 0, replId);
-                retex = std::max(0, replId - 1);
-            }
-            mi.replaceableTexture = retex;
-            mprintf(_M("  Mat %d '%s': replaceableTexture=%d, fm=%d\n"),
-                    mi.materialId, gs.node->GetName(), mi.replaceableTexture, wc3fm);
-
-            BOOL flag = FALSE; int flags = 0;
-            if (PB2Bool(mtl,L"twoSided",0,flag) && flag)    flags|=1;
-            if (PB2Bool(mtl,L"unshaded",0,flag) && flag)    flags|=2;
-            if (PB2Bool(mtl,L"unfogged",0,flag) && flag)    flags|=4;
-            if (PB2Bool(mtl,L"noDepthTest",0,flag) && flag)  flags|=8;
-            if (PB2Bool(mtl,L"noDepthSet",0,flag) && flag)   flags|=16;
-            if (PB2Bool(mtl,L"constantColor",0,flag) && flag) flags|=32;
-            mi.flags = flags;
+            // Single Wc3Material — extract as one layer
+            mprintf(_M("  Mat %d '%s': Wc3Material\n"), mi.materialId, gs.node->GetName());
+            MaterialLayerInfo layer = ExtractWc3MaterialLayer(mtl);
 
             int sortOrd = 1; PB2Int(mtl, L"sortOrder", 0, sortOrd);
             mi.sortOrder = std::max(0, sortOrd - 1);
             int priPlane = 0; PB2Int(mtl, L"priorityPlane", 0, priPlane);
             mi.priorityPlane = priPlane;
 
-            int baseTexId = -1;
-            std::wstring baseTexPath;
-            if (texmap) {
-                mprintf(_M("  \x2192 texmap found, ClassID=0x%x,0x%x\n"),
-                        texmap->ClassID().PartA(), texmap->ClassID().PartB());
-                BitmapTex* bmtex = nullptr;
-                if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
-                    bmtex = static_cast<BitmapTex*>(texmap);
-                } else if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-                    for (int ri = 0; ri < texmap->NumRefs(); ri++) {
-                        ReferenceTarget* ref = texmap->GetReference(ri);
-                        if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
-                            bmtex = static_cast<BitmapTex*>(ref);
-                            break;
-                        }
+            mi.layers.push_back(layer);
+        } else if (mtl->NumSubMtls() > 0) {
+            // Composite / multi-material — check if sub-materials are Wc3Materials.
+            // First sub-material sets the scene blend; subsequent layers blend
+            // to the previous layer using their own filterMode.
+            int numSubs = mtl->NumSubMtls();
+            mprintf(_M("  Mat %d '%s': Composite (%d sub-materials)\n"),
+                    mi.materialId, gs.node->GetName(), numSubs);
+
+            for (int si = 0; si < numSubs; si++) {
+                Mtl* subMtl = mtl->GetSubMtl(si);
+                if (!subMtl) continue;
+
+                if (subMtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
+                    mprintf(_M("    Layer %d: Wc3Material '%s'\n"), si, subMtl->GetName().data());
+                    MaterialLayerInfo layer = ExtractWc3MaterialLayer(subMtl);
+
+                    // Take sortOrder/priorityPlane from the first layer
+                    if (mi.layers.empty()) {
+                        int sortOrd = 1; PB2Int(subMtl, L"sortOrder", 0, sortOrd);
+                        mi.sortOrder = std::max(0, sortOrd - 1);
+                        int priPlane = 0; PB2Int(subMtl, L"priorityPlane", 0, priPlane);
+                        mi.priorityPlane = priPlane;
                     }
-                }
-                if (bmtex) {
-                    const MCHAR* fname = bmtex->GetMapName();
-                    if (fname && fname[0]) {
-                        baseTexPath = std::wstring(fname);
-                        mprintf(_M("  \x2192 texture path: '%s'\n"), baseTexPath.c_str());
-                        baseTexId = LoadTexture(baseTexPath, 0);
-                    } else {
-                        mprintf(_M("  \x2192 texture has no filename!\n"));
-                    }
+
+                    mi.layers.push_back(layer);
                 } else {
-                    mprintf(_M("  \x2192 texmap is NOT a BitmapTexture (e.g. Mix/Composite)\n"));
+                    mprintf(_M("    Layer %d: non-Wc3 material '%s' (skipped)\n"),
+                            si, subMtl->GetName().data());
                 }
-            } else {
-                mprintf(_M("  \x2192 NO texmap found for 'diffuseMap' property\n"));
             }
 
-            if (mi.replaceableTexture == 1 && !baseTexPath.empty()) {
-                mprintf(_M("  \x2192 TEAMCOLOR branch: compositing '%s'\n"), baseTexPath.c_str());
-                mi.textureId = LoadTextureWithTeamColor(baseTexPath, 255, 0, 0);
-                mi.filterMode = 0; mi.alpha = 1.0f;
-            } else if (mi.replaceableTexture == 2) {
-                mprintf(_M("  \x2192 TEAMGLOW branch: generating glow texture\n"));
-                mi.textureId = GenerateTeamGlowTexture(255, 0, 0);
-                mi.filterMode = 3;
-                mi.alpha = 1.0f;
-                mi.flags |= 2 | 16;
-            } else if (mi.replaceableTexture >= 1 && baseTexId >= 0) {
-                mprintf(_M("  \x2192 REPLACEABLE branch: replTex=%d, baseTexId=%d\n"), mi.replaceableTexture, baseTexId);
-                mi.textureId = baseTexId; mi.filterMode = 0; mi.alpha = 1.0f;
-            } else if (mi.replaceableTexture >= 1 && baseTexId < 0) {
-                mprintf(_M("  \x2192 SOLID REPLACEABLE branch: replTex=%d\n"), mi.replaceableTexture);
-                mi.textureId = LoadTexture(L"", mi.replaceableTexture);
-            } else {
-                mi.textureId = baseTexId;
+            // Fallback: if no Wc3Material sub-materials found, treat as generic
+            if (mi.layers.empty()) {
+                MaterialLayerInfo layer;
+                layer.flags = 1;
+                if (mtl->NumSubTexmaps() > 0) {
+                    Texmap* diffuse = mtl->GetSubTexmap(0);
+                    if (diffuse && diffuse->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+                        const MCHAR* fname = static_cast<BitmapTex*>(diffuse)->GetMapName();
+                        if (fname && fname[0]) layer.textureId = LoadTexture(std::wstring(fname), 0);
+                    }
+                }
+                mi.layers.push_back(layer);
             }
         } else {
-            mi.flags = 1;
+            // Generic non-Wc3 material — single layer fallback
+            MaterialLayerInfo layer;
+            layer.flags = 1;
             if (mtl->NumSubTexmaps() > 0) {
                 Texmap* diffuse = mtl->GetSubTexmap(0);
                 if (diffuse && diffuse->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
                     const MCHAR* fname = static_cast<BitmapTex*>(diffuse)->GetMapName();
-                    if (fname && fname[0]) mi.textureId = LoadTexture(std::wstring(fname), 0);
+                    if (fname && fname[0]) layer.textureId = LoadTexture(std::wstring(fname), 0);
                 }
             }
+            mi.layers.push_back(layer);
         }
         materials_.push_back(mi);
     }
@@ -875,12 +941,14 @@ std::vector<MaterialData> MaxSceneAdapter::GetMaterials() {
         md.materialId    = mi.materialId;
         md.priorityPlane = mi.priorityPlane;
         md.sortOrder     = mi.sortOrder;
-        MaterialLayerData layer;
-        layer.filterMode = mi.filterMode;
-        layer.textureId  = mi.textureId;
-        layer.alpha      = mi.alpha;
-        layer.flags      = mi.flags;
-        md.layers.push_back(layer);
+        for (auto& li : mi.layers) {
+            MaterialLayerData ld;
+            ld.filterMode = li.filterMode;
+            ld.textureId  = li.textureId;
+            ld.alpha      = li.alpha;
+            ld.flags      = li.flags;
+            md.layers.push_back(ld);
+        }
         result.push_back(std::move(md));
     }
     return result;
@@ -1144,9 +1212,23 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
         }
     }
 
-    // Geoset visibility
+    // Geoset transforms + visibility
     if (!geosets_.empty()) {
         int c = (int)geosets_.size();
+        state.geosetTransforms.resize(c);
+        for (int i = 0; i < c; i++) {
+            INode* node = geosets_[i].node;
+            if (!node) { state.geosetTransforms[i] = XMMatrixIdentity(); continue; }
+            float m16[16];
+            PackMatrix(node->GetNodeTM(t), m16);
+            state.geosetTransforms[i] = XMMATRIX(
+                m16[0], m16[1], m16[2],  m16[3],
+                m16[4], m16[5], m16[6],  m16[7],
+                m16[8], m16[9], m16[10], m16[11],
+                m16[12],m16[13],m16[14], m16[15]
+            );
+        }
+
         state.geosetAlphas.resize(c, 1.0f);
         state.geosetColors.resize(c, {1,1,1});
         for (int i = 0; i < c; i++) {

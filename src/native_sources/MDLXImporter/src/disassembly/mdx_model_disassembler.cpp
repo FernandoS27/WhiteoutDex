@@ -369,31 +369,61 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
             irLayer.unfogged = wdx::hasFlag(layer.shadingFlags,
                 wdx::Layer::ShadingFlag::Unfogged);
 
-            // Primary texture reference
-            if (layer.textureId < mdx.textures.size()) {
+            // Texture references.
+            // v1100+ (and upgraded v800): textureId is always 0; actual textures are in subTextures.
+            // Raw v800 (no upgrade): subTextures is empty, textureId holds the diffuse index.
+            if (!layer.subTextures.empty()) {
+                // Detect upgraded v800 HD materials: WhiteoutLib UpgradeOldVersions sets
+                // ALL sub-textures to DiffuseMap slot. For these, assign PBR slots by
+                // the WC3 Reforged layer convention (diffuse=0, normal=1, ORM=2, emissive=3, env=4).
+                bool allDiffuseSlots = layer.is_hd && layer.subTextures.size() > 1;
+                if (allDiffuseSlots) {
+                    for (const auto& sub : layer.subTextures) {
+                        if (sub.slot != wdx::Layer::SlotType::DiffuseMap) {
+                            allDiffuseSlots = false;
+                            break;
+                        }
+                    }
+                }
+
+                static const ir::TextureSlot kHdSlotOrder[] = {
+                    ir::TextureSlot::Diffuse,
+                    ir::TextureSlot::Normal,
+                    ir::TextureSlot::ORM,
+                    ir::TextureSlot::Emissive,
+                    ir::TextureSlot::Environment   // TeamColor was not a layer slot in v800/v1100
+                };
+
+                for (size_t si = 0; si < layer.subTextures.size(); si++) {
+                    const auto& sub = layer.subTextures[si];
+                    ir::TextureRef ref;
+                    ref.textureIndex = static_cast<int32_t>(sub.textureId);
+
+                    if (allDiffuseSlots) {
+                        ref.slot = (si < 5) ? kHdSlotOrder[si] : ir::TextureSlot::Diffuse;
+                    } else {
+                        switch (sub.slot) {
+                        case wdx::Layer::SlotType::NormalMap:      ref.slot = ir::TextureSlot::Normal; break;
+                        case wdx::Layer::SlotType::ORMMap:         ref.slot = ir::TextureSlot::ORM; break;
+                        case wdx::Layer::SlotType::EmissiveMap:    ref.slot = ir::TextureSlot::Emissive; break;
+                        case wdx::Layer::SlotType::TeamColor:      ref.slot = ir::TextureSlot::TeamColor; break;
+                        case wdx::Layer::SlotType::EnvironmentMap: ref.slot = ir::TextureSlot::Environment; break;
+                        default: ref.slot = ir::TextureSlot::Diffuse; break;
+                        }
+                    }
+                    irLayer.textureRefs.push_back(ref);
+                }
+            } else if (layer.textureId != 0 && layer.textureId < mdx.textures.size()) {
+                // Raw v800 without sub-textures (textureId is the actual diffuse texture index).
+                // textureId == 0 is the reset value for v1100+ layers — not a real texture ref.
                 ir::TextureRef ref;
                 ref.textureIndex = static_cast<int32_t>(layer.textureId);
                 ref.slot = ir::TextureSlot::Diffuse;
                 irLayer.textureRefs.push_back(ref);
             }
 
-            // v1200 HD sub-textures
-            if (version_ >= 1200 && layer.is_hd) {
-                for (const auto& sub : layer.subTextures) {
-                    ir::TextureRef ref;
-                    ref.textureIndex = static_cast<int32_t>(sub.textureId);
-                    // Map WhiteoutLib slot types to IR
-                    switch (sub.slot) {
-                    case wdx::Layer::SlotType::NormalMap:      ref.slot = ir::TextureSlot::Normal; break;
-                    case wdx::Layer::SlotType::ORMMap:         ref.slot = ir::TextureSlot::ORM; break;
-                    case wdx::Layer::SlotType::EmissiveMap:    ref.slot = ir::TextureSlot::Emissive; break;
-                    case wdx::Layer::SlotType::TeamColor:      ref.slot = ir::TextureSlot::TeamColor; break;
-                    case wdx::Layer::SlotType::EnvironmentMap: ref.slot = ir::TextureSlot::Environment; break;
-                    default: ref.slot = ir::TextureSlot::Diffuse; break;
-                    }
-                    irLayer.textureRefs.push_back(ref);
-                }
-
+            // HD (Reforged) PBR properties — applies to is_hd layers regardless of version
+            if (layer.is_hd) {
                 irLayer.emissiveGain = layer.emissiveGain;
                 irLayer.fresnelColor = Point3(layer.fresnelColor.x,
                                                layer.fresnelColor.y,
@@ -504,17 +534,26 @@ void MdxModelDisassembler::mapGeosets(const wdx::Model& mdx, ir::IRModel& ir) {
             }
         }
 
-        // Face indices (reverse winding for coordinate system change)
+        // Face indices — MDX and Max both use CCW winding in right-handed Z-up,
+        // so copy in file order (no reversal).
         irMesh.indices.reserve(geo.faces.size());
-        for (size_t f = 0; f + 2 < geo.faces.size(); f += 3) {
-            irMesh.indices.push_back(static_cast<uint32_t>(geo.faces[f]));
-            irMesh.indices.push_back(static_cast<uint32_t>(geo.faces[f + 2]));
-            irMesh.indices.push_back(static_cast<uint32_t>(geo.faces[f + 1]));
-        }
+        for (auto idx : geo.faces)
+            irMesh.indices.push_back(static_cast<uint32_t>(idx));
 
         // Skinning: v1200 SKIN data vs v800 matrix groups
         if (version_ >= 1200 && !geo.skinData.empty()) {
-            // SKIN: 4 bone indices + 4 weights per vertex (8 bytes per vertex)
+            // SKIN: 4 bone indices + 4 weights per vertex (8 bytes per vertex).
+            //
+            // Each SKIN byte is an index into the flat matrix table (the raw
+            // concatenation of MATS values in file order). That table entry is
+            // a bone objectId which we then resolve through the hierarchy.
+            // This matches the reference MaxScript importer (applySkinning in
+            // WhiteoutDexSceneRebuilder.ms — flatBoneIds + flatToSkin).
+            //
+            // Fallback: if MATS is empty for any reason, treat the SKIN byte
+            // directly as an objectId (matches our exporter's v1200 output).
+            const auto& flatMats = geo.matrixIndices;
+
             for (size_t v = 0; v < vertCount; ++v) {
                 size_t base = v * 8;
                 if (base + 7 >= geo.skinData.size()) break;
@@ -525,14 +564,14 @@ void MdxModelDisassembler::mapGeosets(const wdx::Model& mdx, ir::IRModel& ir) {
                     uint8_t weight = geo.skinData[base + 4 + j];
                     if (weight == 0) continue;
 
+                    uint32_t objectId;
+                    if (!flatMats.empty() && boneIdx < flatMats.size())
+                        objectId = flatMats[boneIdx];
+                    else
+                        objectId = static_cast<uint32_t>(boneIdx);
+
                     ir::SkinInfluence inf;
-                    // SKIN indices reference the bone array — resolve through hierarchy
-                    if (boneIdx < mdx.bones.size()) {
-                        inf.boneIndex = hierarchy_.irIndexForObjectId(
-                            mdx.bones[boneIdx].node.objectId);
-                    } else {
-                        inf.boneIndex = static_cast<int32_t>(boneIdx);
-                    }
+                    inf.boneIndex = hierarchy_.irIndexForObjectId(objectId);
                     inf.weight = static_cast<float>(weight) / 255.0f;
                     if (inf.boneIndex >= 0)
                         vert.skinInfluences.push_back(inf);

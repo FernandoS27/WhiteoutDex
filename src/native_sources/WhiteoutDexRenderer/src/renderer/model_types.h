@@ -23,6 +23,7 @@ enum FilterMode {
     FILTER_ADDITIVE    = 3,
     FILTER_ADD_ALPHA   = 4,
     FILTER_MODULATE    = 5,
+    FILTER_MODULATE_2X = 6,
 };
 
 // Material flags (bitfield)
@@ -89,6 +90,7 @@ struct CollisionShapeData {
 // Per-frame animated state — computed by the adapter, then passed to ApplyFrameState().
 struct FrameState {
     std::vector<XMMATRIX>  boneWorldMatrices;  // boneCount entries (skinning bones)
+    std::vector<XMMATRIX>  geosetTransforms;   // one per geoset (node world TM for unskinned meshes)
     std::vector<float>     geosetAlphas;       // one per geoset
     std::vector<XMFLOAT3>  geosetColors;       // one per geoset
 
