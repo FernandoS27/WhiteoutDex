@@ -40,12 +40,14 @@ public:
             ? (int)((float)t / (float)tpf * 1000.0f / (float)fps)
             : 0;
 
+        g_lastTimeChangedTick = GetTickCount();
         WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs);
         g_renderer->ApplyFrameState(state, timeMs);
     }
 };
 
 static NdxTimeCallback* g_timeCallback = nullptr;
+static DWORD g_lastTimeChangedTick = 0;
 
 // ============================================================================
 // Material polling timer — detects property changes even without timeline scrub
@@ -55,9 +57,28 @@ static UINT_PTR g_materialTimerId = 0;
 static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
     if (!g_running || !g_renderer || !g_adapter) return;
     if (!g_renderer->IsOpen()) return;
+
+    // Check for material property changes
     auto result = g_adapter->RefreshMaterials();
     if (result.changed) {
         g_renderer->UpdateMaterials(result.materials, result.textures);
+    }
+
+    // Re-evaluate frame state only when the timeline is idle — this picks up
+    // non-animated changes (vertex colors, modifiers, visibility toggles).
+    // Skip when TimeChanged is actively firing to avoid conflicting updates
+    // that cause flicker during animation playback.
+    DWORD now = GetTickCount();
+    if (now - g_lastTimeChangedTick > 1000) {
+        Interface* ip = GetCOREInterface();
+        if (ip) {
+            TimeValue t = ip->GetTime();
+            int tpf = GetTicksPerFrame(), fps = GetFrameRate();
+            int timeMs = (tpf > 0 && fps > 0)
+                ? (int)((float)t / (float)tpf * 1000.0f / (float)fps) : 0;
+            WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs);
+            g_renderer->ApplyFrameState(state, timeMs);
+        }
     }
 }
 

@@ -639,8 +639,8 @@ void MdxModelDisassembler::mapGeosetAnimations(const wdx::Model& mdx, ir::IRMode
         irGA.meshIndex = static_cast<int32_t>(ga.geosetId);
         irGA.alpha = ga.alpha;
         irGA.color = Color(ga.color.z, ga.color.y, ga.color.x);  // MDX BGR → RGB
-        irGA.usesColor  = (ga.flags & 0x1) != 0;  // bit 0: has color
-        irGA.dropShadow = (ga.flags & 0x2) != 0;  // bit 1: drop shadow
+        irGA.dropShadow = (ga.flags & 0x1) != 0;  // bit 0: drop shadow
+        irGA.usesColor  = (ga.flags & 0x2) != 0;  // bit 1: uses color
 
         if (ga.alphaTracks.isUsed)
             irGA.alphaTrackIndex = storeFloatTrack(ir, mapFloatTrack(ga.alphaTracks));

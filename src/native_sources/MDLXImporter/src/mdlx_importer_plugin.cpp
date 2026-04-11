@@ -801,19 +801,14 @@ Control* createFloatController(const ir::FloatTrack& track) {
     return ctrl;
 }
 
-// Write Point3 (color) keys onto a controller and return it.
+// Write color keys onto a Bezier Color controller and return it.
 Control* createColorController(const ir::ColorTrack& track) {
     if (track.empty()) return nullptr;
 
-    // MaxScript maps: #linear → bezier_point3, #hermite → tcb_point3,
-    //                 #bezier → bezier_color (same as bezier_point3)
-    Class_ID cid;
-    switch (track.interpolation) {
-    case ir::InterpolationType::Hermite: cid = Class_ID(TCBINTERP_POINT3_CLASS_ID, 0); break;
-    default:                             cid = Class_ID(HYBRIDINTERP_POINT3_CLASS_ID, 0); break;
-    }
-
-    Control* ctrl = static_cast<Control*>(CreateInstance(CTRL_POINT3_CLASS_ID, cid));
+    // All color interpolation types use Bezier Color (HYBRIDINTERP_COLOR_CLASS_ID).
+    // Max has no separate Linear or TCB color controller classes.
+    Control* ctrl = static_cast<Control*>(
+        CreateInstance(CTRL_POINT3_CLASS_ID, Class_ID(HYBRIDINTERP_COLOR_CLASS_ID, 0)));
     if (!ctrl) return nullptr;
 
     IKeyControl* ikc = GetKeyControlInterface(ctrl);
@@ -1643,9 +1638,6 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             cameraPairs = camBuilder.buildCameras(irModel, nodeMap, gi, reporter);
         }
 
-        // Vertex colors
-        mdx_scene::Wc3VertexColorBuilder vcBuilder;
-        vcBuilder.applyVertexColors(irModel, meshNodes, gi, reporter);
     }
 
     // Close CASC storage (no longer needed after materials + PE2)
@@ -1663,6 +1655,12 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         }
     }
     ILOG << "==== end skinning ====\n";
+
+    // 12b. Vertex color modifiers (AFTER skinning, so they sit above Skin in the stack)
+    {
+        mdx_scene::Wc3VertexColorBuilder vcBuilder;
+        vcBuilder.applyVertexColors(irModel, meshNodes, gi, reporter);
+    }
 
     // 13. Insert animation keyframes (AFTER skinning)
     // 

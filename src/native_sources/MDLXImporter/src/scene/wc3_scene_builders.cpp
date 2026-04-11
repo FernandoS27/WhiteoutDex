@@ -624,23 +624,20 @@ void Wc3VertexColorBuilder::applyVertexColors(
         INode* meshNode = meshNodes[ga.meshIndex];
         if (!meshNode) continue;
 
-        // Create Wc3VertexMod modifier
-        Object* modObj = static_cast<Object*>(
-            gi->CreateInstance(OSM_CLASS_ID, mdx_ids::WC3_VERTEX_MOD));
-        if (!modObj) continue;
-        auto* mod = dynamic_cast<Modifier*>(modObj);
-        if (!mod) { modObj->DeleteMe(); continue; }
-
-        auto* ref = dynamic_cast<ReferenceTarget*>(mod);
-        if (ref) {
-            pbSetBool(ref, L"UsesDropShadow", ga.dropShadow ? TRUE : FALSE);
-            pbSetBool(ref, L"UsesColor", ga.usesColor ? TRUE : FALSE);
-
-            // Static color (BGR→RGB already done in disassembler)
-            if (ga.usesColor) {
-                pbSetColor(ref, L"VertexColor", ga.color);
-            }
+        // Create Wc3VertexMod modifier — scripted plugin extends VertexPaint.
+        // CreateInstance returns a MSPlugin wrapper; cast via Animatable hierarchy.
+        void* rawObj = gi->CreateInstance(OSM_CLASS_ID, mdx_ids::WC3_VERTEX_MOD);
+        if (!rawObj) {
+            reporter.warning(L"Wc3VertexMod plugin not found");
+            break;
         }
+        Modifier* mod = static_cast<Modifier*>(rawObj);
+        auto* ref = static_cast<ReferenceTarget*>(rawObj);
+
+        pbSetBool(ref, L"UsesDropShadow", ga.dropShadow ? TRUE : FALSE);
+        pbSetBool(ref, L"UsesColor", ga.usesColor ? TRUE : FALSE);
+        if (ga.usesColor)
+            pbSetColor(ref, L"VertexColor", ga.color);
 
         // Add modifier to mesh node
         Object* objRef = meshNode->GetObjectRef();

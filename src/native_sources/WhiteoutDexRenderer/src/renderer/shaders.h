@@ -117,15 +117,11 @@ float4 PSMain(PS_INPUT input) : SV_TARGET {
 
     // Material flags from Wc3Material
     bool isUnshaded     = MaterialFlags.x > 0.5;
-    bool isConstColor   = MaterialFlags.y > 0.5;
 
     // Unshaded: skip lighting, use full-bright texture
     float3 lighting = isUnshaded ? float3(1, 1, 1) : (ambient + diffuse);
 
-    // ConstantColor: skip geoset color tint (Wc3VertexMod animation)
-    float3 tint = isConstColor ? float3(1, 1, 1) : colorTint;
-
-    float3 finalColor = lighting * texColor.rgb * vertColor.rgb * tint;
+    float3 finalColor = lighting * texColor.rgb * vertColor.rgb * colorTint;
 
     return float4(finalColor, finalAlpha);
 }

@@ -144,10 +144,10 @@ bool MaxSceneAdapter::PB2Color(Animatable* anim, const wchar_t* name, TimeValue 
             ParamDef& def = pblock->GetParamDef(pid);
             if (def.int_name && _wcsicmp(def.int_name, name) == 0) {
                 Color cv = pblock->GetColor(pid, t);
-                if (cv.r > 1.0f || cv.g > 1.0f || cv.b > 1.0f)
-                    out = Color(cv.r / 255.0f, cv.g / 255.0f, cv.b / 255.0f);
-                else
-                    out = cv;
+                // Scripted plugin #color params return [0-255] from GetColor.
+                // Always normalize to [0-1] — all current callers are our own
+                // scripted plugins (Wc3VertexMod, Wc3Particles2, Wc3Ribbon).
+                out = Color(cv.r / 255.0f, cv.g / 255.0f, cv.b / 255.0f);
                 return true;
             }
         }
