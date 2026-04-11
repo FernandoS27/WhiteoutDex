@@ -5,6 +5,7 @@
 // ============================================================================
 
 #include "model_source.h"
+#include "renderer.h"
 #include "mdx_animation.h"
 #include <whiteout/models/mdx/types.h>
 #include <string>
@@ -32,11 +33,17 @@ public:
     // ---- Sequence control ----
     void SetActiveSequence(int sequenceIndex) override;
 
+    // ---- Camera info for billboard nodes ----
+    void SetCameraPosition(float x, float y, float z) override;
+
     // ---- Per-frame evaluation ----
     FrameState Evaluate(int timeMs) override;
 
     // ---- Sequence info ----
     std::vector<SequenceInfo> GetSequences() override;
+
+    // ---- Camera presets from model ----
+    std::vector<CameraPreset> GetCameraPresets() const;
 
 private:
     whiteout::mdx::Model model_;
@@ -47,6 +54,9 @@ private:
     int activeSeqIdx_ = -1;
     int seqStart_ = 0;
     int seqEnd_   = 0;
+
+    // Camera position for billboard evaluation
+    XMFLOAT3 cameraPos_ = {0, -350, 50};
 
     // Helpers
     int MapPE2FilterMode(whiteout::u32 mdxMode) const;

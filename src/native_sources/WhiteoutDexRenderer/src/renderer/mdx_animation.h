@@ -63,10 +63,12 @@ public:
     // Evaluate the full hierarchy at the given time for the active sequence.
     // Returns world matrices for ALL nodes (indexed by node position in nodes_).
     // Also fills boneWorldMatrices (indexed by bone index 0..boneCount-1).
+    // cameraPos is used for billboard node facing (pass nullptr to skip billboarding).
     void Evaluate(int timeMs, int seqStart, int seqEnd,
                   const std::vector<whiteout::u32>& globalSequences,
                   std::vector<XMMATRIX>& boneWorldMatrices,
-                  std::vector<XMMATRIX>& allNodeMatrices) const;
+                  std::vector<XMMATRIX>& allNodeMatrices,
+                  const XMFLOAT3* cameraPos = nullptr) const;
 
     int BoneCount() const { return boneCount_; }
     int NodeCount() const { return (int)nodes_.size(); }

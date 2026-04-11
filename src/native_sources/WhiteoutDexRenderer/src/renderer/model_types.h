@@ -97,7 +97,7 @@ struct FrameState {
     struct ParticleFrameState {
         int emitterId;
         XMMATRIX transform;
-        float emissionRate, speed, variation, coneAngle;
+        float emissionRate, speed, variation, coneAngle, longitude;
         float gravity, width, length, visibility;
     };
     std::vector<ParticleFrameState> particleStates;
@@ -116,9 +116,19 @@ struct FrameState {
 
     struct TexAnimState {
         int materialId;
+        int layerIndex;
         float uOff, vOff, uTile, vTile;
+        float rotation; // Z-axis rotation angle in radians
     };
     std::vector<TexAnimState> texAnims;
+
+    // Per-layer animated alpha (KMTA tracks)
+    struct LayerAlphaState {
+        int materialId;
+        int layerIndex;
+        float alpha;
+    };
+    std::vector<LayerAlphaState> layerAlphas;
 };
 
 } // namespace WhiteoutDex

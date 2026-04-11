@@ -58,18 +58,7 @@ struct alignas(16) CBPerFrame {
     XMFLOAT4 ambientColor;   // .a = alpha test threshold
     XMFLOAT4 extraParams;    // .x = geoset alpha multiplier (1.0 = full, 0.0 = invisible)
     XMFLOAT4 texAnimParams;  // .x=uOffset, .y=vOffset, .z=uTiling, .w=vTiling (legacy path only)
-    XMFLOAT4 materialFlags;  // .x=unshaded, .y=constantColor, .z=reserved, .w=reserved (legacy path only)
-};
-
-// Maximum number of layers per material (in-shader compositing)
-constexpr int MAX_LAYERS = 8;
-
-// Per-material layer constant buffer for in-shader compositing.
-// Layout must match HLSL CBLayers in shaders.h.
-struct alignas(16) CBLayers {
-    int      layerCount[4];             // .x = numLayers (0..MAX_LAYERS), .yzw = pad
-    XMFLOAT4 layerParams[MAX_LAYERS];   // .x=filterMode, .y=alpha, .z=unshaded, .w=constantColor
-    XMFLOAT4 layerTexAnim[MAX_LAYERS];  // .x=uOff, .y=vOff, .z=uTile, .w=vTile
+    XMFLOAT4 materialFlags;  // .x=unshaded, .y=constantColor, .z=texRotation, .w=reserved (legacy path only)
 };
 
 } // namespace WhiteoutDex

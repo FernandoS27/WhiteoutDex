@@ -33,6 +33,10 @@ public:
     // Index -1 means no sequence (rest pose).
     virtual void SetActiveSequence(int sequenceIndex) = 0;
 
+    // ---- Camera info for billboard evaluation ----
+    // Called before Evaluate() each frame. Default no-op (Max handles billboarding).
+    virtual void SetCameraPosition(float x, float y, float z) { (void)x; (void)y; (void)z; }
+
     // ---- Per-frame (called by the HOST every frame on its own thread) ----
     virtual FrameState Evaluate(int timeMs) = 0;
 

@@ -405,6 +405,61 @@ void MaxSceneAdapter::CollectScene() {
     CollectParticleEmitters();
     CollectRibbonEmitters();
     CollectCollisionShapes();
+
+    // Build initial material snapshots for change detection
+    matSnapshots_.clear();
+    auto snapMtl = [&](Mtl* mtl, int key) {
+        MaterialSnapshot snap;
+        int wc3fm = 1; PB2Int(mtl, L"filterMode", 0, wc3fm);
+        snap.filterMode = MapMaterialFilterMode(wc3fm);
+        BOOL flag = FALSE; int flags = 0;
+        if (PB2Bool(mtl, L"twoSided", 0, flag) && flag)      flags |= 1;
+        if (PB2Bool(mtl, L"unshaded", 0, flag) && flag)      flags |= 2;
+        if (PB2Bool(mtl, L"unfogged", 0, flag) && flag)      flags |= 4;
+        if (PB2Bool(mtl, L"noDepthTest", 0, flag) && flag)   flags |= 8;
+        if (PB2Bool(mtl, L"noDepthSet", 0, flag) && flag)    flags |= 16;
+        if (PB2Bool(mtl, L"constantColor", 0, flag) && flag) flags |= 32;
+        snap.flags = flags;
+        Texmap* texmap = nullptr;
+        PB2Texmap(mtl, L"diffuseMap", texmap);
+        int retex = 0;
+        if (texmap && texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
+            int replId = 1; PB2Int(texmap, L"replaceableId", 0, replId);
+            retex = std::max(0, replId - 1);
+        }
+        snap.replaceableTexture = retex;
+        // Get texture path
+        BitmapTex* bmt = nullptr;
+        if (texmap) {
+            if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
+                for (int r = 0; r < texmap->NumRefs(); r++) {
+                    ReferenceTarget* ref = texmap->GetReference(r);
+                    if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+                        { bmt = static_cast<BitmapTex*>(ref); break; }
+                }
+            } else if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+                bmt = static_cast<BitmapTex*>(texmap);
+            }
+        }
+        if (bmt) { const MCHAR* fn = bmt->GetMapName(); if (fn && fn[0]) snap.texturePath = fn; }
+        int sortOrd = 1; PB2Int(mtl, L"sortOrder", 0, sortOrd);
+        snap.sortOrder = std::max(0, sortOrd - 1);
+        int priPlane = 0; PB2Int(mtl, L"priorityPlane", 0, priPlane);
+        snap.priorityPlane = priPlane;
+        matSnapshots_[key] = snap;
+    };
+    for (auto& mi : materials_) {
+        if (!mi.mtl) continue;
+        if (mi.mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
+            snapMtl(mi.mtl, mi.materialId);
+        } else if (mi.mtl->NumSubMtls() > 0) {
+            for (int si = 0; si < mi.mtl->NumSubMtls(); si++) {
+                Mtl* subMtl = mi.mtl->GetSubMtl(si);
+                if (subMtl && subMtl->ClassID() == WARCRAFT3_MAT_CLASS_ID)
+                    snapMtl(subMtl, mi.materialId * 1000 + si);
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -528,9 +583,6 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     } else if (layer.replaceableTexture == 2) {
         mprintf(_M("    \x2192 TEAMGLOW branch: generating glow texture\n"));
         layer.textureId = GenerateTeamGlowTexture(255, 0, 0);
-        layer.filterMode = 3;
-        layer.alpha = 1.0f;
-        layer.flags |= 2 | 16;
     } else if (layer.replaceableTexture >= 1 && baseTexId >= 0) {
         mprintf(_M("    \x2192 REPLACEABLE branch: replTex=%d, baseTexId=%d\n"), layer.replaceableTexture, baseTexId);
         layer.textureId = baseTexId; layer.filterMode = 0; layer.alpha = 1.0f;
@@ -1234,12 +1286,9 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
         for (int i = 0; i < c; i++) {
             INode* node = geosets_[i].node; if(!node) continue;
             float vis = node->GetVisibility(t);
-            float matAlpha = 1.0f;
-            Mtl* mtl = node->GetMtl();
-            if (mtl && mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
-                float a=100; PB2Float(mtl,L"opacity",t,a); matAlpha = a/100.0f;
-            }
-            state.geosetAlphas[i] = std::max(0.f, std::min(1.f, vis*matAlpha));
+            // Geoset alpha is visibility only — per-layer opacity is sent
+            // separately via layerAlphas so each layer can fade independently
+            state.geosetAlphas[i] = std::max(0.f, std::min(1.f, vis));
 
             // Geoset colors
             Modifier* mod = FindModifierByClassID(geosets_[i].node, WC3VERTEXMOD_CLASS_ID);
@@ -1248,6 +1297,34 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
                 if (uc) {
                     Color col(1,1,1); PB2Color(mod,L"VertexColor",t,col);
                     state.geosetColors[i] = {col.r, col.g, col.b};
+                }
+            }
+        }
+    }
+
+    // Per-layer alpha (opacity from each Wc3Material sub-material at current time)
+    {
+        std::vector<int> sentMats;
+        for (auto& gs : geosets_) {
+            Mtl* mtl = gs.node ? gs.node->GetMtl() : nullptr;
+            if (!mtl) continue;
+            auto it = mtlToId_.find(mtl);
+            if (it == mtlToId_.end()) continue;
+            int matId = it->second;
+            if (std::find(sentMats.begin(), sentMats.end(), matId) != sentMats.end()) continue;
+            sentMats.push_back(matId);
+
+            if (mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
+                float a = 100; PB2Float(mtl, L"opacity", t, a);
+                state.layerAlphas.push_back({matId, 0, std::min(a / 100.0f, 1.0f)});
+            } else if (mtl->NumSubMtls() > 0) {
+                int layerIdx = 0;
+                for (int si = 0; si < mtl->NumSubMtls(); si++) {
+                    Mtl* subMtl = mtl->GetSubMtl(si);
+                    if (!subMtl || subMtl->ClassID() != WARCRAFT3_MAT_CLASS_ID) continue;
+                    float a = 100; PB2Float(subMtl, L"opacity", t, a);
+                    state.layerAlphas.push_back({matId, layerIdx, std::min(a / 100.0f, 1.0f)});
+                    layerIdx++;
                 }
             }
         }
@@ -1310,39 +1387,213 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
         ));
     }
 
-    // Texture animations
-    std::vector<int> sent;
-    for (auto& gs : geosets_) {
-        Mtl* mtl = gs.node->GetMtl();
-        if (!mtl || mtl->ClassID() != WARCRAFT3_MAT_CLASS_ID) continue;
-        auto it = mtlToId_.find(mtl); if (it == mtlToId_.end()) continue;
-        int matId = it->second;
-        if (std::find(sent.begin(), sent.end(), matId) != sent.end()) continue;
-        sent.push_back(matId);
+    // Texture animations (per-layer, supports composite materials)
+    {
+        auto readUVAnim = [&](Mtl* mtl, int matId, int layerIdx) {
+            float uOff=0, vOff=0, uTile=1, vTile=1, wAng=0;
 
-        float uOff=0,vOff=0,uTile=1,vTile=1;
-        Texmap* texmap=nullptr;
-        if (PB2Texmap(mtl,L"diffuseMap",texmap) && texmap) {
-            BitmapTex* bmt = nullptr;
-            if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-                for (int r = 0; r < texmap->NumRefs(); r++) {
-                    ReferenceTarget* ref = texmap->GetReference(r);
-                    if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID,0)) { bmt = static_cast<BitmapTex*>(ref); break; }
+            // Read directly from Wc3Material PB2 (most reliable — doesn't
+            // depend on controller sharing between material and BitmapTex)
+            bool hasPB = PB2Float(mtl, L"anim_UOffset", t, uOff);
+            if (hasPB) {
+                PB2Float(mtl, L"anim_VOffset", t, vOff);
+                PB2Float(mtl, L"anim_UTiling", t, uTile);
+                PB2Float(mtl, L"anim_VTiling", t, vTile);
+                PB2Float(mtl, L"anim_WAngle",  t, wAng);
+            } else {
+                // Fallback: read from BitmapTex UVGen (non-Wc3 materials)
+                Texmap* texmap = nullptr;
+                if (PB2Texmap(mtl, L"diffuseMap", texmap) && texmap) {
+                    BitmapTex* bmt = nullptr;
+                    if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
+                        for (int r = 0; r < texmap->NumRefs(); r++) {
+                            ReferenceTarget* ref = texmap->GetReference(r);
+                            if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID,0))
+                                { bmt = static_cast<BitmapTex*>(ref); break; }
+                        }
+                    } else if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID,0)) {
+                        bmt = static_cast<BitmapTex*>(texmap);
+                    }
+                    if (bmt) {
+                        StdUVGen* uvg = bmt->GetUVGen();
+                        if (uvg) {
+                            uOff = uvg->GetUOffs(t); vOff = uvg->GetVOffs(t);
+                            uTile = uvg->GetUScl(t); vTile = uvg->GetVScl(t);
+                            wAng = uvg->GetWAng(t);
+                        }
+                    }
                 }
-            } else if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID,0)) {
-                bmt = static_cast<BitmapTex*>(texmap);
             }
-            if (bmt) {
-                StdUVGen* uvg = bmt->GetUVGen();
-                if (uvg) { uOff=uvg->GetUOffs(t); vOff=uvg->GetVOffs(t); uTile=uvg->GetUScl(t); vTile=uvg->GetVScl(t); }
+            if (uOff!=0||vOff!=0||uTile!=1||vTile!=1||wAng!=0) {
+                FrameState::TexAnimState tas;
+                tas.materialId = matId;
+                tas.layerIndex = layerIdx;
+                tas.uOff = uOff; tas.vOff = vOff;
+                tas.uTile = uTile; tas.vTile = vTile;
+                tas.rotation = wAng;
+                state.texAnims.push_back(tas);
             }
-        }
-        if (uOff!=0||vOff!=0||uTile!=1||vTile!=1) {
-            state.texAnims.push_back({matId, uOff, vOff, uTile, vTile});
+        };
+
+        std::vector<int> sentTA;
+        for (auto& gs : geosets_) {
+            Mtl* mtl = gs.node ? gs.node->GetMtl() : nullptr;
+            if (!mtl) continue;
+            auto it = mtlToId_.find(mtl); if (it == mtlToId_.end()) continue;
+            int matId = it->second;
+            if (std::find(sentTA.begin(), sentTA.end(), matId) != sentTA.end()) continue;
+            sentTA.push_back(matId);
+
+            if (mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
+                readUVAnim(mtl, matId, 0);
+            } else if (mtl->NumSubMtls() > 0) {
+                int layerIdx = 0;
+                for (int si = 0; si < mtl->NumSubMtls(); si++) {
+                    Mtl* subMtl = mtl->GetSubMtl(si);
+                    if (!subMtl || subMtl->ClassID() != WARCRAFT3_MAT_CLASS_ID) continue;
+                    readUVAnim(subMtl, matId, layerIdx);
+                    layerIdx++;
+                }
+            }
         }
     }
 
     return state;
+}
+
+// ============================================================================
+// RefreshMaterials — re-read material properties, detect changes
+// ============================================================================
+
+MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
+    MaterialRefreshResult result;
+    result.changed = false;
+
+    // Helper: get current texture file path from a Wc3Material
+    auto getTexturePath = [&](Mtl* mtl) -> std::wstring {
+        Texmap* texmap = nullptr;
+        if (!PB2Texmap(mtl, L"diffuseMap", texmap) || !texmap) return {};
+        BitmapTex* bmt = nullptr;
+        if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
+            for (int r = 0; r < texmap->NumRefs(); r++) {
+                ReferenceTarget* ref = texmap->GetReference(r);
+                if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+                    { bmt = static_cast<BitmapTex*>(ref); break; }
+            }
+        } else if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+            bmt = static_cast<BitmapTex*>(texmap);
+        }
+        if (!bmt) return {};
+        const MCHAR* fname = bmt->GetMapName();
+        return (fname && fname[0]) ? std::wstring(fname) : std::wstring{};
+    };
+
+    // Helper: snapshot current properties from a Wc3Material
+    auto snapshotMtl = [&](Mtl* mtl) -> MaterialSnapshot {
+        MaterialSnapshot snap;
+        int wc3fm = 1; PB2Int(mtl, L"filterMode", 0, wc3fm);
+        snap.filterMode = MapMaterialFilterMode(wc3fm);
+
+        BOOL flag = FALSE; int flags = 0;
+        if (PB2Bool(mtl, L"twoSided", 0, flag) && flag)      flags |= 1;
+        if (PB2Bool(mtl, L"unshaded", 0, flag) && flag)      flags |= 2;
+        if (PB2Bool(mtl, L"unfogged", 0, flag) && flag)      flags |= 4;
+        if (PB2Bool(mtl, L"noDepthTest", 0, flag) && flag)   flags |= 8;
+        if (PB2Bool(mtl, L"noDepthSet", 0, flag) && flag)    flags |= 16;
+        if (PB2Bool(mtl, L"constantColor", 0, flag) && flag) flags |= 32;
+        snap.flags = flags;
+
+        Texmap* texmap = nullptr;
+        PB2Texmap(mtl, L"diffuseMap", texmap);
+        int retex = 0;
+        if (texmap && texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
+            int replId = 1; PB2Int(texmap, L"replaceableId", 0, replId);
+            retex = std::max(0, replId - 1);
+        }
+        snap.replaceableTexture = retex;
+        snap.texturePath = getTexturePath(mtl);
+
+        int sortOrd = 1; PB2Int(mtl, L"sortOrder", 0, sortOrd);
+        snap.sortOrder = std::max(0, sortOrd - 1);
+        int priPlane = 0; PB2Int(mtl, L"priorityPlane", 0, priPlane);
+        snap.priorityPlane = priPlane;
+
+        return snap;
+    };
+
+    // Compare current properties with cached snapshots
+    bool anyChanged = false;
+    for (auto& mi : materials_) {
+        if (!mi.mtl) continue;
+
+        if (mi.mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
+            MaterialSnapshot cur = snapshotMtl(mi.mtl);
+            auto it = matSnapshots_.find(mi.materialId);
+            if (it == matSnapshots_.end() ||
+                it->second.filterMode != cur.filterMode ||
+                it->second.flags != cur.flags ||
+                it->second.priorityPlane != cur.priorityPlane ||
+                it->second.sortOrder != cur.sortOrder ||
+                it->second.replaceableTexture != cur.replaceableTexture ||
+                it->second.texturePath != cur.texturePath)
+            {
+                anyChanged = true;
+                break;
+            }
+        } else if (mi.mtl->NumSubMtls() > 0) {
+            for (int si = 0; si < mi.mtl->NumSubMtls(); si++) {
+                Mtl* subMtl = mi.mtl->GetSubMtl(si);
+                if (!subMtl || subMtl->ClassID() != WARCRAFT3_MAT_CLASS_ID) continue;
+                // Use a combined key for sub-material snapshots
+                int key = mi.materialId * 1000 + si;
+                MaterialSnapshot cur = snapshotMtl(subMtl);
+                auto it = matSnapshots_.find(key);
+                if (it == matSnapshots_.end() ||
+                    it->second.filterMode != cur.filterMode ||
+                    it->second.flags != cur.flags ||
+                    it->second.replaceableTexture != cur.replaceableTexture ||
+                    it->second.texturePath != cur.texturePath)
+                {
+                    anyChanged = true;
+                    break;
+                }
+            }
+            if (anyChanged) break;
+        }
+    }
+
+    if (!anyChanged) return result;
+
+    // Something changed — re-collect materials and textures from scratch
+    // Clear texture caches so they get reloaded
+    loadedTextures_.clear();
+    texPathToId_.clear();
+    texEntries_.clear();
+    nextTexId_ = 0;
+
+    // Re-collect materials (uses existing geoset/node data)
+    CollectMaterials();
+
+    // Update snapshots
+    matSnapshots_.clear();
+    for (auto& mi : materials_) {
+        if (!mi.mtl) continue;
+        if (mi.mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
+            matSnapshots_[mi.materialId] = snapshotMtl(mi.mtl);
+        } else if (mi.mtl->NumSubMtls() > 0) {
+            for (int si = 0; si < mi.mtl->NumSubMtls(); si++) {
+                Mtl* subMtl = mi.mtl->GetSubMtl(si);
+                if (subMtl && subMtl->ClassID() == WARCRAFT3_MAT_CLASS_ID)
+                    matSnapshots_[mi.materialId * 1000 + si] = snapshotMtl(subMtl);
+            }
+        }
+    }
+
+    // Build results
+    result.materials = GetMaterials();
+    result.textures  = GetTextures();
+    result.changed   = true;
+    return result;
 }
 
 // ============================================================================
@@ -1351,4 +1602,49 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
 
 std::vector<IModelSource::SequenceInfo> MaxSceneAdapter::GetSequences() {
     return {};
+}
+
+// ============================================================================
+// GetCameraPresets — collect camera objects from the Max scene
+// ============================================================================
+
+std::vector<CameraPreset> MaxSceneAdapter::GetCameraPresets() {
+    std::vector<CameraPreset> presets;
+    Interface* ip = GetCOREInterface();
+    if (!ip) return presets;
+
+    std::function<void(INode*)> findCameras = [&](INode* node) {
+        if (!node) return;
+        Object* obj = GetBaseObject(node);
+        if (obj && obj->SuperClassID() == CAMERA_CLASS_ID) {
+            // Get camera world transform
+            Matrix3 tm = node->GetNodeTM(0);
+            Point3 pos = tm.GetRow(3);
+            // Get target: if it's a target camera, use the target node
+            Point3 tgt = pos + tm.GetRow(2) * -100.0f; // default: look along -Z
+            INode* targNode = node->GetTarget();
+            if (targNode) tgt = targNode->GetNodeTM(0).GetRow(3);
+
+            // Convert to orbital camera params (pitch/yaw/distance around target)
+            Point3 dir = pos - tgt;
+            float dist = Length(dir);
+            if (dist < 0.01f) dist = 100.0f;
+            dir = Normalize(dir);
+            float pitch = asinf(std::clamp(dir.z, -1.0f, 1.0f));
+            float yaw = atan2f(dir.y, dir.x);
+
+            CameraPreset cp;
+            cp.name = std::wstring(node->GetName());
+            cp.pitch = pitch;
+            cp.yaw = yaw;
+            cp.distance = dist;
+            cp.target = {tgt.x, tgt.y, tgt.z};
+            cp.isLive = false;
+            presets.push_back(cp);
+        }
+        for (int i = 0; i < node->NumberOfChildren(); i++)
+            findCameras(node->GetChildNode(i));
+    };
+    findCameras(ip->GetRootNode());
+    return presets;
 }

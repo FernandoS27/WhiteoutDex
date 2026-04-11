@@ -80,8 +80,14 @@ struct Texture {
     bool wrapV = true;
 };
 
-enum class BlendMode {
-    Opaque, AlphaKey, Alpha, Additive, Modulate, Modulate2x, AddAlpha
+enum class BlendMode : uint32_t {
+    Opaque = 0, 
+    AlphaKey = 1, 
+    Alpha = 2, 
+    Additive = 3,
+    AddAlpha = 4,
+    Modulate = 5, 
+    Modulate2x = 6, 
 };
 
 enum class TextureSlot {
@@ -326,6 +332,7 @@ struct IRModel {
         int32_t parentIndex = -1;
         Point3 pivotPoint;
         Matrix3 worldTM;
+        uint32_t nodeFlags = 0;  // MDX node flags (DontInherit, Billboard, CameraAnchored, etc.)
         std::unique_ptr<ExtensionData> ext;
     };
     std::vector<Node> nodes;

@@ -39,6 +39,7 @@ public:
         int timeMs = (tpf > 0 && fps > 0)
             ? (int)((float)t / (float)tpf * 1000.0f / (float)fps)
             : 0;
+
         WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs);
         g_renderer->ApplyFrameState(state, timeMs);
     }
@@ -47,9 +48,27 @@ public:
 static NdxTimeCallback* g_timeCallback = nullptr;
 
 // ============================================================================
+// Material polling timer — detects property changes even without timeline scrub
+// ============================================================================
+static UINT_PTR g_materialTimerId = 0;
+
+static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
+    if (!g_running || !g_renderer || !g_adapter) return;
+    if (!g_renderer->IsOpen()) return;
+    auto result = g_adapter->RefreshMaterials();
+    if (result.changed) {
+        g_renderer->UpdateMaterials(result.materials, result.textures);
+    }
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 static void NdxCleanup() {
+    if (g_materialTimerId) {
+        KillTimer(nullptr, g_materialTimerId);
+        g_materialTimerId = 0;
+    }
     if (g_timeCallback) {
         Interface* ip = GetCOREInterface();
         if (ip) ip->UnRegisterTimeChangeCallback(g_timeCallback);
@@ -152,6 +171,11 @@ Value* ndxStart_cf(Value** arg_list, int count)
     g_renderer->LoadModel(meshes, textures, materials, skeleton,
                           skinW, particles, ribbons, collisions);
 
+    // Populate camera combo with scene cameras
+    auto cameras = g_adapter->GetCameraPresets();
+    if (!cameras.empty())
+        g_renderer->SetCameraPresets(cameras);
+
     // Restore time and do initial evaluation
     ip->SetTime(savedTime, FALSE);
     TimeValue t = ip->GetTime();
@@ -166,6 +190,9 @@ Value* ndxStart_cf(Value** arg_list, int count)
     g_timeCallback = new NdxTimeCallback();
     ip->RegisterTimeChangeCallback(g_timeCallback);
     g_running = true;
+
+    // Start material polling timer (500ms interval)
+    g_materialTimerId = SetTimer(nullptr, 0, 500, MaterialPollTimer);
 
     auto end = std::chrono::high_resolution_clock::now();
     int ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
@@ -189,4 +216,26 @@ Value* ndxStop_cf(Value** arg_list, int count)
     check_arg_count(ndxStop, 0, count);
     NdxCleanup();
     return &ok;
+}
+
+// ============================================================================
+// ndxRefreshMaterials() — force re-read of material properties
+// Returns true if anything changed
+// ============================================================================
+
+def_visible_primitive(ndxRefreshMaterials, "ndxRefreshMaterials");
+Value* ndxRefreshMaterials_cf(Value** arg_list, int count)
+{
+    check_arg_count(ndxRefreshMaterials, 0, count);
+    if (!g_running || !g_renderer || !g_adapter)
+        return &false_value;
+
+    auto result = g_adapter->RefreshMaterials();
+    if (result.changed) {
+        g_renderer->UpdateMaterials(result.materials, result.textures);
+        mprintf(_M("WhiteoutDex: Materials refreshed (%d materials, %d textures)\n"),
+                (int)result.materials.size(), (int)result.textures.size());
+        return &true_value;
+    }
+    return &false_value;
 }

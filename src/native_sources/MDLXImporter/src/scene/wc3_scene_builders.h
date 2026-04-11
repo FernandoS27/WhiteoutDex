@@ -112,6 +112,21 @@ public:
         core::ExportErrorReporter& reporter);
 };
 
+/// Build Max target cameras from IR camera data.
+class Wc3CameraBuilder {
+public:
+    struct CameraNodePair {
+        INode* cameraNode = nullptr;
+        INode* targetNode = nullptr;
+    };
+
+    std::vector<CameraNodePair> buildCameras(
+        const ir::IRModel& irModel,
+        std::vector<INode*>& nodeMap,
+        Interface* gi,
+        core::ExportErrorReporter& reporter);
+};
+
 /// Create Note Track entries for animation sequences.
 class Wc3SequenceBuilder {
 public:

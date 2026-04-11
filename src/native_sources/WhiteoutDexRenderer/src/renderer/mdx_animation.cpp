@@ -361,7 +361,8 @@ void MdxHierarchy::Build(const whiteout::mdx::Model& model) {
 void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
                              const std::vector<u32>& globalSequences,
                              std::vector<XMMATRIX>& boneWorldMatrices,
-                             std::vector<XMMATRIX>& allNodeMatrices) const {
+                             std::vector<XMMATRIX>& allNodeMatrices,
+                             const XMFLOAT3* cameraPos) const {
     int nc = (int)nodes_.size();
     allNodeMatrices.resize(nc);
 
@@ -372,43 +373,38 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
     for (int i = 0; i < nc; i++) {
         const auto& n = nodes_[i];
 
-        // Determine effective time range for this node's tracks
-        int effTime = timeMs, effStart = seqStart, effEnd = seqEnd;
-
-        // Check global sequence for each track
-        auto adjustForGlobal = [&](const auto* track) {
-            if (track && track->isUsed && track->globalSequenceId != 0 &&
-                track->globalSequenceId != 0xFFFFFFFF) {
-                u32 gsId = track->globalSequenceId - 1; // 0-based? Check convention
-                // WhiteoutLib parser stores globalSequenceId as the actual index
-                // but with 0 meaning "not global" and >0 meaning index+1.
-                // Actually, let's check: the raw MDX field uses 0xFFFFFFFF for "none"
-                // and the parser stores globalSequenceId directly.
-                // We'll treat globalSequenceId > 0 as real if it's within range.
-                gsId = track->globalSequenceId;
+        // Compute effective time per track, handling global sequences independently
+        auto getEffTime = [&](const auto* track, int& et, int& es, int& ee) {
+            et = timeMs; es = seqStart; ee = seqEnd;
+            if (track && track->isUsed && track->globalSequenceId != 0xFFFFFFFF) {
+                u32 gsId = track->globalSequenceId;
                 if (gsId < (u32)globalSequences.size()) {
                     u32 duration = globalSequences[gsId];
                     if (duration > 0) {
-                        effStart = 0;
-                        effEnd = (int)duration;
-                        effTime = (int)std::fmod((float)timeMs, (float)duration);
+                        es = 0;
+                        ee = (int)duration;
+                        et = (int)std::fmod((float)timeMs, (float)duration);
                     }
                 }
             }
         };
 
-        // Use the translation track's global sequence as representative
-        // (all tracks on a node usually share the same global sequence ID)
-        adjustForGlobal(n.translation);
-
+        int tTime, tStart, tEnd;
+        getEffTime(n.translation, tTime, tStart, tEnd);
         Vector3f localT = n.translation
-            ? EvaluateTrackVec3(*n.translation, effTime, effStart, effEnd, defaultT)
+            ? EvaluateTrackVec3(*n.translation, tTime, tStart, tEnd, defaultT)
             : defaultT;
+
+        int rTime, rStart, rEnd;
+        getEffTime(n.rotation, rTime, rStart, rEnd);
         Quaternion localR = n.rotation
-            ? EvaluateTrackQuat(*n.rotation, effTime, effStart, effEnd, defaultR)
+            ? EvaluateTrackQuat(*n.rotation, rTime, rStart, rEnd, defaultR)
             : defaultR;
+
+        int sTime, sStart, sEnd;
+        getEffTime(n.scaling, sTime, sStart, sEnd);
         Vector3f localS = n.scaling
-            ? EvaluateTrackVec3(*n.scaling, effTime, effStart, effEnd, defaultS)
+            ? EvaluateTrackVec3(*n.scaling, sTime, sStart, sEnd, defaultS)
             : defaultS;
 
         XMMATRIX localM = Vec3QuatScaleToXMMatrix(localT, localR, localS, n.pivot);
@@ -441,7 +437,80 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
             }
         }
 
-        allNodeMatrices[i] = localM * parentWorld;
+        XMMATRIX worldM = localM * parentWorld;
+
+        // Billboard: override rotation to face the camera.
+        // Warcraft 3 billboarding preserves the node's world position and scale
+        // but replaces its rotation so it faces the camera.
+        // Coordinate system: Z-up, right-handed.
+        if (cameraPos && (flags & ((uint32_t)NF::Billboarded |
+                                   (uint32_t)NF::BillboardedLockX |
+                                   (uint32_t)NF::BillboardedLockY |
+                                   (uint32_t)NF::BillboardedLockZ))) {
+            XMVECTOR wS, wR, wT;
+            if (XMMatrixDecompose(&wS, &wR, &wT, worldM)) {
+                XMVECTOR camP = XMLoadFloat3(cameraPos);
+                XMVECTOR toCamera = XMVectorSubtract(camP, wT);
+                float dist = XMVectorGetX(XMVector3Length(toCamera));
+
+                if (dist > 0.001f) {
+                    XMVECTOR worldUp = XMVectorSet(0, 0, 1, 0);
+
+                    if (flags & (uint32_t)NF::Billboarded) {
+                        // Full billboard: build look-at basis facing camera
+                        XMVECTOR fwd = XMVector3Normalize(toCamera);
+                        XMVECTOR right = XMVector3Cross(fwd, worldUp);
+                        float rightLen = XMVectorGetX(XMVector3Length(right));
+
+                        if (rightLen < 0.001f) {
+                            // Camera directly above/below — use arbitrary right
+                            right = XMVectorSet(1, 0, 0, 0);
+                        }
+                        right = XMVector3Normalize(right);
+                        XMVECTOR up = XMVector3Normalize(XMVector3Cross(right, fwd));
+
+                        // Row-major XMMATRIX: row0=X(right), row1=Y(fwd), row2=Z(up)
+                        XMMATRIX billboardRot = XMMATRIX(
+                            right,
+                            fwd,
+                            up,
+                            XMVectorSet(0, 0, 0, 1)
+                        );
+                        worldM = XMMatrixScalingFromVector(wS) * billboardRot *
+                                 XMMatrixTranslationFromVector(wT);
+
+                    } else if (flags & (uint32_t)NF::BillboardedLockZ) {
+                        // Lock Z: rotate only around world Z to face camera (yaw only)
+                        XMFLOAT3 tc;
+                        XMStoreFloat3(&tc, toCamera);
+                        float yaw = atan2f(tc.y, tc.x);
+                        worldM = XMMatrixScalingFromVector(wS) *
+                                 XMMatrixRotationZ(yaw) *
+                                 XMMatrixTranslationFromVector(wT);
+
+                    } else if (flags & (uint32_t)NF::BillboardedLockY) {
+                        // Lock Y: rotate only around world Y to face camera
+                        XMFLOAT3 tc;
+                        XMStoreFloat3(&tc, toCamera);
+                        float angle = atan2f(tc.z, tc.x);
+                        worldM = XMMatrixScalingFromVector(wS) *
+                                 XMMatrixRotationY(angle) *
+                                 XMMatrixTranslationFromVector(wT);
+
+                    } else if (flags & (uint32_t)NF::BillboardedLockX) {
+                        // Lock X: rotate only around world X to face camera
+                        XMFLOAT3 tc;
+                        XMStoreFloat3(&tc, toCamera);
+                        float angle = atan2f(tc.z, tc.y);
+                        worldM = XMMatrixScalingFromVector(wS) *
+                                 XMMatrixRotationX(angle) *
+                                 XMMatrixTranslationFromVector(wT);
+                    }
+                }
+            }
+        }
+
+        allNodeMatrices[i] = worldM;
     }
 
     // Extract bone world matrices (bones are the first boneCount_ entries by source)

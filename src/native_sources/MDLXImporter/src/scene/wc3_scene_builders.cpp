@@ -12,6 +12,10 @@
 #include <scene/paramblock_reader.h>
 #include <notetrck.h>
 #include <bitmap.h>
+#include <gencam.h>
+#include <ilayer.h>
+#include <ilayermanager.h>
+#include <maxscript/maxscript.h>
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -99,6 +103,39 @@ void attachToParent(INode* node, int32_t nodeIndex,
         nodeMap[parentIdx]->AttachChild(node);
 }
 
+// Apply MDX node properties: billboard flags, CameraAnchored (user properties),
+// and DontInherit flags (Max inheritance flags).
+// Matches MaxScript setupNode() behavior.
+void setupNodeProperties(INode* node, int32_t nodeIndex,
+                         const ir::IRModel& irModel) {
+    if (nodeIndex < 0 || nodeIndex >= static_cast<int32_t>(irModel.nodes.size()))
+        return;
+    uint32_t flags = irModel.nodes[nodeIndex].nodeFlags;
+
+    // Billboard flags → user properties (matching MaxScript setBillboardFlags)
+    node->SetUserPropInt(_T("Billboarded"),      (flags & 0x8)  ? 1 : 0);
+    node->SetUserPropInt(_T("BillboardedLockX"), (flags & 0x10) ? 1 : 0);
+    node->SetUserPropInt(_T("BillboardedLockY"), (flags & 0x20) ? 1 : 0);
+    node->SetUserPropInt(_T("BillboardedLockZ"), (flags & 0x40) ? 1 : 0);
+
+    // CameraAnchored → user property
+    node->SetUserPropInt(_T("CameraAnchored"),   (flags & 0x80) ? 1 : 0);
+
+    // DontInherit flags → Max inheritance flags
+    if (flags & 0x7) {
+        DWORD inheritFlags = INHERIT_ALL;
+        if (flags & 0x1)
+            inheritFlags &= ~(INHERIT_POS_X | INHERIT_POS_Y | INHERIT_POS_Z);
+        if (flags & 0x2)
+            inheritFlags &= ~(INHERIT_ROT_X | INHERIT_ROT_Y | INHERIT_ROT_Z);
+        if (flags & 0x4)
+            inheritFlags &= ~(INHERIT_SCL_X | INHERIT_SCL_Y | INHERIT_SCL_Z);
+        Control* tmCtrl = node->GetTMController();
+        if (tmCtrl)
+            tmCtrl->SetInheritanceFlags(inheritFlags, TRUE);
+    }
+}
+
 // ParamIDs for native plugins (mirrored from plugin headers)
 
 enum P1Params : ParamID {
@@ -165,6 +202,7 @@ void Wc3LightBuilder::buildLights(
 
         // Set parent (walk chain like MaxScript relinkObjects)
         positionAtPivot(node, irLight.nodeIndex, irModel);
+        setupNodeProperties(node, irLight.nodeIndex, irModel);
         attachToParent(node, irLight.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup
@@ -214,6 +252,7 @@ void Wc3AttachmentBuilder::buildAttachments(
         node->SetName(name);
 
         positionAtPivot(node, irAtt.nodeIndex, irModel);
+        setupNodeProperties(node, irAtt.nodeIndex, irModel);
         attachToParent(node, irAtt.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup
@@ -261,6 +300,7 @@ void Wc3Particle1Builder::buildParticles(
         node->SetName(name);
 
         positionAtPivot(node, irPE.nodeIndex, irModel);
+        setupNodeProperties(node, irPE.nodeIndex, irModel);
         attachToParent(node, irPE.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup
@@ -316,6 +356,7 @@ void Wc3Particle2Builder::buildParticles(
         node->SetName(name);
 
         positionAtPivot(node, irPE.nodeIndex, irModel);
+        setupNodeProperties(node, irPE.nodeIndex, irModel);
         attachToParent(node, irPE.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup — all 47 PE2 parameters
@@ -328,7 +369,7 @@ void Wc3Particle2Builder::buildParticles(
             pb->SetValue(PB_LIFE, 0, irPE.lifespan);
             pb->SetValue(PB_GRAVITY, 0, irPE.gravity);
             pb->SetValue(PB_LATITUDE, 0, static_cast<int>(irPE.latitude));
-            pb->SetValue(PB_LONGITUDE, 0, static_cast<int>(irPE.longitude));
+            pb->SetValue(PB_LONGITUDE, 0, irPE.longitude);
             pb->SetValue(PB_WIDTH, 0, irPE.width);
             pb->SetValue(PB_HEIGHT, 0, irPE.length);
             pb->SetValue(PB_TAIL_LEN, 0, irPE.tailLength);
@@ -442,6 +483,7 @@ void Wc3RibbonBuilder::buildRibbons(
             node->SetMtl(materials[irRib.materialIndex]);
 
         positionAtPivot(node, irRib.nodeIndex, irModel);
+        setupNodeProperties(node, irRib.nodeIndex, irModel);
         attachToParent(node, irRib.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup
@@ -500,6 +542,7 @@ void Wc3EventBuilder::buildEvents(
         node->SetName(name);
 
         positionAtPivot(node, irEvt.nodeIndex, irModel);
+        setupNodeProperties(node, irEvt.nodeIndex, irModel);
         attachToParent(node, irEvt.nodeIndex, irModel, nodeMap);
 
         // Set event key times via IntTab paramblock
@@ -545,6 +588,7 @@ void Wc3CollisionBuilder::buildCollisions(
         node->SetName(name);
 
         positionAtPivot(node, irCol.nodeIndex, irModel);
+        setupNodeProperties(node, irCol.nodeIndex, irModel);
         attachToParent(node, irCol.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup: dimensions from collision vertices
@@ -601,6 +645,7 @@ void Wc3PopcornBuilder::buildPopcorn(
         node->SetName(name);
 
         positionAtPivot(node, irPE.nodeIndex, irModel);
+        setupNodeProperties(node, irPE.nodeIndex, irModel);
         attachToParent(node, irPE.nodeIndex, irModel, nodeMap);
 
         // Paramblock setup
@@ -654,6 +699,78 @@ void Wc3FaceFxBuilder::buildFaceFX(
             pb->SetValue(1, 0, wpath.c_str());
         }
     }
+}
+
+// ── Wc3CameraBuilder ──────────────────────────────────────
+
+std::vector<Wc3CameraBuilder::CameraNodePair> Wc3CameraBuilder::buildCameras(
+    const ir::IRModel& irModel, std::vector<INode*>& nodeMap,
+    Interface* gi, core::ExportErrorReporter& reporter)
+{
+    std::vector<CameraNodePair> result;
+    if (irModel.cameras.empty()) return result;
+
+    // Collect all created nodes for layer assignment
+    std::vector<INode*> allCamNodes;
+
+    for (const auto& irCam : irModel.cameras) {
+        // Create camera + target via MaxScript — SDK's LOOKAT_CAM_CLASS_ID + SetTarget
+        // doesn't wire the LookAt controller properly; MaxScript Targetcamera does.
+        std::wstring wname = toWstr(irCam.name);
+
+        wchar_t script[2048];
+        swprintf_s(script, 2048,
+            L"(\n"
+            L"local tgt = Targetobject transform:(matrix3 [1,0,0] [0,1,0] [0,0,1] [%g,%g,%g])\n"
+            L"tgt.name = \"%s_Target\"\n"
+            L"local cam = Targetcamera fov:(radToDeg %g) nearclip:%g farclip:%g pos:[%g,%g,%g] target:tgt\n"
+            L"cam.name = \"%s\"\n"
+            L"true\n"
+            L")",
+            irCam.targetPosition.x, irCam.targetPosition.y, irCam.targetPosition.z,
+            wname.c_str(),
+            irCam.fov, irCam.nearClip, irCam.farClip,
+            irCam.position.x, irCam.position.y, irCam.position.z,
+            wname.c_str());
+
+        ExecuteMAXScriptScript(script,
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE, nullptr);
+
+        // Look up created nodes by name
+        std::wstring tgtName = wname + L"_Target";
+        INode* camNode = gi->GetINodeByName(wname.c_str());
+        INode* targetNode = gi->GetINodeByName(tgtName.c_str());
+
+        if (!camNode) {
+            reporter.warning(L"Failed to create camera '" + wname + L"'");
+            result.push_back({});
+            continue;
+        }
+
+        result.push_back({ camNode, targetNode });
+        allCamNodes.push_back(camNode);
+        if (targetNode) allCamNodes.push_back(targetNode);
+    }
+
+    // Place all camera nodes in the "Cameras" layer (matching MaxScript behavior)
+    if (!allCamNodes.empty()) {
+        ILayerManager* lm = GetCOREInterface13()->GetLayerManager();
+        if (lm) {
+            MSTR layerName(_T("Cameras"));
+            ILayer* layer = lm->GetLayer(layerName);
+            if (!layer)
+                layer = lm->CreateLayer(layerName);
+            if (layer) {
+                for (INode* n : allCamNodes)
+                    layer->AddToLayer(n);
+            }
+        }
+    }
+
+    return result;
 }
 
 // ── Wc3SequenceBuilder ─────────────────────────────────────

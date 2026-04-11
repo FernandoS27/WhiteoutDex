@@ -14,6 +14,14 @@
 
 namespace WhiteoutDex {
 
+// Camera preset for the camera selector combo box
+struct CameraPreset {
+    std::wstring name;
+    float pitch, yaw, distance;
+    XMFLOAT3 target;
+    bool isLive = false;  // if true, host drives camera (e.g., Max viewport)
+};
+
 // Line vertex for grid/bone rendering
 struct LineVertex {
     XMFLOAT3 position;
@@ -84,19 +92,9 @@ struct GPUTexture {
     void Release() { SafeRelease(srv); SafeRelease(tex); }
 };
 
-// Per-material packed Texture2DArray (one slice per layer) for in-shader compositing.
+// Per-material CPU-side data (layers, priority plane, etc.)
 struct GPUMaterial {
-    StagedMaterial            cpu;
-    ID3D11Texture2D*          texArray    = nullptr;
-    ID3D11ShaderResourceView* texArraySRV = nullptr;
-    int                       arrayW      = 0;
-    int                       arrayH      = 0;
-
-    void Release() {
-        SafeRelease(texArraySRV);
-        SafeRelease(texArray);
-        arrayW = arrayH = 0;
-    }
+    StagedMaterial cpu;
 };
 
 // ============================================================================
@@ -116,6 +114,7 @@ public:
     // Camera control (thread-safe)
     void SetCamera(float pitch, float yaw, float distance,
                    float targetX, float targetY, float targetZ);
+    XMFLOAT3 GetCameraPosition() const { return camera_.GetSource(); }
 
     // Model data (thread-safe — called from API/MaxScript thread)
     void ClearModel();
@@ -132,6 +131,18 @@ public:
 
     // Apply pre-computed per-frame state (call from host thread each frame)
     void ApplyFrameState(const FrameState& state, int timeMs);
+
+    // Update materials and textures without full model reload (thread-safe)
+    void UpdateMaterials(const std::vector<MaterialData>& materials,
+                         const std::vector<TextureData>& textures);
+
+    // Team color (RGB 0-255)
+    void SetTeamColor(uint8_t r, uint8_t g, uint8_t b);
+
+    // Camera presets (index 0 is always "Free Camera")
+    void SetCameraPresets(const std::vector<CameraPreset>& presets);
+    int  GetActiveCameraIndex() const;
+    bool IsCameraLocked() const { return cameraLocked_; }
 
 private:
     // Render thread
@@ -168,6 +179,10 @@ private:
     // Collision shape wireframes
     void RenderCollisions();
 
+    // Team color + camera presets
+    void UpdateTeamColorTextures();
+    void ProcessCameraPresets();
+
     // Rendering
     void RenderFrame();
     void RenderGrid();
@@ -203,10 +218,13 @@ private:
     int                   height_ = 600;
     static const int      kToolbarH = 28;
 
-    // Toolbar checkboxes
+    // Toolbar controls
     HWND chkGrid_ = nullptr, chkParticles_ = nullptr;
     HWND chkRibbons_ = nullptr, chkCollisions_ = nullptr;
-    enum { IDC_GRID=1001, IDC_PARTICLES, IDC_RIBBONS, IDC_COLLISIONS };
+    HWND btnTeamColor_ = nullptr;
+    HWND cmbCamera_ = nullptr;
+    enum { IDC_GRID=1001, IDC_PARTICLES, IDC_RIBBONS, IDC_COLLISIONS,
+           IDC_TEAMCOLOR, IDC_CAMERA };
 
     // Mouse
     bool                  lmbDown_ = false;
@@ -240,9 +258,23 @@ private:
     bool                                    stagedDirty_ = false;
     bool                                    stagedClear_ = false;
 
-    // Per-material texture animation params (updated per frame)
-    struct TexAnimData { float uOff=0, vOff=0, uTile=1, vTile=1; };
+    // Per-layer texture animation params (updated per frame)
+    // Key: materialId * 1000 + layerIndex
+    struct TexAnimData { float uOff=0, vOff=0, uTile=1, vTile=1, rotation=0; };
     std::unordered_map<int, TexAnimData>    matTexAnim_;
+
+    // Team color
+    COLORREF teamColor_ = RGB(255, 0, 0);
+    std::unordered_map<int, int> replaceableTexMap_;  // textureId → replaceableId
+
+    // Camera presets
+    std::vector<CameraPreset> cameraPresets_;
+    std::vector<CameraPreset> pendingCameraPresets_;
+    bool cameraDirty_ = false;
+    bool cameraLocked_ = false;
+
+    // Window icon
+    HICON icon_ = nullptr;
 
     // ---- Skinning system (protected by dataMutex_) ----
     SkinningSystem                          skinning_;
@@ -263,13 +295,6 @@ private:
     std::unordered_map<int, GPUTexture>     gpuTextures_;
     std::vector<GPUMaterial>                gpuMaterials_;
 
-    // CPU-side cache of texture pixels (kept so per-material Texture2DArrays
-    // can be rebuilt whenever materials change without re-uploading textures).
-    std::unordered_map<int, StagedTexture>  texturePixels_;
-
-    // Per-material texture-array rebuild helper (render thread only).
-    bool BuildMaterialTextureArray(GPUMaterial& gm);
-
     // ---- DX11 core ----
     ID3D11Device*           device_       = nullptr;
     ID3D11DeviceContext*    context_      = nullptr;
@@ -280,8 +305,7 @@ private:
 
     // Shaders
     ID3D11VertexShader*     vertexShader_       = nullptr;
-    ID3D11PixelShader*      pixelShader_        = nullptr;  // particles/ribbons/viewcube (Texture2D)
-    ID3D11PixelShader*      geosetPixelShader_  = nullptr;  // geosets (Texture2DArray + CBLayers)
+    ID3D11PixelShader*      pixelShader_        = nullptr;
     ID3D11InputLayout*      inputLayout_        = nullptr;
     ID3D11VertexShader*     lineVertexShader_   = nullptr;
     ID3D11PixelShader*      linePixelShader_    = nullptr;
@@ -289,7 +313,6 @@ private:
 
     // Constant buffers
     ID3D11Buffer*           cbPerFrame_ = nullptr;
-    ID3D11Buffer*           cbLayers_   = nullptr;  // b1 for geoset PS
 
     // Grid
     ID3D11Buffer*           gridVB_       = nullptr;
@@ -309,7 +332,6 @@ private:
     ID3D11RasterizerState*    rsNoCull_     = nullptr;
     ID3D11DepthStencilState*  dsDefault_    = nullptr;
     ID3D11DepthStencilState*  dsNoWrite_    = nullptr;
-    ID3D11DepthStencilState*  dsNoWriteLeq_ = nullptr;  // LESS_EQUAL + no write, for internal layers
     ID3D11DepthStencilState*  dsDisabled_   = nullptr;
     ID3D11BlendState*         bsOpaque_     = nullptr;
     ID3D11BlendState*         bsAlphaTest_  = nullptr;

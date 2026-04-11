@@ -335,7 +335,7 @@ extends:Standard replaceUI:true version:11
 	rollout basicRollout "Material Basic Parameters"
 	(
 		dropdownlist	ddShader		"Shader ........................................................" items:#("SD", "HD", "SD on HD", "Crystal") width:300 align:#center
-		dropdownlist	ddFilterMode	"Filter Mode ................................................." items:#("None", "Transparent", "Blend", "Additive", "AddAlpha", "Modulate", "Modulate 2x") width:300 align:#center
+		dropdownlist	ddFilterMode	"Filter Mode ................................................." items:#("None", "Transparent", "Blend", "Additive", "AddAlpha", "Modulate", "Modulate 2x") width:300 align:#center 
 		label			lblSep1		"" height:2
 		checkbox	chkTwoSided		"Two Sided"		align:#left across:3
 		checkbox	chkUnshaded		"Unshaded"		align:#left

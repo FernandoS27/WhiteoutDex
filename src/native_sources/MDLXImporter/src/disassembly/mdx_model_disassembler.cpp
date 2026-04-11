@@ -208,33 +208,35 @@ void MdxModelDisassembler::mapNodes(const wdx::Model& mdx, ir::IRModel& ir) {
         }
     }
 
-    // Fill names from bone/helper/etc source data
-    auto setNodeName = [&](uint32_t objectId, const std::string& name) {
+    // Fill names and node flags from bone/helper/etc source data
+    auto setNodeInfo = [&](uint32_t objectId, const std::string& name, uint32_t flags) {
         int32_t idx = hierarchy_.irIndexForObjectId(objectId);
-        if (idx >= 0 && idx < static_cast<int32_t>(ir.nodes.size()))
+        if (idx >= 0 && idx < static_cast<int32_t>(ir.nodes.size())) {
             ir.nodes[idx].name = name;
+            ir.nodes[idx].nodeFlags = flags;
+        }
     };
 
     for (const auto& bone : mdx.bones)
-        setNodeName(bone.node.objectId, bone.node.name);
+        setNodeInfo(bone.node.objectId, bone.node.name, static_cast<uint32_t>(bone.node.flags));
     for (const auto& helper : mdx.helpers)
-        setNodeName(helper.node.objectId, helper.node.name);
+        setNodeInfo(helper.node.objectId, helper.node.name, static_cast<uint32_t>(helper.node.flags));
     for (const auto& light : mdx.lights)
-        setNodeName(light.node.objectId, light.node.name);
+        setNodeInfo(light.node.objectId, light.node.name, static_cast<uint32_t>(light.node.flags));
     for (const auto& att : mdx.attachments)
-        setNodeName(att.node.objectId, att.node.name);
+        setNodeInfo(att.node.objectId, att.node.name, static_cast<uint32_t>(att.node.flags));
     for (const auto& pe : mdx.particleEmitters)
-        setNodeName(pe.node.objectId, pe.node.name);
+        setNodeInfo(pe.node.objectId, pe.node.name, static_cast<uint32_t>(pe.node.flags));
     for (const auto& pe2 : mdx.particleEmitters2)
-        setNodeName(pe2.node.objectId, pe2.node.name);
+        setNodeInfo(pe2.node.objectId, pe2.node.name, static_cast<uint32_t>(pe2.node.flags));
     for (const auto& rib : mdx.ribbonEmitters)
-        setNodeName(rib.node.objectId, rib.node.name);
+        setNodeInfo(rib.node.objectId, rib.node.name, static_cast<uint32_t>(rib.node.flags));
     for (const auto& evt : mdx.eventObjects)
-        setNodeName(evt.node.objectId, evt.node.name);
+        setNodeInfo(evt.node.objectId, evt.node.name, static_cast<uint32_t>(evt.node.flags));
     for (const auto& col : mdx.collisionShapes)
-        setNodeName(col.node.objectId, col.node.name);
+        setNodeInfo(col.node.objectId, col.node.name, static_cast<uint32_t>(col.node.flags));
     for (const auto& corn : mdx.cornEmitters)
-        setNodeName(corn.node.objectId, corn.node.name);
+        setNodeInfo(corn.node.objectId, corn.node.name, static_cast<uint32_t>(corn.node.flags));
 }
 
 // ── Bones & Helpers ─────────────────────────────────────────
@@ -779,7 +781,11 @@ void MdxModelDisassembler::mapParticleEmitters2(const wdx::Model& mdx, ir::IRMod
         irPE.midTime = pe2.time;
         irPE.textureIndex = static_cast<int32_t>(pe2.textureId);
         irPE.replaceableId = static_cast<int32_t>(pe2.replaceableId);
-        irPE.flags = static_cast<uint32_t>(pe2.node.flags);
+        // IR flags layout: bit 0 = squirt, bits 15-20 = PE2-specific node flags
+        // (DontInherit/billboard flags at bits 1-7 go to irNode.nodeFlags, not here)
+        irPE.flags = static_cast<uint32_t>(pe2.node.flags) & 0x1F8000u;
+        if (pe2.squirt)
+            irPE.flags |= 0x1;
 
         for (int i = 0; i < 3; ++i) {
             irPE.segmentColors[i] = Color(pe2.segmentColor[i].x,

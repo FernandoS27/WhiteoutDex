@@ -69,7 +69,7 @@ if errorlevel 1 (
     goto :done
 )
 
-cmake --build . --config Release -- /m
+cmake --build . --config Release -- /m:4
 
 if errorlevel 1 (
     echo *** Common libraries build FAILED ***
@@ -116,7 +116,7 @@ for %%V in (2016 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 2027) do (
                 set /a FAILED+=1
                 popd
             ) else (
-                cmake --build . --config Release -- /m
+                cmake --build . --config Release -- /m:4
 
                 if errorlevel 1 (
                     echo [%%V] *** Some targets FAILED ***

@@ -14,7 +14,7 @@ cbuffer CBPerFrame : register(b0) {
     float4   AmbientColor;
     float4   ExtraParams;     // .x=geosetAlpha, .yzw=colorTint RGB
     float4   TexAnimParams;   // .x=uOff, .y=vOff, .z=uTile, .w=vTile
-    float4   MaterialFlags;   // .x=unshaded, .y=constantColor
+    float4   MaterialFlags;   // .x=unshaded, .y=constantColor, .z=texRotation
 };
 
 struct VS_INPUT {
@@ -42,8 +42,16 @@ PS_INPUT VSMain(VS_INPUT input) {
     output.Normal   = normalize(mul(input.Normal, (float3x3)World));
     output.Color    = input.Color;
 
-    // Texture animation: apply UV tiling + offset
+    // Texture animation: apply rotation + tiling + offset
     float2 uv = input.UV;
+    float texRot = MaterialFlags.z;
+    if (texRot != 0.0) {
+        float2 center = float2(0.5, 0.5);
+        float2 rel = uv - center;
+        float c = cos(texRot);
+        float s = sin(texRot);
+        uv = float2(c * rel.x - s * rel.y, s * rel.x + c * rel.y) + center;
+    }
     float uTile = TexAnimParams.z;
     float vTile = TexAnimParams.w;
     if (uTile != 0.0 || vTile != 0.0)
@@ -66,7 +74,7 @@ cbuffer CBPerFrame : register(b0) {
     float4   AmbientColor;
     float4   ExtraParams;
     float4   TexAnimParams;
-    float4   MaterialFlags;   // .x=unshaded, .y=constantColor
+    float4   MaterialFlags;   // .x=unshaded, .y=constantColor, .z=texRotation
 };
 
 Texture2D    texDiffuse : register(t0);
@@ -94,12 +102,15 @@ float4 PSMain(PS_INPUT input) : SV_TARGET {
     // Geoset alpha (ExtraParams.x) + color tint (ExtraParams.yzw)
     float geosetAlpha = ExtraParams.x;
     float3 colorTint  = ExtraParams.yzw;
-    float  finalAlpha = texColor.a * vertColor.a * geosetAlpha;
 
-    // Alpha test
+    // Alpha test against texture alpha only (not affected by opacity fade)
+    float texAlpha = texColor.a * vertColor.a;
     float alphaRef = AmbientColor.a;
-    if (alphaRef > 0.0 && finalAlpha < alphaRef)
+    if (alphaRef > 0.0 && texAlpha < alphaRef)
         clip(-1);
+
+    // Apply opacity after alpha test
+    float finalAlpha = texAlpha * geosetAlpha;
 
     if (geosetAlpha < 0.004)
         clip(-1);
@@ -117,117 +128,6 @@ float4 PSMain(PS_INPUT input) : SV_TARGET {
     float3 finalColor = lighting * texColor.rgb * vertColor.rgb * tint;
 
     return float4(finalColor, finalAlpha);
-}
-)HLSL";
-
-// ============================================================================
-// Geoset pixel shader — in-shader multi-layer compositing via Texture2DArray
-// Used only by RenderGeosets(). Particles/ribbons/viewcube use g_pixelShaderSrc.
-// ============================================================================
-static const char* g_geosetPixelShaderSrc = R"HLSL(
-cbuffer CBPerFrame : register(b0) {
-    float4x4 World;
-    float4x4 View;
-    float4x4 Projection;
-    float4   LightDir;
-    float4   LightColor;
-    float4   AmbientColor;
-    float4   ExtraParams;     // .x=geosetAlpha, .yzw=colorTint RGB
-    float4   TexAnimParams;   // unused in geoset path
-    float4   MaterialFlags;   // unused in geoset path
-};
-
-#define MAX_LAYERS 8
-
-cbuffer CBLayers : register(b1) {
-    int4   LayerCount;                  // .x = numLayers
-    float4 LayerParams[MAX_LAYERS];     // .x=filterMode, .y=alpha, .z=unshaded, .w=constantColor
-    float4 LayerTexAnim[MAX_LAYERS];    // .x=uOff, .y=vOff, .z=uTile, .w=vTile
-};
-
-Texture2DArray texLayers : register(t0);
-SamplerState   samLinear : register(s0);
-
-struct PS_INPUT {
-    float4 Pos      : SV_POSITION;
-    float3 Normal   : NORMAL;
-    float4 Color    : COLOR;
-    float2 UV       : TEXCOORD0;
-    float3 WorldPos : TEXCOORD1;
-};
-
-float4 SampleLayer(PS_INPUT input, int li, float3 lighting, float3 colorTint) {
-    float4 p  = LayerParams[li];
-    float4 ta = LayerTexAnim[li];
-    float uTile = (ta.z == 0.0) ? 1.0 : ta.z;
-    float vTile = (ta.w == 0.0) ? 1.0 : ta.w;
-    float2 uv = input.UV * float2(uTile, vTile) + float2(ta.x, ta.y);
-
-    float4 tex = texLayers.Sample(samLinear, float3(uv, (float)li));
-
-    bool unshaded   = p.z > 0.5;
-    bool constColor = p.w > 0.5;
-    float3 light    = unshaded   ? float3(1,1,1) : lighting;
-    float3 tint     = constColor ? float3(1,1,1) : colorTint;
-
-    float3 rgb   = light * tex.rgb * input.Color.rgb * tint;
-    float  alpha = tex.a * input.Color.a * p.y;
-    return float4(rgb, alpha);
-}
-
-float4 PSGeoset(PS_INPUT input) : SV_TARGET {
-    float3 N = normalize(input.Normal);
-    float3 L = normalize(-LightDir.xyz);
-    float  NdotL = saturate(dot(N, L));
-    float3 diffuse = LightColor.rgb * NdotL;
-    float3 ambient = AmbientColor.rgb;
-    float3 lighting = ambient + diffuse;
-
-    float  geosetAlpha = ExtraParams.x;
-    float3 colorTint   = ExtraParams.yzw;
-    if (geosetAlpha < 0.004) clip(-1);
-
-    int numLayers = LayerCount.x;
-    if (numLayers <= 0) { clip(-1); return float4(0,0,0,0); }
-
-    // Layer 0 — base. Hardware blend uses layer 0's filter mode (set CPU-side).
-    float4 accum = SampleLayer(input, 0, lighting, colorTint);
-    int baseFilter = (int)LayerParams[0].x;
-
-    // Alpha test on layer 0 when FILTER_TRANSPARENT (==1)
-    if (baseFilter == 1) {
-        if (accum.a < 0.745) clip(-1);
-    }
-
-    // Composite layers 1..N-1 into accum in-shader (matches per-layer blend modes).
-    [loop]
-    for (int li = 1; li < numLayers; ++li) {
-        float4 s = SampleLayer(input, li, lighting, colorTint);
-        int fm = (int)LayerParams[li].x;
-        if (fm == 0) {                      // NONE: opaque replace
-            accum.rgb = s.rgb;
-            accum.a   = s.a;
-        } else if (fm == 1) {               // TRANSPARENT: replace where src alpha passes
-            if (s.a >= 0.745) {
-                accum.rgb = s.rgb;
-                accum.a   = s.a;
-            }
-        } else if (fm == 2) {               // BLEND: lerp by src alpha
-            accum.rgb = lerp(accum.rgb, s.rgb, s.a);
-        } else if (fm == 3) {               // ADDITIVE: add src.rgb
-            accum.rgb += s.rgb;
-        } else if (fm == 4) {               // ADD_ALPHA: add src.rgb * src.a
-            accum.rgb += s.rgb * s.a;
-        } else if (fm == 5) {               // MODULATE: multiply
-            accum.rgb *= s.rgb;
-        } else if (fm == 6) {               // MODULATE_2X: 2 * dst * src
-            accum.rgb = 2.0 * accum.rgb * s.rgb;
-        }
-    }
-
-    // Apply per-geoset fade (0..1)
-    accum.a *= geosetAlpha;
-    return accum;
 }
 )HLSL";
 

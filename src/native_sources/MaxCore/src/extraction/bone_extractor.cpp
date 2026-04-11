@@ -1,6 +1,7 @@
 // MaxCore — Bone hierarchy extractor implementation
 #include "bone_extractor.h"
 #include "../util/class_ids.h"
+#include "../util/max_helpers.h"
 
 #include <CS/BIPEXP.H>
 
@@ -31,6 +32,7 @@ BoneExtractor::BoneResult BoneExtractor::extract(
             bone.isHelper = (sn.category == NodeCategory::Helper);
             bone.pivotPoint = sn.maxNode->GetNodeTM(0).GetTrans();
             bone.bindPose = sn.maxNode->GetNodeTM(0);
+            bone.nodeFlags = collectNodeFlags(sn.maxNode);
 
             int32_t boneIdx = static_cast<int32_t>(result.bones.size());
             result.nodeToIndex[sn.maxNode] = boneIdx;
@@ -55,6 +57,7 @@ BoneExtractor::BoneResult BoneExtractor::extract(
         bone.isHelper = false;
         bone.pivotPoint = boneNode->GetNodeTM(0).GetTrans();
         bone.bindPose = boneNode->GetNodeTM(0);
+        bone.nodeFlags = collectNodeFlags(boneNode);
 
         int32_t boneIdx = static_cast<int32_t>(result.bones.size());
         result.nodeToIndex[boneNode] = boneIdx;
@@ -100,6 +103,7 @@ BoneExtractor::BoneResult BoneExtractor::extract(
             bone.isHelper = true;
             bone.pivotPoint = anc->GetNodeTM(0).GetTrans();
             bone.bindPose = anc->GetNodeTM(0);
+            bone.nodeFlags = collectNodeFlags(anc);
 
             int32_t boneIdx = static_cast<int32_t>(result.bones.size());
             result.nodeToIndex[anc] = boneIdx;

@@ -5,13 +5,17 @@
 
 #include "renderer.h"
 #include "shaders.h"
+#include "resource.h"
 #include <windowsx.h>
+#include <commdlg.h>
 #include <execution>   // std::execution::par for parallel skinning
+
+#pragma comment(lib, "comdlg32.lib")
 
 namespace WhiteoutDex {
 
 static const wchar_t* WINDOW_CLASS = L"WhiteoutDexRendererClass";
-static const wchar_t* WINDOW_TITLE = L"WhiteoutDex Preview";
+static const wchar_t* WINDOW_TITLE = L"Whiteout Renderer";
 
 // ============================================================================
 // Constructor / Destructor
@@ -73,6 +77,43 @@ void Renderer::ClearModel() {
     ribbons_.Clear();
     collisionShapes_.clear();
     matTexAnim_.clear();
+    replaceableTexMap_.clear();
+}
+
+// ============================================================================
+// Update Materials (hot-reload without full model rebuild)
+// ============================================================================
+
+void Renderer::UpdateMaterials(const std::vector<MaterialData>& materials,
+                               const std::vector<TextureData>& textures) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+
+    // Re-stage textures
+    for (auto& tex : textures) {
+        StagedTexture& st = stagedTextures_[tex.textureId];
+        st.width  = tex.width;
+        st.height = tex.height;
+        st.replaceableId = tex.replaceableId;
+        st.pixels = tex.rgba;
+        if (tex.replaceableId == 1 || tex.replaceableId == 2)
+            replaceableTexMap_[tex.textureId] = tex.replaceableId;
+    }
+
+    // Re-stage materials
+    for (auto& mat : materials) {
+        StagedMaterial& sm = stagedMaterials_[mat.materialId];
+        sm.layers.resize(mat.layers.size());
+        for (size_t i = 0; i < mat.layers.size(); i++) {
+            sm.layers[i].filterMode = mat.layers[i].filterMode;
+            sm.layers[i].textureId  = mat.layers[i].textureId;
+            sm.layers[i].alpha      = mat.layers[i].alpha;
+            sm.layers[i].flags      = mat.layers[i].flags;
+        }
+        sm.priorityPlane = mat.priorityPlane;
+        sm.sortOrder     = mat.sortOrder;
+    }
+
+    stagedDirty_ = true;
 }
 
 // ============================================================================
@@ -96,6 +137,9 @@ void Renderer::LoadModel(const std::vector<MeshData>& meshes,
         st.height = tex.height;
         st.replaceableId = tex.replaceableId;
         st.pixels = tex.rgba;
+        // Track replaceable textures for team color updates
+        if (tex.replaceableId == 1 || tex.replaceableId == 2)
+            replaceableTexMap_[tex.textureId] = tex.replaceableId;
     }
 
     // Materials → staged
@@ -230,6 +274,7 @@ void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
         st.speed        = ps.speed;
         st.variation    = ps.variation;
         st.coneAngle    = ps.coneAngle;
+        st.longitude    = ps.longitude;
         st.gravity      = ps.gravity;
         st.width        = ps.width;
         st.length       = ps.length;
@@ -255,13 +300,83 @@ void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
         collisionShapes_[i].transform = state.collisionTransforms[i];
     }
 
-    // Texture animations
+    // Texture animations (per-layer) — clear stale entries from previous frame
+    matTexAnim_.clear();
     for (auto& ta : state.texAnims) {
-        matTexAnim_[ta.materialId] = {ta.uOff, ta.vOff, ta.uTile, ta.vTile};
+        int key = ta.materialId * 1000 + ta.layerIndex;
+        matTexAnim_[key] = {ta.uOff, ta.vOff, ta.uTile, ta.vTile, ta.rotation};
+    }
+
+    // Per-layer alpha animation (KMTA tracks)
+    for (auto& la : state.layerAlphas) {
+        if (la.materialId >= 0 && la.materialId < (int)gpuMaterials_.size()) {
+            auto& layers = gpuMaterials_[la.materialId].cpu.layers;
+            if (la.layerIndex >= 0 && la.layerIndex < (int)layers.size()) {
+                layers[la.layerIndex].alpha = la.alpha;
+            }
+        }
     }
 
     // Advance simulation clock (replaces old SetTime)
     currentTimeMs_ = timeMs;
+}
+
+// ============================================================================
+// Team Color Texture Update
+// ============================================================================
+
+void Renderer::UpdateTeamColorTextures() {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    uint8_t r = GetRValue(teamColor_);
+    uint8_t g = GetGValue(teamColor_);
+    uint8_t b = GetBValue(teamColor_);
+    for (auto& [texId, replId] : replaceableTexMap_) {
+        StagedTexture& st = stagedTextures_[texId];
+        st.width = 4; st.height = 4;
+        st.replaceableId = replId;
+        st.pixels.resize(64);
+        uint8_t tr = r, tg = g, tb = b;
+        for (int j = 0; j < 16; j++) {
+            st.pixels[j * 4 + 0] = tr;
+            st.pixels[j * 4 + 1] = tg;
+            st.pixels[j * 4 + 2] = tb;
+            st.pixels[j * 4 + 3] = 255;
+        }
+    }
+    if (!replaceableTexMap_.empty()) stagedDirty_ = true;
+}
+
+// ============================================================================
+// Camera Presets
+// ============================================================================
+
+void Renderer::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
+    teamColor_ = RGB(r, g, b);
+    UpdateTeamColorTextures();
+    if (btnTeamColor_) InvalidateRect(btnTeamColor_, nullptr, TRUE);
+}
+
+void Renderer::SetCameraPresets(const std::vector<CameraPreset>& presets) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    pendingCameraPresets_ = presets;
+    cameraDirty_ = true;
+}
+
+int Renderer::GetActiveCameraIndex() const {
+    return cmbCamera_ ? (int)SendMessageW(cmbCamera_, CB_GETCURSEL, 0, 0) : 0;
+}
+
+void Renderer::ProcessCameraPresets() {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    if (!cameraDirty_ || !cmbCamera_) return;
+    SendMessageW(cmbCamera_, CB_RESETCONTENT, 0, 0);
+    SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)L"Free Camera");
+    for (auto& p : pendingCameraPresets_)
+        SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)p.name.c_str());
+    cameraPresets_ = std::move(pendingCameraPresets_);
+    SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
+    cameraLocked_ = false;
+    cameraDirty_ = false;
 }
 
 // ============================================================================
@@ -278,12 +393,10 @@ void Renderer::ProcessStagedData() {
     }
 
     if (stagedDirty_) {
-        // Upload textures (individual Texture2D — used by particles/ribbons and as
-        // source pixels for per-material Texture2DArrays)
+        // Upload textures (individual Texture2D)
         for (auto& [id, st] : stagedTextures_) {
             if (st.width <= 0 || st.height <= 0) continue;
 
-            // Release old GPU texture if exists
             if (gpuTextures_.count(id)) gpuTextures_[id].Release();
 
             GPUTexture gt;
@@ -305,18 +418,13 @@ void Renderer::ProcessStagedData() {
                 device_->CreateShaderResourceView(gt.tex, nullptr, &gt.srv);
             }
             gpuTextures_[id] = gt;
-
-            // Cache the CPU pixels so future material rebuilds don't need re-upload
-            texturePixels_[id] = st;
         }
         stagedTextures_.clear();
 
-        // Copy materials (CPU data for render logic) and build per-material Texture2DArrays
+        // Copy materials (CPU data for render logic)
         for (auto& [id, sm] : stagedMaterials_) {
             if ((int)gpuMaterials_.size() <= id) gpuMaterials_.resize(id + 1);
-            gpuMaterials_[id].Release();
             gpuMaterials_[id].cpu = sm;
-            BuildMaterialTextureArray(gpuMaterials_[id]);
         }
         stagedMaterials_.clear();
 
@@ -371,99 +479,11 @@ void Renderer::ReleaseModelGPU() {
     gpuGeosets_.clear();
     for (auto& [id, t] : gpuTextures_) t.Release();
     gpuTextures_.clear();
-    for (auto& m : gpuMaterials_) m.Release();
     gpuMaterials_.clear();
-    texturePixels_.clear();
 }
 
 // Build a packed Texture2DArray for a material.
 // All layer textures are CPU-resized (nearest-neighbor) to the max (w,h) found
-// across that material's layers, then uploaded as a single ArraySize=numLayers
-// immutable texture. Missing/unknown textures become opaque white slices.
-bool Renderer::BuildMaterialTextureArray(GPUMaterial& gm) {
-    if (!device_) return false;
-    int numLayers = (int)gm.cpu.layers.size();
-    if (numLayers <= 0) return false;
-    if (numLayers > MAX_LAYERS) numLayers = MAX_LAYERS;
-
-    // Determine common size: max dimensions of valid layer textures
-    int maxW = 0, maxH = 0;
-    for (int li = 0; li < numLayers; ++li) {
-        int tid = gm.cpu.layers[li].textureId;
-        auto it = texturePixels_.find(tid);
-        if (it == texturePixels_.end()) continue;
-        if (it->second.width  > maxW) maxW = it->second.width;
-        if (it->second.height > maxH) maxH = it->second.height;
-    }
-    if (maxW <= 0 || maxH <= 0) { maxW = 1; maxH = 1; }
-
-    // Allocate packed pixel buffer: numLayers slices of maxW*maxH RGBA8
-    std::vector<uint8_t> packed((size_t)numLayers * maxW * maxH * 4, 0xFF);
-
-    for (int li = 0; li < numLayers; ++li) {
-        int tid = gm.cpu.layers[li].textureId;
-        auto it = texturePixels_.find(tid);
-        uint8_t* dst = packed.data() + (size_t)li * maxW * maxH * 4;
-        if (it == texturePixels_.end() || it->second.pixels.empty()) {
-            // Leave slice as opaque white
-            continue;
-        }
-        const auto& src = it->second;
-        // Nearest-neighbor resample src (srcW x srcH) → (maxW x maxH)
-        for (int y = 0; y < maxH; ++y) {
-            int sy = (y * src.height) / maxH;
-            if (sy >= src.height) sy = src.height - 1;
-            const uint8_t* srcRow = src.pixels.data() + (size_t)sy * src.width * 4;
-            uint8_t* dstRow = dst + (size_t)y * maxW * 4;
-            for (int x = 0; x < maxW; ++x) {
-                int sx = (x * src.width) / maxW;
-                if (sx >= src.width) sx = src.width - 1;
-                const uint8_t* sp = srcRow + sx * 4;
-                uint8_t* dp = dstRow + x * 4;
-                dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3];
-            }
-        }
-    }
-
-    D3D11_TEXTURE2D_DESC td = {};
-    td.Width     = maxW;
-    td.Height    = maxH;
-    td.MipLevels = 1;
-    td.ArraySize = numLayers;
-    td.Format    = DXGI_FORMAT_R8G8B8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Usage     = D3D11_USAGE_IMMUTABLE;
-    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-    std::vector<D3D11_SUBRESOURCE_DATA> srds((size_t)numLayers);
-    for (int li = 0; li < numLayers; ++li) {
-        srds[li].pSysMem          = packed.data() + (size_t)li * maxW * maxH * 4;
-        srds[li].SysMemPitch      = maxW * 4;
-        srds[li].SysMemSlicePitch = 0;
-    }
-
-    if (FAILED(device_->CreateTexture2D(&td, srds.data(), &gm.texArray))) {
-        gm.texArray = nullptr;
-        return false;
-    }
-
-    D3D11_SHADER_RESOURCE_VIEW_DESC svd = {};
-    svd.Format                         = DXGI_FORMAT_R8G8B8A8_UNORM;
-    svd.ViewDimension                  = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
-    svd.Texture2DArray.MostDetailedMip = 0;
-    svd.Texture2DArray.MipLevels       = 1;
-    svd.Texture2DArray.FirstArraySlice = 0;
-    svd.Texture2DArray.ArraySize       = numLayers;
-
-    if (FAILED(device_->CreateShaderResourceView(gm.texArray, &svd, &gm.texArraySRV))) {
-        SafeRelease(gm.texArray);
-        return false;
-    }
-    gm.arrayW = maxW;
-    gm.arrayH = maxH;
-    return true;
-}
-
 // ============================================================================
 // Phase 4: Animation Update (render thread)
 // ============================================================================
@@ -597,6 +617,9 @@ void Renderer::RenderParticles() {
     context_->VSSetShader(vertexShader_, nullptr, 0);
     context_->PSSetShader(pixelShader_, nullptr, 0);
 
+    // Particles are always two-sided (billboards can face either way)
+    context_->RSSetState(rsNoCull_);
+
     // Render per-emitter with correct blend state and texture
     // BuildBillboards generates 6 verts per particle, in emitter order
     int drawOffset = 0;
@@ -631,15 +654,15 @@ void Renderer::RenderParticles() {
         int count = vertCounts[ei];
         if (count <= 0) { continue; }
 
-        // Apply filter mode blend state
-        ApplyFilterMode(cfg.filterMode, 0);
+        // Apply filter mode blend state (pass MAT_TWO_SIDED — particles are always two-sided)
+        ApplyFilterMode(cfg.filterMode, MAT_TWO_SIDED);
 
         // Force depth write off for particles
         context_->OMSetDepthStencilState(dsNoWrite_, 0);
 
         // Update constant buffer
         {
-            float alphaRef = (cfg.filterMode == FILTER_TRANSPARENT) ? 0.745f : 0.0f;
+            float alphaRef = (cfg.filterMode == FILTER_TRANSPARENT) ? 0.75f : 0.0f;
             D3D11_MAPPED_SUBRESOURCE cbMapped;
             context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &cbMapped);
             CBPerFrame* cb = (CBPerFrame*)cbMapped.pData;
@@ -749,7 +772,7 @@ void Renderer::RenderRibbons() {
         if (cfg.twoSided) context_->RSSetState(rsNoCull_);
 
         {
-            float alphaRef = (cfg.filterMode == FILTER_TRANSPARENT) ? 0.745f : 0.0f;
+            float alphaRef = (cfg.filterMode == FILTER_TRANSPARENT) ? 0.75f : 0.0f;
             D3D11_MAPPED_SUBRESOURCE cbMapped;
             context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &cbMapped);
             CBPerFrame* cb = (CBPerFrame*)cbMapped.pData;
@@ -939,6 +962,9 @@ void Renderer::RenderThread(int width, int height) {
         // Process any staged data from API thread
         ProcessStagedData();
 
+        // Process pending camera preset updates
+        ProcessCameraPresets();
+
         // Phase 4: Skin vertices with current bone matrices
         UpdateAnimation();
 
@@ -963,13 +989,8 @@ void Renderer::RenderThread(int width, int height) {
             }
             wchar_t title[300];
             swprintf_s(title,
-                L"WhiteoutDex Preview \u2014 %d FPS | %d geo, %d tex, %d bones, %d parts, %d segs"
-                L"  [G]%s [P]%s [R]%s [C]%s",
-                frameCount, nGeo, nTex, nBones, nParts, nSegs,
-                showGrid_ ? L"\u2713" : L"\u00B7",
-                showParticles_ ? L"\u2713" : L"\u00B7",
-                showRibbons_ ? L"\u2713" : L"\u00B7",
-                showCollisions_ ? L"\u2713" : L"\u00B7"
+                L"Whiteout Renderer \u2014 %d FPS | %d geo, %d tex, %d bones, %d parts, %d segs",
+                frameCount, nGeo, nTex, nBones, nParts, nSegs
             );
             SetWindowTextW(hwnd_, title);
             frameCount = 0;
@@ -989,7 +1010,14 @@ void Renderer::RenderThread(int width, int height) {
 // ============================================================================
 
 bool Renderer::CreateRenderWindow(int w, int h) {
-    HINSTANCE hInst = GetModuleHandle(nullptr);
+    // Get HINSTANCE of the module containing this code (DLL or EXE)
+    HMODULE hMod = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                       (LPCWSTR)&Renderer::WndProc, &hMod);
+    HINSTANCE hInst = hMod ? (HINSTANCE)hMod : GetModuleHandle(nullptr);
+
+    // Load icon from embedded resource
+    icon_ = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_WHITEOUT_ICON));
 
     // Register parent window class
     WNDCLASSEXW wc = {};
@@ -998,6 +1026,8 @@ bool Renderer::CreateRenderWindow(int w, int h) {
     wc.lpfnWndProc   = Renderer::WndProc;
     wc.hInstance      = hInst;
     wc.hCursor        = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon          = icon_;
+    wc.hIconSm        = icon_;
     wc.hbrBackground  = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName  = WINDOW_CLASS;
     if (!RegisterClassExW(&wc))
@@ -1031,7 +1061,7 @@ bool Renderer::CreateRenderWindow(int w, int h) {
                                    hwnd_, nullptr, hInst, this);
     if (!hwndRender_) return false;
 
-    // Create toolbar checkboxes in parent window
+    // Create toolbar controls in parent window
     int x = 8;
     auto mkChk = [&](const wchar_t* label, int id, bool checked) -> HWND {
         int labelW = (int)wcslen(label) * 7 + 28;
@@ -1046,6 +1076,30 @@ bool Renderer::CreateRenderWindow(int w, int h) {
     chkParticles_  = mkChk(L"Particles",  IDC_PARTICLES,  showParticles_);
     chkRibbons_    = mkChk(L"Ribbons",    IDC_RIBBONS,    showRibbons_);
     chkCollisions_ = mkChk(L"Collisions", IDC_COLLISIONS, showCollisions_);
+
+    // Separator
+    x += 4;
+
+    // Team color label + swatch
+    CreateWindowW(L"STATIC", L"Team:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        x, 4, 36, 20, hwnd_, nullptr, hInst, nullptr);
+    x += 38;
+    btnTeamColor_ = CreateWindowW(L"BUTTON", L"",
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        x, 4, 22, 20, hwnd_, (HMENU)(INT_PTR)IDC_TEAMCOLOR, hInst, nullptr);
+    x += 30;
+
+    // Camera combo box
+    CreateWindowW(L"STATIC", L"Camera:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        x, 4, 50, 20, hwnd_, nullptr, hInst, nullptr);
+    x += 52;
+    cmbCamera_ = CreateWindowW(L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        x, 2, 150, 200, hwnd_, (HMENU)(INT_PTR)IDC_CAMERA, hInst, nullptr);
+    SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)L"Free Camera");
+    SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
 
     return true;
 }
@@ -1136,27 +1190,78 @@ LRESULT Renderer::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         RECT vcr = GetViewCubeRect();
         vcHovered_ = (cur.x >= vcr.left && cur.x <= vcr.right && cur.y >= vcr.top && cur.y <= vcr.bottom);
         std::lock_guard<std::mutex> lock(dataMutex_);
-        if (lmbDown_) camera_.Rotate(dx, dy);   // inverted Y like Magos
-        if (rmbDown_) camera_.Pan(-dx, dy);
-        if (mmbDown_) camera_.ZoomSmooth((float)dy * camera_.GetDistance() / Camera::kFactorRelDist);
+        if (!cameraLocked_) {
+            if (lmbDown_) camera_.Rotate(dx, dy);   // inverted Y like Magos
+            if (rmbDown_) camera_.Pan(-dx, dy);
+            if (mmbDown_) camera_.ZoomSmooth((float)dy * camera_.GetDistance() / Camera::kFactorRelDist);
+        }
         return 0;
     }
     case WM_MOUSEWHEEL: {
-        int delta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        camera_.Zoom(delta * 30);
+        if (!cameraLocked_) {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+            std::lock_guard<std::mutex> lock(dataMutex_);
+            camera_.Zoom(delta * 30);
+        }
         return 0;
     }
     case WM_KEYDOWN: {
         return 0;
     }
+    case WM_DRAWITEM: {
+        DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
+        if (dis->CtlID == IDC_TEAMCOLOR) {
+            HBRUSH brush = CreateSolidBrush(teamColor_);
+            FillRect(dis->hDC, &dis->rcItem, brush);
+            DeleteObject(brush);
+            DrawEdge(dis->hDC, &dis->rcItem, EDGE_SUNKEN, BF_RECT);
+        }
+        return TRUE;
+    }
     case WM_COMMAND: {
         int id = LOWORD(wParam);
+        int code = HIWORD(wParam);
         switch (id) {
             case IDC_GRID:       showGrid_       = (SendMessage(chkGrid_, BM_GETCHECK, 0, 0) == BST_CHECKED); break;
             case IDC_PARTICLES:  showParticles_  = (SendMessage(chkParticles_, BM_GETCHECK, 0, 0) == BST_CHECKED); break;
             case IDC_RIBBONS:    showRibbons_    = (SendMessage(chkRibbons_, BM_GETCHECK, 0, 0) == BST_CHECKED); break;
             case IDC_COLLISIONS: showCollisions_ = (SendMessage(chkCollisions_, BM_GETCHECK, 0, 0) == BST_CHECKED); break;
+            case IDC_TEAMCOLOR: {
+                CHOOSECOLORW cc = {};
+                static COLORREF customColors[16] = {};
+                cc.lStructSize = sizeof(cc);
+                cc.hwndOwner = hwnd_;
+                cc.rgbResult = teamColor_;
+                cc.lpCustColors = customColors;
+                cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+                if (ChooseColorW(&cc)) {
+                    teamColor_ = cc.rgbResult;
+                    UpdateTeamColorTextures();
+                    InvalidateRect(btnTeamColor_, nullptr, TRUE);
+                }
+                break;
+            }
+            case IDC_CAMERA: {
+                if (code == CBN_SELCHANGE) {
+                    int sel = (int)SendMessageW(cmbCamera_, CB_GETCURSEL, 0, 0);
+                    if (sel == 0) {
+                        // Free Camera — no action, user controls camera
+                        cameraLocked_ = false;
+                    } else {
+                        int idx = sel - 1;
+                        std::lock_guard<std::mutex> lock(dataMutex_);
+                        if (idx >= 0 && idx < (int)cameraPresets_.size()) {
+                            auto& p = cameraPresets_[idx];
+                            camera_.SetPitch(p.pitch);
+                            camera_.SetYaw(p.yaw);
+                            camera_.SetDistance(p.distance);
+                            camera_.SetTarget(p.target.x, p.target.y, p.target.z);
+                            cameraLocked_ = p.isLive;
+                        }
+                    }
+                }
+                break;
+            }
         }
         return 0;
     }
@@ -1216,12 +1321,10 @@ bool Renderer::InitD3D() {
         D3D11_DEPTH_STENCIL_DESC dd = {};
         dd.DepthEnable = TRUE;
         dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
-        dd.DepthFunc = D3D11_COMPARISON_LESS;  // strict LESS prevents same-depth bleed-through
+        dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;  // WC3 uses LEQUAL
         device_->CreateDepthStencilState(&dd, &dsDefault_);
         dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
         device_->CreateDepthStencilState(&dd, &dsNoWrite_);
-        dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
-        device_->CreateDepthStencilState(&dd, &dsNoWriteLeq_);
         dd.DepthEnable = FALSE;
         device_->CreateDepthStencilState(&dd, &dsDisabled_);
     }
@@ -1250,12 +1353,13 @@ bool Renderer::InitD3D() {
         // Same as alpha test but with depth write off (handled in render)
         device_->CreateBlendState(&bd, &bsAlphaBlend_);
 
-        // Additive (FILTER_ADDITIVE) — Magos: SrcColor + One
-        rt.SrcBlend = D3D11_BLEND_SRC_COLOR;
+        // Additive (FILTER_ADDITIVE) — SrcAlpha + One
+        rt.SrcBlend = D3D11_BLEND_SRC_ALPHA;
         rt.DestBlend = D3D11_BLEND_ONE;
         device_->CreateBlendState(&bd, &bsAdditive_);
 
-        // Add Alpha (FILTER_ADD_ALPHA) — Magos: SrcAlpha + One
+        // Add Alpha (FILTER_ADD_ALPHA) — SrcAlpha + One
+        // out = src.rgb * src.a + dst. Alpha channel controls glow intensity.
         rt.SrcBlend = D3D11_BLEND_SRC_ALPHA;
         rt.DestBlend = D3D11_BLEND_ONE;
         device_->CreateBlendState(&bd, &bsAddAlpha_);
@@ -1291,9 +1395,6 @@ bool Renderer::InitD3D() {
         bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         device_->CreateBuffer(&bd, nullptr, &cbPerFrame_);
-
-        bd.ByteWidth = sizeof(CBLayers);
-        device_->CreateBuffer(&bd, nullptr, &cbLayers_);
     }
 
     // 1x1 white default texture
@@ -1346,15 +1447,15 @@ void Renderer::CleanupD3D() {
     SafeRelease(samplerLinear_);
     SafeRelease(bsModulate2x_); SafeRelease(bsModulate_); SafeRelease(bsAddAlpha_); SafeRelease(bsAdditive_);
     SafeRelease(bsAlphaBlend_); SafeRelease(bsAlphaTest_); SafeRelease(bsOpaque_);
-    SafeRelease(dsDisabled_); SafeRelease(dsNoWriteLeq_); SafeRelease(dsNoWrite_); SafeRelease(dsDefault_);
+    SafeRelease(dsDisabled_); SafeRelease(dsNoWrite_); SafeRelease(dsDefault_);
     SafeRelease(rsNoCull_); SafeRelease(rsDefault_);
-    SafeRelease(cbLayers_); SafeRelease(cbPerFrame_);
+    SafeRelease(cbPerFrame_);
     SafeRelease(gridVB_); SafeRelease(particleVB_); SafeRelease(ribbonVB_);
     SafeRelease(vcCubeVB_); SafeRelease(vcCubeIB_); SafeRelease(vcOutlineVB_);
     SafeRelease(vcFaceTexSRV_); SafeRelease(vcFaceTex_);
     SafeRelease(lineInputLayout_); SafeRelease(linePixelShader_); SafeRelease(lineVertexShader_);
     SafeRelease(inputLayout_);
-    SafeRelease(geosetPixelShader_); SafeRelease(pixelShader_); SafeRelease(vertexShader_);
+    SafeRelease(pixelShader_); SafeRelease(vertexShader_);
     SafeRelease(dsv_); SafeRelease(depthBuffer_); SafeRelease(rtv_);
     SafeRelease(swapChain_); SafeRelease(context_); SafeRelease(device_);
 }
@@ -1396,13 +1497,6 @@ bool Renderer::CreateShaders() {
         };
         device_->CreateInputLayout(layout, 4, vs->GetBufferPointer(), vs->GetBufferSize(), &inputLayout_);
         vs->Release(); ps->Release();
-    }
-    // Geoset pixel shader (Texture2DArray + in-shader layer compositing)
-    {
-        ID3DBlob* ps = CompileShader(g_geosetPixelShaderSrc, "PSGeoset", "ps_5_0");
-        if (!ps) return false;
-        device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &geosetPixelShader_);
-        ps->Release();
     }
     // Line shader
     {
@@ -1584,17 +1678,16 @@ void Renderer::RenderGrid() {
 void Renderer::RenderGeosets() {
     if (gpuGeosets_.empty()) return;
 
-    // Set mesh shader pipeline: VS + geoset PS (Texture2DArray + in-shader compositing)
+    // Multi-pass layer-by-layer rendering (matches WC3 engine)
     context_->IASetInputLayout(inputLayout_);
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context_->VSSetShader(vertexShader_, nullptr, 0);
-    context_->PSSetShader(geosetPixelShader_, nullptr, 0);
+    context_->PSSetShader(pixelShader_, nullptr, 0);
     context_->VSSetConstantBuffers(0, 1, &cbPerFrame_);
-    ID3D11Buffer* psCBs[] = { cbPerFrame_, cbLayers_ };
-    context_->PSSetConstantBuffers(0, 2, psCBs);
+    context_->PSSetConstantBuffers(0, 1, &cbPerFrame_);
     context_->PSSetSamplers(0, 1, &samplerLinear_);
 
-    // Build sort indices: sort by (renderPass, priorityPlane, geosetId)
+    // Sort geosets by (renderPass of layer 0, priorityPlane, geosetId)
     std::vector<int> sortedIdx(gpuGeosets_.size());
     for (int i = 0; i < (int)sortedIdx.size(); ++i) sortedIdx[i] = i;
     std::sort(sortedIdx.begin(), sortedIdx.end(), [&](int a, int b) {
@@ -1611,62 +1704,99 @@ void Renderer::RenderGeosets() {
         return ga.geosetId < gb.geosetId;
     });
 
-    // Snapshot view matrix once per frame
     XMMATRIX view2;
     { std::lock_guard<std::mutex> lock(dataMutex_); view2 = camera_.GetViewMatrix(); }
     float aspect2 = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
     XMMATRIX proj2 = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect2, 1.0f, 10000.0f);
 
-    // 4-bucket render order (Magos style), sorted by priorityPlane within each bucket.
-    // Single draw call per geoset — all layers composited inside the pixel shader.
-    for (int pass = 1; pass <= 4; ++pass) {
-        for (int si : sortedIdx) {
-            auto& geo = gpuGeosets_[si];
-            if (!geo.vb || !geo.ib || geo.indexCount == 0) continue;
+    // Per-layer texture animation lookup
+    auto getTexAnim = [&](int matId, int layerIdx, float& uOff, float& vOff, float& uTile, float& vTile, float& rot) {
+        uOff = vOff = 0; uTile = vTile = 1; rot = 0;
+        int key = matId * 1000 + layerIdx;
+        auto it = matTexAnim_.find(key);
+        if (it != matTexAnim_.end()) {
+            uOff = it->second.uOff; vOff = it->second.vOff;
+            uTile = it->second.uTile; vTile = it->second.vTile;
+            rot = it->second.rotation;
+        }
+    };
 
-            int matId = geo.materialId;
-            GPUMaterial* mat = nullptr;
-            if (matId >= 0 && matId < (int)gpuMaterials_.size())
-                mat = &gpuMaterials_[matId];
+    for (int si : sortedIdx) {
+        auto& geo = gpuGeosets_[si];
+        if (!geo.vb || !geo.ib || geo.indexCount == 0) continue;
 
-            // Render order from layer 0 (base layer determines scene blending;
-            // subsequent layers are composited in-shader on top of the base)
-            int baseFilter = FILTER_NONE;
-            int baseFlags  = 0;
-            if (mat && !mat->cpu.layers.empty()) {
-                baseFilter = mat->cpu.layers[0].filterMode;
-                baseFlags  = mat->cpu.layers[0].flags;
+        int matId = geo.materialId;
+        GPUMaterial* mat = nullptr;
+        if (matId >= 0 && matId < (int)gpuMaterials_.size())
+            mat = &gpuMaterials_[matId];
+
+        float geoAlpha = geo.geosetAlpha;
+        if (geoAlpha < 0.01f) continue;
+        XMFLOAT3 geoColor = geo.geosetColor;
+
+        int numLayers = mat ? (int)mat->cpu.layers.size() : 0;
+        if (numLayers <= 0) numLayers = 1;
+
+        bool anyLayerThisPass = false;
+        for (int li = 0; li < numLayers; ++li) {
+            int layerFilter = FILTER_NONE;
+            int layerFlags  = 0;
+            float layerAlpha = 1.0f;
+            int layerTexId  = -1;
+
+            if (mat && li < (int)mat->cpu.layers.size()) {
+                const auto& L = mat->cpu.layers[li];
+                layerFilter = L.filterMode;
+                layerFlags  = L.flags;
+                layerAlpha  = L.alpha;
+                layerTexId  = L.textureId;
             }
-            int matRenderOrder = GetRenderOrder(baseFilter);
-            if (matRenderOrder != pass) continue;
 
-            float geoAlpha = geo.geosetAlpha;
-            if (geoAlpha < 0.01f) continue;
-            XMFLOAT3 geoColor = geo.geosetColor;
+            // Each layer draws in the pass matching its own filterMode
+            // if (GetRenderOrder(layerFilter) != pass) continue;
 
-            // Bind vertex/index buffers
-            UINT stride = sizeof(Vertex), offset = 0;
-            context_->IASetVertexBuffers(0, 1, &geo.vb, &stride, &offset);
-            context_->IASetIndexBuffer(geo.ib, DXGI_FORMAT_R32_UINT, 0);
+            // Bind VB/IB on first layer drawn this pass
+            if (!anyLayerThisPass) {
+                UINT stride = sizeof(Vertex), offset = 0;
+                context_->IASetVertexBuffers(0, 1, &geo.vb, &stride, &offset);
+                context_->IASetIndexBuffer(geo.ib, DXGI_FORMAT_R32_UINT, 0);
+                anyLayerThisPass = true;
+            }
 
-            // Hardware blend/depth for the *base* layer only.
-            // In-shader compositing handles all subsequent layers.
-            ApplyFilterMode(baseFilter, baseFlags);
+            // Apply this layer's blend/depth state
+            // ApplyFilterMode sets depth write ON for None/Transparent,
+            // OFF for Blend/Additive/AddAlpha/Modulate/Modulate2x.
+            // This is correct for all layers — an opaque or alpha-tested
+            // layer should write depth even if it's not layer 0.
+            ApplyFilterMode(layerFilter, layerFlags);
 
-            // Force alpha blend when geoset is fading (0 < alpha < 1)
-            if (geoAlpha < 0.99f) {
+            // Combined opacity (geoset visibility * layer opacity)
+            float combinedAlpha = geoAlpha * layerAlpha;
+            if (combinedAlpha < 0.004f) continue;  // skip invisible layers
+
+            // Force alpha blend when combined alpha < 1
+            if (combinedAlpha < 0.99f && layerFilter <= FILTER_TRANSPARENT) {
                 float blend[] = {0,0,0,0};
                 context_->OMSetBlendState(bsAlphaBlend_, blend, 0xFFFFFFFF);
                 context_->OMSetDepthStencilState(dsNoWrite_, 0);
             }
 
-            // Update CBPerFrame (no per-layer state — PS handles that via CBLayers)
+            // Alpha test threshold — always active regardless of opacity.
+            // The shader tests against texture alpha (not final alpha),
+            // so the threshold works correctly at any opacity level.
+            float alphaRef = 0.0f;
+            if (layerFilter == FILTER_TRANSPARENT) alphaRef = 0.75f;
+            else if (layerFilter >= FILTER_MODULATE) alphaRef = 0.02f;
+
+            // Texture animation (per-layer)
+            float uOff, vOff, uTile, vTile, texRot;
+            getTexAnim(geo.materialId, li, uOff, vOff, uTile, vTile, texRot);
+
+            // Update constant buffer
             {
                 D3D11_MAPPED_SUBRESOURCE mapped;
                 context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
                 CBPerFrame* cb = (CBPerFrame*)mapped.pData;
-                // Skinned meshes: identity (vertices already transformed by CPU skinning)
-                // Unskinned meshes: node world transform so they animate with their node
                 cb->world      = XMMatrixTranspose(geo.hasSkinning ? XMMatrixIdentity() : geo.worldMatrix);
                 cb->view       = XMMatrixTranspose(view2);
                 cb->projection = XMMatrixTranspose(proj2);
@@ -1674,52 +1804,24 @@ void Renderer::RenderGeosets() {
                 XMVECTOR ld = XMVector3Normalize(XMVectorSet(0.0f, -0.3f, -0.8f, 0.0f));
                 XMStoreFloat4(&cb->lightDir, ld);
                 cb->lightColor    = {0.50f, 0.50f, 0.48f, 1.0f};
-                cb->ambientColor  = {0.60f, 0.60f, 0.65f, 0.0f};
-                cb->extraParams   = {geoAlpha, geoColor.x, geoColor.y, geoColor.z};
-                cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};   // unused in geoset PS
-                cb->materialFlags = {0.0f, 0.0f, 0.0f, 0.0f};   // unused in geoset PS
+                cb->ambientColor  = {0.60f, 0.60f, 0.65f, alphaRef};
+                cb->extraParams   = {combinedAlpha, geoColor.x, geoColor.y, geoColor.z};
+                cb->texAnimParams = {uOff, vOff, uTile, vTile};
+                cb->materialFlags = {
+                    (layerFlags & MAT_UNSHADED)       ? 1.0f : 0.0f,
+                    (layerFlags & MAT_CONSTANT_COLOR) ? 1.0f : 0.0f,
+                    texRot, 0.0f
+                };
                 context_->Unmap(cbPerFrame_, 0);
             }
 
-            // Update CBLayers — per-material layer descriptors for in-shader compositing
-            {
-                D3D11_MAPPED_SUBRESOURCE mapped;
-                context_->Map(cbLayers_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-                CBLayers* cl = (CBLayers*)mapped.pData;
-                memset(cl, 0, sizeof(CBLayers));
-
-                int n = 0;
-                if (mat) n = (int)mat->cpu.layers.size();
-                if (n > MAX_LAYERS) n = MAX_LAYERS;
-                cl->layerCount[0] = n;
-
-                // Per-material texture animation (applied to all layers of this material)
-                float uOff = 0, vOff = 0, uTile = 1, vTile = 1;
-                auto taIt = matTexAnim_.find(geo.materialId);
-                if (taIt != matTexAnim_.end()) {
-                    uOff = taIt->second.uOff; vOff = taIt->second.vOff;
-                    uTile = taIt->second.uTile; vTile = taIt->second.vTile;
-                }
-
-                for (int li = 0; li < n; ++li) {
-                    const auto& L = mat->cpu.layers[li];
-                    cl->layerParams[li]  = {
-                        (float)L.filterMode,
-                        L.alpha,
-                        (L.flags & MAT_UNSHADED)       ? 1.0f : 0.0f,
-                        (L.flags & MAT_CONSTANT_COLOR) ? 1.0f : 0.0f
-                    };
-                    cl->layerTexAnim[li] = { uOff, vOff, uTile, vTile };
-                }
-                context_->Unmap(cbLayers_, 0);
-            }
-
-            // Bind per-material Texture2DArray (or default white if none)
+            // Bind this layer's texture
             ID3D11ShaderResourceView* srv = defaultTexSRV_;
-            if (mat && mat->texArraySRV) srv = mat->texArraySRV;
+            if (layerTexId >= 0 && gpuTextures_.count(layerTexId))
+                srv = gpuTextures_[layerTexId].srv;
+            if (!srv) srv = defaultTexSRV_;
             context_->PSSetShaderResources(0, 1, &srv);
 
-            // Single draw call — all layers composited inside PSGeoset
             context_->DrawIndexed(geo.indexCount, 0, 0);
         }
     }

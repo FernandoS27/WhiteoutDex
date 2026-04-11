@@ -57,9 +57,10 @@ struct ParticleEmitterConfig {
     int tailDecayStart=0, tailDecayEnd=0, tailDecayRepeat=1;
 
     // Flags
-    bool modelSpace = false;
-    bool xyQuad     = false;
-    bool sortZ      = false;
+    bool modelSpace  = false;
+    bool xyQuad      = false;
+    bool sortZ       = false;
+    bool lineEmitter = false;
 };
 
 // ============================================================================
@@ -70,7 +71,8 @@ struct ParticleEmitterState {
     float emissionRate = 0;
     float speed        = 0;
     float variation    = 0;
-    float coneAngle    = 0;    // degrees
+    float coneAngle    = 0;    // latitude, degrees
+    float longitude    = 180; // longitude, degrees (0 = line emitter)
     float gravity      = 0;
     float width        = 0;
     float length       = 0;
@@ -114,7 +116,7 @@ public:
                                int& outStart, int& outCount) const;
 
 private:
-    void SpawnParticle(ParticleEmitter& em);
+    void SpawnParticle(ParticleEmitter& em, float dt);
 
     static void Interpolate3Seg(const ParticleEmitterConfig& cfg, float t,
                                  XMFLOAT3& outColor, float& outAlpha, float& outScale);

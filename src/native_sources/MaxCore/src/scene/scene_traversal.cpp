@@ -1,5 +1,6 @@
 // MaxCore — Scene traversal implementation
 #include "scene_traversal.h"
+#include "../util/max_helpers.h"
 
 namespace core {
 
@@ -53,6 +54,9 @@ void SceneTraversal::visitNode(INode* node, int parentIndex,
     irn.parentIndex = parentIndex;
     irn.worldTM = node->GetNodeTM(0);
     irn.pivotPoint = irn.worldTM.GetTrans();
+
+    irn.nodeFlags = collectNodeFlags(node);
+
     result.irNodes.push_back(std::move(irn));
 
     // Recurse children

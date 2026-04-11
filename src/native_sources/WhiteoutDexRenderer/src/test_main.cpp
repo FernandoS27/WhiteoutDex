@@ -97,6 +97,8 @@ int main(int argc, char* argv[]) {
                 timeMs = sequences[0].startMs + (elapsed % duration);
         }
 
+        auto camPos = renderer.GetCameraPosition();
+        adapter.SetCameraPosition(camPos.x, camPos.y, camPos.z);
         auto frameState = adapter.Evaluate(timeMs);
         renderer.ApplyFrameState(frameState, timeMs);
 

@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include "mdx_model_adapter.h"
+#include <cmath>
 #include <whiteout/textures/blp/blp.h>
 #include <whiteout/textures/dds/parser.h>
 #include <whiteout/textures/tga/parser.h>
@@ -150,9 +151,6 @@ TextureData MdxModelAdapter::GenerateTeamColorTexture(int textureId,
     td.height = 4;
     td.rgba.resize(4 * 4 * 4);
     uint8_t r = 255, g = 0, b = 0, a = 255;
-    if (replaceableId == 2) { // TeamGlow
-        r = 255; g = 255; b = 255;
-    }
     for (int j = 0; j < 16; j++) {
         td.rgba[j * 4 + 0] = r;
         td.rgba[j * 4 + 1] = g;
@@ -369,7 +367,8 @@ std::vector<ParticleEmitterConfig> MdxModelAdapter::GetParticleConfigs() {
         cfg.midTime    = pe.time;
 
         // Head/Tail
-        cfg.particleType = (int)pe.headOrTail;
+        // MDX: 0=Head, 1=Tail, 2=Both → Renderer: 1=Head, 2=Tail, 3=Both
+        cfg.particleType = (int)pe.headOrTail + 1;
         cfg.tailLength   = pe.tailLength;
 
         // UV animation frames (headInterval/headDecayInterval/tailInterval/tailDecayInterval)
@@ -388,10 +387,11 @@ std::vector<ParticleEmitterConfig> MdxModelAdapter::GetParticleConfigs() {
 
         // Flags from node
         u32 nf = (u32)pe.node.flags;
-        cfg.modelSpace = (nf & (u32)Node::NodeFlag::ModelSpace) != 0;
-        cfg.xyQuad     = (nf & (u32)Node::NodeFlag::XYQuad)     != 0;
-        cfg.sortZ      = (nf & (u32)Node::NodeFlag::SortPrimitives) != 0;
-        cfg.unshaded   = (nf & (u32)Node::NodeFlag::Unshaded)   != 0;
+        cfg.modelSpace  = (nf & (u32)Node::NodeFlag::ModelSpace) != 0;
+        cfg.xyQuad      = (nf & (u32)Node::NodeFlag::XYQuad)     != 0;
+        cfg.sortZ       = (nf & (u32)Node::NodeFlag::SortPrimitives) != 0;
+        cfg.unshaded    = (nf & (u32)Node::NodeFlag::Unshaded)   != 0;
+        cfg.lineEmitter = (nf & (u32)Node::NodeFlag::LineEmitter) != 0;
 
         result.push_back(cfg);
     }
@@ -472,17 +472,39 @@ void MdxModelAdapter::SetActiveSequence(int sequenceIndex) {
 }
 
 // ============================================================================
+// SetCameraPosition — store camera position for billboard evaluation
+// ============================================================================
+
+void MdxModelAdapter::SetCameraPosition(float x, float y, float z) {
+    cameraPos_ = { x, y, z };
+}
+
+// ============================================================================
 // Evaluate — Per-frame animation evaluation
 // ============================================================================
 
 FrameState MdxModelAdapter::Evaluate(int timeMs) {
     FrameState fs;
 
-    // Evaluate bone hierarchy
+    // Evaluate bone hierarchy (pass camera position for billboard nodes)
     std::vector<XMMATRIX> boneWorld, allNodes;
     hierarchy_.Evaluate(timeMs, seqStart_, seqEnd_,
-                        model_.globalSequences, boneWorld, allNodes);
+                        model_.globalSequences, boneWorld, allNodes,
+                        &cameraPos_);
     fs.boneWorldMatrices = std::move(boneWorld);
+
+    // Helper: compute effective time for a track, handling global sequences.
+    // If the track uses a globalSequenceId, wraps timeMs by the global sequence duration.
+    auto effectiveTime = [&](u32 gsId) -> std::tuple<int, int, int> {
+        if (gsId != 0xFFFFFFFF && gsId < (u32)model_.globalSequences.size()) {
+            u32 duration = model_.globalSequences[gsId];
+            if (duration > 0) {
+                int t = (int)std::fmod((float)timeMs, (float)duration);
+                return {t, 0, (int)duration};
+            }
+        }
+        return {timeMs, seqStart_, seqEnd_};
+    };
 
     // GeosetAnimation evaluation
     int geosetCount = (int)model_.geosets.size();
@@ -493,16 +515,34 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         int gid = (int)ga.geosetId;
         if (gid < 0 || gid >= geosetCount) continue;
 
-        float alpha = EvaluateTrackF32(ga.alphaTracks, timeMs, seqStart_, seqEnd_, ga.alpha);
-        fs.geosetAlphas[gid] = alpha;
+        {
+            auto [t, s, e] = effectiveTime(ga.alphaTracks.globalSequenceId);
+            fs.geosetAlphas[gid] = EvaluateTrackF32(ga.alphaTracks, t, s, e, ga.alpha);
+        }
 
         if (ga.colorTracks.isUsed) {
-            Vector3f color = EvaluateTrackVec3(ga.colorTracks, timeMs, seqStart_, seqEnd_, ga.color);
-            // MDX color is BGR — swap to RGB
+            auto [t, s, e] = effectiveTime(ga.colorTracks.globalSequenceId);
+            Vector3f color = EvaluateTrackVec3(ga.colorTracks, t, s, e, ga.color);
             fs.geosetColors[gid] = {color.z, color.y, color.x};
         } else {
-            // Static color, with BGR→RGB swap
             fs.geosetColors[gid] = {ga.color.z, ga.color.y, ga.color.x};
+        }
+    }
+
+    // Layer alpha (KMTA) evaluation — per material layer
+    for (int mi = 0; mi < (int)model_.materials.size(); mi++) {
+        const auto& mat = model_.materials[mi];
+        for (int li = 0; li < (int)mat.layers.size(); li++) {
+            const auto& layer = mat.layers[li];
+            if (!layer.alphaTracks.isUsed) continue;
+
+            auto [t, s, e] = effectiveTime(layer.alphaTracks.globalSequenceId);
+            float alpha = EvaluateTrackF32(layer.alphaTracks, t, s, e, layer.alpha);
+            FrameState::LayerAlphaState las;
+            las.materialId = mi;
+            las.layerIndex = li;
+            las.alpha = alpha;
+            fs.layerAlphas.push_back(las);
         }
     }
 
@@ -520,14 +560,26 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         ps.transform = (nodeIdx >= 0 && nodeIdx < (int)allNodes.size())
                         ? allNodes[nodeIdx] : XMMatrixIdentity();
 
-        ps.emissionRate = EvaluateTrackF32(pe.emissionRateTracks, timeMs, seqStart_, seqEnd_, pe.emissionRate);
-        ps.speed        = EvaluateTrackF32(pe.speedTracks,        timeMs, seqStart_, seqEnd_, pe.speed);
-        ps.variation    = EvaluateTrackF32(pe.variationTracks,    timeMs, seqStart_, seqEnd_, pe.variation);
-        ps.coneAngle    = EvaluateTrackF32(pe.latitudeTracks,     timeMs, seqStart_, seqEnd_, pe.latitude);
-        ps.gravity      = EvaluateTrackF32(pe.gravityTracks,      timeMs, seqStart_, seqEnd_, pe.gravity);
-        ps.width        = EvaluateTrackF32(pe.widthTracks,        timeMs, seqStart_, seqEnd_, pe.width);
-        ps.length       = EvaluateTrackF32(pe.lengthTracks,       timeMs, seqStart_, seqEnd_, pe.length);
-        ps.visibility   = EvaluateTrackF32(pe.visibilityTracks,   timeMs, seqStart_, seqEnd_, 1.0f);
+        { auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
+          ps.emissionRate = EvaluateTrackF32(pe.emissionRateTracks, t, s, e, pe.emissionRate); }
+        { auto [t,s,e] = effectiveTime(pe.speedTracks.globalSequenceId);
+          ps.speed        = EvaluateTrackF32(pe.speedTracks, t, s, e, pe.speed); }
+        { auto [t,s,e] = effectiveTime(pe.variationTracks.globalSequenceId);
+          ps.variation    = EvaluateTrackF32(pe.variationTracks, t, s, e, pe.variation); }
+        { auto [t,s,e] = effectiveTime(pe.latitudeTracks.globalSequenceId);
+          ps.coneAngle    = EvaluateTrackF32(pe.latitudeTracks, t, s, e, pe.latitude); }
+        { auto [t,s,e] = effectiveTime(pe.gravityTracks.globalSequenceId);
+          ps.gravity      = EvaluateTrackF32(pe.gravityTracks, t, s, e, pe.gravity); }
+        { auto [t,s,e] = effectiveTime(pe.widthTracks.globalSequenceId);
+          ps.width        = EvaluateTrackF32(pe.widthTracks, t, s, e, pe.width); }
+        { auto [t,s,e] = effectiveTime(pe.lengthTracks.globalSequenceId);
+          ps.length       = EvaluateTrackF32(pe.lengthTracks, t, s, e, pe.length); }
+        { auto [t,s,e] = effectiveTime(pe.visibilityTracks.globalSequenceId);
+          ps.visibility   = EvaluateTrackF32(pe.visibilityTracks, t, s, e, 1.0f); }
+
+        // PE2 has no longitude field — it's implicitly 0 for line emitters, 180 otherwise
+        bool isLineEmitter = ((u32)pe.node.flags & (u32)Node::NodeFlag::LineEmitter) != 0;
+        ps.longitude = isLineEmitter ? 0.0f : 180.0f;
     }
 
     // Ribbon emitter per-frame state
@@ -542,14 +594,20 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         rs.transform = (nodeIdx >= 0 && nodeIdx < (int)allNodes.size())
                         ? allNodes[nodeIdx] : XMMatrixIdentity();
 
-        rs.above      = EvaluateTrackF32(rb.heightAboveTracks, timeMs, seqStart_, seqEnd_, rb.heightAbove);
-        rs.below      = EvaluateTrackF32(rb.heightBelowTracks, timeMs, seqStart_, seqEnd_, rb.heightBelow);
-        rs.alpha      = EvaluateTrackF32(rb.alphaTracks,       timeMs, seqStart_, seqEnd_, rb.alpha);
-        rs.visibility = EvaluateTrackF32(rb.visibilityTracks,  timeMs, seqStart_, seqEnd_, 1.0f);
-        rs.slot       = (int)EvaluateTrackU32(rb.textureSlotTracks, timeMs, seqStart_, seqEnd_, rb.textureSlot);
+        { auto [t,s,e] = effectiveTime(rb.heightAboveTracks.globalSequenceId);
+          rs.above      = EvaluateTrackF32(rb.heightAboveTracks, t, s, e, rb.heightAbove); }
+        { auto [t,s,e] = effectiveTime(rb.heightBelowTracks.globalSequenceId);
+          rs.below      = EvaluateTrackF32(rb.heightBelowTracks, t, s, e, rb.heightBelow); }
+        { auto [t,s,e] = effectiveTime(rb.alphaTracks.globalSequenceId);
+          rs.alpha      = EvaluateTrackF32(rb.alphaTracks, t, s, e, rb.alpha); }
+        { auto [t,s,e] = effectiveTime(rb.visibilityTracks.globalSequenceId);
+          rs.visibility = EvaluateTrackF32(rb.visibilityTracks, t, s, e, 1.0f); }
+        { auto [t,s,e] = effectiveTime(rb.textureSlotTracks.globalSequenceId);
+          rs.slot       = (int)EvaluateTrackU32(rb.textureSlotTracks, t, s, e, rb.textureSlot); }
 
         if (rb.colorTracks.isUsed) {
-            Vector3f c = EvaluateTrackVec3(rb.colorTracks, timeMs, seqStart_, seqEnd_, rb.color);
+            auto [t,s,e] = effectiveTime(rb.colorTracks.globalSequenceId);
+            Vector3f c = EvaluateTrackVec3(rb.colorTracks, t, s, e, rb.color);
             rs.color = {c.x, c.y, c.z};
         } else {
             rs.color = {rb.color.x, rb.color.y, rb.color.z};
@@ -570,19 +628,28 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         const auto& ta = model_.textureAnimations[i];
         // Find which materials reference this textureAnimation
         for (int mi = 0; mi < (int)model_.materials.size(); mi++) {
-            for (const auto& layer : model_.materials[mi].layers) {
+            for (int li = 0; li < (int)model_.materials[mi].layers.size(); li++) {
+                const auto& layer = model_.materials[mi].layers[li];
                 if ((int)layer.textureAnimationId == i) {
                     FrameState::TexAnimState tas;
                     tas.materialId = mi;
+                    tas.layerIndex = li;
 
-                    Vector3f trans = EvaluateTrackVec3(ta.translationTracks, timeMs,
-                                                       seqStart_, seqEnd_, {0, 0, 0});
-                    Vector3f scale = EvaluateTrackVec3(ta.scalingTracks, timeMs,
-                                                       seqStart_, seqEnd_, {1, 1, 1});
+                    auto [tt, ts, te] = effectiveTime(ta.translationTracks.globalSequenceId);
+                    Vector3f trans = EvaluateTrackVec3(ta.translationTracks, tt, ts, te, {0, 0, 0});
+                    auto [st, ss, se] = effectiveTime(ta.scalingTracks.globalSequenceId);
+                    Vector3f scale = EvaluateTrackVec3(ta.scalingTracks, st, ss, se, {1, 1, 1});
                     tas.uOff  = trans.x;
                     tas.vOff  = trans.y;
                     tas.uTile = scale.x;
                     tas.vTile = scale.y;
+
+                    // Evaluate rotation track (Z-axis rotation in UV space)
+                    auto [rt, rs, re] = effectiveTime(ta.rotationTracks.globalSequenceId);
+                    Quaternion rot = EvaluateTrackQuat(ta.rotationTracks, rt, rs, re,
+                                                      Quaternion(0, 0, 0, 1));
+                    // Extract Z-axis rotation angle from quaternion
+                    tas.rotation = 2.0f * std::atan2(rot.z, rot.w);
                     fs.texAnims.push_back(tas);
                     break; // first matching layer per material
                 }
@@ -604,6 +671,35 @@ std::vector<IModelSource::SequenceInfo> MdxModelAdapter::GetSequences() {
         result.push_back({seq.name, (int)seq.intervalStart, (int)seq.intervalEnd});
     }
     return result;
+}
+
+// ============================================================================
+// GetCameraPresets — extract Camera objects from MDX model
+// ============================================================================
+
+std::vector<CameraPreset> MdxModelAdapter::GetCameraPresets() const {
+    std::vector<CameraPreset> presets;
+    for (const auto& cam : model_.cameras) {
+        auto& pos = cam.position;
+        auto& tgt = cam.targetPosition;
+        float dx = pos.x - tgt.x, dy = pos.y - tgt.y, dz = pos.z - tgt.z;
+        float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+        if (dist < 0.01f) dist = 100.0f;
+        float invD = 1.0f / dist;
+        float pitch = std::asin(std::clamp(dz * invD, -1.0f, 1.0f));
+        float yaw = std::atan2(dy * invD, dx * invD);
+
+        CameraPreset cp;
+        // Convert std::string name to wstring
+        cp.name = std::wstring(cam.name.begin(), cam.name.end());
+        cp.pitch = pitch;
+        cp.yaw = yaw;
+        cp.distance = dist;
+        cp.target = {tgt.x, tgt.y, tgt.z};
+        cp.isLive = false;
+        presets.push_back(cp);
+    }
+    return presets;
 }
 
 } // namespace WhiteoutDex

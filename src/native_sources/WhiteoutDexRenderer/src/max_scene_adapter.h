@@ -24,6 +24,7 @@
 #include <functional>
 
 #include "renderer/model_source.h"
+#include "renderer/renderer.h"
 
 // ============================================================================
 // Known ClassIDs for WhiteoutDex custom MaxScript plugins
@@ -108,6 +109,15 @@ public:
     // Collect scene data (call once on main thread before Get*() calls)
     void CollectScene();
 
+    // Re-read material properties and textures from the scene.
+    // Returns true if anything changed and the renderer should be updated.
+    struct MaterialRefreshResult {
+        std::vector<MaterialData> materials;
+        std::vector<TextureData>  textures;
+        bool changed = false;
+    };
+    MaterialRefreshResult RefreshMaterials();
+
     // IModelSource interface
     std::vector<MeshData>              GetMeshes()          override;
     std::vector<TextureData>           GetTextures()        override;
@@ -123,6 +133,9 @@ public:
     FrameState Evaluate(int timeMs) override;
 
     std::vector<SequenceInfo> GetSequences() override;
+
+    // Camera presets from scene (Max cameras + "Active Viewport")
+    std::vector<WhiteoutDex::CameraPreset> GetCameraPresets();
 
 private:
     // Collection phases
@@ -174,6 +187,17 @@ private:
     std::unordered_map<Mtl*, int>         mtlToId_;
     int nextTexId_ = 0;
     int nextMatId_ = 0;
+
+    // Material change detection: snapshot of per-material properties
+    struct MaterialSnapshot {
+        int filterMode = 0;
+        int flags = 0;
+        int priorityPlane = 0;
+        int sortOrder = 0;
+        int replaceableTexture = 0;
+        std::wstring texturePath;
+    };
+    std::unordered_map<int, MaterialSnapshot> matSnapshots_;  // materialId → snapshot
 };
 
 } // namespace WhiteoutDex

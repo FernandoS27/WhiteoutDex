@@ -48,7 +48,7 @@ void ParticleSystem::Simulate(float dt) {
         if (em.config.squirt && !em.squirtDone) {
             int numToEmit = (int)em.state.emissionRate;
             for (int i = 0; i < numToEmit; ++i)
-                SpawnParticle(em);
+                SpawnParticle(em, dt);
             em.squirtDone = true;
         }
         // Normal emission
@@ -56,7 +56,7 @@ void ParticleSystem::Simulate(float dt) {
             em.accumEmission += em.state.emissionRate * dt;
             int numEmitted = 0;
             while (em.accumEmission >= 1.0f) {
-                SpawnParticle(em);
+                SpawnParticle(em, dt);
                 em.accumEmission -= 1.0f;
                 ++numEmitted;
             }
@@ -160,16 +160,6 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
                 XMStoreFloat3(&worldPos, wPos);
             }
 
-            // Billboard right/up
-            XMFLOAT3 right, up;
-            if (em.config.xyQuad) {
-                right = {1, 0, 0};
-                up    = {0, 1, 0};
-            } else {
-                right = camRight;
-                up    = camUp;
-            }
-
             float halfScale = scale * 0.5f;
             XMFLOAT3 normal = camFwd;
 
@@ -179,14 +169,24 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
                 ComputeUV(em.config, lifeFactor, true, u0, v0, u1, v1);
 
                 XMFLOAT3 corners[4];
-                for (int c = 0; c < 4; c++) {
-                    float sx = (c == 0 || c == 3) ? -halfScale : halfScale;
-                    float sy = (c == 0 || c == 1) ? -halfScale : halfScale;
-                    corners[c] = {
-                        worldPos.x + right.x * sx + up.x * sy,
-                        worldPos.y + right.y * sx + up.y * sy,
-                        worldPos.z + right.z * sx + up.z * sy
-                    };
+                if (em.config.xyQuad) {
+                    // XY-aligned quads: axis-aligned in local space, not camera-facing
+                    // RE uses p.m_position (local coords) directly with +/-halfScale on X/Y
+                    XMFLOAT3 localP = p.position;
+                    corners[0] = {localP.x - halfScale, localP.y - halfScale, localP.z};
+                    corners[1] = {localP.x + halfScale, localP.y - halfScale, localP.z};
+                    corners[2] = {localP.x + halfScale, localP.y + halfScale, localP.z};
+                    corners[3] = {localP.x - halfScale, localP.y + halfScale, localP.z};
+                } else {
+                    for (int c = 0; c < 4; c++) {
+                        float sx = (c == 0 || c == 3) ? -halfScale : halfScale;
+                        float sy = (c == 0 || c == 1) ? -halfScale : halfScale;
+                        corners[c] = {
+                            worldPos.x + camRight.x * sx + camUp.x * sy,
+                            worldPos.y + camRight.y * sx + camUp.y * sy,
+                            worldPos.z + camRight.z * sx + camUp.z * sy
+                        };
+                    }
                 }
 
                 outVerts.push_back({corners[0], normal, vertColor, {u0, v1}});
@@ -224,17 +224,17 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
                     worldPos.z - tailDir.z * em.config.tailLength
                 };
 
-                // Compute perpendicular for tail width
+                // Compute perpendicular for tail width (cross camera up with tail direction)
                 XMFLOAT3 tailRight;
-                float cx = up.y * tailDir.z - up.z * tailDir.y;
-                float cy = up.z * tailDir.x - up.x * tailDir.z;
-                float cz = up.x * tailDir.y - up.y * tailDir.x;
+                float cx = camUp.y * tailDir.z - camUp.z * tailDir.y;
+                float cy = camUp.z * tailDir.x - camUp.x * tailDir.z;
+                float cz = camUp.x * tailDir.y - camUp.y * tailDir.x;
                 float cLen = sqrtf(cx*cx + cy*cy + cz*cz);
                 if (cLen > 1e-6f) {
                     float inv = 1.0f / cLen;
                     tailRight = {cx * inv, cy * inv, cz * inv};
                 } else {
-                    tailRight = right;
+                    tailRight = camRight;
                 }
 
                 XMFLOAT3 corners[4];
@@ -314,11 +314,15 @@ bool ParticleSystem::GetEmitterVertexRange(int emitterId, int totalVerts,
 // Private Helpers
 // ============================================================================
 
-void ParticleSystem::SpawnParticle(ParticleEmitter& em) {
+void ParticleSystem::SpawnParticle(ParticleEmitter& em, float dt) {
     Particle p;
     auto& cfg = em.config;
     auto& st = em.state;
 
+    constexpr float kPi = 3.14159265f;
+    constexpr float kDegToRad = kPi / 180.0f;
+
+    // Spawn position: random within width x length rectangle in XY plane
     float hw = st.width * 0.5f;
     float hl = st.length * 0.5f;
     XMFLOAT3 localPos = {RandF(-hw, hw), RandF(-hl, hl), 0};
@@ -330,30 +334,43 @@ void ParticleSystem::SpawnParticle(ParticleEmitter& em) {
         p.position = localPos;
     }
 
-    float latRad = st.coneAngle * (3.14159265f / 180.0f);
-    float randLat = RandF(0, latRad);
-    float randLon = RandF(0, 6.28318530f);
-
-    float sinLat = sinf(randLat), cosLat = cosf(randLat);
-    float sinLon = sinf(randLon), cosLon = cosf(randLon);
-
-    XMFLOAT3 localDir = {sinLat * cosLon, sinLat * sinLon, cosLat};
-
+    // Emission direction: sequential Y/Z rotation matching RE pseudocode
+    // Start along +Z, rotate by latitude around Y, then by longitude around Z
     float spd = st.speed * (1.0f + RandF(-st.variation, st.variation));
+    float rotLat = st.coneAngle * kDegToRad * RandF(-1.0f, 1.0f);
+    float sinLat = sinf(rotLat), cosLat = cosf(rotLat);
+
+    XMFLOAT3 localDir;
+    if (cfg.lineEmitter) {
+        // Line emitter: longitude = 0, no Y component
+        localDir = {spd * sinLat, 0.0f, spd * cosLat};
+    } else {
+        float rotLon = st.longitude * kDegToRad * RandF(-1.0f, 1.0f);
+        float sinLon = sinf(rotLon), cosLon = cosf(rotLon);
+        localDir = {spd * sinLat * cosLon, spd * sinLat * sinLon, spd * cosLat};
+    }
 
     if (!cfg.modelSpace) {
         XMVECTOR dirV = XMVector3TransformNormal(XMLoadFloat3(&localDir), st.transform);
-        dirV = XMVector3Normalize(dirV);
-        dirV = XMVectorScale(dirV, spd);
         XMStoreFloat3(&p.velocity, dirV);
     } else {
-        XMVECTOR dirV = XMVector3Normalize(XMLoadFloat3(&localDir));
-        dirV = XMVectorScale(dirV, spd);
-        XMStoreFloat3(&p.velocity, dirV);
+        p.velocity = localDir;
     }
 
     p.lifeSpan = cfg.lifeSpan;
     p.initLife = cfg.lifeSpan;
+
+    // Sub-frame age randomization: distribute births within the time step
+    // RE sets p.age = elapsed * random[0,1), pre-advancing position/velocity
+    float subAge = dt * RandF(0.0f, 1.0f);
+    if (subAge > 0) {
+        float az = -(em.state.gravity);
+        p.position.x += p.velocity.x * subAge;
+        p.position.y += p.velocity.y * subAge;
+        p.position.z += p.velocity.z * subAge + 0.5f * az * subAge * subAge;
+        p.velocity.z += az * subAge;
+        p.lifeSpan   -= subAge;
+    }
 
     em.particles.push_back(p);
 }

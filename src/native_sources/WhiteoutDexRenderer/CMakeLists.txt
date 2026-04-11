@@ -31,6 +31,7 @@ target_link_libraries(WhiteoutDexRendererLib PUBLIC
     d3dcompiler.lib
     user32.lib
     gdi32.lib
+    comdlg32.lib
 )
 
 if(MSVC)
@@ -45,6 +46,7 @@ add_library(WhiteoutDexExtractor SHARED
     src/dllmain.cpp
     src/max_scene_adapter.cpp
     src/WhiteoutDexExtractor.def
+    src/resource.rc
 )
 
 set_target_properties(WhiteoutDexExtractor PROPERTIES
@@ -87,7 +89,7 @@ endif()
 # ---- Standalone test harness (no Max SDK) ----
 option(WHITEOUTDEX_BUILD_TEST "Build standalone MDX test viewer" OFF)
 if(WHITEOUTDEX_BUILD_TEST)
-    add_executable(WhiteoutDexTest src/test_main.cpp)
+    add_executable(WhiteoutDexTest src/test_main.cpp src/resource.rc)
     set_target_properties(WhiteoutDexTest PROPERTIES
         CXX_STANDARD          20
         CXX_STANDARD_REQUIRED ON

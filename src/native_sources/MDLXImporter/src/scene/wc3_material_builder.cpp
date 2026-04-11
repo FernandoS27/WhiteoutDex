@@ -494,8 +494,16 @@ static Mtl* buildSingleLayerWc3Material(
     // Filter mode (1-based)
     pbSetInt(ref, L"filterMode", blendModeToFilterMode(layer.blendMode));
 
-    // Opacity (0-100)
+    // Opacity: Wc3Material uses 0-100, Standard delegate uses 0-1
     pbSetFloat(ref, L"opacity", layer.alpha * 100.0f);
+    // Sync to Standard material delegate (on set handler may not fire from C++)
+    for (int ri = 0; ri < mtl->NumRefs(); ri++) {
+        auto* r = mtl->GetReference(ri);
+        if (auto* sm = dynamic_cast<StdMat2*>(r)) {
+            sm->SetOpacity(layer.alpha, 0);
+            break;
+        }
+    }
 
     // Shading flags
     pbSetBool(ref, L"twoSided", layer.twoSided ? TRUE : FALSE);
@@ -745,7 +753,7 @@ Mtl* Wc3MaterialBuilder::buildStdFallback(
     if (!irMat.layers.empty()) {
         const auto& layer = irMat.layers[0];
         stdMtl->SetTwoSided(layer.twoSided ? TRUE : FALSE);
-        stdMtl->SetOpacity(layer.alpha * 100.0f, 0);
+        stdMtl->SetOpacity(layer.alpha, 0);
 
         if (!layer.textureRefs.empty()) {
             int32_t texIdx = layer.textureRefs[0].textureIndex;
