@@ -50,9 +50,9 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
     Layer layer;
 
     switch (irLayer.blendMode) {
-    case ir::BlendMode::Opaque:     layer.filterMode = Layer::FilterMode::None; break;
-    case ir::BlendMode::AlphaKey:   layer.filterMode = Layer::FilterMode::Transparent; break;
-    case ir::BlendMode::Alpha:      layer.filterMode = Layer::FilterMode::Blend; break;
+    case ir::BlendMode::None:        layer.filterMode = Layer::FilterMode::None; break;
+    case ir::BlendMode::Transparent: layer.filterMode = Layer::FilterMode::Transparent; break;
+    case ir::BlendMode::Blend:       layer.filterMode = Layer::FilterMode::Blend; break;
     case ir::BlendMode::Additive:   layer.filterMode = Layer::FilterMode::Additive; break;
     case ir::BlendMode::AddAlpha:   layer.filterMode = Layer::FilterMode::AddAlpha; break;
     case ir::BlendMode::Modulate:   layer.filterMode = Layer::FilterMode::Modulate; break;

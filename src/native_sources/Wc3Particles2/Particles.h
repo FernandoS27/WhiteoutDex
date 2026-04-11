@@ -129,13 +129,13 @@ enum ParamBlockIndex : ParamID {
     PB_SORT         = 37,   ///< Enable depth-sorted particle rendering (TYPE_INT).
     PB_LINE_EMIT    = 38,   ///< Emit along the full width of the emitter rectangle (TYPE_INT).
     PB_UNSHADED     = 39,   ///< Disable lighting on this emitter's particles (TYPE_INT).
-    PB_LATITUDE     = 40,   ///< Latitude offset [-100, 100] (TYPE_INT).
+    PB_LATITUDE     = 40,   ///< Deprecated — kept for file compat. Use PB_ANGLE_Y (TYPE_FLOAT, invisible).
     PB_PRIORITY     = 41,   ///< Render priority plane [-100, 100] (TYPE_INT).
     PB_UNFOGGED     = 42,   ///< Disable distance fog on this emitter (TYPE_INT).
     PB_MODELSPACE   = 43,   ///< Simulate particles in emitter-local space rather than world space (TYPE_INT).
     PB_XYQUAD       = 44,   ///< Align quads to the XY plane instead of facing the camera (TYPE_INT).
     PB_REPLACEABLE_ID = 45,  ///< Replaceable texture slot: 0=none, 1=TeamColor, 2=TeamGlow (TYPE_INT).
-    PB_LONGITUDE    = 46,   ///< Longitude spread angle in degrees (TYPE_FLOAT, animatable).
+    PB_LONGITUDE    = 46,   ///< Internal — derived from LineEmitter flag (TYPE_FLOAT, invisible).
 };
 
 constexpr int PARAM_COUNT_MAX   = 500;  ///< Hard cap on live particle count.

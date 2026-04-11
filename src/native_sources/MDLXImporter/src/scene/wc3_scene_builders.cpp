@@ -159,7 +159,7 @@ enum P2Params : ParamID {
     PB_TAIL_DECAY_START = 31, PB_TAIL_DECAY_REPEAT = 32, PB_TAIL_DECAY_END = 33,
     PB_SQUIRT = 34, PB_BLEND = 35, PB_GRAVITY = 36,
     PB_SORT = 37, PB_LINE_EMIT = 38, PB_UNSHADED = 39,
-    PB_LATITUDE = 40, PB_PRIORITY = 41, PB_UNFOGGED = 42,
+    PB_PRIORITY = 41, PB_UNFOGGED = 42,
     PB_MODELSPACE = 43, PB_XYQUAD = 44, PB_REPLACEABLE_ID = 45,
     PB_LONGITUDE = 46,
 };
@@ -312,8 +312,10 @@ void Wc3Particle1Builder::buildParticles(
             pb->SetValue(P1_PB_EMISSION_RATE, 0, irPE.emissionRate);
             pb->SetValue(P1_PB_LIFE, 0, irPE.lifespan);
             pb->SetValue(P1_PB_ACCELERATION, 0, irPE.gravity);
-            pb->SetValue(P1_PB_LATITUDE, 0, irPE.latitude);
-            pb->SetValue(P1_PB_LONGITUDE, 0, irPE.longitude);
+            // MDX stores latitude/longitude in radians; plugin expects degrees
+            constexpr float kRadToDeg = 180.0f / 3.14159265f;
+            pb->SetValue(P1_PB_LATITUDE, 0, irPE.latitude * kRadToDeg);
+            pb->SetValue(P1_PB_LONGITUDE, 0, irPE.longitude * kRadToDeg);
         }
 
         // Model path via custom interface
@@ -369,8 +371,9 @@ void Wc3Particle2Builder::buildParticles(
             pb->SetValue(PB_INITVEL, 0, irPE.emissionRate);
             pb->SetValue(PB_LIFE, 0, irPE.lifespan);
             pb->SetValue(PB_GRAVITY, 0, irPE.gravity);
-            pb->SetValue(PB_LATITUDE, 0, static_cast<int>(irPE.latitude));
-            pb->SetValue(PB_LONGITUDE, 0, irPE.longitude);
+            // MDX latitude is in radians; plugin ConeAngle (PB_ANGLE_Y) is in degrees
+            pb->SetValue(PB_ANGLE_Y, 0, irPE.latitude * (180.0f / 3.14159265f));
+            // PE2 has no longitude in MDX — plugin derives it from LineEmitter flag
             pb->SetValue(PB_WIDTH, 0, irPE.width);
             pb->SetValue(PB_HEIGHT, 0, irPE.length);
             pb->SetValue(PB_TAIL_LEN, 0, irPE.tailLength);
@@ -624,31 +627,30 @@ void Wc3VertexColorBuilder::applyVertexColors(
         INode* meshNode = meshNodes[ga.meshIndex];
         if (!meshNode) continue;
 
-        // Create Wc3VertexMod modifier — scripted plugin extends VertexPaint.
-        // CreateInstance returns a MSPlugin wrapper; cast via Animatable hierarchy.
-        void* rawObj = gi->CreateInstance(OSM_CLASS_ID, mdx_ids::WC3_VERTEX_MOD);
-        if (!rawObj) {
-            reporter.warning(L"Wc3VertexMod plugin not found");
-            break;
-        }
-        Modifier* mod = static_cast<Modifier*>(rawObj);
-        auto* ref = static_cast<ReferenceTarget*>(rawObj);
+        // Create and apply Wc3VertexMod via MaxScript — scripted modifier
+        // plugins can't be safely cast to Modifier* from CreateInstance.
+        std::wstring nodeName(meshNode->GetName());
+        wchar_t script[512];
+        swprintf_s(script, 512,
+            L"(local n = getNodeByName \"%s\";"
+            L"if n != undefined do ("
+            L"local m = Wc3VertexMod();"
+            L"m.UsesDropShadow = %s;"
+            L"m.UsesColor = %s;"
+            L"m.VertexColor = color %d %d %d;"
+            L"addModifier n m))",
+            nodeName.c_str(),
+            ga.dropShadow ? L"true" : L"false",
+            ga.usesColor ? L"true" : L"false",
+            (int)(ga.color.r * 255.0f + 0.5f),
+            (int)(ga.color.g * 255.0f + 0.5f),
+            (int)(ga.color.b * 255.0f + 0.5f));
 
-        pbSetBool(ref, L"UsesDropShadow", ga.dropShadow ? TRUE : FALSE);
-        pbSetBool(ref, L"UsesColor", ga.usesColor ? TRUE : FALSE);
-        if (ga.usesColor)
-            pbSetColor(ref, L"VertexColor", ga.color);
-
-        // Add modifier to mesh node
-        Object* objRef = meshNode->GetObjectRef();
-        IDerivedObject* dobj = nullptr;
-        if (objRef && objRef->SuperClassID() == GEN_DERIVOB_CLASS_ID) {
-            dobj = static_cast<IDerivedObject*>(objRef);
-        } else {
-            dobj = CreateDerivedObject(objRef);
-            meshNode->SetObjectRef(dobj);
-        }
-        dobj->AddModifier(mod);
+        ExecuteMAXScriptScript(script,
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE, nullptr);
     }
 }
 
@@ -813,31 +815,96 @@ void Wc3SequenceBuilder::buildSequences(
 {
     if (irModel.sequences.empty()) return;
 
-    // Create a DefNoteTrack on the scene root node for sequence markers
     INode* rootNode = gi->GetRootNode();
     if (!rootNode) return;
 
-    DefNoteTrack* noteTrack = static_cast<DefNoteTrack*>(
-        NewDefaultNoteTrack());
-    rootNode->AddNoteTrack(noteTrack);
+    // Remove legacy note tracks
+    while (rootNode->HasNoteTracks())
+        rootNode->DeleteNoteTrack(rootNode->GetNoteTrack(0), TRUE);
 
-    TimeValue minTime = irModel.sequences[0].startTime;
-    TimeValue maxTime = irModel.sequences[0].endTime;
+    // Setup WhiteoutDexSequenceData custom attributes and populate via MaxScript.
+    // This matches the MaxScript rebuilder's recreateSequences().
+    // Build the script: remove old CA, add fresh one, populate arrays, create FrameTags.
+    std::wstring script;
+    script += L"::SequenceStorage.removeCA()\n";
+    script += L"::SequenceStorage.ensureCA()\n";
 
     for (const auto& seq : irModel.sequences) {
-        // Add note key at sequence start
-        MSTR note;
-        note.printf(_T("%hs"), seq.name.c_str());
-        NoteKey* startKey = new NoteKey(seq.startTime, note, 0);
-        noteTrack->keys.Append(1, &startKey);
+        // Convert name to wide string, escape backslashes and quotes
+        std::wstring wname;
+        for (char c : seq.name) {
+            if (c == '\\') wname += L"\\\\";
+            else if (c == '"') wname += L"\\\"";
+            else wname += static_cast<wchar_t>(c);
+        }
 
+        TimeValue endTime = seq.endTime;
+        if (seq.startTime == endTime) endTime += 160;  // 1 frame at 30fps
+
+        int startF = seq.startTime / GetTicksPerFrame();
+        int endF   = endTime / GetTicksPerFrame();
+
+        // Extent string: "radius minX minY minZ maxX maxY maxZ"
+        wchar_t extBuf[256];
+        swprintf_s(extBuf, 256, L"%g %g %g %g %g %g %g",
+            seq.extentRadius,
+            seq.extentMin.x, seq.extentMin.y, seq.extentMin.z,
+            seq.extentMax.x, seq.extentMax.y, seq.extentMax.z);
+
+        wchar_t line[1024];
+        swprintf_s(line, 1024,
+            L"append rootNode.seqNames \"%s\"\n"
+            L"append rootNode.startFrames %d\n"
+            L"append rootNode.endFrames %d\n"
+            L"append rootNode.nonLooping %s\n"
+            L"append rootNode.rarity %g\n"
+            L"append rootNode.moveSpeed %g\n"
+            L"append rootNode.seqExtents \"%s\"\n"
+            L"append rootNode.sharedGroup \"\"\n",
+            wname.c_str(),
+            startF, endF,
+            seq.isLooping ? L"false" : L"true",  // nonLooping = !isLooping
+            seq.rarity,
+            seq.moveSpeed,
+            extBuf);
+        script += line;
+    }
+
+    // Create FrameTagManager entries (paired Start/End tags)
+    for (const auto& seq : irModel.sequences) {
+        std::wstring wname;
+        for (char c : seq.name) {
+            if (c == '\\') wname += L"\\\\";
+            else if (c == '"') wname += L"\\\"";
+            else wname += static_cast<wchar_t>(c);
+        }
+        TimeValue endTime = seq.endTime;
+        if (seq.startTime == endTime) endTime += 160;
+
+        wchar_t line[512];
+        swprintf_s(line, 512,
+            L"(local t1 = FrameTagManager.CreateNewTag \"%s Start\" %df\n"
+            L"local id = FrameTagManager.GetTagID t1\n"
+            L"FrameTagManager.CreateNewTag \"%s End\" %df lockID:id)\n",
+            wname.c_str(), seq.startTime / GetTicksPerFrame(),
+            wname.c_str(), endTime / GetTicksPerFrame());
+        script += line;
+    }
+
+    ExecuteMAXScriptScript(script.c_str(),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+        MAXScript::ScriptSource::NonEmbedded,
+#endif
+        TRUE, nullptr);
+
+    // Set animation range
+    TimeValue minTime = irModel.sequences[0].startTime;
+    TimeValue maxTime = irModel.sequences[0].endTime;
+    for (const auto& seq : irModel.sequences) {
         if (seq.startTime < minTime) minTime = seq.startTime;
         if (seq.endTime > maxTime) maxTime = seq.endTime;
     }
-
-    // Set animation range
-    Interval range(minTime, maxTime);
-    gi->SetAnimRange(range);
+    gi->SetAnimRange(Interval(minTime, maxTime));
 }
 
 } // namespace mdx_scene

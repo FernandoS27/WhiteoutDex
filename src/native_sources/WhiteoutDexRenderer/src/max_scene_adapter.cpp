@@ -4,6 +4,7 @@
 // ============================================================================
 
 #include "max_scene_adapter.h"
+#include "renderer/team_glow_data.h"
 
 #include <maxscript/maxscript.h>
 #include <maxscript/foundation/numbers.h>
@@ -144,10 +145,14 @@ bool MaxSceneAdapter::PB2Color(Animatable* anim, const wchar_t* name, TimeValue 
             ParamDef& def = pblock->GetParamDef(pid);
             if (def.int_name && _wcsicmp(def.int_name, name) == 0) {
                 Color cv = pblock->GetColor(pid, t);
-                // Scripted plugin #color params return [0-255] from GetColor.
-                // Always normalize to [0-1] — all current callers are our own
-                // scripted plugins (Wc3VertexMod, Wc3Particles2, Wc3Ribbon).
-                out = Color(cv.r / 255.0f, cv.g / 255.0f, cv.b / 255.0f);
+                // Normalize based on value range — if any channel > 1,
+                // the value is in [0-255] space (TYPE_RGBA / scripted #color).
+                // Otherwise it's already [0-1] (TYPE_POINT3 / colorswatch).
+                if (cv.r > 1.0f || cv.g > 1.0f || cv.b > 1.0f) {
+                    out = Color(cv.r / 255.0f, cv.g / 255.0f, cv.b / 255.0f);
+                } else {
+                    out = cv;
+                }
                 return true;
             }
         }
@@ -362,30 +367,13 @@ int MaxSceneAdapter::GenerateTeamGlowTexture(int tcR, int tcG, int tcB) {
     int id = nextTexId_++;
     texPathToId_[key] = id;
 
-    const int size = 64;
-    std::vector<uint8_t> rgba(size * size * 4, 0);
-    float center = (size - 1) / 2.0f;
-    float maxDist = center;
+    int w, h;
+    auto rgba = WhiteoutDex::DecodeTeamGlow((uint8_t)tcR, (uint8_t)tcG, (uint8_t)tcB, w, h);
 
-    for (int y = 0; y < size; y++) {
-        for (int x = 0; x < size; x++) {
-            float dx = x - center;
-            float dy = y - center;
-            float dist = sqrtf(dx*dx + dy*dy) / maxDist;
-            if (dist > 1.0f) dist = 1.0f;
-            float intensity = (1.0f - dist) * (1.0f - dist);
-            int idx = (y * size + x) * 4;
-            rgba[idx]   = (uint8_t)(tcR * intensity);
-            rgba[idx+1] = (uint8_t)(tcG * intensity);
-            rgba[idx+2] = (uint8_t)(tcB * intensity);
-            rgba[idx+3] = (uint8_t)(255 * intensity);
-        }
-    }
-
-    loadedTextures_.push_back({id, 0, std::move(rgba), size, size});
+    loadedTextures_.push_back({id, 2, std::move(rgba), w, h});
     TextureEntry te; te.textureId = id; te.replaceableId = 2;
     texEntries_.push_back(te);
-    mprintf(_M("  Texture %d: %dx%d [TeamGlow generated]\n"), id, size, size);
+    mprintf(_M("  Texture %d: %dx%d [TeamGlow from embedded TGA]\n"), id, w, h);
     return id;
 }
 
@@ -1133,8 +1121,9 @@ std::vector<ParticleEmitterConfig> MaxSceneAdapter::GetParticleConfigs() {
         if(PB2Int(obj, L"ParticleType", 0, iv)) cfg.particleType = iv + 1;
         if(PB2Float(obj, L"TailLength", 0, fv)) cfg.tailLength = fv;
 
-        if(PB2Bool(obj, L"ModelSpace", 0, bv)) cfg.modelSpace = bv != 0;
-        if(PB2Bool(obj, L"XYQuad", 0, bv))     cfg.xyQuad     = bv != 0;
+        if(PB2Bool(obj, L"ModelSpace", 0, bv))   cfg.modelSpace   = bv != 0;
+        if(PB2Bool(obj, L"XYQuad", 0, bv))      cfg.xyQuad       = bv != 0;
+        if(PB2Bool(obj, L"LineEmitter", 0, bv))  cfg.lineEmitter  = bv != 0;
 
         // Head/tail UV animation frames
         if(PB2Int(obj, L"HeadLifeStart", 0, iv))  cfg.headLifeStart  = iv;

@@ -23,7 +23,7 @@ ir::Material StandardMaterialExtractor::extract(Mtl* mtl, TimeValue t,
     if (!stdMat) {
         // Generic fallback: just get the diffuse color via Mtl interface
         ir::MaterialLayer layer;
-        layer.blendMode = ir::BlendMode::Opaque;
+        layer.blendMode = ir::BlendMode::None;
 
         // Try to find a diffuse texture
         Texmap* diffTex = mtl->GetSubTexmap(0);
@@ -46,9 +46,9 @@ ir::Material StandardMaterialExtractor::extract(Mtl* mtl, TimeValue t,
     float opacity = stdMat->GetOpacity(t);
     layer.alpha = opacity;
     if (opacity < 1.0f)
-        layer.blendMode = ir::BlendMode::Alpha;
+        layer.blendMode = ir::BlendMode::Blend;
     else
-        layer.blendMode = ir::BlendMode::Opaque;
+        layer.blendMode = ir::BlendMode::None;
 
     // Two-sided
     layer.twoSided = stdMat->GetTwoSided() ? true : false;

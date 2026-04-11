@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include "mdx_model_adapter.h"
+#include "team_glow_data.h"
 #include <cmath>
 #include <whiteout/textures/blp/blp.h>
 #include <whiteout/textures/dds/parser.h>
@@ -147,15 +148,19 @@ TextureData MdxModelAdapter::GenerateTeamColorTexture(int textureId,
     TextureData td;
     td.textureId     = textureId;
     td.replaceableId = replaceableId;
-    td.width  = 4;
-    td.height = 4;
-    td.rgba.resize(4 * 4 * 4);
-    uint8_t r = 255, g = 0, b = 0, a = 255;
-    for (int j = 0; j < 16; j++) {
-        td.rgba[j * 4 + 0] = r;
-        td.rgba[j * 4 + 1] = g;
-        td.rgba[j * 4 + 2] = b;
-        td.rgba[j * 4 + 3] = a;
+    if (replaceableId == 2) {
+        // TeamGlow: decode embedded TGA tinted with default red
+        td.rgba = DecodeTeamGlow(255, 0, 0, td.width, td.height);
+    } else {
+        // TeamColor: solid 4x4 red
+        td.width = 4; td.height = 4;
+        td.rgba.resize(64);
+        for (int j = 0; j < 16; j++) {
+            td.rgba[j * 4 + 0] = 255;
+            td.rgba[j * 4 + 1] = 0;
+            td.rgba[j * 4 + 2] = 0;
+            td.rgba[j * 4 + 3] = 255;
+        }
     }
     return td;
 }
@@ -577,9 +582,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         { auto [t,s,e] = effectiveTime(pe.visibilityTracks.globalSequenceId);
           ps.visibility   = EvaluateTrackF32(pe.visibilityTracks, t, s, e, 1.0f); }
 
-        // PE2 has no longitude field — it's implicitly 0 for line emitters, 180 otherwise
-        bool isLineEmitter = ((u32)pe.node.flags & (u32)Node::NodeFlag::LineEmitter) != 0;
-        ps.longitude = isLineEmitter ? 0.0f : 180.0f;
+        (void)pe; // all PE2 per-frame fields set above
     }
 
     // Ribbon emitter per-frame state

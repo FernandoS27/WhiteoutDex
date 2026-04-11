@@ -120,14 +120,14 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     int filterMode = 1;
     PBR::readIntByName(mtlRef, L"filterMode", t, filterMode);
     switch (filterMode) {
-    case 1: layer.blendMode = ir::BlendMode::Opaque; break;
-    case 2: layer.blendMode = ir::BlendMode::AlphaKey; break;
-    case 3: layer.blendMode = ir::BlendMode::Alpha; break;
+    case 1: layer.blendMode = ir::BlendMode::None; break;
+    case 2: layer.blendMode = ir::BlendMode::Transparent; break;
+    case 3: layer.blendMode = ir::BlendMode::Blend; break;
     case 4: layer.blendMode = ir::BlendMode::Additive; break;
     case 5: layer.blendMode = ir::BlendMode::AddAlpha; break;
     case 6: layer.blendMode = ir::BlendMode::Modulate; break;
     case 7: layer.blendMode = ir::BlendMode::Modulate2x; break;
-    default: layer.blendMode = ir::BlendMode::Opaque; break;
+    default: layer.blendMode = ir::BlendMode::None; break;
     }
 
     // Opacity (0–100 → 0.0–1.0)
@@ -316,7 +316,7 @@ void extractStdMaterial(Mtl* mtl, ir::IRModel& model) {
 
     ir::Material mat;
     ir::MaterialLayer layer;
-    layer.blendMode = ir::BlendMode::Opaque;
+    layer.blendMode = ir::BlendMode::None;
     layer.alpha = stdMat->GetOpacity(0);
     layer.twoSided = stdMat->GetTwoSided() != 0;
 

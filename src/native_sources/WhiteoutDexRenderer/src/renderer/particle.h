@@ -72,7 +72,6 @@ struct ParticleEmitterState {
     float speed        = 0;
     float variation    = 0;
     float coneAngle    = 0;    // latitude, degrees
-    float longitude    = 180; // longitude, degrees (0 = line emitter)
     float gravity      = 0;
     float width        = 0;
     float length       = 0;
@@ -106,14 +105,12 @@ public:
 
     int BuildBillboards(float cameraPitch, float cameraYaw,
                         std::vector<Vertex>& outVerts,
-                        std::vector<int>& outEmitterIds) const;
+                        std::vector<int>& outEmitterIds,
+                        std::vector<int>& outVertCounts) const;
 
     const ParticleEmitterConfig* GetConfig(int id) const;
     int GetTotalParticleCount() const;
 
-    bool GetEmitterVertexRange(int emitterId, int totalVerts,
-                               const std::vector<int>& emitterIds,
-                               int& outStart, int& outCount) const;
 
 private:
     void SpawnParticle(ParticleEmitter& em, float dt);

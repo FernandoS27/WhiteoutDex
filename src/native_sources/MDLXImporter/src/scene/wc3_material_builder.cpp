@@ -432,9 +432,9 @@ Texmap* createWc3Bitmap(const ir::Texture& irTex, const std::wstring& modelDir,
 // Map ir::BlendMode to filterMode int (1-based)
 int blendModeToFilterMode(ir::BlendMode bm) {
     switch (bm) {
-    case ir::BlendMode::Opaque:     return 1;
-    case ir::BlendMode::AlphaKey:   return 2;
-    case ir::BlendMode::Alpha:      return 3;
+    case ir::BlendMode::None:        return 1;
+    case ir::BlendMode::Transparent: return 2;
+    case ir::BlendMode::Blend:       return 3;
     case ir::BlendMode::Additive:   return 4;
     case ir::BlendMode::AddAlpha:   return 5;
     case ir::BlendMode::Modulate:   return 6;

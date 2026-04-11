@@ -12,6 +12,7 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/ribbon.cpp
     src/renderer/mdx_animation.cpp
     src/renderer/mdx_model_adapter.cpp
+    src/renderer/team_glow_data.cpp
 )
 
 set_target_properties(WhiteoutDexRendererLib PROPERTIES

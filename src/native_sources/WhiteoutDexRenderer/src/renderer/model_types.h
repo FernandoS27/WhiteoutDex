@@ -97,7 +97,7 @@ struct FrameState {
     struct ParticleFrameState {
         int emitterId;
         XMMATRIX transform;
-        float emissionRate, speed, variation, coneAngle, longitude;
+        float emissionRate, speed, variation, coneAngle;
         float gravity, width, length, visibility;
     };
     std::vector<ParticleFrameState> particleStates;

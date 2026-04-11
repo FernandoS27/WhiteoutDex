@@ -26,6 +26,7 @@ static WhiteoutDex::MaxSceneAdapter* g_adapter  = nullptr;
 static WhiteoutDex::Renderer*        g_renderer = nullptr;
 static bool                           g_running  = false;
 static HINSTANCE                      g_hInstance = nullptr;
+static DWORD                          g_lastTimeChangedTick = 0;
 
 // ============================================================================
 // TimeChange callback — asks adapter to Evaluate, passes result to renderer
@@ -47,7 +48,6 @@ public:
 };
 
 static NdxTimeCallback* g_timeCallback = nullptr;
-static DWORD g_lastTimeChangedTick = 0;
 
 // ============================================================================
 // Material polling timer — detects property changes even without timeline scrub

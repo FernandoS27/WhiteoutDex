@@ -81,13 +81,13 @@ struct Texture {
 };
 
 enum class BlendMode : uint32_t {
-    Opaque = 0, 
-    AlphaKey = 1, 
-    Alpha = 2, 
+    None = 0,
+    Transparent = 1,
+    Blend = 2,
     Additive = 3,
     AddAlpha = 4,
-    Modulate = 5, 
-    Modulate2x = 6, 
+    Modulate = 5,
+    Modulate2x = 6,
 };
 
 enum class TextureSlot {
@@ -100,7 +100,7 @@ struct TextureRef {
 };
 
 struct MaterialLayer {
-    BlendMode blendMode = BlendMode::Opaque;
+    BlendMode blendMode = BlendMode::None;
     std::vector<TextureRef> textureRefs;
     float alpha = 1.0f;
     int32_t uvSetIndex = 0;
@@ -230,7 +230,7 @@ struct ParticleEmitter {
     float lifespan = 0.0f;
     float gravity = 0.0f;
     float latitude = 0.0f;
-    float longitude = 0.0f;
+    float longitude = 0.0f;   // PE1 only — PE2 derives internally from LineEmitter
     float width = 0.0f;
     float length = 0.0f;
     float tailLength = 0.0f;
@@ -262,7 +262,7 @@ struct ParticleEmitter {
     int32_t gravityTrackIndex = -1;
     int32_t visibilityTrackIndex = -1;
     int32_t latitudeTrackIndex = -1;
-    int32_t longitudeTrackIndex = -1;
+    int32_t longitudeTrackIndex = -1;  // PE1 only
     int32_t widthTrackIndex = -1;
     int32_t lengthTrackIndex = -1;
     int32_t lifespanVariationTrackIndex = -1;

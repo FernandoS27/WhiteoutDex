@@ -33,6 +33,8 @@
 #include <maxscript/maxscript.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
@@ -940,8 +942,9 @@ enum P1Params : ParamID {
 };
 enum P2Params : ParamID {
     P2_PB_COUNT = 0, P2_PB_SPEED = 1, P2_PB_VARIATION = 2,
-    P2_PB_WIDTH = 4, P2_PB_HEIGHT = 5,
-    P2_PB_GRAVITY = 36, P2_PB_LATITUDE = 40,
+    P2_PB_WIDTH = 4, P2_PB_HEIGHT = 5, P2_PB_INITVEL = 6,
+    P2_PB_ANGLE_Y = 7,
+    P2_PB_GRAVITY = 36,
 };
 enum RibbonParams : ParamID {
     RB_PB_HEIGHT_ABOVE = 0, RB_PB_HEIGHT_BELOW = 1,
@@ -1569,17 +1572,152 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             modelDir = fullPath.substr(0, lastSep + 1);
     }
 
-    // Open CASC storage once (shared between material builder and PE2 builder)
-    void* cascPtr = nullptr;
-    if (opts.core.importTextures && opts.searchCASC)
-        cascPtr = mdx_scene::openCascStorage(opts.cascDirectory);
+    // Pre-resolve all textures and PE1 model files (including CASC extraction)
+    // so every builder can find them on disk without needing the CASC handle.
+    // PE1 model files are parsed recursively to extract their textures and
+    // any nested PE1 model references (with cycle detection).
+    if (opts.core.importTextures) {
+        void* cascPtr = nullptr;
+        if (opts.searchCASC)
+            cascPtr = mdx_scene::openCascStorage(opts.cascDirectory);
+
+        // Resolve all textures from the main model
+        for (const auto& irTex : irModel.textures) {
+            if (!irTex.filePath.empty()) {
+                std::wstring wpath(irTex.filePath.begin(), irTex.filePath.end());
+                mdx_scene::resolveTexturePathFull(modelDir, wpath, cascPtr);
+            }
+        }
+
+        // Recursively resolve PE1 model files and their textures.
+        // PE1 particles spawn sub-models which may have their own textures
+        // and their own PE1 emitters (forming a tree).
+        {
+            namespace fs = std::filesystem;
+
+            // Resolve a model file on disk: try modelDir + relPath directly,
+            // then try swapping .mdx↔.mdl extension.
+            auto resolveModelOnDisk = [&](const std::wstring& relPath) -> std::wstring {
+                std::error_code ec;
+                // Try exact path
+                fs::path full = fs::path(modelDir) / relPath;
+                if (fs::exists(full, ec)) return full.wstring();
+
+                // Try alternate extension
+                fs::path stem = full; stem.replace_extension();
+                std::wstring ext = full.extension().wstring();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+                fs::path alt;
+                if (ext == L".mdl")      alt = stem; alt += L".mdx";
+                if (fs::exists(alt, ec)) return alt.wstring();
+                if (ext == L".mdx") { alt = stem; alt += L".mdl"; }
+                else                { alt = stem; alt += L".mdx"; }
+                if (fs::exists(alt, ec)) return alt.wstring();
+                return {};
+            };
+
+            // Resolve a model file, falling back to CASC extraction.
+            auto resolveModelFull = [&](const std::wstring& relPath) -> std::wstring {
+                // Check disk first (both extensions)
+                auto onDisk = resolveModelOnDisk(relPath);
+                if (!onDisk.empty()) return onDisk;
+
+                // Try CASC extraction with original path
+                auto extracted = mdx_scene::resolveTexturePathFull(modelDir, relPath, cascPtr);
+                std::error_code ec;
+                if (!extracted.empty() && fs::exists(extracted, ec)) return extracted;
+
+                // Try CASC with alternate extension
+                std::wstring altPath = relPath;
+                if (altPath.size() > 4) {
+                    std::wstring ext = altPath.substr(altPath.size() - 4);
+                    std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+                    if (ext == L".mdx")
+                        altPath = altPath.substr(0, altPath.size() - 4) + L".mdl";
+                    else if (ext == L".mdl")
+                        altPath = altPath.substr(0, altPath.size() - 4) + L".mdx";
+                    else
+                        return {};
+                    extracted = mdx_scene::resolveTexturePathFull(modelDir, altPath, cascPtr);
+                    if (!extracted.empty() && fs::exists(extracted, ec)) return extracted;
+                }
+                return {};
+            };
+
+            std::set<std::string> visited;
+            std::vector<std::string> pendingModels;
+
+            for (const auto& pe : irModel.particleEmitters) {
+                if (pe.variant == 1 && !pe.modelPath.empty())
+                    pendingModels.push_back(pe.modelPath);
+            }
+
+            while (!pendingModels.empty()) {
+                std::string mdxRelPath = pendingModels.back();
+                pendingModels.pop_back();
+
+                // Normalize for cycle detection
+                std::string normalized = mdxRelPath;
+                for (char& c : normalized)
+                    if (c == '/') c = '\\';
+                std::transform(normalized.begin(), normalized.end(),
+                               normalized.begin(), ::tolower);
+                // Strip extension for cycle check (Foo.mdl == Foo.mdx)
+                auto dotPos = normalized.rfind('.');
+                if (dotPos != std::string::npos) normalized.resize(dotPos);
+                if (visited.count(normalized)) continue;
+                visited.insert(normalized);
+
+                std::wstring wRelPath(mdxRelPath.begin(), mdxRelPath.end());
+                std::wstring resolvedModel = resolveModelFull(wRelPath);
+                if (resolvedModel.empty()) continue;
+
+                try {
+                    std::ifstream ifs(resolvedModel, std::ios::binary | std::ios::ate);
+                    if (!ifs) continue;
+                    auto sz = ifs.tellg();
+                    ifs.seekg(0);
+                    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+                    ifs.read(reinterpret_cast<char*>(buf.data()), sz);
+                    ifs.close();
+
+                    auto fmt = whiteout::mdx::MDLXFormat::MDX;
+                    {
+                        std::wstring ext = fs::path(resolvedModel).extension().wstring();
+                        std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+                        if (ext == L".mdl") fmt = whiteout::mdx::MDLXFormat::MDL;
+                    }
+
+                    whiteout::mdx::Parser subParser;
+                    auto subModel = subParser.parse(
+                        std::span<const uint8_t>(buf.data(), buf.size()), fmt);
+
+                    for (const auto& tex : subModel.textures) {
+                        if (!tex.fileName.empty()) {
+                            std::wstring wTexPath(tex.fileName.begin(), tex.fileName.end());
+                            mdx_scene::resolveTexturePathFull(modelDir, wTexPath, cascPtr);
+                        }
+                    }
+                    for (const auto& subPE : subModel.particleEmitters) {
+                        if (!subPE.spawnModelFileName.empty())
+                            pendingModels.push_back(subPE.spawnModelFileName);
+                    }
+                } catch (...) {}
+            }
+        }
+
+        if (cascPtr) {
+            mdx_scene::closeCascStorage(cascPtr);
+            cascPtr = nullptr;
+        }
+    }
 
     // 10. Build materials and assign to meshes
     std::vector<Mtl*> materials;
     if (opts.core.importMaterials) {
         mdx_scene::Wc3MaterialBuilder matBuilder;
         materials = matBuilder.buildMaterials(
-            irModel, opts.core.importTextures, modelDir, cascPtr, gi, reporter);
+            irModel, opts.core.importTextures, modelDir, nullptr, gi, reporter);
 
         for (size_t mi = 0; mi < irModel.meshes.size(); ++mi) {
             int32_t matIdx = irModel.meshes[mi].materialIndex;
@@ -1605,7 +1743,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         }
         if (opts.core.importParticleEmitters2) {
             mdx_scene::Wc3Particle2Builder pe2Builder;
-            pe2Builder.buildParticles(irModel, nodeMap, modelDir, cascPtr, gi, reporter);
+            pe2Builder.buildParticles(irModel, nodeMap, modelDir, nullptr, gi, reporter);
         }
         if (opts.core.importRibbonEmitters) {
             mdx_scene::Wc3RibbonBuilder ribBuilder;
@@ -1638,12 +1776,6 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             cameraPairs = camBuilder.buildCameras(irModel, nodeMap, gi, reporter);
         }
 
-    }
-
-    // Close CASC storage (no longer needed after materials + PE2)
-    if (cascPtr) {
-        mdx_scene::closeCascStorage(cascPtr);
-        cascPtr = nullptr;
     }
 
     // 12. Apply skin modifiers BEFORE animation (MaxScript order)
@@ -2129,8 +2261,23 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 animateFloatPB(pb, P1_PB_EMISSION_RATE,  pe.emissionRateTrackIndex, irModel);
                 animateFloatPB(pb, P1_PB_LIFE,           pe.lifespanTrackIndex, irModel);
                 animateFloatPB(pb, P1_PB_ACCELERATION,   pe.gravityTrackIndex, irModel);
-                animateFloatPB(pb, P1_PB_LATITUDE,       pe.latitudeTrackIndex, irModel);
-                animateFloatPB(pb, P1_PB_LONGITUDE,      pe.longitudeTrackIndex, irModel);
+                // Latitude/longitude: MDX stores radians, plugin expects degrees
+                auto animateRadToDeg = [&](ParamID pid, int32_t trackIdx) {
+                    if (trackIdx < 0 || trackIdx >= (int32_t)irModel.floatTracks.size()) return;
+                    ir::FloatTrack degTrack = irModel.floatTracks[trackIdx];
+                    constexpr float kRadToDeg = 180.0f / 3.14159265f;
+                    for (auto& k : degTrack.keys) {
+                        k.value *= kRadToDeg;
+                        if (k.hasTangents) {
+                            k.inTangent *= kRadToDeg;
+                            k.outTangent *= kRadToDeg;
+                        }
+                    }
+                    Control* ctrl = createFloatController(degTrack);
+                    if (ctrl) pb->SetControllerByID(pid, 0, ctrl, FALSE);
+                };
+                animateRadToDeg(P1_PB_LATITUDE,  pe.latitudeTrackIndex);
+                animateRadToDeg(P1_PB_LONGITUDE, pe.longitudeTrackIndex);
             }
 
             // PE2: speed, variation, latitude, gravity, emissionRate, width, length
@@ -2143,9 +2290,23 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 ILOG << "  PE2 node[" << pe.nodeIndex << "]\n";
                 animateFloatPB(pb, P2_PB_SPEED,      pe.speedTrackIndex, irModel);
                 animateFloatPB(pb, P2_PB_VARIATION,  pe.variationTrackIndex, irModel);
-                animateFloatPB(pb, P2_PB_LATITUDE,   pe.latitudeTrackIndex, irModel);
+                // Latitude: MDX stores radians, plugin expects degrees
+                if (pe.latitudeTrackIndex >= 0 &&
+                    pe.latitudeTrackIndex < (int32_t)irModel.floatTracks.size()) {
+                    ir::FloatTrack degTrack = irModel.floatTracks[pe.latitudeTrackIndex];
+                    constexpr float kRadToDeg = 180.0f / 3.14159265f;
+                    for (auto& k : degTrack.keys) {
+                        k.value *= kRadToDeg;
+                        if (k.hasTangents) {
+                            k.inTangent *= kRadToDeg;
+                            k.outTangent *= kRadToDeg;
+                        }
+                    }
+                    Control* ctrl = createFloatController(degTrack);
+                    if (ctrl) pb->SetControllerByID(P2_PB_ANGLE_Y, 0, ctrl, FALSE);
+                }
                 animateFloatPB(pb, P2_PB_GRAVITY,    pe.gravityTrackIndex, irModel);
-                animateFloatPB(pb, P2_PB_COUNT,      pe.emissionRateTrackIndex, irModel);
+                animateFloatPB(pb, P2_PB_INITVEL,    pe.emissionRateTrackIndex, irModel);
                 animateFloatPB(pb, P2_PB_WIDTH,      pe.widthTrackIndex, irModel);
                 animateFloatPB(pb, P2_PB_HEIGHT,     pe.lengthTrackIndex, irModel);
             }

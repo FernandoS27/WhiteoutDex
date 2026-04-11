@@ -347,10 +347,9 @@ static ParamBlockDesc2 wc3particles2_param_blk(
         p_ui,       MAP_TEXTURE, TYPE_SINGLECHEKBOX, IDC_CHECKBOX_UNSHADED,
     p_end,
 
-    // [40] PB_LATITUDE
-    PB_LATITUDE, _M("Latitude"), TYPE_INT, 0, 0,
-        p_default,  0,
-        p_range,    -100, 100,
+    // [40] PB_LATITUDE — deprecated, kept for file compatibility. Use PB_ANGLE_Y instead.
+    PB_LATITUDE, _M("Latitude"), TYPE_FLOAT, P_INVISIBLE, 0,
+        p_default,  0.0f,
     p_end,
 
     // [41] PB_PRIORITY
@@ -385,10 +384,9 @@ static ParamBlockDesc2 wc3particles2_param_blk(
         p_range,    0, 2,
     p_end,
 
-    // [46] PB_LONGITUDE — hidden, derived from line-emitter state
-    PB_LONGITUDE, _M("Longitude"), TYPE_FLOAT, 0, 0,
+    // [46] PB_LONGITUDE — internal, derived from line-emitter state. Not user-editable.
+    PB_LONGITUDE, _M("Longitude"), TYPE_FLOAT, P_INVISIBLE, 0,
         p_default,  180.0f,
-        p_range,    0.0f, 180.0f,
     p_end,
 
     p_end   // Final terminator
@@ -1400,33 +1398,23 @@ BOOL Wc3Particles2ParticleDraw::DrawParticle(GraphicsWindow* gw, ParticleSys& pa
     bool wantTail = (partType == 1 || partType == 2);
 
     /// HEAD: Billboard quad.
-    /// Engine XY-quad mode (bit 10): velocity-oriented in XY plane,
-    /// axes = normalize(vel.xy) and its 90° perpendicular.
+    /// Engine: halfSize = scale * 0.5 (decompiled from CParticleEmitter2::RenderParticle)
+    float halfSz = sz * 0.5f;
+
     if (wantHead) {
         Point3 v0, v1;
         if (xyQuad) {
-            // Velocity-oriented XY billboard
-            Point3 vel = parts.vels[i];
-            float velXYsq = vel.x * vel.x + vel.y * vel.y;
-            if (velXYsq > 0.001f) {
-                float invLen = 1.0f / sqrtf(velXYsq);
-                Point3 pvel     = Point3(vel.x * invLen, vel.y * invLen, 0.0f);
-                Point3 pvelPerp = Point3(vel.y * invLen, -vel.x * invLen, 0.0f);
-                v0 = pvelPerp * sz;
-                v1 = pvel * sz;
-            } else {
-                // Zero XY velocity: fall back to axis-aligned
-                v0 = Point3(sz, 0.0f, 0.0f);
-                v1 = Point3(0.0f, sz, 0.0f);
-            }
+            // XY-aligned quads: axis-aligned in local/model space (matches engine bit 10)
+            v0 = Point3(halfSz, 0.0f, 0.0f);
+            v1 = Point3(0.0f, halfSz, 0.0f);
         } else {
             // Camera-facing billboard
             Point3 v = Normalize(camPos - parts[i]);
             Point3 up(0, 0, 1);
             if (fabsf(DotProd(v, up)) > 0.999f)
                 up = Point3(0, 1, 0);
-            v0 = Normalize(up ^ v) * sz;
-            v1 = Normalize(v0 ^ v) * sz;
+            v0 = Normalize(up ^ v) * halfSz;
+            v1 = Normalize(v0 ^ v) * halfSz;
         }
 
         Point3 quad[4];
@@ -1437,22 +1425,20 @@ BOOL Wc3Particles2ParticleDraw::DrawParticle(GraphicsWindow* gw, ParticleSys& pa
         gw->polyline(4, quad, NULL, NULL, TRUE, NULL);
     }
 
-    /// TAIL: Velocity-proportional streak quad.
-    /// Engine: tailDisp = -velocity * tailLength (NOT normalized — faster = longer tail).
-    /// Engine velocity is in units/sec; plugin velocity is in units/tick.
-    /// Multiply by TICKS_PER_SEC to convert from per-tick to per-second before
-    /// applying tailLen, so the visual tail length matches the engine.
+    /// TAIL: Normalized direction, fixed length (matches engine).
+    /// Engine: tailDir = Normalize(velocity), tailEnd = pos - tailDir * tailLength
     if (wantTail) {
         Point3 head = parts[i];
         float velLen = Length(parts.vels[i]);
         if (velLen > 0.001f) {
-            // Convert velocity from units/tick to units/sec, then scale by tailLen
+            // Tail displacement: velocity-proportional (faster = longer tail).
+            // Velocity is in units/tick; multiply by TICKS_PER_SEC to get units/sec,
+            // then scale by tailLen.
             Point3 tailDisp = parts.vels[i] * (tailLen * static_cast<float>(TICKS_PER_SEC));
             Point3 tail = head - tailDisp;
-            Point3 dir = parts.vels[i] / velLen;  // normalized for width direction only
+            Point3 dir = parts.vels[i] / velLen;
 
             // Width direction: camera-facing perpendicular to velocity.
-            // Engine always uses view-space 2D perpendicular for tails (no XY quad branch).
             Point3 toCam = Normalize(camPos - (head + tail) * 0.5f);
             Point3 cross = dir ^ toCam;
             float crossLen = Length(cross);
@@ -1463,7 +1449,7 @@ BOOL Wc3Particles2ParticleDraw::DrawParticle(GraphicsWindow* gw, ParticleSys& pa
                 cross = dir ^ altUp;
                 crossLen = Length(cross);
             }
-            Point3 right = (cross / crossLen) * sz;
+            Point3 right = (cross / crossLen) * halfSz;
 
             Point3 quad[4];
             quad[0] = tail - right;
@@ -1638,6 +1624,7 @@ void GenParticle::BirthParticle(INode* node, TimeValue bt, int index, TimeValue 
     float latitude = 0.0f;
     int line_emitter = 0;
     constexpr float kDegToRad = 0.017453292f;
+    constexpr float kPi = 3.14159265f;
 
     Interval forever = FOREVER;
 
@@ -1665,16 +1652,16 @@ void GenParticle::BirthParticle(INode* node, TimeValue bt, int index, TimeValue 
     float rotLat = latitude * randSigned() * kDegToRad;
 
     // Initial velocity along +Z, rotated by latitude/longitude
-    // Engine: rotZ = m_longitude * reals_(), longitude = π rad (180°) for full circle → [-π, +π]
+    // PE2 has no longitude in model data — derived from LineEmitter flag:
+    //   lineEmitter → longitude = 0 (XZ plane only)
+    //   otherwise   → longitude = π (full circle)
     float velX, velY, velZ;
     if (line_emitter) {
-        // Line emitter: latitude spread in XZ plane only (longitude = 0)
         velX = speed * sinf(rotLat);
         velY = 0.0f;
         velZ = speed * cosf(rotLat);
     } else {
-        // Full azimuth: 180° * [-1,+1] = [-180°,+180°] = [-π,+π] radians (full circle)
-        float rotLon = 180.0f * randSigned() * kDegToRad;
+        float rotLon = kPi * randSigned();
         velX = speed * sinf(rotLat) * cosf(rotLon);
         velY = speed * sinf(rotLat) * sinf(rotLon);
         velZ = speed * cosf(rotLat);
@@ -2164,7 +2151,7 @@ MSTR GenParticle::GetParameterName(int pbIndex)
     case PB_SORT:       s = _T("Sort Primitives"); break;
     case PB_LINE_EMIT:  s = _T("Line Emitter"); break;
     case PB_UNSHADED:   s = _T("Unshaded"); break;
-    case PB_LATITUDE:   s = _T("Latitude"); break;
+    case PB_LATITUDE:   s = _T("Latitude (deprecated)"); break;
     case PB_PRIORITY:   s = _T("Priority Plane"); break;
     case PB_UNFOGGED:   s = _T("Unfogged"); break;
     case PB_MODELSPACE: s = _T("Model Space"); break;

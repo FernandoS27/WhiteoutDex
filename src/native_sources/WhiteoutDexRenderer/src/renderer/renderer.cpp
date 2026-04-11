@@ -6,6 +6,7 @@
 #include "renderer.h"
 #include "shaders.h"
 #include "resource.h"
+#include "team_glow_data.h"
 #include <windowsx.h>
 #include <commdlg.h>
 #include <execution>   // std::execution::par for parallel skinning
@@ -66,42 +67,47 @@ void Renderer::SetCamera(float pitch, float yaw, float distance,
 
 void Renderer::ClearModel() {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    stagedGeosets_.clear();
-    stagedMaterials_.clear();
-    stagedTextures_.clear();
-    stagedClear_ = true;
-    stagedDirty_ = true;
-    skinning_.Clear();
-    skinDirty_ = false;
-    particles_.Clear();
-    ribbons_.Clear();
-    collisionShapes_.clear();
-    matTexAnim_.clear();
-    replaceableTexMap_.clear();
+    for (auto& [h, mi] : models_) {
+        mi->stagedClear = true;
+        mi->stagedDirty = true;
+    }
+    focusModelHandle_ = 0;
+}
+
+void Renderer::RemoveModel(uint32_t handle) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    auto it = models_.find(handle);
+    if (it != models_.end()) {
+        it->second->ReleaseGPU();
+        models_.erase(it);
+    }
+    if (focusModelHandle_ == handle) {
+        focusModelHandle_ = models_.empty() ? 0 : models_.begin()->first;
+    }
 }
 
 // ============================================================================
 // Update Materials (hot-reload without full model rebuild)
 // ============================================================================
 
-void Renderer::UpdateMaterials(const std::vector<MaterialData>& materials,
+void Renderer::UpdateMaterials(uint32_t handle, const std::vector<MaterialData>& materials,
                                const std::vector<TextureData>& textures) {
     std::lock_guard<std::mutex> lock(dataMutex_);
+    auto* mi = getModel(handle);
+    if (!mi) return;
 
-    // Re-stage textures
     for (auto& tex : textures) {
-        StagedTexture& st = stagedTextures_[tex.textureId];
+        StagedTexture& st = mi->stagedTextures[tex.textureId];
         st.width  = tex.width;
         st.height = tex.height;
         st.replaceableId = tex.replaceableId;
         st.pixels = tex.rgba;
         if (tex.replaceableId == 1 || tex.replaceableId == 2)
-            replaceableTexMap_[tex.textureId] = tex.replaceableId;
+            mi->replaceableTexMap[tex.textureId] = tex.replaceableId;
     }
 
-    // Re-stage materials
     for (auto& mat : materials) {
-        StagedMaterial& sm = stagedMaterials_[mat.materialId];
+        StagedMaterial& sm = mi->stagedMaterials[mat.materialId];
         sm.layers.resize(mat.layers.size());
         for (size_t i = 0; i < mat.layers.size(); i++) {
             sm.layers[i].filterMode = mat.layers[i].filterMode;
@@ -113,38 +119,46 @@ void Renderer::UpdateMaterials(const std::vector<MaterialData>& materials,
         sm.sortOrder     = mat.sortOrder;
     }
 
-    stagedDirty_ = true;
+    mi->stagedDirty = true;
+}
+
+void Renderer::UpdateMaterials(const std::vector<MaterialData>& materials,
+                               const std::vector<TextureData>& textures) {
+    UpdateMaterials(focusModelHandle_, materials, textures);
 }
 
 // ============================================================================
-// NEW: Typed Model Loading API (Phase A — adapter pattern)
+// Multi-Model Loading API
 // ============================================================================
 
-void Renderer::LoadModel(const std::vector<MeshData>& meshes,
-                         const std::vector<TextureData>& textures,
-                         const std::vector<MaterialData>& materials,
-                         const SkeletonData& skeleton,
-                         const std::vector<SkinWeightData>& skinWeights,
-                         const std::vector<ParticleEmitterConfig>& particleConfigs,
-                         const std::vector<RibbonEmitterConfig>& ribbonConfigs,
-                         const std::vector<CollisionShapeData>& collisions) {
+uint32_t Renderer::AddModel(const std::vector<MeshData>& meshes,
+                            const std::vector<TextureData>& textures,
+                            const std::vector<MaterialData>& materials,
+                            const SkeletonData& skeleton,
+                            const std::vector<SkinWeightData>& skinWeights,
+                            const std::vector<ParticleEmitterConfig>& particleConfigs,
+                            const std::vector<RibbonEmitterConfig>& ribbonConfigs,
+                            const std::vector<CollisionShapeData>& collisions) {
     std::lock_guard<std::mutex> lock(dataMutex_);
+    uint32_t handle = nextModelHandle_++;
+    auto mi = std::make_unique<ModelInstance>();
+    mi->handle = handle;
 
     // Textures → staged
     for (auto& tex : textures) {
-        StagedTexture& st = stagedTextures_[tex.textureId];
+        StagedTexture& st = mi->stagedTextures[tex.textureId];
         st.width  = tex.width;
         st.height = tex.height;
         st.replaceableId = tex.replaceableId;
         st.pixels = tex.rgba;
         // Track replaceable textures for team color updates
         if (tex.replaceableId == 1 || tex.replaceableId == 2)
-            replaceableTexMap_[tex.textureId] = tex.replaceableId;
+            mi->replaceableTexMap[tex.textureId] = tex.replaceableId;
     }
 
     // Materials → staged
     for (auto& mat : materials) {
-        StagedMaterial& sm = stagedMaterials_[mat.materialId];
+        StagedMaterial& sm = mi->stagedMaterials[mat.materialId];
         sm.layers.resize(mat.layers.size());
         for (size_t i = 0; i < mat.layers.size(); i++) {
             sm.layers[i].filterMode = mat.layers[i].filterMode;
@@ -158,7 +172,7 @@ void Renderer::LoadModel(const std::vector<MeshData>& meshes,
 
     // Meshes → staged
     for (auto& mesh : meshes) {
-        StagedGeoset& sg = stagedGeosets_[mesh.geosetId];
+        StagedGeoset& sg = mi->stagedGeosets[mesh.geosetId];
         sg.materialId = mesh.materialId;
         int vc = (int)mesh.positions.size();
         sg.vertices.resize(vc);
@@ -186,8 +200,8 @@ void Renderer::LoadModel(const std::vector<MeshData>& meshes,
             dst[8]  = f44._31; dst[9]  = f44._32; dst[10] = f44._33; dst[11] = f44._34;
             dst[12] = f44._41; dst[13] = f44._42; dst[14] = f44._43; dst[15] = f44._44;
         }
-        skinning_.SetSkeleton(skeleton.boneCount, invBindFlat.data());
-        skinDirty_ = true;
+        mi->skinning.SetSkeleton(skeleton.boneCount, invBindFlat.data());
+        mi->skinDirty = true;
     }
 
     // Skin weights
@@ -201,18 +215,18 @@ void Renderer::LoadModel(const std::vector<MeshData>& meshes,
                 weights[v * 4 + j] = sw.influences[v].weight[j];
             }
         }
-        skinning_.SetGeosetWeights(sw.geosetId, vc, boneIdx.data(), weights.data());
+        mi->skinning.SetGeosetWeights(sw.geosetId, vc, boneIdx.data(), weights.data());
     }
-    if (!skinWeights.empty()) skinDirty_ = true;
+    if (!skinWeights.empty()) mi->skinDirty = true;
 
     // Particles
     for (size_t i = 0; i < particleConfigs.size(); i++) {
-        particles_.AddEmitter((int)i, particleConfigs[i]);
+        mi->particles.AddEmitter((int)i, particleConfigs[i]);
     }
 
     // Ribbons
     for (size_t i = 0; i < ribbonConfigs.size(); i++) {
-        ribbons_.AddEmitter((int)i, ribbonConfigs[i]);
+        mi->ribbons.AddEmitter((int)i, ribbonConfigs[i]);
     }
 
     // Collision shapes
@@ -222,18 +236,38 @@ void Renderer::LoadModel(const std::vector<MeshData>& meshes,
         shape.vmin   = cs.vertices[0];
         shape.vmax   = cs.vertices[1];
         shape.radius = cs.radius;
-        collisionShapes_.push_back(shape);
+        mi->collisionShapes.push_back(shape);
     }
 
-    stagedDirty_ = true;
+    mi->stagedDirty = true;
+    if (focusModelHandle_ == 0) focusModelHandle_ = handle;
+    models_[handle] = std::move(mi);
+    return handle;
+}
+
+// Backward-compatible single-model API
+void Renderer::LoadModel(const std::vector<MeshData>& meshes,
+                         const std::vector<TextureData>& textures,
+                         const std::vector<MaterialData>& materials,
+                         const SkeletonData& skeleton,
+                         const std::vector<SkinWeightData>& skinWeights,
+                         const std::vector<ParticleEmitterConfig>& particleConfigs,
+                         const std::vector<RibbonEmitterConfig>& ribbonConfigs,
+                         const std::vector<CollisionShapeData>& collisions) {
+    ClearModel();
+    uint32_t h = AddModel(meshes, textures, materials, skeleton,
+                          skinWeights, particleConfigs, ribbonConfigs, collisions);
+    focusModelHandle_ = h;
 }
 
 // ============================================================================
-// NEW: Apply Pre-computed Frame State (Phase A — adapter pattern)
+// Apply Pre-computed Frame State
 // ============================================================================
 
-void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
+void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int timeMs) {
     std::lock_guard<std::mutex> lock(dataMutex_);
+    auto* mi = getModel(handle);
+    if (!mi) return;
 
     // Bone matrices → skinning system
     if (!state.boneWorldMatrices.empty()) {
@@ -248,22 +282,22 @@ void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
             dst[8]  = f44._31; dst[9]  = f44._32; dst[10] = f44._33; dst[11] = f44._34;
             dst[12] = f44._41; dst[13] = f44._42; dst[14] = f44._43; dst[15] = f44._44;
         }
-        skinning_.UpdateBoneMatrices(bc, worldFlat.data());
+        mi->skinning.UpdateBoneMatrices(bc, worldFlat.data());
     }
 
     // Geoset world transforms (used for unskinned meshes; skinned ones ignore this)
-    for (int i = 0; i < (int)state.geosetTransforms.size() && i < (int)gpuGeosets_.size(); i++) {
-        gpuGeosets_[i].worldMatrix = state.geosetTransforms[i];
+    for (int i = 0; i < (int)state.geosetTransforms.size() && i < (int)mi->gpuGeosets.size(); i++) {
+        mi->gpuGeosets[i].worldMatrix = state.geosetTransforms[i];
     }
 
     // Geoset visibility
-    for (int i = 0; i < (int)state.geosetAlphas.size() && i < (int)gpuGeosets_.size(); i++) {
-        gpuGeosets_[i].geosetAlpha = state.geosetAlphas[i];
+    for (int i = 0; i < (int)state.geosetAlphas.size() && i < (int)mi->gpuGeosets.size(); i++) {
+        mi->gpuGeosets[i].geosetAlpha = state.geosetAlphas[i];
     }
 
     // Geoset colors
-    for (int i = 0; i < (int)state.geosetColors.size() && i < (int)gpuGeosets_.size(); i++) {
-        gpuGeosets_[i].geosetColor = state.geosetColors[i];
+    for (int i = 0; i < (int)state.geosetColors.size() && i < (int)mi->gpuGeosets.size(); i++) {
+        mi->gpuGeosets[i].geosetColor = state.geosetColors[i];
     }
 
     // Particle emitter states
@@ -274,12 +308,11 @@ void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
         st.speed        = ps.speed;
         st.variation    = ps.variation;
         st.coneAngle    = ps.coneAngle;
-        st.longitude    = ps.longitude;
         st.gravity      = ps.gravity;
         st.width        = ps.width;
         st.length       = ps.length;
         st.visibility   = ps.visibility;
-        particles_.UpdateEmitterState(ps.emitterId, st);
+        mi->particles.UpdateEmitterState(ps.emitterId, st);
     }
 
     // Ribbon emitter states
@@ -292,25 +325,25 @@ void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
         st.color       = rs.color;
         st.visibility  = rs.visibility;
         st.slot        = rs.slot;
-        ribbons_.UpdateEmitterState(rs.emitterId, st);
+        mi->ribbons.UpdateEmitterState(rs.emitterId, st);
     }
 
     // Collision transforms
-    for (int i = 0; i < (int)state.collisionTransforms.size() && i < (int)collisionShapes_.size(); i++) {
-        collisionShapes_[i].transform = state.collisionTransforms[i];
+    for (int i = 0; i < (int)state.collisionTransforms.size() && i < (int)mi->collisionShapes.size(); i++) {
+        mi->collisionShapes[i].transform = state.collisionTransforms[i];
     }
 
     // Texture animations (per-layer) — clear stale entries from previous frame
-    matTexAnim_.clear();
+    mi->matTexAnim.clear();
     for (auto& ta : state.texAnims) {
         int key = ta.materialId * 1000 + ta.layerIndex;
-        matTexAnim_[key] = {ta.uOff, ta.vOff, ta.uTile, ta.vTile, ta.rotation};
+        mi->matTexAnim[key] = {ta.uOff, ta.vOff, ta.uTile, ta.vTile, ta.rotation};
     }
 
     // Per-layer alpha animation (KMTA tracks)
     for (auto& la : state.layerAlphas) {
-        if (la.materialId >= 0 && la.materialId < (int)gpuMaterials_.size()) {
-            auto& layers = gpuMaterials_[la.materialId].cpu.layers;
+        if (la.materialId >= 0 && la.materialId < (int)mi->gpuMaterials.size()) {
+            auto& layers = mi->gpuMaterials[la.materialId].cpu.layers;
             if (la.layerIndex >= 0 && la.layerIndex < (int)layers.size()) {
                 layers[la.layerIndex].alpha = la.alpha;
             }
@@ -319,6 +352,10 @@ void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
 
     // Advance simulation clock (replaces old SetTime)
     currentTimeMs_ = timeMs;
+}
+
+void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
+    ApplyFrameState(focusModelHandle_, state, timeMs);
 }
 
 // ============================================================================
@@ -330,20 +367,25 @@ void Renderer::UpdateTeamColorTextures() {
     uint8_t r = GetRValue(teamColor_);
     uint8_t g = GetGValue(teamColor_);
     uint8_t b = GetBValue(teamColor_);
-    for (auto& [texId, replId] : replaceableTexMap_) {
-        StagedTexture& st = stagedTextures_[texId];
-        st.width = 4; st.height = 4;
-        st.replaceableId = replId;
-        st.pixels.resize(64);
-        uint8_t tr = r, tg = g, tb = b;
-        for (int j = 0; j < 16; j++) {
-            st.pixels[j * 4 + 0] = tr;
-            st.pixels[j * 4 + 1] = tg;
-            st.pixels[j * 4 + 2] = tb;
-            st.pixels[j * 4 + 3] = 255;
+    for (auto& [h, mi] : models_) {
+        for (auto& [texId, replId] : mi->replaceableTexMap) {
+            StagedTexture& st = mi->stagedTextures[texId];
+            st.replaceableId = replId;
+            if (replId == 2) {
+                st.pixels = DecodeTeamGlow(r, g, b, st.width, st.height);
+            } else {
+                st.width = 4; st.height = 4;
+                st.pixels.resize(64);
+                for (int j = 0; j < 16; j++) {
+                    st.pixels[j * 4 + 0] = r;
+                    st.pixels[j * 4 + 1] = g;
+                    st.pixels[j * 4 + 2] = b;
+                    st.pixels[j * 4 + 3] = 255;
+                }
+            }
         }
+        if (!mi->replaceableTexMap.empty()) mi->stagedDirty = true;
     }
-    if (!replaceableTexMap_.empty()) stagedDirty_ = true;
 }
 
 // ============================================================================
@@ -385,19 +427,25 @@ void Renderer::ProcessCameraPresets() {
 
 void Renderer::ProcessStagedData() {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    if (!stagedDirty_ && !skinDirty_) return;
-
-    if (stagedClear_) {
-        ReleaseModelGPU();
-        stagedClear_ = false;
+    // Remove models marked for clear
+    for (auto it = models_.begin(); it != models_.end(); ) {
+        if (it->second->stagedClear) {
+            it->second->ReleaseGPU();
+            it = models_.erase(it);
+        } else {
+            ++it;
+        }
     }
+    for (auto& [h, miPtr] : models_) {
+        auto* mi = miPtr.get();
+        if (!mi->stagedDirty && !mi->skinDirty) continue;
 
-    if (stagedDirty_) {
+    if (mi->stagedDirty) {
         // Upload textures (individual Texture2D)
-        for (auto& [id, st] : stagedTextures_) {
+        for (auto& [id, st] : mi->stagedTextures) {
             if (st.width <= 0 || st.height <= 0) continue;
 
-            if (gpuTextures_.count(id)) gpuTextures_[id].Release();
+            if (mi->gpuTextures.count(id)) mi->gpuTextures[id].Release();
 
             GPUTexture gt;
             D3D11_TEXTURE2D_DESC td = {};
@@ -417,30 +465,30 @@ void Renderer::ProcessStagedData() {
             if (SUCCEEDED(device_->CreateTexture2D(&td, &srd, &gt.tex))) {
                 device_->CreateShaderResourceView(gt.tex, nullptr, &gt.srv);
             }
-            gpuTextures_[id] = gt;
+            mi->gpuTextures[id] = gt;
         }
-        stagedTextures_.clear();
+        mi->stagedTextures.clear();
 
         // Copy materials (CPU data for render logic)
-        for (auto& [id, sm] : stagedMaterials_) {
-            if ((int)gpuMaterials_.size() <= id) gpuMaterials_.resize(id + 1);
-            gpuMaterials_[id].cpu = sm;
+        for (auto& [id, sm] : mi->stagedMaterials) {
+            if ((int)mi->gpuMaterials.size() <= id) mi->gpuMaterials.resize(id + 1);
+            mi->gpuMaterials[id].cpu = sm;
         }
-        stagedMaterials_.clear();
+        mi->stagedMaterials.clear();
 
         // Upload geosets
-        for (auto& [id, sg] : stagedGeosets_) {
+        for (auto& [id, sg] : mi->stagedGeosets) {
             GPUGeoset gg;
             gg.geosetId    = id;
             gg.materialId  = sg.materialId;
             gg.indexCount   = (int)sg.indices.size();
             gg.vertexCount  = (int)sg.vertices.size();
             gg.baseVertices = sg.vertices;  // keep CPU copy for skinning
-            gg.hasSkinning  = skinning_.HasWeights(id);
+            gg.hasSkinning  = mi->skinning.HasWeights(id);
 
             // Copy priorityPlane from material for render sorting
-            if (sg.materialId >= 0 && sg.materialId < (int)gpuMaterials_.size())
-                gg.priorityPlane = gpuMaterials_[sg.materialId].cpu.priorityPlane;
+            if (sg.materialId >= 0 && sg.materialId < (int)mi->gpuMaterials.size())
+                gg.priorityPlane = mi->gpuMaterials[sg.materialId].cpu.priorityPlane;
 
             // Vertex buffer — DYNAMIC for skinning updates
             D3D11_BUFFER_DESC bd = {};
@@ -460,26 +508,24 @@ void Renderer::ProcessStagedData() {
             srd.pSysMem = sg.indices.data();
             device_->CreateBuffer(&bd, &srd, &gg.ib);
 
-            gpuGeosets_.push_back(gg);
+            mi->gpuGeosets.push_back(gg);
         }
-        stagedGeosets_.clear();
-        stagedDirty_ = false;
+        mi->stagedGeosets.clear();
+        mi->stagedDirty = false;
     }
 
     // Phase 4: Update skinning flags (runs independently of mesh uploads)
-    if (skinDirty_) {
-        for (auto& geo : gpuGeosets_)
-            geo.hasSkinning = skinning_.HasWeights(geo.geosetId);
-        skinDirty_ = false;
+    if (mi->skinDirty) {
+        for (auto& geo : mi->gpuGeosets)
+            geo.hasSkinning = mi->skinning.HasWeights(geo.geosetId);
+        mi->skinDirty = false;
     }
+    } // end for each model
 }
 
 void Renderer::ReleaseModelGPU() {
-    for (auto& g : gpuGeosets_) g.Release();
-    gpuGeosets_.clear();
-    for (auto& [id, t] : gpuTextures_) t.Release();
-    gpuTextures_.clear();
-    gpuMaterials_.clear();
+    for (auto& [h, miPtr] : models_)
+        miPtr->ReleaseGPU();
 }
 
 // Build a packed Texture2DArray for a material.
@@ -489,26 +535,8 @@ void Renderer::ReleaseModelGPU() {
 // ============================================================================
 
 void Renderer::UpdateAnimation() {
-    // ================================================================
-    // Phase 1: Compute offset matrices (single-threaded, under lock)
-    // offset = inverseBind × currentWorld — must happen before skinning
-    // ================================================================
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        if (!skinning_.HasSkeleton() || !skinning_.IsReady()) return;
-        skinning_.ComputeOffsetMatrices();
-    }
-    // After this point, offsetMatrices_ and geosetWeights_ are immutable
-    // until the next ComputeOffsetMatrices call (next frame).
-    // The Max thread only writes to currentMatrices_ (via UpdateBones),
-    // which we don't read during skinning. So parallel access is safe.
-
-    // ================================================================
-    // Phase 2: Parallel CPU skinning — each geoset independently
-    // Each geoset reads from shared (immutable) bone data and writes
-    // to its own output vector. No shared mutable state = no races.
-    // ================================================================
     struct SkinJob {
+        SkinningSystem* skin;
         int geosetId;
         const std::vector<Vertex>* baseVerts;
         std::vector<Vertex> skinned;
@@ -516,29 +544,34 @@ void Renderer::UpdateAnimation() {
         bool ok = false;
     };
 
+    // Phase 1: Compute offset matrices for all models (under lock)
     std::vector<SkinJob> jobs;
-    jobs.reserve(gpuGeosets_.size());
-    for (auto& geo : gpuGeosets_) {
-        if (!geo.hasSkinning || geo.baseVertices.empty() || !geo.vb) continue;
-        SkinJob j;
-        j.geosetId = geo.geosetId;
-        j.baseVerts = &geo.baseVertices;
-        j.vb = geo.vb;
-        jobs.push_back(std::move(j));
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        for (auto& [h, miPtr] : models_) {
+            auto* mi = miPtr.get();
+            if (!mi->skinning.HasSkeleton() || !mi->skinning.IsReady()) continue;
+            mi->skinning.ComputeOffsetMatrices();
+            for (auto& geo : mi->gpuGeosets) {
+                if (!geo.hasSkinning || geo.baseVertices.empty() || !geo.vb) continue;
+                SkinJob j;
+                j.skin = &mi->skinning;
+                j.geosetId = geo.geosetId;
+                j.baseVerts = &geo.baseVertices;
+                j.vb = geo.vb;
+                jobs.push_back(std::move(j));
+            }
+        }
     }
     if (jobs.empty()) return;
 
-    // Parallel for_each: skin all geosets across available CPU cores
-    // SkinVertices is const — reads offsetMatrices_ + geosetWeights_ (immutable)
-    // Each job writes to its own 'skinned' vector — zero contention
+    // Phase 2: Parallel CPU skinning across all models
     std::for_each(std::execution::par, jobs.begin(), jobs.end(),
-        [this](SkinJob& j) {
-            j.ok = skinning_.SkinVertices(j.geosetId, *j.baseVerts, j.skinned);
+        [](SkinJob& j) {
+            j.ok = j.skin->SkinVertices(j.geosetId, *j.baseVerts, j.skinned);
         });
 
-    // ================================================================
-    // Phase 3: Upload results to GPU (single-threaded — DX11 requirement)
-    // ================================================================
+    // Phase 3: Upload results to GPU (single-threaded)
     for (auto& j : jobs) {
         if (!j.ok) continue;
         D3D11_MAPPED_SUBRESOURCE mapped;
@@ -556,60 +589,63 @@ void Renderer::UpdateAnimation() {
 
 void Renderer::UpdateParticles(float dt) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    particles_.Simulate(dt);
+    for (auto& [h, mi] : models_)
+        mi->particles.Simulate(dt);
 }
 
 void Renderer::RenderParticles() {
+    for (auto& [_mh, _mi] : models_) {
+    auto* mi = _mi.get();
     std::vector<Vertex> verts;
     std::vector<int> emitterIds;
+    std::vector<int> vertCounts;
 
     // Snapshot all data under one lock
     float pitch, yaw;
     XMMATRIX viewMat;
-    std::vector<ParticleEmitterConfig> configs;  // config per emitter in emitterIds order
+    std::vector<ParticleEmitterConfig> configs;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        if (!particles_.HasEmitters()) return;
+        if (!mi->particles.HasEmitters()) continue;
         pitch   = camera_.GetPitch();
         yaw     = camera_.GetYaw();
         viewMat = camera_.GetViewMatrix();
-        particles_.BuildBillboards(pitch, yaw, verts, emitterIds);
+        mi->particles.BuildBillboards(pitch, yaw, verts, emitterIds, vertCounts);
 
-        // Snapshot configs for each emitter
         for (int eid : emitterIds) {
-            auto* c = particles_.GetConfig(eid);
+            auto* c = mi->particles.GetConfig(eid);
             configs.push_back(c ? *c : ParticleEmitterConfig{});
         }
     }
     // Lock released — safe to call DX11
 
-    if (verts.empty()) return;
+    if (verts.empty()) continue;
 
     int vertCount = (int)verts.size();
 
     // Grow particle VB if needed
-    if (!particleVB_ || vertCount > particleVBSize_) {
-        SafeRelease(particleVB_);
+    if (!mi->particleVB || vertCount > mi->particleVBSize) {
+        SafeRelease(mi->particleVB);
         int newSize = (std::max)(vertCount, 1024);
         D3D11_BUFFER_DESC bd = {};
         bd.ByteWidth      = (UINT)(sizeof(Vertex) * newSize);
         bd.Usage          = D3D11_USAGE_DYNAMIC;
         bd.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        device_->CreateBuffer(&bd, nullptr, &particleVB_);
-        particleVBSize_ = newSize;
+        device_->CreateBuffer(&bd, nullptr, &mi->particleVB);
+        mi->particleVBSize = newSize;
     }
 
     // Upload vertex data
     D3D11_MAPPED_SUBRESOURCE mapped;
-    if (FAILED(context_->Map(particleVB_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-        return;
+    if (FAILED(context_->Map(mi->particleVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        continue;
     memcpy(mapped.pData, verts.data(), sizeof(Vertex) * vertCount);
-    context_->Unmap(particleVB_, 0);
+    context_->Unmap(mi->particleVB, 0);
 
     // Bind particle VB
     UINT stride = sizeof(Vertex), offset = 0;
-    context_->IASetVertexBuffers(0, 1, &particleVB_, &stride, &offset);
+    context_->IASetVertexBuffers(0, 1, &mi->particleVB, &stride, &offset);
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     // Set main shader + input layout
@@ -621,34 +657,7 @@ void Renderer::RenderParticles() {
     context_->RSSetState(rsNoCull_);
 
     // Render per-emitter with correct blend state and texture
-    // BuildBillboards generates 6 verts per particle, in emitter order
     int drawOffset = 0;
-
-    for (int ei = 0; ei < (int)emitterIds.size(); ei++) {
-        auto& cfg = configs[ei];
-
-        // Count particles for this emitter by scanning verts
-        // (they're contiguous per emitter)
-        // Actually, we need to know how many particles each emitter contributed.
-        // Re-derive from the configs/particles — simpler: track counts during BuildBillboards
-        // For now, scan forward for matching vertex color patterns or just divide evenly.
-        // BETTER: count non-dead particles per emitter.
-    }
-
-    // Simpler approach: just draw all particles grouped by emitter
-    // We know emitters are in emitterIds order, 6 verts per particle
-    // Re-count from particle system under lock
-    std::vector<int> vertCounts;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        for (int eid : emitterIds) {
-            int start = 0, count = 0;
-            particles_.GetEmitterVertexRange(eid, vertCount, emitterIds, start, count);
-            vertCounts.push_back(count);
-        }
-    }
-
-    drawOffset = 0;
     for (int ei = 0; ei < (int)emitterIds.size(); ei++) {
         auto& cfg = configs[ei];
         int count = vertCounts[ei];
@@ -685,8 +694,8 @@ void Renderer::RenderParticles() {
 
         // Bind texture
         ID3D11ShaderResourceView* srv = defaultTexSRV_;
-        if (cfg.textureId >= 0 && gpuTextures_.count(cfg.textureId))
-            srv = gpuTextures_[cfg.textureId].srv;
+        if (cfg.textureId >= 0 && mi->gpuTextures.count(cfg.textureId))
+            srv = mi->gpuTextures[cfg.textureId].srv;
         if (!srv) srv = defaultTexSRV_;
         context_->PSSetShaderResources(0, 1, &srv);
 
@@ -694,6 +703,7 @@ void Renderer::RenderParticles() {
         context_->Draw(count, drawOffset);
         drawOffset += count;
     }
+    } // end for each model
 }
 
 // ============================================================================
@@ -702,10 +712,13 @@ void Renderer::RenderParticles() {
 
 void Renderer::UpdateRibbons(float dt) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    ribbons_.Simulate(dt);
+    for (auto& [h, mi] : models_)
+        mi->ribbons.Simulate(dt);
 }
 
 void Renderer::RenderRibbons() {
+    for (auto& [_mh, _mi] : models_) {
+    auto* mi = _mi.get();
     std::vector<Vertex> verts;
     std::vector<int> emitterIds;
     XMMATRIX viewMat;
@@ -713,39 +726,39 @@ void Renderer::RenderRibbons() {
 
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        if (!ribbons_.HasEmitters()) return;
+        if (!mi->ribbons.HasEmitters()) continue;
         viewMat = camera_.GetViewMatrix();
-        ribbons_.BuildStrips(verts, emitterIds);
+        mi->ribbons.BuildStrips(verts, emitterIds);
         for (int eid : emitterIds) {
-            auto* c = ribbons_.GetConfig(eid);
+            auto* c = mi->ribbons.GetConfig(eid);
             configs.push_back(c ? *c : RibbonEmitterConfig{});
         }
     }
 
-    if (verts.empty()) return;
+    if (verts.empty()) continue;
     int vertCount = (int)verts.size();
 
     // Grow ribbon VB if needed
-    if (!ribbonVB_ || vertCount > ribbonVBSize_) {
-        SafeRelease(ribbonVB_);
+    if (!mi->ribbonVB || vertCount > mi->ribbonVBSize) {
+        SafeRelease(mi->ribbonVB);
         int newSize = (std::max)(vertCount, 512);
         D3D11_BUFFER_DESC bd = {};
         bd.ByteWidth      = (UINT)(sizeof(Vertex) * newSize);
         bd.Usage          = D3D11_USAGE_DYNAMIC;
         bd.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        device_->CreateBuffer(&bd, nullptr, &ribbonVB_);
-        ribbonVBSize_ = newSize;
+        device_->CreateBuffer(&bd, nullptr, &mi->ribbonVB);
+        mi->ribbonVBSize = newSize;
     }
 
     D3D11_MAPPED_SUBRESOURCE mapped;
-    if (FAILED(context_->Map(ribbonVB_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-        return;
+    if (FAILED(context_->Map(mi->ribbonVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        continue;
     memcpy(mapped.pData, verts.data(), sizeof(Vertex) * vertCount);
-    context_->Unmap(ribbonVB_, 0);
+    context_->Unmap(mi->ribbonVB, 0);
 
     UINT stride = sizeof(Vertex), offset = 0;
-    context_->IASetVertexBuffers(0, 1, &ribbonVB_, &stride, &offset);
+    context_->IASetVertexBuffers(0, 1, &mi->ribbonVB, &stride, &offset);
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context_->IASetInputLayout(inputLayout_);
     context_->VSSetShader(vertexShader_, nullptr, 0);
@@ -759,7 +772,7 @@ void Renderer::RenderRibbons() {
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
         for (int eid : emitterIds)
-            vertCounts.push_back(ribbons_.GetEmitterVertCount(eid));
+            vertCounts.push_back(mi->ribbons.GetEmitterVertCount(eid));
     }
 
     for (int ei = 0; ei < (int)emitterIds.size(); ei++) {
@@ -793,8 +806,8 @@ void Renderer::RenderRibbons() {
 
         // Bind texture
         ID3D11ShaderResourceView* srv = defaultTexSRV_;
-        if (cfg.textureId >= 0 && gpuTextures_.count(cfg.textureId))
-            srv = gpuTextures_[cfg.textureId].srv;
+        if (cfg.textureId >= 0 && mi->gpuTextures.count(cfg.textureId))
+            srv = mi->gpuTextures[cfg.textureId].srv;
         if (!srv) srv = defaultTexSRV_;
         context_->PSSetShaderResources(0, 1, &srv);
 
@@ -804,6 +817,7 @@ void Renderer::RenderRibbons() {
 
     // Restore default rasterizer
     context_->RSSetState(rsDefault_);
+    } // end for each model
 }
 
 // ============================================================================
@@ -815,8 +829,9 @@ void Renderer::RenderCollisions() {
     XMMATRIX viewMat;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        if (collisionShapes_.empty()) return;
-        shapes = collisionShapes_;
+        for (auto& [h, mi] : models_)
+            shapes.insert(shapes.end(), mi->collisionShapes.begin(), mi->collisionShapes.end());
+        if (shapes.empty()) return;
         viewMat = camera_.GetViewMatrix();
     }
 
@@ -977,15 +992,16 @@ void Renderer::RenderThread(int width, int height) {
 
         double fpsDt = (double)(now.QuadPart - fpsTimer.QuadPart) / freq.QuadPart;
         if (fpsDt >= 1.0) {
-            int nGeo = (int)gpuGeosets_.size();
-            int nTex = (int)gpuTextures_.size();
-            int nBones = 0;
-            int nParts = 0;
-            int nSegs = 0;
-            { std::lock_guard<std::mutex> lock(dataMutex_);
-              nBones = skinning_.BoneCount();
-              nParts = particles_.GetTotalParticleCount();
-              nSegs = ribbons_.GetTotalSegmentCount();
+            int nGeo = 0, nTex = 0, nBones = 0, nParts = 0, nSegs = 0;
+            {
+                std::lock_guard<std::mutex> lock(dataMutex_);
+                for (auto& [h, mi] : models_) {
+                    nGeo += (int)mi->gpuGeosets.size();
+                    nTex += (int)mi->gpuTextures.size();
+                    nBones += mi->skinning.BoneCount();
+                    nParts += mi->particles.GetTotalParticleCount();
+                    nSegs += mi->ribbons.GetTotalSegmentCount();
+                }
             }
             wchar_t title[300];
             swprintf_s(title,
@@ -1451,7 +1467,7 @@ void Renderer::CleanupD3D() {
     SafeRelease(dsDisabled_); SafeRelease(dsNoWrite_); SafeRelease(dsDefault_);
     SafeRelease(rsNoCull_); SafeRelease(rsDefault_);
     SafeRelease(cbPerFrame_);
-    SafeRelease(gridVB_); SafeRelease(particleVB_); SafeRelease(ribbonVB_);
+    SafeRelease(gridVB_);
     SafeRelease(vcCubeVB_); SafeRelease(vcCubeIB_); SafeRelease(vcOutlineVB_);
     SafeRelease(vcFaceTexSRV_); SafeRelease(vcFaceTex_);
     SafeRelease(lineInputLayout_); SafeRelease(linePixelShader_); SafeRelease(lineVertexShader_);
@@ -1677,9 +1693,8 @@ void Renderer::RenderGrid() {
 // ============================================================================
 
 void Renderer::RenderGeosets() {
-    if (gpuGeosets_.empty()) return;
+    if (models_.empty()) return;
 
-    // Multi-pass layer-by-layer rendering (matches WC3 engine)
     context_->IASetInputLayout(inputLayout_);
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context_->VSSetShader(vertexShader_, nullptr, 0);
@@ -1688,21 +1703,30 @@ void Renderer::RenderGeosets() {
     context_->PSSetConstantBuffers(0, 1, &cbPerFrame_);
     context_->PSSetSamplers(0, 1, &samplerLinear_);
 
-    // Sort geosets by (renderPass of layer 0, priorityPlane, geosetId)
-    std::vector<int> sortedIdx(gpuGeosets_.size());
-    for (int i = 0; i < (int)sortedIdx.size(); ++i) sortedIdx[i] = i;
-    std::sort(sortedIdx.begin(), sortedIdx.end(), [&](int a, int b) {
-        auto& ga = gpuGeosets_[a];
-        auto& gb = gpuGeosets_[b];
-        int matIdA = ga.materialId, matIdB = gb.materialId;
-        int roA = 1, roB = 1;
-        if (matIdA >= 0 && matIdA < (int)gpuMaterials_.size() && !gpuMaterials_[matIdA].cpu.layers.empty())
-            roA = GetRenderOrder(gpuMaterials_[matIdA].cpu.layers[0].filterMode);
-        if (matIdB >= 0 && matIdB < (int)gpuMaterials_.size() && !gpuMaterials_[matIdB].cpu.layers.empty())
-            roB = GetRenderOrder(gpuMaterials_[matIdB].cpu.layers[0].filterMode);
-        if (roA != roB) return roA < roB;
-        if (ga.priorityPlane != gb.priorityPlane) return ga.priorityPlane < gb.priorityPlane;
-        return ga.geosetId < gb.geosetId;
+    // Collect geoset draw refs from all models for global sort
+    struct GeosetRef {
+        ModelInstance* mi;
+        int idx;
+        int renderOrder, priorityPlane, geosetId;
+    };
+    std::vector<GeosetRef> refs;
+    for (auto& [h, miPtr] : models_) {
+        auto* mi = miPtr.get();
+        for (int i = 0; i < (int)mi->gpuGeosets.size(); i++) {
+            auto& geo = mi->gpuGeosets[i];
+            int ro = 1;
+            int matId = geo.materialId;
+            if (matId >= 0 && matId < (int)mi->gpuMaterials.size() && !mi->gpuMaterials[matId].cpu.layers.empty())
+                ro = GetRenderOrder(mi->gpuMaterials[matId].cpu.layers[0].filterMode);
+            refs.push_back({mi, i, ro, geo.priorityPlane, geo.geosetId});
+        }
+    }
+    if (refs.empty()) return;
+
+    std::sort(refs.begin(), refs.end(), [](const GeosetRef& a, const GeosetRef& b) {
+        if (a.renderOrder != b.renderOrder) return a.renderOrder < b.renderOrder;
+        if (a.priorityPlane != b.priorityPlane) return a.priorityPlane < b.priorityPlane;
+        return a.geosetId < b.geosetId;
     });
 
     XMMATRIX view2;
@@ -1710,26 +1734,15 @@ void Renderer::RenderGeosets() {
     float aspect2 = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
     XMMATRIX proj2 = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect2, 1.0f, 10000.0f);
 
-    // Per-layer texture animation lookup
-    auto getTexAnim = [&](int matId, int layerIdx, float& uOff, float& vOff, float& uTile, float& vTile, float& rot) {
-        uOff = vOff = 0; uTile = vTile = 1; rot = 0;
-        int key = matId * 1000 + layerIdx;
-        auto it = matTexAnim_.find(key);
-        if (it != matTexAnim_.end()) {
-            uOff = it->second.uOff; vOff = it->second.vOff;
-            uTile = it->second.uTile; vTile = it->second.vTile;
-            rot = it->second.rotation;
-        }
-    };
-
-    for (int si : sortedIdx) {
-        auto& geo = gpuGeosets_[si];
+    for (auto& ref : refs) {
+        auto* mi = ref.mi;
+        auto& geo = mi->gpuGeosets[ref.idx];
         if (!geo.vb || !geo.ib || geo.indexCount == 0) continue;
 
         int matId = geo.materialId;
         GPUMaterial* mat = nullptr;
-        if (matId >= 0 && matId < (int)gpuMaterials_.size())
-            mat = &gpuMaterials_[matId];
+        if (matId >= 0 && matId < (int)mi->gpuMaterials.size())
+            mat = &mi->gpuMaterials[matId];
 
         float geoAlpha = geo.geosetAlpha;
         if (geoAlpha < 0.01f) continue;
@@ -1753,10 +1766,6 @@ void Renderer::RenderGeosets() {
                 layerTexId  = L.textureId;
             }
 
-            // Each layer draws in the pass matching its own filterMode
-            // if (GetRenderOrder(layerFilter) != pass) continue;
-
-            // Bind VB/IB on first layer drawn this pass
             if (!anyLayerThisPass) {
                 UINT stride = sizeof(Vertex), offset = 0;
                 context_->IASetVertexBuffers(0, 1, &geo.vb, &stride, &offset);
@@ -1764,36 +1773,33 @@ void Renderer::RenderGeosets() {
                 anyLayerThisPass = true;
             }
 
-            // Apply this layer's blend/depth state
-            // ApplyFilterMode sets depth write ON for None/Transparent,
-            // OFF for Blend/Additive/AddAlpha/Modulate/Modulate2x.
-            // This is correct for all layers — an opaque or alpha-tested
-            // layer should write depth even if it's not layer 0.
             ApplyFilterMode(layerFilter, layerFlags);
 
-            // Combined opacity (geoset visibility * layer opacity)
             float combinedAlpha = geoAlpha * layerAlpha;
-            if (combinedAlpha < 0.004f) continue;  // skip invisible layers
+            if (combinedAlpha < 0.004f) continue;
 
-            // Force alpha blend when combined alpha < 1
             if (combinedAlpha < 0.99f && layerFilter <= FILTER_TRANSPARENT) {
                 float blend[] = {0,0,0,0};
                 context_->OMSetBlendState(bsAlphaBlend_, blend, 0xFFFFFFFF);
                 context_->OMSetDepthStencilState(dsNoWrite_, 0);
             }
 
-            // Alpha test threshold — always active regardless of opacity.
-            // The shader tests against texture alpha (not final alpha),
-            // so the threshold works correctly at any opacity level.
             float alphaRef = 0.0f;
             if (layerFilter == FILTER_TRANSPARENT) alphaRef = 0.75f;
             else if (layerFilter >= FILTER_MODULATE) alphaRef = 0.02f;
 
-            // Texture animation (per-layer)
-            float uOff, vOff, uTile, vTile, texRot;
-            getTexAnim(geo.materialId, li, uOff, vOff, uTile, vTile, texRot);
+            // Texture animation (per-layer, per-model)
+            float uOff=0, vOff=0, uTile=1, vTile=1, texRot=0;
+            {
+                int key = matId * 1000 + li;
+                auto it = mi->matTexAnim.find(key);
+                if (it != mi->matTexAnim.end()) {
+                    uOff = it->second.uOff; vOff = it->second.vOff;
+                    uTile = it->second.uTile; vTile = it->second.vTile;
+                    texRot = it->second.rotation;
+                }
+            }
 
-            // Update constant buffer
             {
                 D3D11_MAPPED_SUBRESOURCE mapped;
                 context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
@@ -1816,10 +1822,9 @@ void Renderer::RenderGeosets() {
                 context_->Unmap(cbPerFrame_, 0);
             }
 
-            // Bind this layer's texture
             ID3D11ShaderResourceView* srv = defaultTexSRV_;
-            if (layerTexId >= 0 && gpuTextures_.count(layerTexId))
-                srv = gpuTextures_[layerTexId].srv;
+            if (layerTexId >= 0 && mi->gpuTextures.count(layerTexId))
+                srv = mi->gpuTextures[layerTexId].srv;
             if (!srv) srv = defaultTexSRV_;
             context_->PSSetShaderResources(0, 1, &srv);
 

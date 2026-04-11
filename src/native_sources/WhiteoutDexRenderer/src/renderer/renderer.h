@@ -10,7 +10,9 @@
 #include "particle.h"
 #include "ribbon.h"
 #include "model_types.h"
+#include "model_instance.h"
 #include <unordered_map>
+#include <memory>
 
 namespace WhiteoutDex {
 
@@ -26,75 +28,6 @@ struct CameraPreset {
 struct LineVertex {
     XMFLOAT3 position;
     XMFLOAT4 color;
-};
-
-// ============================================================================
-// Staged data (CPU side — written by API thread, read by render thread)
-// ============================================================================
-
-struct StagedTexture {
-    std::vector<uint8_t> pixels;
-    int width  = 0;
-    int height = 0;
-    int replaceableId = 0;
-};
-
-struct StagedMaterialLayer {
-    int filterMode  = 0;
-    int textureId   = -1;
-    float alpha     = 1.0f;
-    int flags       = 0;
-};
-
-struct StagedMaterial {
-    std::vector<StagedMaterialLayer> layers;
-    int priorityPlane = 0;   // -20 to 20, render order within same filter pass
-    int sortOrder     = 0;   // 0=unused, 1=near-to-far, 2=far-to-near
-};
-
-struct StagedGeoset {
-    std::vector<Vertex>   vertices;
-    std::vector<uint32_t> indices;
-    int materialId = -1;
-};
-
-// ============================================================================
-// GPU resources (render thread only)
-// ============================================================================
-
-struct GPUGeoset {
-    int geosetId       = -1;
-    ID3D11Buffer* vb   = nullptr;  // DYNAMIC for skinning updates
-    ID3D11Buffer* ib   = nullptr;
-    int indexCount      = 0;
-    int vertexCount     = 0;
-    int materialId      = -1;
-
-    // Phase 4: CPU data for skinning
-    std::vector<Vertex> baseVertices;
-    bool hasSkinning    = false;
-    float geosetAlpha   = 1.0f;      // visibility: 0=hidden, 1=visible
-    XMFLOAT3 geosetColor = {1,1,1};  // color tint: RGB 0-1
-    XMMATRIX worldMatrix = XMMatrixIdentity();  // node world transform (used for unskinned meshes)
-    int priorityPlane   = 0;         // render order within same filter pass
-
-    void Release() {
-        SafeRelease(vb); SafeRelease(ib);
-        indexCount = 0; vertexCount = 0;
-        baseVertices.clear(); baseVertices.shrink_to_fit();
-    }
-};
-
-struct GPUTexture {
-    ID3D11Texture2D*          tex = nullptr;
-    ID3D11ShaderResourceView* srv = nullptr;
-
-    void Release() { SafeRelease(srv); SafeRelease(tex); }
-};
-
-// Per-material CPU-side data (layers, priority plane, etc.)
-struct GPUMaterial {
-    StagedMaterial cpu;
 };
 
 // ============================================================================
@@ -119,7 +52,18 @@ public:
     // Model data (thread-safe — called from API/MaxScript thread)
     void ClearModel();
 
-    // Typed model loading API (adapter pattern)
+    // Multi-model API — returns handle for the loaded model
+    uint32_t AddModel(const std::vector<MeshData>& meshes,
+                      const std::vector<TextureData>& textures,
+                      const std::vector<MaterialData>& materials,
+                      const SkeletonData& skeleton,
+                      const std::vector<SkinWeightData>& skinWeights,
+                      const std::vector<ParticleEmitterConfig>& particles,
+                      const std::vector<RibbonEmitterConfig>& ribbons,
+                      const std::vector<CollisionShapeData>& collisions);
+    void RemoveModel(uint32_t handle);
+
+    // Backward-compatible single-model API (operates on focus model)
     void LoadModel(const std::vector<MeshData>& meshes,
                    const std::vector<TextureData>& textures,
                    const std::vector<MaterialData>& materials,
@@ -129,12 +73,15 @@ public:
                    const std::vector<RibbonEmitterConfig>& ribbons,
                    const std::vector<CollisionShapeData>& collisions);
 
-    // Apply pre-computed per-frame state (call from host thread each frame)
-    void ApplyFrameState(const FrameState& state, int timeMs);
+    // Apply pre-computed per-frame state
+    void ApplyFrameState(uint32_t handle, const FrameState& state, int timeMs);
+    void ApplyFrameState(const FrameState& state, int timeMs); // focus model
 
-    // Update materials and textures without full model reload (thread-safe)
-    void UpdateMaterials(const std::vector<MaterialData>& materials,
+    // Update materials and textures without full model reload
+    void UpdateMaterials(uint32_t handle, const std::vector<MaterialData>& materials,
                          const std::vector<TextureData>& textures);
+    void UpdateMaterials(const std::vector<MaterialData>& materials,
+                         const std::vector<TextureData>& textures); // focus model
 
     // Team color (RGB 0-255)
     void SetTeamColor(uint8_t r, uint8_t g, uint8_t b);
@@ -241,31 +188,23 @@ private:
     bool                  showRibbons_    = true;
     bool                  showCollisions_ = false;  // off by default
 
-    // ---- Collision shapes ----
-    struct CollisionShape {
-        int type = 0;            // 0=box, 1=sphere
-        XMFLOAT3 vmin = {0,0,0};
-        XMFLOAT3 vmax = {0,0,0};
-        float radius = 0;
-        XMMATRIX transform = XMMatrixIdentity();
-    };
-    std::vector<CollisionShape> collisionShapes_;
+    // ---- Model instances ----
+    uint32_t nextModelHandle_ = 1;
+    std::unordered_map<uint32_t, std::unique_ptr<ModelInstance>> models_;
+    uint32_t focusModelHandle_ = 0;
 
-    // ---- Staged model data (API thread writes, render thread reads) ----
-    std::unordered_map<int, StagedGeoset>   stagedGeosets_;
-    std::unordered_map<int, StagedMaterial> stagedMaterials_;
-    std::unordered_map<int, StagedTexture>  stagedTextures_;
-    bool                                    stagedDirty_ = false;
-    bool                                    stagedClear_ = false;
+    // Helper: get focus model (may be null)
+    ModelInstance* focusModel() const {
+        auto it = models_.find(focusModelHandle_);
+        return (it != models_.end()) ? it->second.get() : nullptr;
+    }
+    ModelInstance* getModel(uint32_t h) const {
+        auto it = models_.find(h);
+        return (it != models_.end()) ? it->second.get() : nullptr;
+    }
 
-    // Per-layer texture animation params (updated per frame)
-    // Key: materialId * 1000 + layerIndex
-    struct TexAnimData { float uOff=0, vOff=0, uTile=1, vTile=1, rotation=0; };
-    std::unordered_map<int, TexAnimData>    matTexAnim_;
-
-    // Team color
+    // Team color (shared across all models)
     COLORREF teamColor_ = RGB(255, 0, 0);
-    std::unordered_map<int, int> replaceableTexMap_;  // textureId → replaceableId
 
     // Camera presets
     std::vector<CameraPreset> cameraPresets_;
@@ -275,25 +214,6 @@ private:
 
     // Window icon
     HICON icon_ = nullptr;
-
-    // ---- Skinning system (protected by dataMutex_) ----
-    SkinningSystem                          skinning_;
-    bool                                    skinDirty_ = false;
-
-    // ---- Particle system (protected by dataMutex_) ----
-    ParticleSystem                          particles_;
-    ID3D11Buffer*                           particleVB_ = nullptr;
-    int                                     particleVBSize_ = 0;
-
-    // ---- Ribbon system (protected by dataMutex_) ----
-    RibbonSystem                            ribbons_;
-    ID3D11Buffer*                           ribbonVB_ = nullptr;
-    int                                     ribbonVBSize_ = 0;  // current VB capacity in vertices
-
-    // ---- GPU model data (render thread only) ----
-    std::vector<GPUGeoset>                  gpuGeosets_;
-    std::unordered_map<int, GPUTexture>     gpuTextures_;
-    std::vector<GPUMaterial>                gpuMaterials_;
 
     // ---- DX11 core ----
     ID3D11Device*           device_       = nullptr;
