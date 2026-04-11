@@ -15,6 +15,7 @@
 #include <gencam.h>
 #include <ilayer.h>
 #include <ilayermanager.h>
+#include <modstack.h>
 #include <maxscript/maxscript.h>
 
 // ── Helpers ────────────────────────────────────────────────
@@ -616,8 +617,42 @@ void Wc3VertexColorBuilder::applyVertexColors(
     const ir::IRModel& irModel, const std::vector<INode*>& meshNodes,
     Interface* gi, core::ExportErrorReporter& reporter)
 {
-    // TODO: Phase 4 — create Wc3VertexMod modifier and apply to mesh nodes
-    (void)irModel; (void)meshNodes; (void)gi; (void)reporter;
+    for (const auto& ga : irModel.geosetAnims) {
+        if (!ga.usesColor && !ga.dropShadow) continue;
+        if (ga.meshIndex < 0 || ga.meshIndex >= static_cast<int32_t>(meshNodes.size()))
+            continue;
+        INode* meshNode = meshNodes[ga.meshIndex];
+        if (!meshNode) continue;
+
+        // Create Wc3VertexMod modifier
+        Object* modObj = static_cast<Object*>(
+            gi->CreateInstance(OSM_CLASS_ID, mdx_ids::WC3_VERTEX_MOD));
+        if (!modObj) continue;
+        auto* mod = dynamic_cast<Modifier*>(modObj);
+        if (!mod) { modObj->DeleteMe(); continue; }
+
+        auto* ref = dynamic_cast<ReferenceTarget*>(mod);
+        if (ref) {
+            pbSetBool(ref, L"UsesDropShadow", ga.dropShadow ? TRUE : FALSE);
+            pbSetBool(ref, L"UsesColor", ga.usesColor ? TRUE : FALSE);
+
+            // Static color (BGR→RGB already done in disassembler)
+            if (ga.usesColor) {
+                pbSetColor(ref, L"VertexColor", ga.color);
+            }
+        }
+
+        // Add modifier to mesh node
+        Object* objRef = meshNode->GetObjectRef();
+        IDerivedObject* dobj = nullptr;
+        if (objRef && objRef->SuperClassID() == GEN_DERIVOB_CLASS_ID) {
+            dobj = static_cast<IDerivedObject*>(objRef);
+        } else {
+            dobj = CreateDerivedObject(objRef);
+            meshNode->SetObjectRef(dobj);
+        }
+        dobj->AddModifier(mod);
+    }
 }
 
 // ── Wc3PopcornBuilder (v1200) ───────────────────────────────

@@ -923,6 +923,7 @@ void animateColorNamed(ReferenceTarget* ref, const wchar_t* name,
         p.pb->SetControllerByID(p.id, 0, ctrl, FALSE);
 }
 
+
 // Animate a color paramblock param from an IR color track index.
 void animateColorPB(IParamBlock2* pb, ParamID pid,
                     int32_t trackIndex, const ir::IRModel& irModel)
@@ -2017,25 +2018,49 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         if (opts.core.importVisibility) {
             ILOG << "\n==== Visibility Animations ====\n";
 
-            // Geoset animations: alpha track → mesh node visibility
+            // Geoset animations: alpha track → mesh node visibility,
+            //                    color track → Wc3VertexMod VertexColor
             for (const auto& ga : irModel.geosetAnims) {
-                if (ga.alphaTrackIndex < 0 ||
-                    ga.alphaTrackIndex >= static_cast<int32_t>(irModel.floatTracks.size()))
-                    continue;
-                const auto& track = irModel.floatTracks[ga.alphaTrackIndex];
-                if (track.empty()) continue;
-
-                // Find the mesh node for this geoset
                 if (ga.meshIndex < 0 ||
                     ga.meshIndex >= static_cast<int32_t>(meshNodes.size()))
                     continue;
                 INode* meshNode = meshNodes[ga.meshIndex];
                 if (!meshNode) continue;
 
-                ILOG << "  geosetAnim mesh[" << ga.meshIndex << "] '"
-                     << narrow(meshNode->GetName()) << "' keys=" << track.keys.size()
-                     << " interp=" << static_cast<int>(track.interpolation) << "\n";
-                insertVisibilityKeys(meshNode, track, irModel.sequences);
+                // Alpha → visibility
+                if (ga.alphaTrackIndex >= 0 &&
+                    ga.alphaTrackIndex < static_cast<int32_t>(irModel.floatTracks.size())) {
+                    const auto& track = irModel.floatTracks[ga.alphaTrackIndex];
+                    if (!track.empty()) {
+                        ILOG << "  geosetAnim mesh[" << ga.meshIndex << "] '"
+                             << narrow(meshNode->GetName()) << "' vis keys=" << track.keys.size() << "\n";
+                        insertVisibilityKeys(meshNode, track, irModel.sequences);
+                    }
+                }
+
+                // Color → animate Wc3VertexMod.VertexColor on the mesh node's modifier
+                if (ga.usesColor && ga.colorTrackIndex >= 0 &&
+                    ga.colorTrackIndex < static_cast<int32_t>(irModel.colorTracks.size())) {
+                    // Find the Wc3VertexMod modifier on this mesh
+                    Object* objRef = meshNode->GetObjectRef();
+                    if (objRef && objRef->SuperClassID() == GEN_DERIVOB_CLASS_ID) {
+                        auto* dobj = static_cast<IDerivedObject*>(objRef);
+                        for (int mi = 0; mi < dobj->NumModifiers(); mi++) {
+                            Modifier* mod = dobj->GetModifier(mi);
+                            if (mod && mod->ClassID() == mdx_ids::WC3_VERTEX_MOD) {
+                                auto* modRef = dynamic_cast<ReferenceTarget*>(mod);
+                                if (modRef) {
+                                    animateColorNamed(modRef, L"VertexColor",
+                                                      ga.colorTrackIndex, irModel);
+                                    ILOG << "  geosetAnim mesh[" << ga.meshIndex << "] '"
+                                         << narrow(meshNode->GetName()) << "' color keys="
+                                         << irModel.colorTracks[ga.colorTrackIndex].keys.size() << "\n";
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
             }
 
             // Object visibility: lights, attachments, PE1, PE2, ribbons
