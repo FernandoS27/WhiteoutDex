@@ -1603,15 +1603,14 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 fs::path full = fs::path(modelDir) / relPath;
                 if (fs::exists(full, ec)) return full.wstring();
 
-                // Try alternate extension
-                fs::path stem = full; stem.replace_extension();
+                // Try alternate extension (.mdx ↔ .mdl)
+                fs::path stem = full;
+                stem.replace_extension();
                 std::wstring ext = full.extension().wstring();
                 std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
                 fs::path alt;
-                if (ext == L".mdl")      alt = stem; alt += L".mdx";
-                if (fs::exists(alt, ec)) return alt.wstring();
-                if (ext == L".mdx") { alt = stem; alt += L".mdl"; }
-                else                { alt = stem; alt += L".mdx"; }
+                if (ext == L".mdl") { alt = stem; alt += L".mdx"; }
+                else                { alt = stem; alt += L".mdl"; }
                 if (fs::exists(alt, ec)) return alt.wstring();
                 return {};
             };
@@ -1688,6 +1687,11 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                         if (ext == L".mdl") fmt = whiteout::mdx::MDLXFormat::MDL;
                     }
 
+                    // Child model's directory for resolving its own textures
+                    std::wstring childDir = fs::path(resolvedModel).parent_path().wstring();
+                    if (!childDir.empty() && childDir.back() != L'\\' && childDir.back() != L'/')
+                        childDir += L'\\';
+
                     whiteout::mdx::Parser subParser;
                     auto subModel = subParser.parse(
                         std::span<const uint8_t>(buf.data(), buf.size()), fmt);
@@ -1695,6 +1699,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                     for (const auto& tex : subModel.textures) {
                         if (!tex.fileName.empty()) {
                             std::wstring wTexPath(tex.fileName.begin(), tex.fileName.end());
+                            // Try relative to child model first, then parent model dir
+                            mdx_scene::resolveTexturePathFull(childDir, wTexPath, cascPtr);
                             mdx_scene::resolveTexturePathFull(modelDir, wTexPath, cascPtr);
                         }
                     }
@@ -1739,7 +1745,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         }
         if (opts.core.importParticleEmitters1) {
             mdx_scene::Wc3Particle1Builder pe1Builder;
-            pe1Builder.buildParticles(irModel, nodeMap, gi, reporter);
+            pe1Builder.buildParticles(irModel, nodeMap, modelDir, gi, reporter);
         }
         if (opts.core.importParticleEmitters2) {
             mdx_scene::Wc3Particle2Builder pe2Builder;

@@ -16,14 +16,6 @@
 
 namespace WhiteoutDex {
 
-// Camera preset for the camera selector combo box
-struct CameraPreset {
-    std::wstring name;
-    float pitch, yaw, distance;
-    XMFLOAT3 target;
-    bool isLive = false;  // if true, host drives camera (e.g., Max viewport)
-};
-
 // Line vertex for grid/bone rendering
 struct LineVertex {
     XMFLOAT3 position;
@@ -62,6 +54,10 @@ public:
                       const std::vector<RibbonEmitterConfig>& ribbons,
                       const std::vector<CollisionShapeData>& collisions);
     void RemoveModel(uint32_t handle);
+    void SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig>& configs);
+    void SetPE1ChildCoordSpace(CoordSpace space);
+    void SetPE1BasePath(const std::string& basePath);
+    uint32_t GetFocusModelHandle() const { return focusModelHandle_; }
 
     // Backward-compatible single-model API (operates on focus model)
     void LoadModel(const std::vector<MeshData>& meshes,
@@ -118,6 +114,10 @@ private:
     // Phase 5: Particle simulation + rendering
     void UpdateParticles(float dt);
     void RenderParticles();
+
+    // PE1: Model particle lifecycle
+    void UpdatePE1(float dt);
+    void EvaluatePE1Children();
 
     // Phase 5b: Ribbon rendering
     void UpdateRibbons(float dt);
@@ -202,6 +202,18 @@ private:
         auto it = models_.find(h);
         return (it != models_.end()) ? it->second.get() : nullptr;
     }
+
+    // ---- PE1 model template cache (PE1ModelTemplate defined in renderer.cpp) ----
+    struct PE1ModelTemplate;
+    std::unordered_map<std::string, std::shared_ptr<PE1ModelTemplate>> pe1TemplateCache_;
+    static constexpr int kMaxPE1Depth = 3;
+    static constexpr int kMaxPE1Instances = 256;
+    int pe1InstanceCount_ = 0;
+    CoordSpace pe1ChildCoordSpace_ = CoordSpace::MDX;
+
+    std::string pe1BasePath_;  // root directory for resolving PE1 model + texture paths
+    std::shared_ptr<PE1ModelTemplate> getOrLoadTemplate(const std::string& modelPath);
+    void stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl);
 
     // Team color (shared across all models)
     COLORREF teamColor_ = RGB(255, 0, 0);

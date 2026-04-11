@@ -22,4 +22,8 @@ namespace mdx_ids {
     inline const Class_ID WC3_PARTICLES1     (0x12E4F5A6, 0x3B7C8D9E);
     inline const Class_ID WC3_PARTICLES2     (0xD9F33BC9, 0x7A0DA37A);
     inline const Class_ID WC3_RIBBON         (0x937AA064, 0x9EFFA3DA);
+
+    // Cross-DLL interface IDs
+    constexpr ULONG WC3P1_MODEL_PATH_IID    = 0x7B3C8D01;
+    constexpr ULONG WC3P1_MODEL_PREFIX_IID  = 0x7B3C8D02;
 } // namespace mdx_ids

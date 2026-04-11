@@ -42,6 +42,9 @@ public:
             : 0;
 
         g_lastTimeChangedTick = GetTickCount();
+        // Update camera position for billboard evaluation (no-op for MaxSceneAdapter)
+        XMFLOAT3 cp = g_renderer->GetCameraPosition();
+        g_adapter->SetCameraPosition(cp.x, cp.y, cp.z);
         WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs);
         g_renderer->ApplyFrameState(state, timeMs);
     }
@@ -76,6 +79,8 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
             int tpf = GetTicksPerFrame(), fps = GetFrameRate();
             int timeMs = (tpf > 0 && fps > 0)
                 ? (int)((float)t / (float)tpf * 1000.0f / (float)fps) : 0;
+            XMFLOAT3 cp = g_renderer->GetCameraPosition();
+            g_adapter->SetCameraPosition(cp.x, cp.y, cp.z);
             WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs);
             g_renderer->ApplyFrameState(state, timeMs);
         }
@@ -191,6 +196,23 @@ Value* ndxStart_cf(Value** arg_list, int count)
 
     g_renderer->LoadModel(meshes, textures, materials, skeleton,
                           skinW, particles, ribbons, collisions);
+
+    // Register PE1 emitters (model particle emitters)
+    auto pe1Configs = g_adapter->GetPE1Configs();
+    if (!pe1Configs.empty()) {
+        // Max scene operates in Max coordinate space — child MDX models need swizzle
+        g_renderer->SetPE1ChildCoordSpace(WhiteoutDex::CoordSpace::Max);
+        // Set base path for resolving PE1 model files + textures (Max file directory)
+        const MCHAR* maxFile = ip->GetCurFilePath().data();
+        if (maxFile && maxFile[0]) {
+            std::wstring wp(maxFile);
+            auto pos = wp.find_last_of(L'\\');
+            if (pos != std::wstring::npos) wp = wp.substr(0, pos + 1);
+            g_renderer->SetPE1BasePath(std::string(wp.begin(), wp.end()));
+        }
+        g_renderer->SetPE1Configs(g_renderer->GetFocusModelHandle(), pe1Configs);
+        mprintf(_M("  %d PE1 emitters registered\n"), (int)pe1Configs.size());
+    }
 
     // Populate camera combo with scene cameras
     auto cameras = g_adapter->GetCameraPresets();

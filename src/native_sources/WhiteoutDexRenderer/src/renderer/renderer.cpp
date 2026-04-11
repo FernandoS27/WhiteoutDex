@@ -7,6 +7,22 @@
 #include "shaders.h"
 #include "resource.h"
 #include "team_glow_data.h"
+#include "mdx_model_adapter.h"
+#include <whiteout/models/mdx/parser.h>
+
+// PE1 model template — full definition (uses MdxModelAdapter which is now fully included)
+struct WhiteoutDex::Renderer::PE1ModelTemplate {
+    std::shared_ptr<MdxModelAdapter> adapter;
+    std::vector<MeshData> meshes;
+    std::vector<TextureData> textures;
+    std::vector<MaterialData> materials;
+    SkeletonData skeleton;
+    std::vector<SkinWeightData> skinWeights;
+    std::vector<ParticleEmitterConfig> pe2Configs;
+    std::vector<RibbonEmitterConfig> ribbonConfigs;
+    std::vector<CollisionShapeData> collisionConfigs;
+    std::vector<PE1EmitterConfig> pe1Configs;
+};
 #include <windowsx.h>
 #include <commdlg.h>
 #include <execution>   // std::execution::par for parallel skinning
@@ -83,6 +99,252 @@ void Renderer::RemoveModel(uint32_t handle) {
     }
     if (focusModelHandle_ == handle) {
         focusModelHandle_ = models_.empty() ? 0 : models_.begin()->first;
+    }
+}
+
+void Renderer::SetPE1ChildCoordSpace(CoordSpace space) {
+    pe1ChildCoordSpace_ = space;
+}
+
+void Renderer::SetPE1BasePath(const std::string& basePath) {
+    pe1BasePath_ = basePath;
+}
+
+void Renderer::SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig>& configs) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    auto* mi = getModel(handle);
+    if (!mi) return;
+    for (int i = 0; i < (int)configs.size(); i++)
+        mi->pe1.AddEmitter(i, configs[i]);
+}
+
+// ============================================================================
+// PE1 Model Template Cache
+// ============================================================================
+
+std::shared_ptr<Renderer::PE1ModelTemplate> Renderer::getOrLoadTemplate(const std::string& modelPath) {
+    auto it = pe1TemplateCache_.find(modelPath);
+    if (it != pe1TemplateCache_.end()) return it->second;
+
+    // Resolve model file path relative to pe1BasePath_
+    namespace fs = std::filesystem;
+    fs::path fullPath = modelPath;
+    if (!pe1BasePath_.empty() && fullPath.is_relative())
+        fullPath = fs::path(pe1BasePath_) / modelPath;
+
+    // Try original, then with alternate extensions
+    auto tryPath = [](const fs::path& p) -> bool { return fs::exists(p); };
+    if (!tryPath(fullPath)) {
+        // Try .mdx / .mdl extension swap
+        fs::path alt = fullPath;
+        std::string ext = alt.extension().string();
+        if (ext == ".mdx") alt.replace_extension(".mdl");
+        else alt.replace_extension(".mdx");
+        if (tryPath(alt)) fullPath = alt;
+        else {
+            pe1TemplateCache_[modelPath] = nullptr;  // cache miss
+            return nullptr;
+        }
+    }
+
+    // Parse MDX file
+    whiteout::mdx::Parser mdxParser;
+    whiteout::mdx::Model model;
+    try {
+        model = mdxParser.parse(fullPath.string());
+    } catch (...) {
+        pe1TemplateCache_[modelPath] = nullptr;
+        return nullptr;
+    }
+
+    // basePath for texture resolution: use pe1BasePath_ (war3 data root)
+    // so textures like "Textures\Footprint00.blp" resolve correctly
+    fs::path texBasePath = pe1BasePath_.empty() ? fullPath.parent_path() : fs::path(pe1BasePath_);
+
+    auto tmpl = std::make_shared<PE1ModelTemplate>();
+    auto adapter = std::make_shared<MdxModelAdapter>(
+        std::move(model), texBasePath, pe1ChildCoordSpace_);
+    tmpl->adapter = adapter;
+    tmpl->meshes = adapter->GetMeshes();
+    tmpl->textures = adapter->GetTextures();
+    tmpl->materials = adapter->GetMaterials();
+    tmpl->skeleton = adapter->GetSkeleton();
+    tmpl->skinWeights = adapter->GetSkinWeights();
+    tmpl->pe2Configs = adapter->GetParticleConfigs();
+    tmpl->ribbonConfigs = adapter->GetRibbonConfigs();
+    tmpl->collisionConfigs = adapter->GetCollisionShapes();
+    tmpl->pe1Configs = adapter->GetPE1Configs();
+
+    pe1TemplateCache_[modelPath] = tmpl;
+    return tmpl;
+}
+
+void Renderer::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl) {
+    // Stage textures
+    for (auto& tex : tmpl.textures) {
+        StagedTexture& st = mi->stagedTextures[tex.textureId];
+        st.width = tex.width; st.height = tex.height;
+        st.replaceableId = tex.replaceableId;
+        st.pixels = tex.rgba;
+        if (tex.replaceableId == 1 || tex.replaceableId == 2)
+            mi->replaceableTexMap[tex.textureId] = tex.replaceableId;
+    }
+    // Stage materials
+    for (auto& mat : tmpl.materials) {
+        StagedMaterial& sm = mi->stagedMaterials[mat.materialId];
+        sm.layers.resize(mat.layers.size());
+        for (size_t i = 0; i < mat.layers.size(); i++) {
+            sm.layers[i].filterMode = mat.layers[i].filterMode;
+            sm.layers[i].textureId  = mat.layers[i].textureId;
+            sm.layers[i].alpha      = mat.layers[i].alpha;
+            sm.layers[i].flags      = mat.layers[i].flags;
+        }
+        sm.priorityPlane = mat.priorityPlane;
+        sm.sortOrder = mat.sortOrder;
+    }
+    // Stage meshes
+    for (auto& mesh : tmpl.meshes) {
+        StagedGeoset& sg = mi->stagedGeosets[mesh.geosetId];
+        sg.materialId = mesh.materialId;
+        int vc = (int)mesh.positions.size();
+        sg.vertices.resize(vc);
+        for (int i = 0; i < vc; i++) {
+            sg.vertices[i].position = mesh.positions[i];
+            sg.vertices[i].normal = (i < (int)mesh.normals.size()) ? mesh.normals[i] : XMFLOAT3{0,0,1};
+            sg.vertices[i].uv = (i < (int)mesh.uvs.size()) ? mesh.uvs[i] : XMFLOAT2{0,0};
+            sg.vertices[i].color = {1,1,1,1};
+        }
+        sg.indices = mesh.indices;
+    }
+    // Skeleton
+    if (tmpl.skeleton.boneCount > 0) {
+        std::vector<float> invBind(tmpl.skeleton.boneCount * 16);
+        for (int i = 0; i < tmpl.skeleton.boneCount; i++) {
+            XMFLOAT4X4 f44; XMStoreFloat4x4(&f44, tmpl.skeleton.inverseBindMatrices[i]);
+            float* dst = &invBind[i * 16];
+            dst[0]=f44._11; dst[1]=f44._12; dst[2]=f44._13; dst[3]=f44._14;
+            dst[4]=f44._21; dst[5]=f44._22; dst[6]=f44._23; dst[7]=f44._24;
+            dst[8]=f44._31; dst[9]=f44._32; dst[10]=f44._33; dst[11]=f44._34;
+            dst[12]=f44._41; dst[13]=f44._42; dst[14]=f44._43; dst[15]=f44._44;
+        }
+        mi->skinning.SetSkeleton(tmpl.skeleton.boneCount, invBind.data());
+        mi->boneBillboardFlags = tmpl.skeleton.boneBillboardFlags;
+        mi->skinDirty = true;
+    }
+    // Skin weights
+    for (auto& sw : tmpl.skinWeights) {
+        int vc = (int)sw.influences.size();
+        std::vector<int> bIdx(vc * 4); std::vector<float> wts(vc * 4);
+        for (int v = 0; v < vc; v++)
+            for (int j = 0; j < 4; j++) {
+                bIdx[v*4+j] = sw.influences[v].boneIdx[j];
+                wts[v*4+j] = sw.influences[v].weight[j];
+            }
+        mi->skinning.SetGeosetWeights(sw.geosetId, vc, bIdx.data(), wts.data());
+    }
+    // PE2 particles
+    for (int i = 0; i < (int)tmpl.pe2Configs.size(); i++)
+        mi->particles.AddEmitter(i, tmpl.pe2Configs[i]);
+    // Ribbons
+    for (int i = 0; i < (int)tmpl.ribbonConfigs.size(); i++)
+        mi->ribbons.AddEmitter(i, tmpl.ribbonConfigs[i]);
+    // PE1 (recursive, only if depth allows)
+    for (int i = 0; i < (int)tmpl.pe1Configs.size(); i++)
+        mi->pe1.AddEmitter(i, tmpl.pe1Configs[i]);
+
+    mi->stagedDirty = true;
+}
+
+// ============================================================================
+// PE1 Model Particle Lifecycle
+// ============================================================================
+
+void Renderer::UpdatePE1(float dt) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    std::vector<uint32_t> toRemove;
+
+    // Collect handles to iterate (avoid modifying models_ during iteration)
+    std::vector<uint32_t> handles;
+    for (auto& [h, mi] : models_) handles.push_back(h);
+
+    for (uint32_t h : handles) {
+        auto* mi = getModel(h);
+        if (!mi) continue;
+        if (mi->pe1Depth >= kMaxPE1Depth) continue;
+        if (!mi->pe1.HasEmitters()) continue;
+
+        auto result = mi->pe1.Simulate(dt, nextModelHandle_);
+
+        // Birth: create child ModelInstance from template
+        for (auto& birth : result.born) {
+            if (pe1InstanceCount_ >= kMaxPE1Instances) continue;
+            auto* cfg = mi->pe1.GetConfig(birth.emitterId);
+            if (!cfg) continue;
+            auto tmpl = getOrLoadTemplate(cfg->modelPath);
+            if (!tmpl) continue;
+
+            auto child = std::make_unique<ModelInstance>();
+            child->handle = birth.handle;
+            child->worldTransform = birth.worldTransform;
+            child->isPE1Child = true;
+            child->pe1Depth = mi->pe1Depth + 1;
+            child->pe1Adapter = tmpl->adapter;
+            child->pe1BirthTimeMs = currentTimeMs_;
+
+            stageModelFromTemplate(child.get(), *tmpl);
+            models_[birth.handle] = std::move(child);
+            pe1InstanceCount_++;
+        }
+
+        // Death
+        for (uint32_t childH : result.died) toRemove.push_back(childH);
+
+        // Transform updates
+        for (auto& [childH, tm] : result.transforms) {
+            if (auto* c = getModel(childH)) c->worldTransform = tm;
+        }
+    }
+
+    for (uint32_t rh : toRemove) {
+        auto it = models_.find(rh);
+        if (it != models_.end()) {
+            it->second->ReleaseGPU();
+            models_.erase(it);
+            pe1InstanceCount_--;
+        }
+    }
+}
+
+void Renderer::EvaluatePE1Children() {
+    struct ChildEval {
+        uint32_t handle;
+        std::shared_ptr<IModelSource> adapter;
+        int localTimeMs;
+    };
+    std::vector<ChildEval> toEval;
+    XMFLOAT3 camPos;
+
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        camPos = camera_.GetSource();
+        int timeMs = currentTimeMs_.load();
+        for (auto& [h, mi] : models_) {
+            if (!mi->isPE1Child || !mi->pe1Adapter) continue;
+            int localTime = timeMs - mi->pe1BirthTimeMs;
+            auto seqs = mi->pe1Adapter->GetSequences();
+            if (!seqs.empty()) {
+                int dur = seqs[0].endMs - seqs[0].startMs;
+                if (dur > 0) localTime = seqs[0].startMs + (localTime % dur);
+            }
+            toEval.push_back({h, mi->pe1Adapter, localTime});
+        }
+    }
+
+    for (auto& ce : toEval) {
+        // Update camera position for billboard evaluation
+        ce.adapter->SetCameraPosition(camPos.x, camPos.y, camPos.z);
+        FrameState fs = ce.adapter->Evaluate(ce.localTimeMs);
+        ApplyFrameState(ce.handle, fs, ce.localTimeMs);
     }
 }
 
@@ -201,6 +463,7 @@ uint32_t Renderer::AddModel(const std::vector<MeshData>& meshes,
             dst[12] = f44._41; dst[13] = f44._42; dst[14] = f44._43; dst[15] = f44._44;
         }
         mi->skinning.SetSkeleton(skeleton.boneCount, invBindFlat.data());
+        mi->boneBillboardFlags = skeleton.boneBillboardFlags;
         mi->skinDirty = true;
     }
 
@@ -348,6 +611,19 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
                 layers[la.layerIndex].alpha = la.alpha;
             }
         }
+    }
+
+    // PE1 (model particle emitter) states
+    for (auto& ps : state.pe1States) {
+        PE1EmitterState st;
+        st.transform    = ps.transform;
+        st.emissionRate = ps.emissionRate;
+        st.speed        = ps.speed;
+        st.latitude     = ps.latitude;
+        st.longitude    = ps.longitude;
+        st.gravity      = ps.gravity;
+        st.visibility   = ps.visibility;
+        mi->pe1.UpdateEmitterState(ps.emitterId, st);
     }
 
     // Advance simulation clock (replaces old SetTime)
@@ -980,11 +1256,15 @@ void Renderer::RenderThread(int width, int height) {
         // Process pending camera preset updates
         ProcessCameraPresets();
 
+        // PE1: Evaluate child model animations
+        EvaluatePE1Children();
+
         // Phase 4: Skin vertices with current bone matrices
         UpdateAnimation();
 
         // Phase 5: Simulate particles
         UpdateParticles((float)elapsed);
+        UpdatePE1((float)elapsed);
         UpdateRibbons((float)elapsed);
 
         RenderFrame();
@@ -1804,7 +2084,9 @@ void Renderer::RenderGeosets() {
                 D3D11_MAPPED_SUBRESOURCE mapped;
                 context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
                 CBPerFrame* cb = (CBPerFrame*)mapped.pData;
-                cb->world      = XMMatrixTranspose(geo.hasSkinning ? XMMatrixIdentity() : geo.worldMatrix);
+                XMMATRIX world = geo.hasSkinning ? mi->worldTransform
+                                                 : (geo.worldMatrix * mi->worldTransform);
+                cb->world      = XMMatrixTranspose(world);
                 cb->view       = XMMatrixTranspose(view2);
                 cb->projection = XMMatrixTranspose(proj2);
 

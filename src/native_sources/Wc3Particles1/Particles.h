@@ -102,7 +102,9 @@ constexpr int P1_TICKS_PER_SEC   = 4800; ///< 3ds Max ticks per second.
 
 /// Interface ID for cross-plugin model path query via Animatable::GetInterface(ULONG).
 /// Returns a pointer to the internal m_modelPath MSTR, or nullptr for other objects.
-constexpr ULONG WC3P1_MODEL_PATH_IID = 0x7B3C8D01;
+constexpr ULONG WC3P1_MODEL_PATH_IID   = 0x7B3C8D01;
+/// Interface ID for model path prefix (directory part).
+constexpr ULONG WC3P1_MODEL_PREFIX_IID = 0x7B3C8D02;
 
 /// @cond FORWARD_DECLS
 class GenParticle1;

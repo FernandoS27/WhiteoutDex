@@ -8,6 +8,7 @@
 #include "wc3_scene_builders.h"
 #include "texture_resolver.h"
 #include "../mdlx_class_ids.h"
+#include <filesystem>
 
 #include <scene/paramblock_reader.h>
 #include <notetrck.h>
@@ -171,7 +172,8 @@ enum RibbonParams : ParamID {
     pb_material = 7, pb_color = 8, pb_alpha = 9, pb_gravity = 10,
 };
 
-constexpr ULONG WC3P1_MODEL_PATH_IID = 0x7B3C8D01;
+constexpr ULONG WC3P1_MODEL_PATH_IID   = 0x7B3C8D01;
+constexpr ULONG WC3P1_MODEL_PREFIX_IID = 0x7B3C8D02;
 constexpr ULONG WC3P2_TEXTURE_PATH_IID   = 0x7B3C8D10;
 constexpr ULONG WC3P2_TEXTURE_PREFIX_IID = 0x7B3C8D11;
 
@@ -280,6 +282,7 @@ void Wc3AttachmentBuilder::buildAttachments(
 
 void Wc3Particle1Builder::buildParticles(
     const ir::IRModel& irModel, std::vector<INode*>& nodeMap,
+    const std::wstring& modelDir,
     Interface* gi, core::ExportErrorReporter& reporter)
 {
     for (const auto& irPE : irModel.particleEmitters) {
@@ -318,13 +321,40 @@ void Wc3Particle1Builder::buildParticles(
             pb->SetValue(P1_PB_LONGITUDE, 0, irPE.longitude * kRadToDeg);
         }
 
-        // Model path via custom interface
+        // Model path: resolve to absolute path on disk, set path + empty prefix.
+        // The pre-resolve step already extracted models from CASC, so we just
+        // need to find the file on disk (trying both .mdx and .mdl extensions).
         if (!irPE.modelPath.empty()) {
-            auto* pathPtr = static_cast<MSTR*>(obj->GetInterface(WC3P1_MODEL_PATH_IID));
-            if (pathPtr) {
-                auto wpath = toWstr(irPE.modelPath);
-                *pathPtr = wpath.c_str();
+            namespace fs = std::filesystem;
+            std::wstring wRelPath = toWstr(irPE.modelPath);
+            std::wstring resolved;
+
+            // Try exact path, then alternate extension
+            auto tryPath = [&](const std::wstring& rel) -> bool {
+                fs::path full = fs::path(modelDir) / rel;
+                std::error_code ec;
+                if (fs::exists(full, ec)) { resolved = full.wstring(); return true; }
+                return false;
+            };
+
+            if (!tryPath(wRelPath)) {
+                // Swap .mdx↔.mdl
+                fs::path p(wRelPath);
+                std::wstring ext = p.extension().wstring();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+                if (ext == L".mdl")
+                    tryPath(p.replace_extension(L".mdx").wstring());
+                else if (ext == L".mdx")
+                    tryPath(p.replace_extension(L".mdl").wstring());
             }
+
+            if (resolved.empty())
+                resolved = wRelPath;  // fallback: use relative path as-is
+
+            auto* pathPtr = static_cast<MSTR*>(obj->GetInterface(WC3P1_MODEL_PATH_IID));
+            if (pathPtr) *pathPtr = resolved.c_str();
+            auto* prefixPtr = static_cast<MSTR*>(obj->GetInterface(WC3P1_MODEL_PREFIX_IID));
+            if (prefixPtr) *prefixPtr = _T("");
         }
 
         // Register for animation key insertion

@@ -385,7 +385,7 @@ void MaxSceneAdapter::CollectScene() {
     nextTexId_ = 0; nextMatId_ = 0; texPathToId_.clear(); mtlToId_.clear();
     loadedTextures_.clear(); texEntries_.clear();
     bones_.clear(); boneNameToIdx_.clear(); geosets_.clear();
-    materials_.clear(); particles_.clear(); ribbons_.clear(); collisions_.clear();
+    materials_.clear(); particles_.clear(); pe1Emitters_.clear(); ribbons_.clear(); collisions_.clear();
 
     CollectGeometry();
     CollectMaterials();
@@ -710,8 +710,10 @@ void MaxSceneAdapter::CollectBones() {
 
 void MaxSceneAdapter::CollectParticleEmitters() {
     particles_.clear();
+    pe1Emitters_.clear();
     Interface* ip = GetCOREInterface(); if (!ip) return;
     int emitterId = 0;
+    int pe1EmitterId = 0;
     std::wstring basePath = GetMaxFilePath();
 
     std::function<void(INode*)> scan = [&](INode* node) {
@@ -754,6 +756,21 @@ void MaxSceneAdapter::CollectParticleEmitters() {
                 }
             }
             particles_.push_back(pi);
+        }
+        else if (baseObj && baseObj->ClassID() == WC3PARTICLES1_CLASS_ID) {
+            PE1EmitterInfo pi;
+            pi.emitterId = pe1EmitterId++;
+            pi.node = node;
+            // Read model path via GetInterface (cross-DLL)
+            auto* pathPtr = static_cast<const MSTR*>(baseObj->GetInterface(WC3P1_MODEL_PATH_IID));
+            if (pathPtr && pathPtr->Length() > 0) {
+                // Convert wstring to string (ASCII model paths)
+                std::wstring wp = pathPtr->data();
+                pi.modelPath = std::string(wp.begin(), wp.end());
+            }
+            mprintf(_M("  [PE1 '%s'] model='%S'\n"), node->GetName(), pi.modelPath.c_str());
+            if (!pi.modelPath.empty())
+                pe1Emitters_.push_back(pi);
         }
         for (int c = 0; c < node->NumberOfChildren(); c++) scan(node->GetChildNode(c));
     };
@@ -1222,6 +1239,24 @@ std::vector<CollisionShapeData> MaxSceneAdapter::GetCollisionShapes() {
 // IModelSource::SetActiveSequence() — no-op for Max (Max controls the timeline)
 // ============================================================================
 
+// ============================================================================
+// IModelSource::GetPE1Configs()
+// ============================================================================
+
+std::vector<PE1EmitterConfig> MaxSceneAdapter::GetPE1Configs() {
+    std::vector<PE1EmitterConfig> result;
+    for (auto& pi : pe1Emitters_) {
+        Object* obj = GetBaseObject(pi.node); if (!obj) continue;
+        PE1EmitterConfig cfg;
+        cfg.modelPath = pi.modelPath;
+        float fv = 0;
+        if (PB2Float(obj, L"Life", 0, fv)) cfg.lifespan = fv;
+        if (PB2Float(obj, L"Scale", 0, fv)) cfg.scale = fv;
+        result.push_back(cfg);
+    }
+    return result;
+}
+
 void MaxSceneAdapter::SetActiveSequence(int) {}
 
 // ============================================================================
@@ -1374,6 +1409,28 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
             m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
             m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]
         ));
+    }
+
+    // PE1 emitter states
+    constexpr float kDegToRad = 3.14159265f / 180.0f;
+    for (auto& pi : pe1Emitters_) {
+        Object* obj = GetBaseObject(pi.node); if (!obj) continue;
+        FrameState::PE1FrameState ps;
+        ps.emitterId = pi.emitterId;
+        float m16[16];
+        PackMatrix(pi.node->GetNodeTM(t), m16);
+        ps.transform = XMMATRIX(
+            m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
+            m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]
+        );
+        float fv = 0;
+        PB2Float(obj, L"Speed", t, fv);         ps.speed = fv;
+        PB2Float(obj, L"EmissionRate", t, fv);  ps.emissionRate = fv;
+        PB2Float(obj, L"Latitude", t, fv);      ps.latitude = fv * kDegToRad;  // deg→rad
+        PB2Float(obj, L"Longitude", t, fv);     ps.longitude = fv * kDegToRad; // deg→rad
+        PB2Float(obj, L"Gravity", t, fv);        ps.gravity = fv;
+        ps.visibility = pi.node->GetVisibility(t);
+        state.pe1States.push_back(ps);
     }
 
     // Texture animations (per-layer, supports composite materials)

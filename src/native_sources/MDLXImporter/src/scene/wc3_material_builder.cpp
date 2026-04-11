@@ -284,8 +284,8 @@ std::wstring extractTextureFromCASC(
         "war3.w3mod:_hd.w3mod:",
     };
 
-    // Extensions to try
-    static const char* kExts[] = { ".dds", ".blp", ".tga", ".png", ".tif" };
+    // Extensions to try (textures + model files for PE1 particle models)
+    static const char* kExts[] = { ".dds", ".blp", ".tga", ".png", ".tif", ".mdx", ".mdl" };
 
     MLOG << "[CASC] Searching for: " << cascStem << " (original rel: " << cascRel << ")" << std::endl;
 

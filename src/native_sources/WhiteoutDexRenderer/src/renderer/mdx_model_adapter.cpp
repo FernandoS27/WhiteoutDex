@@ -17,13 +17,21 @@ using namespace whiteout;
 using namespace whiteout::mdx;
 namespace fs = std::filesystem;
 
+// MDX→Max coordinate swizzle helpers
+static inline XMFLOAT3 swizzlePos(const Vector3f& v) { return {v.y, -v.x, v.z}; }
+static inline XMFLOAT3 swizzleNorm(const Vector3f& v) { return {v.y, -v.x, v.z}; }
+static inline XMFLOAT3 rawPos(const Vector3f& v) { return {v.x, v.y, v.z}; }
+static inline XMFLOAT3 rawNorm(const Vector3f& v) { return {v.x, v.y, v.z}; }
+
 // ============================================================================
 // Constructor
 // ============================================================================
 
-MdxModelAdapter::MdxModelAdapter(whiteout::mdx::Model model, fs::path basePath)
+MdxModelAdapter::MdxModelAdapter(whiteout::mdx::Model model, fs::path basePath,
+                                 CoordSpace space)
     : model_(std::move(model))
-    , basePath_(std::move(basePath)) {
+    , basePath_(std::move(basePath))
+    , space_(space) {
     hierarchy_.Build(model_);
 }
 
@@ -46,14 +54,13 @@ std::vector<MeshData> MdxModelAdapter::GetMeshes() {
         mesh.normals.resize(vc);
         mesh.uvs.resize(vc);
 
+        bool swiz = (space_ == CoordSpace::Max);
         for (int v = 0; v < vc; v++) {
-            mesh.positions[v] = {gs.vertexPositions[v].x,
-                                 gs.vertexPositions[v].y,
-                                 gs.vertexPositions[v].z};
+            mesh.positions[v] = swiz ? swizzlePos(gs.vertexPositions[v])
+                                     : rawPos(gs.vertexPositions[v]);
             if (v < (int)gs.vertexNormals.size())
-                mesh.normals[v] = {gs.vertexNormals[v].x,
-                                   gs.vertexNormals[v].y,
-                                   gs.vertexNormals[v].z};
+                mesh.normals[v] = swiz ? swizzleNorm(gs.vertexNormals[v])
+                                       : rawNorm(gs.vertexNormals[v]);
             if (!gs.textureCoordinateSets.empty() &&
                 v < (int)gs.textureCoordinateSets[0].size()) {
                 mesh.uvs[v] = {gs.textureCoordinateSets[0][v].x,
@@ -585,6 +592,33 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         (void)pe; // all PE2 per-frame fields set above
     }
 
+    // PE1 (model particle emitter) per-frame state
+    for (int i = 0; i < (int)model_.particleEmitters.size(); i++) {
+        const auto& pe = model_.particleEmitters[i];
+        FrameState::PE1FrameState ps;
+        ps.emitterId = i;
+
+        int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)pe.node.objectId);
+        ps.transform = (nodeIdx >= 0 && nodeIdx < (int)allNodes.size())
+                        ? allNodes[nodeIdx] : XMMatrixIdentity();
+
+        // Evaluate animated tracks (lat/lon already in radians in MDX)
+        { auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
+          ps.emissionRate = EvaluateTrackF32(pe.emissionRateTracks, t, s, e, pe.emissionRate); }
+        { auto [t,s,e] = effectiveTime(pe.speedTracks.globalSequenceId);
+          ps.speed = EvaluateTrackF32(pe.speedTracks, t, s, e, pe.initialVelocity); }
+        { auto [t,s,e] = effectiveTime(pe.latitudeTracks.globalSequenceId);
+          ps.latitude = EvaluateTrackF32(pe.latitudeTracks, t, s, e, pe.latitude); }
+        { auto [t,s,e] = effectiveTime(pe.longitudeTracks.globalSequenceId);
+          ps.longitude = EvaluateTrackF32(pe.longitudeTracks, t, s, e, pe.longitude); }
+        { auto [t,s,e] = effectiveTime(pe.gravityTracks.globalSequenceId);
+          ps.gravity = EvaluateTrackF32(pe.gravityTracks, t, s, e, pe.gravity); }
+        { auto [t,s,e] = effectiveTime(pe.visibilityTracks.globalSequenceId);
+          ps.visibility = EvaluateTrackF32(pe.visibilityTracks, t, s, e, 1.0f); }
+
+        fs.pe1States.push_back(ps);
+    }
+
     // Ribbon emitter per-frame state
     fs.ribbonStates.resize(model_.ribbonEmitters.size());
 
@@ -661,6 +695,23 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
     }
 
     return fs;
+}
+
+// ============================================================================
+// GetPE1Configs
+// ============================================================================
+
+std::vector<PE1EmitterConfig> MdxModelAdapter::GetPE1Configs() {
+    std::vector<PE1EmitterConfig> result;
+    for (const auto& pe : model_.particleEmitters) {
+        if (pe.spawnModelFileName.empty()) continue;  // skip emitters without model
+        PE1EmitterConfig cfg;
+        cfg.modelPath = pe.spawnModelFileName;
+        cfg.lifespan  = pe.lifespan;
+        cfg.scale     = 1.0f;  // MDX PE1 has no scale field
+        result.push_back(cfg);
+    }
+    return result;
 }
 
 // ============================================================================

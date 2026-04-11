@@ -26,6 +26,9 @@ public:
     virtual std::vector<RibbonEmitterConfig>   GetRibbonConfigs()    = 0;
     virtual std::vector<CollisionShapeData>    GetCollisionShapes()  = 0;
 
+    // ---- PE1 (model particle emitter) configs ----
+    virtual std::vector<PE1EmitterConfig>     GetPE1Configs()       { return {}; }
+
     // ---- Sequence control ----
     // SetActiveSequence selects which animation sequence Evaluate() uses.
     // For the Max adapter this is a no-op (Max controls the timeline).

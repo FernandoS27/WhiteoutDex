@@ -5,7 +5,6 @@
 // ============================================================================
 
 #include "model_source.h"
-#include "renderer.h"
 #include "mdx_animation.h"
 #include <whiteout/models/mdx/types.h>
 #include <string>
@@ -17,8 +16,10 @@ class MdxModelAdapter : public IModelSource {
 public:
     // Construct from a parsed MDX model. basePath is the directory containing
     // the .mdx file, used to resolve relative texture paths.
+    // space: MDX = raw coordinates, Max = swizzle (y, -x, z) for Max integration
     explicit MdxModelAdapter(whiteout::mdx::Model model,
-                             std::filesystem::path basePath = {});
+                             std::filesystem::path basePath = {},
+                             CoordSpace space = CoordSpace::MDX);
 
     // ---- IModelSource static data ----
     std::vector<MeshData>              GetMeshes()          override;
@@ -29,6 +30,7 @@ public:
     std::vector<ParticleEmitterConfig> GetParticleConfigs() override;
     std::vector<RibbonEmitterConfig>   GetRibbonConfigs()   override;
     std::vector<CollisionShapeData>    GetCollisionShapes() override;
+    std::vector<PE1EmitterConfig>      GetPE1Configs()      override;
 
     // ---- Sequence control ----
     void SetActiveSequence(int sequenceIndex) override;
@@ -48,6 +50,7 @@ public:
 private:
     whiteout::mdx::Model model_;
     std::filesystem::path basePath_;
+    CoordSpace space_ = CoordSpace::MDX;
     MdxHierarchy hierarchy_;
 
     // Active sequence

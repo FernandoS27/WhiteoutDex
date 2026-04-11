@@ -252,6 +252,8 @@ void MdxHierarchy::Build(const whiteout::mdx::Model& model) {
         addNode(model.bones[i].node, HierarchyNode::Source::Bone, i);
     for (int i = 0; i < (int)model.helpers.size(); i++)
         addNode(model.helpers[i].node, HierarchyNode::Source::Helper, i);
+    for (int i = 0; i < (int)model.particleEmitters.size(); i++)
+        addNode(model.particleEmitters[i].node, HierarchyNode::Source::ParticleEmitter, i);
     for (int i = 0; i < (int)model.particleEmitters2.size(); i++)
         addNode(model.particleEmitters2[i].node, HierarchyNode::Source::ParticleEmitter2, i);
     for (int i = 0; i < (int)model.ribbonEmitters.size(); i++)
@@ -293,6 +295,9 @@ void MdxHierarchy::Build(const whiteout::mdx::Model& model) {
     for (int i = 0; i < (int)model.helpers.size(); i++)
         resolveParent(model.helpers[i].node, offset + i);
     offset += (int)model.helpers.size();
+    for (int i = 0; i < (int)model.particleEmitters.size(); i++)
+        resolveParent(model.particleEmitters[i].node, offset + i);
+    offset += (int)model.particleEmitters.size();
     for (int i = 0; i < (int)model.particleEmitters2.size(); i++)
         resolveParent(model.particleEmitters2[i].node, offset + i);
     offset += (int)model.particleEmitters2.size();

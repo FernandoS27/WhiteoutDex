@@ -1402,8 +1402,8 @@ IOResult GenParticle1::Load(ILoad* iload)
 }
 
 void* GenParticle1::GetInterface(ULONG id) {
-    if (id == WC3P1_MODEL_PATH_IID)
-        return &m_modelPath;
+    if (id == WC3P1_MODEL_PATH_IID)   return &m_modelPath;
+    if (id == WC3P1_MODEL_PREFIX_IID) return &m_modelPrefix;
     return SimpleParticle::GetInterface(id);
 }
 

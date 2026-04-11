@@ -24,7 +24,7 @@
 #include <functional>
 
 #include "renderer/model_source.h"
-#include "renderer/renderer.h"
+#include "renderer/model_types.h"
 
 // ============================================================================
 // Known ClassIDs for WhiteoutDex custom MaxScript plugins
@@ -34,10 +34,12 @@
 #define WC3PARTICLES2_CLASS_ID   Class_ID(0xD9F33BC9, 0x7A0DA37A)
 #define WC3RIBBON_CLASS_ID       Class_ID(0x937AA064, 0x9EFFA3DA)
 #define WC3VERTEXMOD_CLASS_ID    Class_ID(0x234d68a2, 0x7204a141)
+#define WC3PARTICLES1_CLASS_ID   Class_ID(0x12E4F5A6, 0x3B7C8D9E)
 
-// Cross-DLL interface IDs for Wc3Particles2 texture path access
+// Cross-DLL interface IDs
 #define WC3P2_TEXTURE_PATH_IID   0x7B3C8D10
 #define WC3P2_TEXTURE_PREFIX_IID 0x7B3C8D11
+#define WC3P1_MODEL_PATH_IID     0x7B3C8D01
 
 // ============================================================================
 // Collected data structures (Max-specific; not exposed to renderer)
@@ -85,6 +87,12 @@ struct ParticleEmitterInfo {
     int textureId = -1;
 };
 
+struct PE1EmitterInfo {
+    int emitterId = 0;
+    INode* node = nullptr;
+    std::string modelPath;
+};
+
 struct RibbonEmitterInfo {
     int emitterId = 0;
     INode* node = nullptr;
@@ -127,6 +135,7 @@ public:
     std::vector<ParticleEmitterConfig> GetParticleConfigs() override;
     std::vector<RibbonEmitterConfig>   GetRibbonConfigs()   override;
     std::vector<CollisionShapeData>    GetCollisionShapes() override;
+    std::vector<PE1EmitterConfig>      GetPE1Configs()      override;
 
     void SetActiveSequence(int sequenceIndex) override;  // no-op for Max
 
@@ -180,6 +189,7 @@ private:
     std::vector<MaterialInfo>        materials_;
     std::vector<TextureEntry>        texEntries_;
     std::vector<ParticleEmitterInfo> particles_;
+    std::vector<PE1EmitterInfo>      pe1Emitters_;
     std::vector<RibbonEmitterInfo>   ribbons_;
     std::vector<CollisionShapeInfo>  collisions_;
 

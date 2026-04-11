@@ -10,8 +10,29 @@
 #include "ribbon.h"
 #include "animation.h"
 #include <vector>
+#include <string>
 
 namespace WhiteoutDex {
+
+// Coordinate space for MDX model data
+enum class CoordSpace { MDX, Max };
+
+// Camera preset for the camera selector combo box
+struct CameraPreset {
+    std::wstring name;
+    float pitch, yaw, distance;
+    XMFLOAT3 target;
+    bool isLive = false;
+};
+
+// ============================================================================
+// PE1 (Model Particle Emitter) Configuration — static data, set once
+// ============================================================================
+struct PE1EmitterConfig {
+    std::string modelPath;     // Path to spawned MDX model file
+    float lifespan = 1.0f;    // Particle lifetime in seconds
+    float scale    = 1.0f;    // Uniform model scale
+};
 
 // ============================================================================
 // FilterMode enum (matches Magos Constants.h / WhiteoutDex IO)
@@ -66,14 +87,20 @@ struct MaterialData {
     int sortOrder;
 };
 
+// Billboard flags for bones
+enum BoneBillboardFlag : uint32_t {
+    BONE_BILLBOARD_NONE    = 0,
+    BONE_BILLBOARD_FULL    = 1,
+    BONE_BILLBOARD_LOCK_X  = 2,
+    BONE_BILLBOARD_LOCK_Y  = 4,
+    BONE_BILLBOARD_LOCK_Z  = 8,
+};
+
 struct SkeletonData {
     int boneCount;   // total bones that affect skin (indices into inverseBindMatrices)
     int nodeCount;   // total hierarchy nodes (bones + helpers + emitters + collisions)
     std::vector<XMMATRIX> inverseBindMatrices;  // boneCount entries
-    // nodeCount is needed internally by the animation evaluator to traverse
-    // the full hierarchy (emitters, collisions, etc.). FrameState::boneWorldMatrices
-    // carries boneCount entries (skinning bones only); emitter/collision transforms
-    // are delivered via their own FrameState fields.
+    std::vector<uint32_t> boneBillboardFlags;    // boneCount entries (BoneBillboardFlag)
 };
 
 struct SkinWeightData {
@@ -129,6 +156,15 @@ struct FrameState {
         float alpha;
     };
     std::vector<LayerAlphaState> layerAlphas;
+
+    // PE1 (model particle emitter) per-frame state
+    struct PE1FrameState {
+        int emitterId;
+        XMMATRIX transform;
+        float emissionRate, speed, latitude, longitude;  // lat/lon in radians
+        float gravity, visibility;
+    };
+    std::vector<PE1FrameState> pe1States;
 };
 
 } // namespace WhiteoutDex

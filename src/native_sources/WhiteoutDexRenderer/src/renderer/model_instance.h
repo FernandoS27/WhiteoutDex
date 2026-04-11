@@ -9,8 +9,11 @@
 #include "animation.h"
 #include "particle.h"
 #include "ribbon.h"
+#include "pe1_system.h"
+#include "model_source.h"
 #include <unordered_map>
 #include <vector>
+#include <memory>
 
 namespace WhiteoutDex {
 
@@ -125,6 +128,7 @@ struct ModelInstance {
     // ---- Skinning ----
     SkinningSystem skinning;
     bool skinDirty = false;
+    std::vector<uint32_t> boneBillboardFlags;  // per-bone billboard flags
 
     // ---- Particle system ----
     ParticleSystem particles;
@@ -146,6 +150,16 @@ struct ModelInstance {
     // ---- Replaceable texture map (for team color) ----
     // textureId → replaceableId (1=TeamColor, 2=TeamGlow)
     std::unordered_map<int, int> replaceableTexMap;
+
+    // ---- PE1 (model particle emitter) ----
+    PE1System pe1;
+    int pe1Depth = 0;           // recursion depth (0 = root model)
+    bool isPE1Child = false;    // true if spawned by a PE1 particle
+
+    // For PE1 children: adapter for animation evaluation (IModelSource)
+    std::shared_ptr<IModelSource> pe1Adapter;
+    int pe1BirthTimeMs = 0;
+    int pe1SequenceIdx = 0;
 
     // Release all GPU resources
     void ReleaseGPU() {
