@@ -41,9 +41,11 @@ bool MassFXDetector::hasNamedMassFXSubAnim(Animatable* anim) {
     for (int i = 0; i < numSubs; ++i) {
         // Get the sub-anim name — this is the label shown in Track View
         // (e.g. "MassFX Baked Position", "MassFX Baked Rotation")
-        // Max 2022+ requires a bool localized parameter; we use false
-        // to get the English name for reliable detection.
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
         MSTR name = anim->SubAnimName(i, false);
+#else
+        MSTR name = anim->SubAnimName(i);
+#endif
         if (wcsContainsI(name.data(), L"MassFX"))
             return true;
     }

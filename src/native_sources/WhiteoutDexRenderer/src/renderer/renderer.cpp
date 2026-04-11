@@ -1001,6 +1001,7 @@ void Renderer::RenderThread(int width, int height) {
     ReleaseModelGPU();
     CleanupD3D();
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
+    if (icon_) { DestroyIcon(icon_); icon_ = nullptr; }
     UnregisterClassW(WINDOW_CLASS, GetModuleHandle(nullptr));
     initialized_ = false;
 }

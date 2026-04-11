@@ -69,8 +69,9 @@ bool ControllerReader::isCAT(INode* node) {
 
     // ClassName fallback — CAT ClassIDs can change between Max versions
     // because CAT is compiled from SDK sample source, not part of public API.
-    auto classNameStr = os.obj->ClassName();
-    const MCHAR* className = static_cast<const MCHAR*>(classNameStr);
+    MSTR classNameStr;
+    os.obj->GetClassName(classNameStr);
+    const MCHAR* className = classNameStr.data();
     if (className) {
         if (_wcsicmp(className, L"CATBone") == 0 ||
             _wcsicmp(className, L"HubObject") == 0 ||

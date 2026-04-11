@@ -57,8 +57,9 @@ NodeCategory NodeClassifier::classify(INode* node, std::string& outTag) const {
     // CAT ClassName fallback — ClassIDs can change between Max versions
     // because CAT is compiled from SDK sample source, not part of public API.
     {
-        auto classNameStr = obj->ClassName();
-        const MCHAR* className = static_cast<const MCHAR*>(classNameStr);
+        MSTR classNameStr;
+        obj->GetClassName(classNameStr);
+        const MCHAR* className = classNameStr.data();
         if (className) {
             if (_wcsicmp(className, L"CATBone") == 0 ||
                 _wcsicmp(className, L"HubObject") == 0 ||
