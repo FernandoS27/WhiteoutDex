@@ -45,6 +45,105 @@ category:"Warcraft 3 Systems"
 				General.title = ::L.t "attach_general_functions_title"
 		)
 	)
+	rollout modelMapParams "Model Map Parameters"
+	(
+		label mlbl1 "- Model Path Prefix -" pos:[25,7] align:#center
+		edittext mdxPrefix pos:[8,25] height:20 width:142
+		label mlbl2 "- Model File -" pos:[40,50] align:#center
+		edittext mdxFile pos:[8,68] height:20 width:142
+		button btnImportMDX "Import MDX Model" pos:[12,96] height:24 width:138
+		button btnBrowseMPQ "Browse MPQ / CASC" pos:[12,124] height:24 width:138 tooltip:"Browse models from MPQ/CASC archives"
+
+		fn updateModelPath =
+		(
+			local prefix = mdxPrefix.text
+			local file = mdxFile.text
+			if file != "" then
+				this.externalModelPath = prefix + file
+			else
+				this.externalModelPath = prefix
+		)
+
+		fn splitModelPath =
+		(
+			local fullPath = this.externalModelPath
+			if fullPath == undefined or fullPath == "" then
+			(
+				mdxPrefix.text = ""
+				mdxFile.text = ""
+			)
+			else
+			(
+				local lastSlash = 0
+				for i = 1 to fullPath.count do
+				(
+					if fullPath[i] == "\\" or fullPath[i] == "/" do lastSlash = i
+				)
+				if lastSlash > 0 then
+				(
+					mdxPrefix.text = substring fullPath 1 lastSlash
+					mdxFile.text = substring fullPath (lastSlash + 1) -1
+				)
+				else
+				(
+					mdxPrefix.text = ""
+					mdxFile.text = fullPath
+				)
+			)
+		)
+
+		on mdxPrefix changed txt do updateModelPath()
+		on mdxFile changed txt do updateModelPath()
+
+		on btnImportMDX pressed do
+		(
+			mdxFile.enabled = false
+			local f = getOpenFileName caption:"Select MDX Model" types:"MDX Files (*.mdx)|*.mdx|MDL Files (*.mdl)|*.mdl|All Files (*.*)|*.*|" historyCategory:"AttachPointModel"
+			if f != undefined then
+			(
+				mdxFile.text = filenameFromPath f
+				if mdxPrefix.text == "" do mdxPrefix.text = getFilenamePath f
+				updateModelPath()
+			)
+			mdxFile.enabled = true
+		)
+
+		on btnBrowseMPQ pressed do
+		(
+			try
+			(
+				-- Use NeoDex archive browser if available
+				local result = undefined
+				try
+				(
+					::NeoDexTexBrowserTarget = #(this, "attachment_model")
+					::NeoDexTexBrowserInitCategory = 0
+					::NeoDexTexBrowser.show()
+				) catch ( messageBox "Archive Browser not available." )
+			) catch ()
+		)
+
+		on modelMapParams open do
+		(
+			splitModelPath()
+
+			-- Enable/disable browse button
+			local browserAvailable = false
+			try
+			(
+				if ::NeoDexMPQ != undefined and ::NeoDexMPQ.getDirectory() != "" and ::NeoDexMPQ.validateDirectory() then
+					browserAvailable = true
+				if not browserAvailable then
+				(
+					local cascIni = getDir #plugcfg + "\\NeoDex_Settings.ini"
+					local cascDir = getINISetting cascIni "CASC" "W3Path"
+					if cascDir != "" and doesFileExist (cascDir + "\\.build.info") then
+						browserAvailable = true
+				)
+			) catch()
+			btnBrowseMPQ.enabled = browserAvailable
+		)
+	)
 	rollout params "Attachment Parameters"
 	(
 		group "Basic Parameters"
@@ -59,21 +158,20 @@ category:"Warcraft 3 Systems"
 		)
 		group "Extended Parameters 1"
 		(
-			label       lbl2        "Model Path:"                      align:#left      pos:[12,192]
-			editText    edt2                                           align:#left     pos:[8,212]     height:20   width:142
-			label       B1          "Use External Model ............"  align:#left      pos:[12,240]                 width:124
-			checkbox    chk1                                                           pos:[137,240]   height:16   width:16
-			label       B2          "Visibility .........."                           pos:[12,264]                 width:85
-			spinner     Ath_Visibility                                 align:#left     pos:[94,262]    height:16   fieldwidth:45   range:[0.0,1.0,0.00]    type:#float
-			button      btnInfo     "Use Tips"                                        pos:[12,286]     height:24    width:138
+			editText    edt2                                           pos:[9999,0]     height:0   width:0
+			label       B1          "Use External Model ............"  align:#left      pos:[12,192]                 width:124
+			checkbox    chk1                                                           pos:[137,192]   height:16   width:16
+			label       B2          "Visibility .........."                           pos:[12,216]                 width:85
+			spinner     Ath_Visibility                                 align:#left     pos:[94,214]    height:16   fieldwidth:45   range:[0.0,1.0,0.00]    type:#float
+			button      btnInfo     "Use Tips"                                        pos:[12,238]     height:24    width:138
 			label       hhf2        ""                                                 height:0
 		)
 		group "Extended Parameters 2"
 		(
-			label       B3          "ID ................."           align:#left     pos:[12,348]
-			spinner     spn2        fieldwidth:45   height:16       align:#left     pos:[94,348]    range:[0,100,0] type:#integer
-			label       B4          "Use Attachment ID ..............."  align:#left      pos:[12,371]
-			checkbox    chk2                                                        pos:[137,371]   height:16   width:16
+			label       B3          "ID ................."           align:#left     pos:[12,300]
+			spinner     spn2        fieldwidth:45   height:16       align:#left     pos:[94,300]    range:[0,100,0] type:#integer
+			label       B4          "Use Attachment ID ..............."  align:#left      pos:[12,323]
+			checkbox    chk2                                                        pos:[137,323]   height:16   width:16
 			label       hhf3                        height:0                       offset:[999,-2]
 		)
 		on btnInfo pressed do
@@ -88,7 +186,6 @@ category:"Warcraft 3 Systems"
 				first_Str.text = ::L.t "attach_type_lbl"
 				add1_Str.text = ::L.t "attach_direction_lbl"
 				add2_Str.text = ::L.t "attach_additional_lbl"
-				lbl2.text = ::L.t "attach_model_path_lbl"
 				B1.text = ::L.t "attach_use_external_model_lbl"
 				B2.text = ::L.t "attach_visibility_lbl"
 				btnInfo.text = ::L.t "attach_use_tips_btn"

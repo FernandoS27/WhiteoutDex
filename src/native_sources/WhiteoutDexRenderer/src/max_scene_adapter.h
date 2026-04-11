@@ -35,6 +35,7 @@
 #define WC3RIBBON_CLASS_ID       Class_ID(0x937AA064, 0x9EFFA3DA)
 #define WC3VERTEXMOD_CLASS_ID    Class_ID(0x234d68a2, 0x7204a141)
 #define WC3PARTICLES1_CLASS_ID   Class_ID(0x12E4F5A6, 0x3B7C8D9E)
+#define WC3ATTACHPOINT_CLASS_ID  Class_ID(0x1136ac20, 0x6f9cfeb7)
 
 // Cross-DLL interface IDs
 #define WC3P2_TEXTURE_PATH_IID   0x7B3C8D10
@@ -93,6 +94,13 @@ struct PE1EmitterInfo {
     std::string modelPath;
 };
 
+struct AttachmentInfo {
+    int index = 0;
+    INode* node = nullptr;
+    int attachmentId = 0;
+    std::string modelPath;
+};
+
 struct RibbonEmitterInfo {
     int emitterId = 0;
     INode* node = nullptr;
@@ -135,6 +143,7 @@ public:
     std::vector<ParticleEmitterConfig> GetParticleConfigs() override;
     std::vector<RibbonEmitterConfig>   GetRibbonConfigs()   override;
     std::vector<CollisionShapeData>    GetCollisionShapes() override;
+    std::vector<AttachmentConfig>      GetAttachmentConfigs() override;
     std::vector<PE1EmitterConfig>      GetPE1Configs()      override;
 
     void SetActiveSequence(int sequenceIndex) override;  // no-op for Max
@@ -154,6 +163,7 @@ private:
     int  LoadTextureWithTeamColor(const std::wstring& filePath, int tcR, int tcG, int tcB);
     int  GenerateTeamGlowTexture(int tcR, int tcG, int tcB);
     void CollectBones();
+    void CollectAttachments();
     void CollectParticleEmitters();
     void CollectRibbonEmitters();
     void CollectCollisionShapes();
@@ -190,6 +200,7 @@ private:
     std::vector<TextureEntry>        texEntries_;
     std::vector<ParticleEmitterInfo> particles_;
     std::vector<PE1EmitterInfo>      pe1Emitters_;
+    std::vector<AttachmentInfo>      attachments_;
     std::vector<RibbonEmitterInfo>   ribbons_;
     std::vector<CollisionShapeInfo>  collisions_;
 

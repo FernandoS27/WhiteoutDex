@@ -151,6 +151,14 @@ struct ModelInstance {
     // textureId → replaceableId (1=TeamColor, 2=TeamGlow)
     std::unordered_map<int, int> replaceableTexMap;
 
+    // ---- Attachments with child models ----
+    struct AttachmentSlot {
+        AttachmentConfig config;
+        uint32_t childModelHandle = 0;  // 0 = not yet loaded
+        bool loaded = false;
+    };
+    std::vector<AttachmentSlot> attachmentSlots;
+
     // ---- PE1 (model particle emitter) ----
     PE1System pe1;
     int pe1Depth = 0;           // recursion depth (0 = root model)

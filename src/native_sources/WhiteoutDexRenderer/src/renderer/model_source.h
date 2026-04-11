@@ -26,6 +26,9 @@ public:
     virtual std::vector<RibbonEmitterConfig>   GetRibbonConfigs()    = 0;
     virtual std::vector<CollisionShapeData>    GetCollisionShapes()  = 0;
 
+    // ---- Attachment configs ----
+    virtual std::vector<AttachmentConfig>     GetAttachmentConfigs() { return {}; }
+
     // ---- PE1 (model particle emitter) configs ----
     virtual std::vector<PE1EmitterConfig>     GetPE1Configs()       { return {}; }
 

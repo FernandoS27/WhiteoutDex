@@ -197,6 +197,15 @@ Value* ndxStart_cf(Value** arg_list, int count)
     g_renderer->LoadModel(meshes, textures, materials, skeleton,
                           skinW, particles, ribbons, collisions);
 
+    // Register attachment models
+    auto attConfigs = g_adapter->GetAttachmentConfigs();
+    if (!attConfigs.empty()) {
+        g_renderer->SetAttachmentConfigs(g_renderer->GetFocusModelHandle(), attConfigs);
+        int withModels = 0;
+        for (auto& ac : attConfigs) if (!ac.modelPath.empty()) withModels++;
+        mprintf(_M("  %d attachments (%d with models)\n"), (int)attConfigs.size(), withModels);
+    }
+
     // Register PE1 emitters (model particle emitters)
     auto pe1Configs = g_adapter->GetPE1Configs();
     if (!pe1Configs.empty()) {

@@ -30,6 +30,7 @@ public:
     std::vector<ParticleEmitterConfig> GetParticleConfigs() override;
     std::vector<RibbonEmitterConfig>   GetRibbonConfigs()   override;
     std::vector<CollisionShapeData>    GetCollisionShapes() override;
+    std::vector<AttachmentConfig>      GetAttachmentConfigs() override;
     std::vector<PE1EmitterConfig>      GetPE1Configs()      override;
 
     // ---- Sequence control ----

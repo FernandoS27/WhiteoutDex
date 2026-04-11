@@ -54,6 +54,7 @@ public:
                       const std::vector<RibbonEmitterConfig>& ribbons,
                       const std::vector<CollisionShapeData>& collisions);
     void RemoveModel(uint32_t handle);
+    void SetAttachmentConfigs(uint32_t handle, const std::vector<AttachmentConfig>& configs);
     void SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig>& configs);
     void SetPE1ChildCoordSpace(CoordSpace space);
     void SetPE1BasePath(const std::string& basePath);
@@ -114,6 +115,9 @@ private:
     // Phase 5: Particle simulation + rendering
     void UpdateParticles(float dt);
     void RenderParticles();
+
+    // Attachment model lifecycle
+    void UpdateAttachments();
 
     // PE1: Model particle lifecycle
     void UpdatePE1(float dt);

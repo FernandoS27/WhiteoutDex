@@ -385,11 +385,12 @@ void MaxSceneAdapter::CollectScene() {
     nextTexId_ = 0; nextMatId_ = 0; texPathToId_.clear(); mtlToId_.clear();
     loadedTextures_.clear(); texEntries_.clear();
     bones_.clear(); boneNameToIdx_.clear(); geosets_.clear();
-    materials_.clear(); particles_.clear(); pe1Emitters_.clear(); ribbons_.clear(); collisions_.clear();
+    materials_.clear(); particles_.clear(); pe1Emitters_.clear(); attachments_.clear(); ribbons_.clear(); collisions_.clear();
 
     CollectGeometry();
     CollectMaterials();
     CollectBones();
+    CollectAttachments();
     CollectParticleEmitters();
     CollectRibbonEmitters();
     CollectCollisionShapes();
@@ -702,6 +703,60 @@ void MaxSceneAdapter::CollectBones() {
         bones_.push_back(bi);
         boneNameToIdx_[std::wstring(allBones[i]->GetName())] = i;
     }
+}
+
+// ============================================================================
+// Collect attachments (Wc3_AttachPoint helpers)
+// ============================================================================
+
+void MaxSceneAdapter::CollectAttachments() {
+    attachments_.clear();
+    Interface* ip = GetCOREInterface(); if (!ip) return;
+    int idx = 0;
+
+    std::function<void(INode*)> scan = [&](INode* node) {
+        if (!node) return;
+        Object* baseObj = GetBaseObject(node);
+        if (baseObj && baseObj->ClassID() == WC3ATTACHPOINT_CLASS_ID) {
+            AttachmentInfo ai;
+            ai.index = idx++;
+            ai.node = node;
+            int iv = 0;
+            PB2Int(baseObj, L"attachmentId", 0, iv); ai.attachmentId = iv;
+            BOOL usesModel = FALSE;
+            PB2Bool(baseObj, L"usesExternalModel", 0, usesModel);
+            if (usesModel) {
+                // Read model path from PB2 string param
+                Animatable* anim = static_cast<Animatable*>(baseObj);
+                for (int pb = 0; pb < anim->NumParamBlocks(); pb++) {
+                    IParamBlock2* pblock = anim->GetParamBlock(pb);
+                    if (!pblock) continue;
+                    for (int p = 0; p < pblock->NumParams(); p++) {
+                        ParamID pid = pblock->IndextoID(p);
+                        ParamDef& def = pblock->GetParamDef(pid);
+                        if (def.int_name && _wcsicmp(def.int_name, L"externalModelPath") == 0) {
+                            const MCHAR* sv = nullptr;
+                            Interval iv2 = FOREVER;
+                            pblock->GetValue(pid, 0, sv, iv2);
+                            if (sv && sv[0]) {
+                                std::wstring wp(sv);
+                                ai.modelPath = std::string(wp.begin(), wp.end());
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!ai.modelPath.empty()) {
+                mprintf(_M("  [Attachment '%s'] id=%d model='%S'\n"),
+                        node->GetName(), ai.attachmentId, ai.modelPath.c_str());
+            }
+            attachments_.push_back(ai);
+        }
+        for (int c = 0; c < node->NumberOfChildren(); c++) scan(node->GetChildNode(c));
+    };
+    INode* root = ip->GetRootNode();
+    for (int i = 0; i < root->NumberOfChildren(); i++) scan(root->GetChildNode(i));
 }
 
 // ============================================================================
@@ -1018,10 +1073,12 @@ std::vector<MaterialData> MaxSceneAdapter::GetMaterials() {
 SkeletonData MaxSceneAdapter::GetSkeleton() {
     SkeletonData sd;
     sd.boneCount = (int)bones_.size();
-    sd.nodeCount = sd.boneCount;  // Max adapter only tracks skinning bones
+    sd.nodeCount = sd.boneCount;
     sd.inverseBindMatrices.resize(sd.boneCount);
+    sd.boneBillboardFlags.resize(sd.boneCount, 0);
     for (int i = 0; i < sd.boneCount; i++) {
-        Matrix3 inv = Inverse(bones_[i].node->GetNodeTM(0));
+        INode* node = bones_[i].node;
+        Matrix3 inv = Inverse(node->GetNodeTM(0));
         bones_[i].inverseBind = inv;
         float m16[16];
         PackMatrix(inv, m16);
@@ -1031,6 +1088,14 @@ SkeletonData MaxSceneAdapter::GetSkeleton() {
             m16[8], m16[9], m16[10], m16[11],
             m16[12],m16[13],m16[14], m16[15]
         );
+        // Read billboard flags from user properties
+        int val = 0;
+        uint32_t flags = 0;
+        if (node->GetUserPropInt(_T("Billboarded"), val) && val)      flags |= BONE_BILLBOARD_FULL;
+        if (node->GetUserPropInt(_T("BillboardedLockX"), val) && val) flags |= BONE_BILLBOARD_LOCK_X;
+        if (node->GetUserPropInt(_T("BillboardedLockY"), val) && val) flags |= BONE_BILLBOARD_LOCK_Y;
+        if (node->GetUserPropInt(_T("BillboardedLockZ"), val) && val) flags |= BONE_BILLBOARD_LOCK_Z;
+        sd.boneBillboardFlags[i] = flags;
     }
     return sd;
 }
@@ -1243,6 +1308,17 @@ std::vector<CollisionShapeData> MaxSceneAdapter::GetCollisionShapes() {
 // IModelSource::GetPE1Configs()
 // ============================================================================
 
+std::vector<AttachmentConfig> MaxSceneAdapter::GetAttachmentConfigs() {
+    std::vector<AttachmentConfig> result;
+    for (auto& ai : attachments_) {
+        AttachmentConfig cfg;
+        cfg.attachmentId = ai.attachmentId;
+        cfg.modelPath = ai.modelPath;
+        result.push_back(cfg);
+    }
+    return result;
+}
+
 std::vector<PE1EmitterConfig> MaxSceneAdapter::GetPE1Configs() {
     std::vector<PE1EmitterConfig> result;
     for (auto& pi : pe1Emitters_) {
@@ -1409,6 +1485,17 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
             m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
             m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]
         ));
+    }
+
+    // Attachment transforms
+    for (int i = 0; i < (int)attachments_.size(); i++) {
+        auto& ai = attachments_[i];
+        float m16[16];
+        PackMatrix(ai.node->GetNodeTM(t), m16);
+        XMMATRIX tm(m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
+                    m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]);
+        float vis = ai.node->GetVisibility(t);
+        state.attachmentStates.push_back({i, tm, vis});
     }
 
     // PE1 emitter states

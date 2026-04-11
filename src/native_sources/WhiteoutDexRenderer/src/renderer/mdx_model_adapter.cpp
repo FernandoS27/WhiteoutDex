@@ -275,6 +275,21 @@ SkeletonData MdxModelAdapter::GetSkeleton() {
             sk.inverseBindMatrices[i] = XMMatrixInverse(&det, boneWorld[i]);
         }
     }
+
+    // Extract billboard flags from hierarchy nodes (bone nodes only)
+    sk.boneBillboardFlags.resize(sk.boneCount, 0);
+    const auto& nodes = hierarchy_.Nodes();
+    for (int i = 0; i < (int)nodes.size() && i < sk.boneCount; i++) {
+        uint32_t nf = nodes[i].flags;
+        uint32_t bbf = 0;
+        using NF = whiteout::mdx::Node::NodeFlag;
+        if (nf & (uint32_t)NF::Billboarded)      bbf |= BONE_BILLBOARD_FULL;
+        if (nf & (uint32_t)NF::BillboardedLockX)  bbf |= BONE_BILLBOARD_LOCK_X;
+        if (nf & (uint32_t)NF::BillboardedLockY)  bbf |= BONE_BILLBOARD_LOCK_Y;
+        if (nf & (uint32_t)NF::BillboardedLockZ)  bbf |= BONE_BILLBOARD_LOCK_Z;
+        sk.boneBillboardFlags[i] = bbf;
+    }
+
     return sk;
 }
 
@@ -592,6 +607,20 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         (void)pe; // all PE2 per-frame fields set above
     }
 
+    // Attachment transforms
+    for (int i = 0; i < (int)model_.attachments.size(); i++) {
+        const auto& att = model_.attachments[i];
+        int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)att.node.objectId);
+        XMMATRIX tm = (nodeIdx >= 0 && nodeIdx < (int)allNodes.size())
+                       ? allNodes[nodeIdx] : XMMatrixIdentity();
+        float vis = 1.0f;
+        if (att.visibilityTracks.isUsed) {
+            auto [t,s,e] = effectiveTime(att.visibilityTracks.globalSequenceId);
+            vis = EvaluateTrackF32(att.visibilityTracks, t, s, e, 1.0f);
+        }
+        fs.attachmentStates.push_back({i, tm, vis});
+    }
+
     // PE1 (model particle emitter) per-frame state
     for (int i = 0; i < (int)model_.particleEmitters.size(); i++) {
         const auto& pe = model_.particleEmitters[i];
@@ -695,6 +724,21 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
     }
 
     return fs;
+}
+
+// ============================================================================
+// GetAttachmentConfigs
+// ============================================================================
+
+std::vector<AttachmentConfig> MdxModelAdapter::GetAttachmentConfigs() {
+    std::vector<AttachmentConfig> result;
+    for (const auto& att : model_.attachments) {
+        AttachmentConfig cfg;
+        cfg.attachmentId = (int)att.attachmentId;
+        cfg.modelPath = att.path;
+        result.push_back(cfg);
+    }
+    return result;
 }
 
 // ============================================================================

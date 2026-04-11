@@ -444,76 +444,9 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
 
         XMMATRIX worldM = localM * parentWorld;
 
-        // Billboard: override rotation to face the camera.
-        // Warcraft 3 billboarding preserves the node's world position and scale
-        // but replaces its rotation so it faces the camera.
-        // Coordinate system: Z-up, right-handed.
-        if (cameraPos && (flags & ((uint32_t)NF::Billboarded |
-                                   (uint32_t)NF::BillboardedLockX |
-                                   (uint32_t)NF::BillboardedLockY |
-                                   (uint32_t)NF::BillboardedLockZ))) {
-            XMVECTOR wS, wR, wT;
-            if (XMMatrixDecompose(&wS, &wR, &wT, worldM)) {
-                XMVECTOR camP = XMLoadFloat3(cameraPos);
-                XMVECTOR toCamera = XMVectorSubtract(camP, wT);
-                float dist = XMVectorGetX(XMVector3Length(toCamera));
-
-                if (dist > 0.001f) {
-                    XMVECTOR worldUp = XMVectorSet(0, 0, 1, 0);
-
-                    if (flags & (uint32_t)NF::Billboarded) {
-                        // Full billboard: build look-at basis facing camera
-                        XMVECTOR fwd = XMVector3Normalize(toCamera);
-                        XMVECTOR right = XMVector3Cross(fwd, worldUp);
-                        float rightLen = XMVectorGetX(XMVector3Length(right));
-
-                        if (rightLen < 0.001f) {
-                            // Camera directly above/below — use arbitrary right
-                            right = XMVectorSet(1, 0, 0, 0);
-                        }
-                        right = XMVector3Normalize(right);
-                        XMVECTOR up = XMVector3Normalize(XMVector3Cross(right, fwd));
-
-                        // Row-major XMMATRIX: row0=X(right), row1=Y(fwd), row2=Z(up)
-                        XMMATRIX billboardRot = XMMATRIX(
-                            right,
-                            fwd,
-                            up,
-                            XMVectorSet(0, 0, 0, 1)
-                        );
-                        worldM = XMMatrixScalingFromVector(wS) * billboardRot *
-                                 XMMatrixTranslationFromVector(wT);
-
-                    } else if (flags & (uint32_t)NF::BillboardedLockZ) {
-                        // Lock Z: rotate only around world Z to face camera (yaw only)
-                        XMFLOAT3 tc;
-                        XMStoreFloat3(&tc, toCamera);
-                        float yaw = atan2f(tc.y, tc.x);
-                        worldM = XMMatrixScalingFromVector(wS) *
-                                 XMMatrixRotationZ(yaw) *
-                                 XMMatrixTranslationFromVector(wT);
-
-                    } else if (flags & (uint32_t)NF::BillboardedLockY) {
-                        // Lock Y: rotate only around world Y to face camera
-                        XMFLOAT3 tc;
-                        XMStoreFloat3(&tc, toCamera);
-                        float angle = atan2f(tc.z, tc.x);
-                        worldM = XMMatrixScalingFromVector(wS) *
-                                 XMMatrixRotationY(angle) *
-                                 XMMatrixTranslationFromVector(wT);
-
-                    } else if (flags & (uint32_t)NF::BillboardedLockX) {
-                        // Lock X: rotate only around world X to face camera
-                        XMFLOAT3 tc;
-                        XMStoreFloat3(&tc, toCamera);
-                        float angle = atan2f(tc.z, tc.y);
-                        worldM = XMMatrixScalingFromVector(wS) *
-                                 XMMatrixRotationX(angle) *
-                                 XMMatrixTranslationFromVector(wT);
-                    }
-                }
-            }
-        }
+        // NOTE: Billboard rotation is applied in Renderer::ApplyFrameState()
+        // using boneBillboardFlags, NOT here. This ensures billboarding works
+        // uniformly for both Max and MDX adapter paths.
 
         allNodeMatrices[i] = worldM;
     }

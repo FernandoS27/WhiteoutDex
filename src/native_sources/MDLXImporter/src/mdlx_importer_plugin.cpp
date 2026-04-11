@@ -1646,9 +1646,15 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             std::set<std::string> visited;
             std::vector<std::string> pendingModels;
 
+            // Seed with PE1 model paths
             for (const auto& pe : irModel.particleEmitters) {
                 if (pe.variant == 1 && !pe.modelPath.empty())
                     pendingModels.push_back(pe.modelPath);
+            }
+            // Seed with attachment model paths
+            for (const auto& att : irModel.attachments) {
+                if (!att.path.empty())
+                    pendingModels.push_back(att.path);
             }
 
             while (!pendingModels.empty()) {
@@ -1741,7 +1747,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         }
         if (opts.core.importAttachments) {
             mdx_scene::Wc3AttachmentBuilder attBuilder;
-            attBuilder.buildAttachments(irModel, nodeMap, gi, reporter);
+            attBuilder.buildAttachments(irModel, nodeMap, modelDir, gi, reporter);
         }
         if (opts.core.importParticleEmitters1) {
             mdx_scene::Wc3Particle1Builder pe1Builder;

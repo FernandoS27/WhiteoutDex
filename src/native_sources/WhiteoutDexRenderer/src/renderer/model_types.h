@@ -26,6 +26,14 @@ struct CameraPreset {
 };
 
 // ============================================================================
+// Attachment configuration — static data, set once
+// ============================================================================
+struct AttachmentConfig {
+    int attachmentId = 0;
+    std::string modelPath;   // path to attached model (empty = no model)
+};
+
+// ============================================================================
 // PE1 (Model Particle Emitter) Configuration — static data, set once
 // ============================================================================
 struct PE1EmitterConfig {
@@ -156,6 +164,14 @@ struct FrameState {
         float alpha;
     };
     std::vector<LayerAlphaState> layerAlphas;
+
+    // Attachment per-frame state
+    struct AttachmentFrameState {
+        int attachmentIndex;
+        XMMATRIX transform;
+        float visibility;
+    };
+    std::vector<AttachmentFrameState> attachmentStates;
 
     // PE1 (model particle emitter) per-frame state
     struct PE1FrameState {

@@ -102,6 +102,21 @@ void Renderer::RemoveModel(uint32_t handle) {
     }
 }
 
+void Renderer::SetAttachmentConfigs(uint32_t handle, const std::vector<AttachmentConfig>& configs) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    auto* mi = getModel(handle);
+    if (!mi) return;
+    mi->attachmentSlots.clear();
+    // Keep ALL attachments as slots so slot index == FrameState attachment index.
+    // Only slots with non-empty modelPath will have child models loaded.
+    for (auto& cfg : configs) {
+        ModelInstance::AttachmentSlot slot;
+        slot.config = cfg;
+        slot.loaded = cfg.modelPath.empty(); // mark empty-path slots as "loaded" (nothing to load)
+        mi->attachmentSlots.push_back(slot);
+    }
+}
+
 void Renderer::SetPE1ChildCoordSpace(CoordSpace space) {
     pe1ChildCoordSpace_ = space;
 }
@@ -116,6 +131,43 @@ void Renderer::SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig
     if (!mi) return;
     for (int i = 0; i < (int)configs.size(); i++)
         mi->pe1.AddEmitter(i, configs[i]);
+}
+
+// ============================================================================
+// Attachment Model Loading
+// ============================================================================
+
+void Renderer::UpdateAttachments() {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+
+    // Collect handles to avoid modifying models_ during iteration
+    std::vector<uint32_t> handles;
+    for (auto& [h, mi] : models_) handles.push_back(h);
+
+    for (uint32_t h : handles) {
+        auto* mi = getModel(h);
+        if (!mi) continue;
+
+        for (auto& slot : mi->attachmentSlots) {
+            if (slot.loaded || slot.config.modelPath.empty()) continue;
+            slot.loaded = true;
+
+            auto tmpl = getOrLoadTemplate(slot.config.modelPath);
+            if (!tmpl) continue;
+
+            uint32_t childH = nextModelHandle_++;
+            auto child = std::make_unique<ModelInstance>();
+            child->handle = childH;
+            child->isPE1Child = true;  // reuse the flag for "child model"
+            child->pe1Depth = mi->pe1Depth + 1;
+            child->pe1Adapter = tmpl->adapter;
+            child->pe1BirthTimeMs = currentTimeMs_;
+
+            stageModelFromTemplate(child.get(), *tmpl);
+            models_[childH] = std::move(child);
+            slot.childModelHandle = childH;
+        }
+    }
 }
 
 // ============================================================================
@@ -532,13 +584,57 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
     auto* mi = getModel(handle);
     if (!mi) return;
 
-    // Bone matrices → skinning system
+    // Bone matrices → skinning system (with billboard adjustment)
     if (!state.boneWorldMatrices.empty()) {
         int bc = (int)state.boneWorldMatrices.size();
+        XMFLOAT3 camPos = camera_.GetSource();
+
         std::vector<float> worldFlat(bc * 16);
         for (int i = 0; i < bc; i++) {
+            XMMATRIX boneM = state.boneWorldMatrices[i];
+
+            // Apply billboard: replace rotation to face camera, preserve position + scale
+            uint32_t bbFlags = (i < (int)mi->boneBillboardFlags.size()) ? mi->boneBillboardFlags[i] : 0;
+            if (bbFlags != 0) {
+                XMVECTOR wS, wR, wT;
+                if (XMMatrixDecompose(&wS, &wR, &wT, boneM)) {
+                    XMVECTOR camP = XMLoadFloat3(&camPos);
+                    XMVECTOR toCamera = XMVectorSubtract(camP, wT);
+                    float dist = XMVectorGetX(XMVector3Length(toCamera));
+                    if (dist > 0.001f) {
+                        XMVECTOR worldUp = XMVectorSet(0, 0, 1, 0);
+
+                        if (bbFlags & BONE_BILLBOARD_FULL) {
+                            // fwd points FROM camera TO bone so the front face faces the viewer
+                            XMVECTOR fwd = XMVector3Normalize(XMVectorNegate(toCamera));
+                            XMVECTOR right = XMVector3Cross(fwd, worldUp);
+                            float rightLen = XMVectorGetX(XMVector3Length(right));
+                            if (rightLen < 0.001f) {
+                                right = XMVectorSet(1, 0, 0, 0);
+                            }
+                            right = XMVector3Normalize(right);
+                            XMVECTOR up = XMVector3Normalize(XMVector3Cross(right, fwd));
+                            XMMATRIX bbRot = XMMATRIX(right, fwd, up, XMVectorSet(0,0,0,1));
+                            boneM = XMMatrixScalingFromVector(wS) * bbRot * XMMatrixTranslationFromVector(wT);
+                        } else if (bbFlags & BONE_BILLBOARD_LOCK_Z) {
+                            XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
+                            float yaw = atan2f(tc.y, tc.x);
+                            boneM = XMMatrixScalingFromVector(wS) * XMMatrixRotationZ(yaw) * XMMatrixTranslationFromVector(wT);
+                        } else if (bbFlags & BONE_BILLBOARD_LOCK_Y) {
+                            XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
+                            float angle = atan2f(tc.z, tc.x);
+                            boneM = XMMatrixScalingFromVector(wS) * XMMatrixRotationY(angle) * XMMatrixTranslationFromVector(wT);
+                        } else if (bbFlags & BONE_BILLBOARD_LOCK_X) {
+                            XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
+                            float angle = atan2f(tc.z, tc.y);
+                            boneM = XMMatrixScalingFromVector(wS) * XMMatrixRotationX(angle) * XMMatrixTranslationFromVector(wT);
+                        }
+                    }
+                }
+            }
+
             XMFLOAT4X4 f44;
-            XMStoreFloat4x4(&f44, state.boneWorldMatrices[i]);
+            XMStoreFloat4x4(&f44, boneM);
             float* dst = &worldFlat[i * 16];
             dst[0]  = f44._11; dst[1]  = f44._12; dst[2]  = f44._13; dst[3]  = f44._14;
             dst[4]  = f44._21; dst[5]  = f44._22; dst[6]  = f44._23; dst[7]  = f44._24;
@@ -624,6 +720,21 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
         st.gravity      = ps.gravity;
         st.visibility   = ps.visibility;
         mi->pe1.UpdateEmitterState(ps.emitterId, st);
+    }
+
+    // Update attachment child model transforms
+    for (auto& as : state.attachmentStates) {
+        if (as.attachmentIndex < 0 || as.attachmentIndex >= (int)mi->attachmentSlots.size()) continue;
+        auto& slot = mi->attachmentSlots[as.attachmentIndex];
+        if (slot.childModelHandle != 0) {
+            auto* child = getModel(slot.childModelHandle);
+            if (child) {
+                child->worldTransform = as.transform;
+                // Hide if visibility <= 0
+                for (auto& geo : child->gpuGeosets)
+                    geo.geosetAlpha = (as.visibility > 0.5f) ? 1.0f : 0.0f;
+            }
+        }
     }
 
     // Advance simulation clock (replaces old SetTime)
@@ -1255,6 +1366,9 @@ void Renderer::RenderThread(int width, int height) {
 
         // Process pending camera preset updates
         ProcessCameraPresets();
+
+        // Load attachment child models (lazy, first frame only)
+        UpdateAttachments();
 
         // PE1: Evaluate child model animations
         EvaluatePE1Children();

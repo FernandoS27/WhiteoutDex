@@ -237,6 +237,7 @@ void Wc3LightBuilder::buildLights(
 
 void Wc3AttachmentBuilder::buildAttachments(
     const ir::IRModel& irModel, std::vector<INode*>& nodeMap,
+    const std::wstring& modelDir,
     Interface* gi, core::ExportErrorReporter& reporter)
 {
     for (const auto& irAtt : irModel.attachments) {
@@ -263,9 +264,28 @@ void Wc3AttachmentBuilder::buildAttachments(
         if (ref) {
             pbSetInt(ref, L"attachmentId", irAtt.attachmentId);
             if (!irAtt.path.empty()) {
-                auto wpath = toWstr(irAtt.path);
+                // Resolve model path to absolute (pre-resolve extracted from CASC)
+                namespace fs = std::filesystem;
+                std::wstring wRelPath = toWstr(irAtt.path);
+                std::wstring resolved;
+
+                auto tryPath = [&](const std::wstring& rel) -> bool {
+                    fs::path full = fs::path(modelDir) / rel;
+                    std::error_code ec;
+                    if (fs::exists(full, ec)) { resolved = full.wstring(); return true; }
+                    return false;
+                };
+                if (!tryPath(wRelPath)) {
+                    fs::path p(wRelPath);
+                    std::wstring ext = p.extension().wstring();
+                    std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+                    if (ext == L".mdl") { p.replace_extension(L".mdx"); tryPath(p.wstring()); }
+                    else if (ext == L".mdx") { p.replace_extension(L".mdl"); tryPath(p.wstring()); }
+                }
+                if (resolved.empty()) resolved = wRelPath;
+
                 pbSetBool(ref, L"usesExternalModel", TRUE);
-                pbSetString(ref, L"externalModelPath", wpath.c_str());
+                pbSetString(ref, L"externalModelPath", resolved.c_str());
             }
             if (irAtt.attachmentId >= 0) {
                 pbSetBool(ref, L"usesAttachmentId", TRUE);
