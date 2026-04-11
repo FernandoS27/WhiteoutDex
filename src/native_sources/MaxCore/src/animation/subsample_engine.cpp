@@ -1,38 +1,201 @@
 // MaxCore — Transform sampling engine implementation
+// Uses GetValue() on controllers (Autodesk-recommended) for FK nodes.
+// Uses GetNodeTM() matrix decomposition for IK nodes (GetValue returns
+// pre-IK bind pose, not the solved result).
 #include "subsample_engine.h"
 #include "../util/max_helpers.h"
 
 #include <decomp.h>
+#include <control.h>
 #include <cmath>
 #include <algorithm>
+#include <fstream>
+#include <unordered_map>
+
+// IKControl interface ID from the Max SDK (IKHierarchy.h)
+#ifndef I_IKCONTROL
+#define I_IKCONTROL 0x27ab4f01
+#endif
+
+// Debug logging — writes to %TEMP%\mdlx_subsample_debug.log
+static std::ofstream& ssLog() {
+    static std::ofstream log;
+    if (!log.is_open()) {
+        char tmp[MAX_PATH];
+        GetTempPathA(MAX_PATH, tmp);
+        std::string path = std::string(tmp) + "mdlx_subsample_debug.log";
+        log.open(path, std::ios::trunc);
+    }
+    return log;
+}
+#define SSLOG ssLog()
+#define SSFLUSH ssLog().flush()
 
 namespace core {
 
+// Detect if a TM controller is IK-driven.
+// IK controllers compute transforms dynamically via the solver —
+// GetValue() on their sub-controllers returns the static bind pose,
+// NOT the IK-solved result. We must use GetNodeTM() + matrix decomp instead.
+static bool isIKDriven(Control* tmCtrl) {
+    if (!tmCtrl) return false;
+
+    // Check for IKControl interface (used by HD solver bones)
+    if (tmCtrl->GetInterface(I_IKCONTROL) != nullptr)
+        return true;
+
+    // Check class name as fallback for IKChainControl and variants
+    Class_ID cid = tmCtrl->ClassID();
+    // IKChainControl ClassID = (0x7B9A27E5, 0x21181E2A) — the HI solver chain object
+    if (cid == Class_ID(0x7B9A27E5, 0x21181E2A))
+        return true;
+
+    return false;
+}
+
 void SubsampleEngine::evaluateLocalTransform(INode* node, INode* parent, TimeValue t,
                                               Point3& outPos, Quat& outRot, Point3& outScl) {
-    Matrix3 nodeTM = node->GetNodeTM(t);
-    Matrix3 localTM;
+    Control* tmCtrl = node->GetTMController();
+    Control* posCtrl = tmCtrl ? tmCtrl->GetPositionController() : nullptr;
+    Control* rotCtrl = tmCtrl ? tmCtrl->GetRotationController() : nullptr;
+    Control* sclCtrl = tmCtrl ? tmCtrl->GetScaleController() : nullptr;
 
-    INode* root = GetCOREInterface()->GetRootNode();
-    if (parent && parent != root) {
-        Matrix3 parentTM = parent->GetNodeTM(t);
-        localTM = nodeTM * Inverse(parentTM);
-    } else {
-        localTM = nodeTM;
+    // ── IK detection ──
+    bool useMatrixDecomp = isIKDriven(tmCtrl);
+
+    // ── Debug: log first few calls per node to show IK vs FK path ──
+    static std::unordered_map<INode*, int> nodeLogCount;
+    bool shouldLog = false;
+    {
+        int& count = nodeLogCount[node];
+        if (count < 3) {  // Log first 3 samples per node
+            shouldLog = true;
+            count++;
+        }
     }
 
-    // Decompose the local matrix
-    AffineParts parts;
-    decomp_affine(localTM, &parts);
+    if (shouldLog) {
+        const MCHAR* name = node->GetName();
+        char nameBuf[256] = {};
+        if (name) WideCharToMultiByte(CP_UTF8, 0, name, -1, nameBuf, 255, nullptr, nullptr);
 
-    outPos = parts.t;
-    outRot = parts.q;
-    outScl = Point3(parts.k.x, parts.k.y, parts.k.z);
+        const char* tmClassName = "unknown";
+        if (tmCtrl) {
+            Class_ID cid = tmCtrl->ClassID();
+            // Simple ID for logging
+            if (useMatrixDecomp) tmClassName = "IK";
+            else tmClassName = "FK";
+        }
 
-    // If there's a non-trivial stretch rotation, apply it to the scale
-    // (parts.u is the stretch rotation, parts.f is the sign of determinant)
-    if (parts.f < 0.0f) {
-        outScl = -outScl;
+        SSLOG << "evalLocal '" << nameBuf << "' t=" << t 
+              << " path=" << tmClassName << "\n";
+    }
+
+    if (!useMatrixDecomp && posCtrl && rotCtrl) {
+        // ── GetValue path (FK nodes) ──
+        Interval valid = FOREVER;
+
+        Point3 pos(0, 0, 0);
+        posCtrl->GetValue(t, &pos, valid, CTRL_ABSOLUTE);
+        outPos = pos;
+
+        Quat rot;
+        rot.Identity();
+        rotCtrl->GetValue(t, &rot, valid, CTRL_ABSOLUTE);
+        outRot = rot;
+
+        if (sclCtrl) {
+            ScaleValue sv(Point3(1, 1, 1));
+            sclCtrl->GetValue(t, &sv, valid, CTRL_ABSOLUTE);
+            outScl = Point3(sv.s.x, sv.s.y, sv.s.z);
+        } else {
+            outScl = Point3(1, 1, 1);
+        }
+
+        if (shouldLog) {
+            SSLOG << "  FK GetValue: pos=(" << outPos.x << "," << outPos.y << "," << outPos.z
+                  << ") rot=(" << outRot.x << "," << outRot.y << "," << outRot.z << "," << outRot.w
+                  << ") scl=(" << outScl.x << "," << outScl.y << "," << outScl.z << ")\n";
+            SSFLUSH;
+        }
+    } else {
+        // ── Matrix path (IK nodes + fallback) ──
+        // Extract rotation by normalizing matrix rows (same as MaxScript's .rotationPart)
+        // NOT decomp_affine — that decomposes scale/shear differently and gives
+        // wrong quaternions for IK chains.
+        Matrix3 nodeTM = node->GetNodeTM(t);
+        Matrix3 localTM;
+
+        INode* root = GetCOREInterface()->GetRootNode();
+        if (parent && parent != root) {
+            Matrix3 parentTM = parent->GetNodeTM(t);
+            localTM = nodeTM * Inverse(parentTM);
+        } else {
+            localTM = nodeTM;
+        }
+
+        // Translation
+        outPos = localTM.GetRow(3);
+
+        // Scale: measure row lengths
+        Point3 r0 = localTM.GetRow(0);
+        Point3 r1 = localTM.GetRow(1);
+        Point3 r2 = localTM.GetRow(2);
+        float sx = Length(r0);
+        float sy = Length(r1);
+        float sz = Length(r2);
+
+        // Detect mirror (negative determinant)
+        float det = DotProd(r0, CrossProd(r1, r2));
+        if (det < 0.0f) {
+            sx = -sx;  // Negate one axis to absorb the flip
+        }
+
+        outScl = Point3(sx, sy, sz);
+
+        // Build pure rotation matrix by normalizing rows
+        // This matches MaxScript's .rotationPart
+        Matrix3 rotMat(1);
+        if (fabsf(sx) > 0.0001f) r0 = r0 / sx; else r0 = Point3(1, 0, 0);
+        if (fabsf(sy) > 0.0001f) r1 = r1 / sy; else r1 = Point3(0, 1, 0);
+        if (fabsf(sz) > 0.0001f) r2 = r2 / sz; else r2 = Point3(0, 0, 1);
+        rotMat.SetRow(0, r0);
+        rotMat.SetRow(1, r1);
+        rotMat.SetRow(2, r2);
+        rotMat.SetRow(3, Point3(0, 0, 0));
+
+        Quat q(rotMat);
+        outRot = q;
+
+        if (shouldLog) {
+            SSLOG << "  IK RowNorm: pos=(" << outPos.x << "," << outPos.y << "," << outPos.z
+                  << ") rot=(" << outRot.x << "," << outRot.y << "," << outRot.z << "," << outRot.w
+                  << ") scl=(" << outScl.x << "," << outScl.y << "," << outScl.z
+                  << ") det=" << det << "\n";
+
+            // Compare with decomp_affine for diagnosis
+            AffineParts parts;
+            decomp_affine(localTM, &parts);
+            Quat dq = parts.q;
+            SSLOG << "  IK decomp(old): rot=(" << dq.x << "," << dq.y << "," << dq.z << "," << dq.w << ")\n";
+
+            // Also show GetValue for comparison
+            if (posCtrl && rotCtrl) {
+                Interval valid2 = FOREVER;
+                Quat gvRot;
+                gvRot.Identity();
+                rotCtrl->GetValue(t, &gvRot, valid2, CTRL_ABSOLUTE);
+                
+                float rotDiff = fabsf(outRot.x - gvRot.x) + fabsf(outRot.y - gvRot.y) + 
+                                fabsf(outRot.z - gvRot.z) + fabsf(outRot.w - gvRot.w);
+                if (rotDiff > 0.001f) {
+                    SSLOG << "  ** ROT DIFFERS by " << rotDiff << " — IK solver is active **\n";
+                } else {
+                    SSLOG << "  (rot same — IK not changing this bone at this time)\n";
+                }
+            }
+            SSFLUSH;
+        }
     }
 }
 
@@ -91,7 +254,6 @@ void SubsampleEngine::sampleNode(INode* node, INode* parent,
 
     // Adaptive refinement for rotation if requested
     if (config.adaptiveRefine && outRot.keys.size() >= 2) {
-        // Work backwards through pairs to insert midpoints
         size_t origSize = outRot.keys.size();
         for (size_t i = 0; i + 1 < origSize; ++i) {
             TimeValue t0 = outRot.keys[i].time;
@@ -103,11 +265,9 @@ void SubsampleEngine::sampleNode(INode* node, INode* parent,
                            outPos, outRot, outScl);
         }
 
-        // Sort keys by time after refinement insertions
         auto sortByTime = [](auto& track) {
             std::sort(track.keys.begin(), track.keys.end(),
                       [](const auto& a, const auto& b) { return a.time < b.time; });
-            // Remove duplicates
             auto last = std::unique(track.keys.begin(), track.keys.end(),
                                     [](const auto& a, const auto& b) { return a.time == b.time; });
             track.keys.erase(last, track.keys.end());
@@ -125,21 +285,18 @@ void SubsampleEngine::sampleNode(INode* node, INode* parent,
             auto& key = track.keys[i];
             key.hasTangents = true;
             if (i == 0) {
-                // First key: forward difference
                 auto dt = static_cast<float>(track.keys[1].time - key.time);
                 if (dt > 0.0f) {
                     key.inTangent = (track.keys[1].value - key.value) / dt;
                     key.outTangent = key.inTangent;
                 }
             } else if (i == n - 1) {
-                // Last key: backward difference
                 auto dt = static_cast<float>(key.time - track.keys[n - 2].time);
                 if (dt > 0.0f) {
                     key.inTangent = (key.value - track.keys[n - 2].value) / dt;
                     key.outTangent = key.inTangent;
                 }
             } else {
-                // Central difference
                 auto dt = static_cast<float>(track.keys[i + 1].time - track.keys[i - 1].time);
                 if (dt > 0.0f) {
                     key.inTangent = (track.keys[i + 1].value - track.keys[i - 1].value) / dt;
@@ -152,28 +309,14 @@ void SubsampleEngine::sampleNode(INode* node, INode* parent,
     computeTangents(outPos);
     computeTangents(outScl);
 
-    // For quaternion tangents, use log-map based central difference
+    // Quaternion tangents
     {
         size_t n = outRot.keys.size();
         for (size_t i = 0; i < n; ++i) {
             auto& key = outRot.keys[i];
             key.hasTangents = true;
-            // For quaternion tracks, tangents are stored as quaternions
-            // representing the angular velocity. Use simple slerp-based tangents.
-            if (n < 2) continue;
-
-            if (i == 0) {
-                key.inTangent = key.value;
-                key.outTangent = key.value;
-            } else if (i == n - 1) {
-                key.inTangent = key.value;
-                key.outTangent = key.value;
-            } else {
-                // Central: store the "delta" quaternion as tangent hint
-                // Actual tangent usage is format-dependent
-                key.inTangent = key.value;
-                key.outTangent = key.value;
-            }
+            key.inTangent = key.value;
+            key.outTangent = key.value;
         }
     }
 }
@@ -185,29 +328,24 @@ void SubsampleEngine::adaptiveRefine(INode* node, INode* parent,
                                       ir::Vec3Track& posTrack, ir::QuatTrack& rotTrack,
                                       ir::Vec3Track& sclTrack) {
     if (depth >= maxDepth) return;
-    if (t1 - t0 <= 1) return; // Can't subdivide further
+    if (t1 - t0 <= 1) return;
 
     TimeValue tmid = (t0 + t1) / 2;
 
-    // Evaluate actual transform at midpoint
     Point3 midPos, midScl;
     Quat midRot;
     evaluateLocalTransform(node, parent, tmid, midPos, midRot, midScl);
 
-    // Ensure quaternion consistency
     if (core::quatDot(q0, midRot) < 0.0f)
         midRot = -midRot;
 
-    // Compute interpolated quaternion at midpoint (slerp)
     Quat interpRot = Slerp(q0, q1, 0.5f);
 
-    // Compute angular difference in degrees
     Quat diff = interpRot * Inverse(midRot);
     float angle = 2.0f * acosf(std::min(1.0f, fabsf(diff.w)));
     float angleDeg = angle * (180.0f / 3.14159265f);
 
     if (angleDeg > angleThreshold) {
-        // Insert midpoint key
         ir::Keyframe<Point3> posKey;
         posKey.time = tmid;
         posKey.value = midPos;
@@ -223,7 +361,6 @@ void SubsampleEngine::adaptiveRefine(INode* node, INode* parent,
         sclKey.value = midScl;
         sclTrack.keys.push_back(sclKey);
 
-        // Recurse both halves
         adaptiveRefine(node, parent, t0, tmid, q0, midRot,
                         angleThreshold, depth + 1, maxDepth, posTrack, rotTrack, sclTrack);
         adaptiveRefine(node, parent, tmid, t1, midRot, q1,

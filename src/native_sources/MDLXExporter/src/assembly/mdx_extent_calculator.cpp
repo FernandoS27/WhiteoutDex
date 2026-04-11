@@ -1,9 +1,20 @@
 // MDLXExporter — MDX extent calculator implementation
+// CHANGES: Added debug logging for extent computation
 #include "mdx_extent_calculator.h"
 #include "mdx_coord_transform.h"
 #include <cmath>
 #include <algorithm>
 #include <limits>
+
+#include <max.h>
+#ifndef MDX_DEBUG_PRINT
+#define MDX_DEBUG_PRINT 1
+#endif
+#if MDX_DEBUG_PRINT
+  #define MDX_LOG(...) DebugPrint(__VA_ARGS__)
+#else
+  #define MDX_LOG(...) ((void)0)
+#endif
 
 using whiteout::Vector3f;
 using whiteout::mdx::Extent;
@@ -25,18 +36,13 @@ Extent computeExtentFromVertices(const std::vector<Vector3f>& positions) {
     float maxZ = std::numeric_limits<float>::lowest();
 
     for (auto& v : positions) {
-        minX = std::min(minX, v.x);
-        minY = std::min(minY, v.y);
-        minZ = std::min(minZ, v.z);
-        maxX = std::max(maxX, v.x);
-        maxY = std::max(maxY, v.y);
-        maxZ = std::max(maxZ, v.z);
+        minX = std::min(minX, v.x); minY = std::min(minY, v.y); minZ = std::min(minZ, v.z);
+        maxX = std::max(maxX, v.x); maxY = std::max(maxY, v.y); maxZ = std::max(maxZ, v.z);
     }
 
     ext.minimum = {minX, minY, minZ};
     ext.maximum = {maxX, maxY, maxZ};
 
-    // Bounding sphere: center at midpoint, radius = half diagonal
     float cx = (minX + maxX) * 0.5f;
     float cy = (minY + maxY) * 0.5f;
     float cz = (minZ + maxZ) * 0.5f;
@@ -67,57 +73,61 @@ Extent unionExtents(const Extent& a, const Extent& b) {
 } // anonymous namespace
 
 void MdxExtentCalculator::compute(const ir::IRModel& ir, Model& model) {
-    // Compute per-geoset extents from vertex positions
-    for (auto& geo : model.geosets) {
-        geo.extent = computeExtentFromVertices(geo.vertexPositions);
+    MDX_LOG(_T("── ExtentCalculator::compute ──\n"));
 
-        // Per-sequence extents: for static meshes, use the same extent for all sequences
+    for (size_t g = 0; g < model.geosets.size(); g++) {
+        auto& geo = model.geosets[g];
+        geo.extent = computeExtentFromVertices(geo.vertexPositions);
         geo.sequenceExtents.resize(model.sequences.size(), geo.extent);
+
+        MDX_LOG(_T("  geo[%d] extent: radius=%.2f min=(%.1f,%.1f,%.1f) max=(%.1f,%.1f,%.1f)\n"),
+                (int)g, geo.extent.boundsRadius,
+                geo.extent.minimum.x, geo.extent.minimum.y, geo.extent.minimum.z,
+                geo.extent.maximum.x, geo.extent.maximum.y, geo.extent.maximum.z);
     }
 
-    // Model extent = union of all geoset extents
     if (!model.geosets.empty()) {
         model.modelExtent = model.geosets[0].extent;
         for (size_t i = 1; i < model.geosets.size(); i++)
             model.modelExtent = unionExtents(model.modelExtent, model.geosets[i].extent);
     }
 
-    // Sequence extents
+    MDX_LOG(_T("  Model extent: radius=%.2f\n"), model.modelExtent.boundsRadius);
+
     for (size_t s = 0; s < model.sequences.size(); s++) {
         Extent seqExt{};
         bool first = true;
         for (auto& geo : model.geosets) {
             if (s < geo.sequenceExtents.size()) {
-                if (first) {
-                    seqExt = geo.sequenceExtents[s];
-                    first = false;
-                } else {
-                    seqExt = unionExtents(seqExt, geo.sequenceExtents[s]);
-                }
+                if (first) { seqExt = geo.sequenceExtents[s]; first = false; }
+                else seqExt = unionExtents(seqExt, geo.sequenceExtents[s]);
             }
         }
 
-        // Use the IR sequence extents if available (from custom attribute data)
         if (s < ir.sequences.size()) {
             auto& irSeq = ir.sequences[s];
             if (irSeq.extentRadius > 0.0f) {
-                // Use the stored extent from the scene
-                model.sequences[s].extent.boundsRadius = irSeq.extentRadius;
-                // Coordinate transform can swap min/max on negated axes — re-sort
                 auto tMin = mdx_transform::position(irSeq.extentMin);
                 auto tMax = mdx_transform::position(irSeq.extentMax);
+                model.sequences[s].extent.boundsRadius = irSeq.extentRadius;
                 model.sequences[s].extent.minimum = {std::min(tMin.x, tMax.x),
                                                       std::min(tMin.y, tMax.y),
                                                       std::min(tMin.z, tMax.z)};
                 model.sequences[s].extent.maximum = {std::max(tMin.x, tMax.x),
                                                       std::max(tMin.y, tMax.y),
                                                       std::max(tMin.z, tMax.z)};
+                MDX_LOG(_T("  seq[%d] \"%S\" extent from CA: radius=%.2f\n"),
+                        (int)s, model.sequences[s].name.c_str(), irSeq.extentRadius);
                 continue;
             }
         }
 
         model.sequences[s].extent = seqExt;
+        MDX_LOG(_T("  seq[%d] \"%S\" extent computed: radius=%.2f\n"),
+                (int)s, model.sequences[s].name.c_str(), seqExt.boundsRadius);
     }
+
+    MDX_LOG(_T("── ExtentCalculator done ──\n\n"));
 }
 
 Extent MdxExtentCalculator::fromPositions(const Vector3f* positions, size_t count) {

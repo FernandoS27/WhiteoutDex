@@ -1,5 +1,16 @@
 // MDLXExporter — MDX material mapper implementation
+// CHANGES: Added debug logging for material/layer conversion
 #include "mdx_material_mapper.h"
+
+#include <max.h>
+#ifndef MDX_DEBUG_PRINT
+#define MDX_DEBUG_PRINT 1
+#endif
+#if MDX_DEBUG_PRINT
+  #define MDX_LOG(...) DebugPrint(__VA_ARGS__)
+#else
+  #define MDX_LOG(...) ((void)0)
+#endif
 
 namespace wdx = whiteout::mdx;
 using wdx::Layer;
@@ -14,12 +25,19 @@ wdx::Material MdxMaterialMapper::map(const ir::Material& irMat,
     mat.priorityPlane = irMat.priorityPlane;
     mat.flags = irMat.flags;
     mat.shader = irMat.shaderName;
-    // v900-1000 require a shader name; default if none was set
     if (mat.shader.empty() && version > 800 && version < 1100)
         mat.shader = "Shader_HD_DefaultUnit";
 
-    for (auto& irLayer : irMat.layers) {
-        mat.layers.push_back(mapLayer(irLayer, model, version));
+    MDX_LOG(_T("  MaterialMapper: priority=%d flags=0x%X shader=\"%S\" layers=%d\n"),
+            mat.priorityPlane, mat.flags, mat.shader.c_str(), (int)irMat.layers.size());
+
+    for (size_t i = 0; i < irMat.layers.size(); i++) {
+        auto layer = mapLayer(irMat.layers[i], model, version);
+        MDX_LOG(_T("    layer[%d] filter=%d alpha=%.2f texId=%u coordId=%u hd=%s\n"),
+                (int)i, (int)layer.filterMode, layer.alpha,
+                layer.textureId, layer.coordId,
+                layer.is_hd ? _T("yes") : _T("no"));
+        mat.layers.push_back(std::move(layer));
     }
 
     return mat;
@@ -31,7 +49,6 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
 {
     Layer layer;
 
-    // Filter mode
     switch (irLayer.blendMode) {
     case ir::BlendMode::Opaque:     layer.filterMode = Layer::FilterMode::None; break;
     case ir::BlendMode::AlphaKey:   layer.filterMode = Layer::FilterMode::Transparent; break;
@@ -42,13 +59,12 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
     case ir::BlendMode::Modulate2x: layer.filterMode = Layer::FilterMode::Modulate2x; break;
     }
 
-    // Shading flags
     Layer::ShadingFlag flags = Layer::ShadingFlag::None;
-    if (irLayer.unshaded)    flags = flags | Layer::ShadingFlag::Unshaded;
+    if (irLayer.unshaded)     flags = flags | Layer::ShadingFlag::Unshaded;
     if (irLayer.sphereEnvMap) flags = flags | Layer::ShadingFlag::SphereEnvMap;
-    if (irLayer.twoSided)    flags = flags | Layer::ShadingFlag::TwoSided;
-    if (irLayer.unfogged)    flags = flags | Layer::ShadingFlag::Unfogged;
-    if (irLayer.noDepthTest) flags = flags | Layer::ShadingFlag::NoDepthTest;
+    if (irLayer.twoSided)     flags = flags | Layer::ShadingFlag::TwoSided;
+    if (irLayer.unfogged)     flags = flags | Layer::ShadingFlag::Unfogged;
+    if (irLayer.noDepthTest)  flags = flags | Layer::ShadingFlag::NoDepthTest;
     if (irLayer.noDepthWrite) flags = flags | Layer::ShadingFlag::NoDepthSet;
     layer.shadingFlags = flags;
 
@@ -57,7 +73,6 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
     layer.textureAnimationId = (irLayer.textureAnimationIndex >= 0)
         ? static_cast<uint32_t>(irLayer.textureAnimationIndex) : 0xFFFFFFFF;
 
-    // Texture ID (first diffuse texture ref)
     for (auto& ref : irLayer.textureRefs) {
         if (ref.slot == ir::TextureSlot::Diffuse && ref.textureIndex >= 0) {
             layer.textureId = static_cast<uint32_t>(ref.textureIndex);
@@ -65,7 +80,6 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
         }
     }
 
-    // Reforged PBR properties
     if (version >= 1200) {
         layer.emissiveGain = irLayer.emissiveGain;
         layer.fresnelOpacity = irLayer.fresnelOpacity;
@@ -73,13 +87,10 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
         layer.fresnelColor = {irLayer.fresnelColor.x, irLayer.fresnelColor.y,
                               irLayer.fresnelColor.z};
 
-        // Sub-textures for HD materials
         for (auto& ref : irLayer.textureRefs) {
             if (ref.textureIndex < 0) continue;
-
             Layer::SubTexture sub;
             sub.textureId = static_cast<uint32_t>(ref.textureIndex);
-
             switch (ref.slot) {
             case ir::TextureSlot::Diffuse:    sub.slot = Layer::SlotType::DiffuseMap; break;
             case ir::TextureSlot::Normal:     sub.slot = Layer::SlotType::NormalMap; break;
@@ -89,7 +100,6 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
             case ir::TextureSlot::Environment: sub.slot = Layer::SlotType::EnvironmentMap; break;
             default: sub.slot = Layer::SlotType::DiffuseMap; break;
             }
-
             layer.subTextures.push_back(sub);
         }
 
@@ -133,6 +143,8 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
                     keys[k].value = irTrack.keys[k].value;
                 }
             }
+
+            MDX_LOG(_T("      alpha animated: %d keys\n"), (int)irTrack.keys.size());
         }
     }
 
@@ -157,6 +169,8 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
                 keys[k].frame = mdx_transform::ticksToMs(irTrack.keys[k].time);
                 keys[k].value = static_cast<whiteout::u32>(irTrack.keys[k].value);
             }
+
+            MDX_LOG(_T("      texId animated: %d keys\n"), (int)irTrack.keys.size());
         }
     }
 

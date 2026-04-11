@@ -1,5 +1,6 @@
 // MaxCore — Animation controller type detection implementation
 #include "controller_reader.h"
+#include "massfx_detector.h"
 #include "../util/class_ids.h"
 
 namespace core {
@@ -61,26 +62,36 @@ bool ControllerReader::isCAT(INode* node) {
     ObjectState os = node->EvalWorldState(0);
     if (!os.obj) return false;
     Class_ID objID = os.obj->ClassID();
-    return (objID == core_ids::CAT_PARENT_ID ||
-            objID == core_ids::CAT_BONE_ID ||
-            objID == core_ids::HUB_ID);
+    if (objID == core_ids::CAT_PARENT_ID ||
+        objID == core_ids::CAT_BONE_ID ||
+        objID == core_ids::HUB_ID)
+        return true;
+
+    // ClassName fallback — CAT ClassIDs can change between Max versions
+    // because CAT is compiled from SDK sample source, not part of public API.
+    auto classNameStr = os.obj->ClassName();
+    const MCHAR* className = static_cast<const MCHAR*>(classNameStr);
+    if (className) {
+        if (_wcsicmp(className, L"CATBone") == 0 ||
+            _wcsicmp(className, L"HubObject") == 0 ||
+            _wcsicmp(className, L"CATParent") == 0)
+            return true;
+    }
+    return false;
+}
+
+bool ControllerReader::isMassFX(INode* node) {
+    return MassFXDetector::isMassFXBaked(node);
 }
 
 bool ControllerReader::isIKAffected(INode* node) {
     if (!node) return false;
     Control* tmCtrl = node->GetTMController();
     if (!tmCtrl) return false;
-    // IK chains are typically identified by having an IK chain interface
-    // or specific chain controller ClassIDs. For a robust check, we
-    // examine if the controller has sub-controllers that are IK.
-    // A simplified approach: check if the position controller
-    // is something other than standard FK types.
     Control* posCtrl = tmCtrl->GetPositionController();
     if (posCtrl) {
         ControllerType pType = detect(posCtrl);
         if (pType == ControllerType::Unknown) {
-            // Unknown controller type on position — might be IK
-            // Check for IK chain interface
             return false; // Conservative: only flag IK if explicitly detected
         }
     }

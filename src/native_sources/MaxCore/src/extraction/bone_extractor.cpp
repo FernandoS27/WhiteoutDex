@@ -4,6 +4,7 @@
 #include "../util/max_helpers.h"
 
 #include <CS/BIPEXP.H>
+#include <algorithm>
 
 namespace core {
 
@@ -14,6 +15,9 @@ BoneExtractor::BoneResult BoneExtractor::extract(
 
     BoneResult result;
     std::unordered_set<INode*> addedNodes;
+
+    // Build a fast lookup set for skin-referenced bones
+    std::unordered_set<INode*> skinRefSet(skinBoneNodes.begin(), skinBoneNodes.end());
 
     // 1. Collect all explicitly classified bones and helpers
     for (const auto& sn : sceneNodes) {
@@ -29,10 +33,23 @@ BoneExtractor::BoneResult BoneExtractor::extract(
             }
             bone.nodeIndex = sn.nodeIndex;
             bone.type = detectBoneType(sn.maxNode);
-            bone.isHelper = (sn.category == NodeCategory::Helper);
+
+            // v800 helper classification (matches NeoDex behavior):
+            // If the node is explicitly a Helper category → helper.
+            // If the node is a Bone category but NOT referenced by any Skin modifier → helper.
+            // Bones that directly deform vertices (skin-referenced) stay as bones.
+            // For v1200 (Reforged), the model builder will write all as bones regardless.
+            if (sn.category == NodeCategory::Helper) {
+                bone.isHelper = true;
+            } else if (!skinRefSet.empty() && skinRefSet.find(sn.maxNode) == skinRefSet.end()) {
+                // Bone not referenced by any Skin modifier → helper
+                bone.isHelper = true;
+            } else {
+                bone.isHelper = false;
+            }
+
             bone.pivotPoint = sn.maxNode->GetNodeTM(0).GetTrans();
             bone.bindPose = sn.maxNode->GetNodeTM(0);
-            bone.nodeFlags = collectNodeFlags(sn.maxNode);
 
             int32_t boneIdx = static_cast<int32_t>(result.bones.size());
             result.nodeToIndex[sn.maxNode] = boneIdx;
@@ -41,6 +58,7 @@ BoneExtractor::BoneResult BoneExtractor::extract(
     }
 
     // 2. Add implicit bones (referenced by Skin but not already in bone list)
+    //    These are by definition skin-referenced → always BONE, never helper.
     for (INode* boneNode : skinBoneNodes) {
         if (!boneNode || addedNodes.count(boneNode)) continue;
         addedNodes.insert(boneNode);
@@ -54,7 +72,7 @@ BoneExtractor::BoneResult BoneExtractor::extract(
         }
         bone.nodeIndex = -1; // Not in scene traversal
         bone.type = detectBoneType(boneNode);
-        bone.isHelper = false;
+        bone.isHelper = false; // Skin-referenced → always BONE
         bone.pivotPoint = boneNode->GetNodeTM(0).GetTrans();
         bone.bindPose = boneNode->GetNodeTM(0);
         bone.nodeFlags = collectNodeFlags(boneNode);
@@ -66,6 +84,7 @@ BoneExtractor::BoneResult BoneExtractor::extract(
 
     // 3. Add ancestors of existing bones that aren't in the list
     //    (ensures hierarchy completeness)
+    //    Ancestors are not skin-referenced → always HELPER.
     INode* root = GetCOREInterface()->GetRootNode();
     std::vector<INode*> ancestors;
     for (size_t i = 0; i < result.bones.size(); ++i) {
@@ -100,7 +119,7 @@ BoneExtractor::BoneResult BoneExtractor::extract(
             }
             bone.nodeIndex = -1;
             bone.type = detectBoneType(anc);
-            bone.isHelper = true;
+            bone.isHelper = true; // Ancestors not in skin → always helper
             bone.pivotPoint = anc->GetNodeTM(0).GetTrans();
             bone.bindPose = anc->GetNodeTM(0);
             bone.nodeFlags = collectNodeFlags(anc);
@@ -136,7 +155,7 @@ ir::BoneType BoneExtractor::detectBoneType(INode* node) const {
             return ir::BoneType::Biped;
     }
 
-    // Check for CAT
+    // Check for CAT (ClassID + ClassName fallback for version compatibility)
     ObjectState os = node->EvalWorldState(0);
     if (os.obj) {
         Class_ID objID = os.obj->ClassID();
@@ -144,11 +163,20 @@ ir::BoneType BoneExtractor::detectBoneType(INode* node) const {
             objID == core_ids::CAT_BONE_ID ||
             objID == core_ids::HUB_ID)
             return ir::BoneType::CAT;
+
+        // ClassName fallback — CAT ClassIDs can change between Max versions
+        auto classNameStr = os.obj->ClassName();
+        const MCHAR* className = static_cast<const MCHAR*>(classNameStr);
+        if (className) {
+            if (_wcsicmp(className, L"CATBone") == 0 ||
+                _wcsicmp(className, L"HubObject") == 0 ||
+                _wcsicmp(className, L"CATParent") == 0)
+                return ir::BoneType::CAT;
+        }
     }
 
     // Check for IK (node has IK chain controller)
     if (tmCtrl) {
-        // IK chain controllers typically have a specific interface
         if (tmCtrl->GetInterface(0x00000001) != nullptr)
             return ir::BoneType::IKAffected;
     }

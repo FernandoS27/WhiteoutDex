@@ -4,11 +4,29 @@
 #include "modifier_reader.h"
 #include "../util/max_helpers.h"
 #include "../util/class_ids.h"
+#include "../animation/controller_reader.h"
 
 #include <triobj.h>
 #include <MeshNormalSpec.h>
 #include <iskin.h>
 #include <unordered_map>
+#include <fstream>
+#include <cmath>
+#include <windows.h>
+
+// Debug logging for mesh extraction
+static std::ofstream& meshLog() {
+    static std::ofstream log;
+    if (!log.is_open()) {
+        char tmp[MAX_PATH];
+        GetTempPathA(MAX_PATH, tmp);
+        std::string path = std::string(tmp) + "mdlx_mesh_debug.log";
+        log.open(path, std::ios::trunc);
+    }
+    return log;
+}
+#define MLOG meshLog()
+#define MFLUSH meshLog().flush()
 
 namespace core {
 
@@ -24,12 +42,88 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
         result.name.assign(wname.begin(), wname.end());
     }
 
+    // Debug: log mesh info
+    char nameBuf[256] = {};
+    if (nodeName) WideCharToMultiByte(CP_UTF8, 0, nodeName, -1, nameBuf, 255, nullptr, nullptr);
+    MLOG << "\n=== MESH '" << nameBuf << "' nodeIdx=" << nodeIndex << " ===\n";
+
+    // Log transforms
+    {
+        Matrix3 nodeTM = node->GetNodeTM(t);
+        Matrix3 objTM = node->GetObjectTM(t);
+        float nodeRow0 = Length(nodeTM.GetRow(0));
+        float objRow0 = Length(objTM.GetRow(0));
+        Point3 nodePos = nodeTM.GetRow(3);
+        Point3 objPos = objTM.GetRow(3);
+        // Check for negative scale (mirroring)
+        float nodeDet = DotProd(nodeTM.GetRow(0), CrossProd(nodeTM.GetRow(1), nodeTM.GetRow(2)));
+        float objDet = DotProd(objTM.GetRow(0), CrossProd(objTM.GetRow(1), objTM.GetRow(2)));
+        MLOG << "  NodeTM  row0Len=" << nodeRow0 << " pos=(" << nodePos.x << "," << nodePos.y << "," << nodePos.z << ") det=" << nodeDet << "\n";
+        MLOG << "  ObjTM   row0Len=" << objRow0 << " pos=(" << objPos.x << "," << objPos.y << "," << objPos.z << ") det=" << objDet << "\n";
+        if (nodeDet < 0) MLOG << "  ** NEGATIVE DET (mirrored) in NodeTM **\n";
+        if (objDet < 0) MLOG << "  ** NEGATIVE DET (mirrored) in ObjTM **\n";
+    }
+    MFLUSH;
+
     // Find Skin modifier — disable it to get bind-pose vertices
     Modifier* skinMod = core::findModifierByClassID(node, core_ids::SKIN_CLASS_ID);
-    if (skinMod) skinMod->DisableMod();
+    MLOG << "  Skin modifier: " << (skinMod ? "FOUND" : "NOT FOUND") << "\n";
+
+    // Check if any skin bone has a Link Constraint controller.
+    // Link Constraint bones change parent during animation, so the raw mesh
+    // position (skin disabled) doesn't match the frame-0 bone position.
+    // In that case, we read the SKINNED mesh at frame 0 instead.
+    bool useSkinned = false;
+    if (skinMod) {
+        ISkin* skinCheck = static_cast<ISkin*>(skinMod->GetInterface(I_SKIN));
+        if (skinCheck) {
+            int numBones = skinCheck->GetNumBones();
+            MLOG << "  Checking " << numBones << " skin bones for Link Constraint...\n";
+            for (int b = 0; b < numBones; ++b) {
+                INode* boneNode = skinCheck->GetBone(b);
+                if (boneNode) {
+                    Control* boneTmCtrl = boneNode->GetTMController();
+                    char bnBuf[256] = {};
+                    const MCHAR* bn = boneNode->GetName();
+                    if (bn) WideCharToMultiByte(CP_UTF8, 0, bn, -1, bnBuf, 255, nullptr, nullptr);
+
+                    // Check both ControllerReader and direct ClassID match
+                    // Link Constraint ClassID = (2269112164, 2864612865) = (0x87366764, 0xAAD50281)
+                    bool isLC = false;
+                    if (boneTmCtrl) {
+                        isLC = core::ControllerReader::isLinkConstraint(boneTmCtrl);
+                        if (!isLC) {
+                            Class_ID lcID(2269112164u, 2864612865u);
+                            isLC = (boneTmCtrl->ClassID() == lcID);
+                        }
+                    }
+                    Class_ID cid = boneTmCtrl ? boneTmCtrl->ClassID() : Class_ID(0,0);
+                    MLOG << "    bone[" << b << "] '" << bnBuf << "'"
+                         << " tmCtrl=" << (boneTmCtrl ? "yes" : "null")
+                         << " classID=(" << cid.PartA() << "," << cid.PartB() << ")"
+                         << " isLink=" << (isLC ? "YES" : "no") << "\n";
+
+                    if (isLC) {
+                        useSkinned = true;
+                        MLOG << "  ** Link Constraint detected → using skinned bind pose **\n";
+                        break;
+                    }
+                }
+            }
+        } else {
+            MLOG << "  ISkin interface not available\n";
+        }
+    }
+    MFLUSH;
+
+    if (!useSkinned && skinMod) {
+        skinMod->DisableMod();
+    }
 
     // Evaluate node to TriObject
-    ObjectState os = node->EvalWorldState(t);
+    // For skinned bind pose: evaluate at frame 0 to get the correct deformed positions
+    TimeValue evalTime = useSkinned ? 0 : t;
+    ObjectState os = node->EvalWorldState(evalTime);
     Object* obj = os.obj;
 
     if (!obj || !obj->CanConvertToType(triObjectClassID)) {
@@ -98,6 +192,53 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
         }
     }
 
+    // Transform vertices & normals from object-space to world-space.
+    // For unskinned extraction: vertices are in object space → apply GetObjectTM.
+    // For skinned extraction (Link Constraint): Skin deforms into node-local space,
+    // so apply GetNodeTM (NOT GetObjectTM which would double-apply object offset).
+    if (!useSkinned) {
+        Matrix3 worldTM = node->GetObjectTM(t);
+        Matrix3 normalTM = worldTM;
+        normalTM.NoTrans();
+        for (auto& vert : result.vertices) {
+            vert.position = vert.position * worldTM;
+            vert.normal = Normalize(vert.normal * normalTM);
+        }
+        MLOG << "  Transform: GetObjectTM applied (unskinned path)\n";
+    } else {
+        Matrix3 nodeTM = node->GetNodeTM(0);
+        Matrix3 normalTM = nodeTM;
+        normalTM.NoTrans();
+        for (auto& vert : result.vertices) {
+            vert.position = vert.position * nodeTM;
+            vert.normal = Normalize(vert.normal * normalTM);
+        }
+        MLOG << "  Transform: GetNodeTM(0) applied (skinned bind pose path)\n";
+    }
+
+    // Debug: log vertex bounds after world transform
+    {
+        Point3 minP(1e30f, 1e30f, 1e30f), maxP(-1e30f, -1e30f, -1e30f);
+        for (const auto& vert : result.vertices) {
+            if (vert.position.x < minP.x) minP.x = vert.position.x;
+            if (vert.position.y < minP.y) minP.y = vert.position.y;
+            if (vert.position.z < minP.z) minP.z = vert.position.z;
+            if (vert.position.x > maxP.x) maxP.x = vert.position.x;
+            if (vert.position.y > maxP.y) maxP.y = vert.position.y;
+            if (vert.position.z > maxP.z) maxP.z = vert.position.z;
+        }
+        Point3 size = maxP - minP;
+        MLOG << "  Faces=" << numFaces << " Verts=" << numVerts << "\n";
+        MLOG << "  World bounds: min=(" << minP.x << "," << minP.y << "," << minP.z
+             << ") max=(" << maxP.x << "," << maxP.y << "," << maxP.z << ")\n";
+        MLOG << "  Size=(" << size.x << "," << size.y << "," << size.z << ")\n";
+        if (numVerts > 0) {
+            MLOG << "  Sample v[0]=(" << result.vertices[0].position.x << ","
+                 << result.vertices[0].position.y << "," << result.vertices[0].position.z << ")\n";
+        }
+        MFLUSH;
+    }
+
     // Extract UV sets (channels 1-4)
     int uvSetCount = 0;
     for (int ch = 1; ch <= 4; ++ch) {
@@ -118,8 +259,24 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
 
     // Extract skin weights (uses original vertex indices via faceVertMap)
     if (skinMod) {
+        MLOG << "  Extracting skin weights...\n";
+        MFLUSH;
         extractSkinWeights(node, result, faceVertMap, reporter);
+        // Count bones used
+        int maxBoneIdx = -1;
+        for (const auto& vert : result.vertices) {
+            for (const auto& inf : vert.skinInfluences) {
+                if (inf.weight > 0 && inf.boneIndex > maxBoneIdx)
+                    maxBoneIdx = inf.boneIndex;
+            }
+        }
+        MLOG << "  Skin: maxBoneIndex=" << maxBoneIdx << "\n";
+    } else {
+        MLOG << "  No skin — unskinned mesh\n";
     }
+
+    MLOG << "  DONE mesh '" << nameBuf << "'\n";
+    MFLUSH;
 
     return result;
 }
@@ -152,6 +309,19 @@ void MeshExtractor::extractSkinWeights(INode* node, ir::Mesh& out,
 
     int origVertCount = ctx->GetNumPoints();
     int numBones = skin->GetNumBones();
+
+    MLOG << "    SkinWeights: origVerts=" << origVertCount << " numBones=" << numBones << "\n";
+    for (int b = 0; b < numBones && b < 5; ++b) {
+        INode* boneNode = skin->GetBone(b);
+        if (boneNode) {
+            char bn[256] = {};
+            const MCHAR* bname = boneNode->GetName();
+            if (bname) WideCharToMultiByte(CP_UTF8, 0, bname, -1, bn, 255, nullptr, nullptr);
+            MLOG << "      bone[" << b << "] '" << bn << "'\n";
+        }
+    }
+    if (numBones > 5) MLOG << "      ... +" << (numBones - 5) << " more\n";
+    MFLUSH;
 
     // Build original vertex weights (up to 4 influences per vert)
     struct OrigWeights {

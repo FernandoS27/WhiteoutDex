@@ -48,11 +48,24 @@ NodeCategory NodeClassifier::classify(INode* node, std::string& outTag) const {
     if (objClassID == SKELOBJ_CLASS_ID)
         return NodeCategory::Bone;
 
-    // 4. CAT bones
+    // 4. CAT bones (ClassID + ClassName fallback for version compatibility)
     if (objClassID == core_ids::CAT_PARENT_ID ||
         objClassID == core_ids::CAT_BONE_ID ||
         objClassID == core_ids::HUB_ID)
         return NodeCategory::Bone;
+
+    // CAT ClassName fallback — ClassIDs can change between Max versions
+    // because CAT is compiled from SDK sample source, not part of public API.
+    {
+        auto classNameStr = obj->ClassName();
+        const MCHAR* className = static_cast<const MCHAR*>(classNameStr);
+        if (className) {
+            if (_wcsicmp(className, L"CATBone") == 0 ||
+                _wcsicmp(className, L"HubObject") == 0 ||
+                _wcsicmp(className, L"CATParent") == 0)
+                return NodeCategory::Bone;
+        }
+    }
 
     // 5. Cameras
     if (superClassID == CAMERA_CLASS_ID)

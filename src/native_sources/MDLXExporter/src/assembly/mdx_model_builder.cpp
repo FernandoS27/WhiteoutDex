@@ -11,6 +11,8 @@
 #include <cstring>
 #include <map>
 #include <algorithm>
+#include <fstream>
+#include <windows.h>
 
 namespace wdx = whiteout::mdx;
 using whiteout::f32;
@@ -102,7 +104,8 @@ Vector3f uvScaleIdentity(const Point3& s) { return {s.x, s.y, s.z}; }
 
 Node buildNode(const ir::IRModel& ir, int32_t irNodeIndex,
                const MdxHierarchyResolver& hierarchy,
-               Node::NodeType type, Node::NodeFlag extraFlags)
+               Node::NodeType type, Node::NodeFlag extraFlags,
+               float invScale = 1.0f)
 {
     Node node;
     if (irNodeIndex >= 0 && irNodeIndex < static_cast<int32_t>(ir.nodes.size())) {
@@ -133,13 +136,59 @@ Node buildNode(const ir::IRModel& ir, int32_t irNodeIndex,
     default: break;
     }
 
-    // Animation tracks
-    for (auto& na : ir.nodeAnimations) {
-        if (na.nodeIndex != irNodeIndex) continue;
-        node.translationTracks = convertTrack<Vector3f, Point3>(na.translation, positionTransform);
-        node.rotationTracks = convertTrack<Quaternion, Quat>(na.rotation, rotationTransform);
-        node.scalingTracks = convertTrack<Vector3f, Point3>(na.scale, scaleTransform);
-        break;
+    // Animation tracks — merge ALL sequence sub-tracks into one combined track per channel.
+    // AnimDispatcher creates one NodeAnimation per (node × sequence). MDX expects a single
+    // KGTR/KGRT/KGSC per node containing keys from ALL sequences.
+    // Delta correction (absolute → relative to bind pose) is already done in AnimDispatcher.
+    {
+        ir::Track<Point3> mergedTrans;
+        ir::Track<Quat>   mergedRot;
+        ir::Track<Point3> mergedScale;
+
+        for (auto& na : ir.nodeAnimations) {
+            if (na.nodeIndex != irNodeIndex) continue;
+
+            if (!na.translation.empty()) {
+                if (mergedTrans.empty())
+                    mergedTrans.interpolation = na.translation.interpolation;
+                for (auto& key : na.translation.keys)
+                    mergedTrans.keys.push_back(key);
+            }
+            if (!na.rotation.empty()) {
+                if (mergedRot.empty())
+                    mergedRot.interpolation = na.rotation.interpolation;
+                for (auto& key : na.rotation.keys)
+                    mergedRot.keys.push_back(key);
+            }
+            if (!na.scale.empty()) {
+                if (mergedScale.empty())
+                    mergedScale.interpolation = na.scale.interpolation;
+                for (auto& key : na.scale.keys)
+                    mergedScale.keys.push_back(key);
+            }
+        }
+
+        // Sort merged keys by time
+        auto sortByTime = [](auto& track) {
+            std::sort(track.keys.begin(), track.keys.end(),
+                [](const auto& a, const auto& b) { return a.time < b.time; });
+        };
+        if (!mergedTrans.empty()) sortByTime(mergedTrans);
+        if (!mergedRot.empty())   sortByTime(mergedRot);
+        if (!mergedScale.empty()) sortByTime(mergedScale);
+
+        // Apply scene scale correction to translation keys
+        if (invScale != 1.0f) {
+            for (auto& key : mergedTrans.keys) {
+                key.value *= invScale;
+                key.inTangent *= invScale;
+                key.outTangent *= invScale;
+            }
+        }
+
+        node.translationTracks = convertTrack<Vector3f, Point3>(mergedTrans, positionTransform);
+        node.rotationTracks    = convertTrack<Quaternion, Quat>(mergedRot, rotationTransform);
+        node.scalingTracks     = convertTrack<Vector3f, Point3>(mergedScale, scaleTransform);
     }
 
     return node;
@@ -171,6 +220,10 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     model.version = opts.version;
     model.blendTime = opts.blendTime;
 
+    // No automatic scale correction — export at native scene scale.
+    // Pivots, vertices, and translation deltas are all in the same world space.
+    float invScale = 1.0f;
+
     // 1. Hierarchy
     MdxHierarchyResolver hierarchy;
     hierarchy.resolve(ir, opts.version);
@@ -188,6 +241,27 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     MdxMaterialMapper matMapper;
     for (auto& mat : ir.materials)
         model.materials.push_back(matMapper.map(mat, ir, opts.version));
+
+    // Fallback: if no textures/materials were extracted, create a default
+    // white.blp material so editors and viewers don't choke on dangling MaterialID refs.
+    if (model.textures.empty() && model.materials.empty()) {
+        Texture fallbackTex;
+        fallbackTex.fileName = "Textures\\white.blp";
+        fallbackTex.replaceableId = 0;
+        fallbackTex.flags = 0;
+        model.textures.push_back(std::move(fallbackTex));
+
+        wdx::Material fallbackMat;
+        wdx::Layer layer;
+        layer.filterMode = wdx::Layer::FilterMode::None;
+        layer.shadingFlags = wdx::Layer::ShadingFlag::None;
+        layer.textureId = 0;
+        layer.alpha = 1.0f;
+        layer.coordId = 0;
+        layer.textureAnimationId = 0xFFFFFFFF;
+        fallbackMat.layers.push_back(std::move(layer));
+        model.materials.push_back(std::move(fallbackMat));
+    }
 
     // 4. Global sequences
     for (auto dur : ir.globalSequenceDurations)
@@ -211,13 +285,13 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             // v800: separate helper
             Helper h;
             h.node = buildNode(ir, bone.nodeIndex, hierarchy,
-                               Node::NodeType::Helper, Node::NodeFlag::None);
+                               Node::NodeType::Helper, Node::NodeFlag::None, invScale);
             model.helpers.push_back(std::move(h));
         } else {
             // Bone (or v1200 helper-as-bone)
             Bone b;
             b.node = buildNode(ir, bone.nodeIndex, hierarchy,
-                               Node::NodeType::Bone, Node::NodeFlag::Bone);
+                               Node::NodeType::Bone, Node::NodeFlag::Bone, invScale);
             b.geosetId = Bone::MULTIPLE_GEOSETS;
             b.geosetAnimationId = Bone::MULTIPLE_GEOSETS;
             model.bones.push_back(std::move(b));
@@ -233,7 +307,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             mapping.irNodeIndex < static_cast<int32_t>(ir.nodes.size()))
         {
             model.pivotPoints[mapping.objectId] =
-                mdx_transform::position(ir.nodes[mapping.irNodeIndex].pivotPoint);
+                mdx_transform::position(ir.nodes[mapping.irNodeIndex].pivotPoint * invScale);
         }
     }
 
@@ -243,9 +317,15 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         geo.materialId = (irMesh.materialIndex >= 0)
                              ? static_cast<uint32_t>(irMesh.materialIndex) : 0;
 
+        // Clamp materialId to valid range — prevents viewer crashes when
+        // Multi/Sub-Object materials aren't fully extracted
+        if (!model.materials.empty() && geo.materialId >= model.materials.size()) {
+            geo.materialId = 0;
+        }
+
         // Vertex data
         for (auto& v : irMesh.vertices) {
-            geo.vertexPositions.push_back(mdx_transform::position(v.position));
+            geo.vertexPositions.push_back(mdx_transform::position(v.position * invScale));
             geo.vertexNormals.push_back(mdx_transform::normal(v.normal));
 
             // UV sets
@@ -280,12 +360,14 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
                 for (int wi = 0; wi < 4; wi++) geo.skinData.push_back(weights[wi]);
             }
 
-            // v800 vertex groups
-            if (!v.skinInfluences.empty()) {
-                // Vertex group = index into matrixGroups (resolved later)
-                geo.vertexGroups.push_back(0); // placeholder, resolved below
-            } else {
-                geo.vertexGroups.push_back(0);
+            // v800 vertex groups (v1200 uses SKIN chunk instead, GNDX must be empty)
+            if (opts.version < 1200) {
+                if (!v.skinInfluences.empty()) {
+                    // Vertex group = index into matrixGroups (resolved later)
+                    geo.vertexGroups.push_back(0); // placeholder, resolved below
+                } else {
+                    geo.vertexGroups.push_back(0);
+                }
             }
         }
 
@@ -389,7 +471,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     for (auto& irLight : ir.lights) {
         wdx::Light light;
         light.node = buildNode(ir, irLight.nodeIndex, hierarchy,
-                               Node::NodeType::Light, Node::NodeFlag::Light);
+                               Node::NodeType::Light, Node::NodeFlag::Light, invScale);
 
         switch (irLight.type) {
         case ir::Light::Type::Omni:        light.type = wdx::Light::LightType::Omni; break;
@@ -420,7 +502,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     for (auto& irAt : ir.attachments) {
         Attachment attach;
         attach.node = buildNode(ir, irAt.nodeIndex, hierarchy,
-                                Node::NodeType::Attachment, Node::NodeFlag::Attachment);
+                                Node::NodeType::Attachment, Node::NodeFlag::Attachment, invScale);
         attach.path = irAt.path;
         attach.attachmentId = static_cast<uint32_t>(irAt.attachmentId);
         attach.visibilityTracks = getFloatTrack(ir, irAt.visibilityTrackIndex);
@@ -433,7 +515,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             ParticleEmitter pe;
             pe.node = buildNode(ir, irPe.nodeIndex, hierarchy,
                                 Node::NodeType::ParticleEmitter,
-                                Node::NodeFlag::ParticleEmitter);
+                                Node::NodeFlag::ParticleEmitter, invScale);
             pe.emissionRate = irPe.emissionRate;
             pe.gravity = irPe.gravity;
             pe.longitude = irPe.longitude;
@@ -456,7 +538,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             ParticleEmitter2 pe;
             pe.node = buildNode(ir, irPe.nodeIndex, hierarchy,
                                 Node::NodeType::ParticleEmitter2,
-                                Node::NodeFlag::ParticleEmitter);
+                                Node::NodeFlag::ParticleEmitter, invScale);
 
             // Apply PE2 node flags
             pe.node.flags = pe.node.flags |
@@ -510,7 +592,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             // CornEmitter (PopcornFX)
             CornEmitter corn;
             corn.node = buildNode(ir, irPe.nodeIndex, hierarchy,
-                                  Node::NodeType::CornEmitter, Node::NodeFlag::None);
+                                  Node::NodeType::CornEmitter, Node::NodeFlag::None, invScale);
             corn.lifeSpan = irPe.lifespan;
             corn.emissionRate = irPe.emissionRate;
             corn.speed = irPe.speed;
@@ -527,7 +609,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         RibbonEmitter rib;
         rib.node = buildNode(ir, irRib.nodeIndex, hierarchy,
                              Node::NodeType::RibbonEmitter,
-                             Node::NodeFlag::RibbonEmitter);
+                             Node::NodeFlag::RibbonEmitter, invScale);
         rib.heightAbove = irRib.heightAbove;
         rib.heightBelow = irRib.heightBelow;
         rib.alpha = irRib.alpha;
@@ -555,7 +637,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         EventObject evt;
         evt.node = buildNode(ir, irEvt.nodeIndex, hierarchy,
                              Node::NodeType::EventObject,
-                             Node::NodeFlag::EventObject);
+                             Node::NodeFlag::EventObject, invScale);
         // Set node name to the event code (e.g., "SND_FAL0")
         evt.node.name = irEvt.eventCode;
 
@@ -570,7 +652,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         CollisionShape cs;
         cs.node = buildNode(ir, irCs.nodeIndex, hierarchy,
                             Node::NodeType::CollisionShape,
-                            Node::NodeFlag::CollisionShape);
+                            Node::NodeFlag::CollisionShape, invScale);
 
         switch (irCs.shape) {
         case ir::CollisionShape::Shape::Box:
@@ -584,9 +666,9 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         }
 
         for (auto& v : irCs.vertices)
-            cs.vertices.push_back(mdx_transform::position(v));
+            cs.vertices.push_back(mdx_transform::position(v * invScale));
 
-        cs.radius = irCs.radius;
+        cs.radius = irCs.radius * invScale;
         model.collisionShapes.push_back(std::move(cs));
     }
 
@@ -594,8 +676,8 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     for (auto& irCam : ir.cameras) {
         wdx::Camera cam;
         cam.name = irCam.name;
-        cam.position = mdx_transform::position(irCam.position);
-        cam.targetPosition = mdx_transform::position(irCam.targetPosition);
+        cam.position = mdx_transform::position(irCam.position * invScale);
+        cam.targetPosition = mdx_transform::position(irCam.targetPosition * invScale);
         cam.fieldOfView = irCam.fov;
         cam.nearClippingPlane = irCam.nearClip;
         cam.farClippingPlane = irCam.farClip;
@@ -701,6 +783,117 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             }
             model.bindPoses[mapping.objectId] = bp;
         }
+    }
+
+    // ── DEBUG: Dump final MDX bone pivots and KGTR keys ──
+    {
+        wchar_t tmp[MAX_PATH];
+        GetTempPathW(MAX_PATH, tmp);
+        std::wstring path(tmp);
+        path += L"mdlx_translation_debug.log";
+        std::ofstream dbg(path, std::ios::trunc);
+        dbg << "=== MDX Translation Debug ===\n";
+        dbg << "invScale=" << invScale << "\n\n";
+
+        // Helper lambda to dump a node's translation track
+        auto dumpNode = [&](const char* type, int idx, const Node& node, uint32_t objectId) {
+            dbg << type << "[" << idx << "] '" << node.name << "'"
+                << " objectId=" << objectId
+                << " parentId=" << node.parentId << "\n";
+
+            // Pivot
+            if (objectId < model.pivotPoints.size()) {
+                auto& p = model.pivotPoints[objectId];
+                dbg << "  pivot=(" << p.x << ", " << p.y << ", " << p.z << ")\n";
+            }
+
+            // Parent pivot
+            if (node.parentId < model.pivotPoints.size() && node.parentId != 0xFFFFFFFF) {
+                auto& pp = model.pivotPoints[node.parentId];
+                dbg << "  parentPivot=(" << pp.x << ", " << pp.y << ", " << pp.z << ")\n";
+                if (objectId < model.pivotPoints.size()) {
+                    auto& p = model.pivotPoints[objectId];
+                    dbg << "  pivotDelta=(" << (p.x - pp.x) << ", " << (p.y - pp.y) << ", " << (p.z - pp.z) << ")\n";
+                }
+            }
+
+            // KGTR keys
+            auto& tr = node.translationTracks;
+            if (tr.isUsed && tr.keyCount > 0) {
+                bool hasTangents = (tr.interpolationType == InterpolationType::Hermite ||
+                                    tr.interpolationType == InterpolationType::Bezier);
+                dbg << "  KGTR: " << tr.keyCount << " keys, interp="
+                    << static_cast<int>(tr.interpolationType) << "\n";
+
+                int showKeys = tr.keyCount > 10 ? 10 : static_cast<int>(tr.keyCount);
+                if (!hasTangents) {
+                    using K = Track<Vector3f>::Key;
+                    auto* keys = reinterpret_cast<const K*>(tr.keys_data.data());
+                    for (int k = 0; k < showKeys; ++k) {
+                        dbg << "    [" << k << "] t=" << keys[k].frame << "ms"
+                            << " v=(" << keys[k].value.x << ", " << keys[k].value.y
+                            << ", " << keys[k].value.z << ")\n";
+                    }
+                    if (tr.keyCount > 10u) dbg << "    ... (" << tr.keyCount << " total)\n";
+                } else {
+                    using TK = Track<Vector3f>::TangentKey;
+                    auto* keys = reinterpret_cast<const TK*>(tr.keys_data.data());
+                    for (int k = 0; k < showKeys; ++k) {
+                        dbg << "    [" << k << "] t=" << keys[k].frame << "ms"
+                            << " v=(" << keys[k].value.x << ", " << keys[k].value.y
+                            << ", " << keys[k].value.z << ")\n";
+                    }
+                    if (tr.keyCount > 10u) dbg << "    ... (" << tr.keyCount << " total)\n";
+                }
+            } else {
+                dbg << "  KGTR: none\n";
+            }
+
+            // KGRT summary
+            auto& rt = node.rotationTracks;
+            if (rt.isUsed && rt.keyCount > 0) {
+                dbg << "  KGRT: " << rt.keyCount << " keys\n";
+            }
+
+            // KGSC (scale) tracks
+            auto& sc = node.scalingTracks;
+            if (sc.isUsed && sc.keyCount > 0) {
+                bool scTangents = (sc.interpolationType == InterpolationType::Hermite ||
+                                   sc.interpolationType == InterpolationType::Bezier);
+                dbg << "  KGSC: " << sc.keyCount << " keys, interp="
+                    << static_cast<int>(sc.interpolationType) << "\n";
+                int showSc = sc.keyCount > 10 ? 10 : static_cast<int>(sc.keyCount);
+                if (!scTangents) {
+                    using K = Track<Vector3f>::Key;
+                    auto* keys = reinterpret_cast<const K*>(sc.keys_data.data());
+                    for (int k = 0; k < showSc; ++k) {
+                        dbg << "    [" << k << "] t=" << keys[k].frame << "ms"
+                            << " s=(" << keys[k].value.x << ", " << keys[k].value.y
+                            << ", " << keys[k].value.z << ")\n";
+                    }
+                    if (sc.keyCount > 10u) dbg << "    ... (" << sc.keyCount << " total)\n";
+                } else {
+                    using TK = Track<Vector3f>::TangentKey;
+                    auto* keys = reinterpret_cast<const TK*>(sc.keys_data.data());
+                    for (int k = 0; k < showSc; ++k) {
+                        dbg << "    [" << k << "] t=" << keys[k].frame << "ms"
+                            << " s=(" << keys[k].value.x << ", " << keys[k].value.y
+                            << ", " << keys[k].value.z << ")\n";
+                    }
+                    if (sc.keyCount > 10u) dbg << "    ... (" << sc.keyCount << " total)\n";
+                }
+            }
+
+            dbg << "\n";
+        };
+
+        for (size_t i = 0; i < model.bones.size(); ++i)
+            dumpNode("BONE", (int)i, model.bones[i].node, model.bones[i].node.objectId);
+        for (size_t i = 0; i < model.helpers.size(); ++i)
+            dumpNode("HELPER", (int)i, model.helpers[i].node, model.helpers[i].node.objectId);
+
+        dbg << "=== END ===\n";
+        dbg.flush();
     }
 
     return model;

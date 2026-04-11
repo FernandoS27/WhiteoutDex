@@ -18,8 +18,12 @@ inline whiteout::Vector3f normal(const Point3& n) {
 }
 
 inline whiteout::Quaternion rotation(const Quat& q) {
-    // Max Quat: (x, y, z, w) → MDX Quat: (-y, x, z, w) — same axis remap as position
-    return {-q.y, q.x, q.z, q.w};
+    // Max Quat from decomp_affine is conjugated relative to MDX convention.
+    // (Confirmed by Importer Bug 6: SetValue() needs conjugation for correct rotation.)
+    // Step 1 — conjugate: (-q.x, -q.y, -q.z, q.w)
+    // Step 2 — axis remap Max→MDX same as position: (-conj.y, conj.x, conj.z, conj.w)
+    //   = (-(-q.y), (-q.x), (-q.z), q.w) = (q.y, -q.x, -q.z, q.w)
+    return {q.y, -q.x, -q.z, q.w};
 }
 
 inline whiteout::Vector3f scale(const Point3& s) {
@@ -39,9 +43,9 @@ inline whiteout::Vector2f texcoord(const Point2& uv) {
     return {uv.x, uv.y};
 }
 
-// Time: Max ticks (4800/sec) → MDX milliseconds
+// Time: Max ticks (4800/sec) → MDX milliseconds (rounded to nearest)
 inline uint32_t ticksToMs(TimeValue t) {
-    return static_cast<uint32_t>((static_cast<int64_t>(t) * 1000) / 4800);
+    return static_cast<uint32_t>((static_cast<int64_t>(t) * 1000 + 2400) / 4800);
 }
 
 // Convert a Max frame number to MDX milliseconds

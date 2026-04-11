@@ -14,7 +14,7 @@ enum class ControllerType {
     Bezier_Rotation, TCB_Rotation, Linear_Rotation, Euler_XYZ,
     Bezier_Scale, TCB_Scale, Linear_Scale, ScaleXYZ,
     Bezier_Float, TCB_Float, Linear_Float,
-    Biped, CAT,
+    Biped, CAT, MassFX,
     Link_Constraint,
     Unknown, None
 };
@@ -24,6 +24,7 @@ public:
     static ControllerType detect(Control* ctrl);
     static bool isBiped(INode* node);
     static bool isCAT(INode* node);
+    static bool isMassFX(INode* node);
     static bool isIKAffected(INode* node);
     static bool isLinkConstraint(Control* ctrl);
 };

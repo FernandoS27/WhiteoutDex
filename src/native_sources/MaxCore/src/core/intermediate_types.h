@@ -332,7 +332,7 @@ struct IRModel {
         int32_t parentIndex = -1;
         Point3 pivotPoint;
         Matrix3 worldTM;
-        uint32_t nodeFlags = 0;  // MDX node flags (DontInherit, Billboard, CameraAnchored, etc.)
+        uint32_t nodeFlags = 0;
         std::unique_ptr<ExtensionData> ext;
     };
     std::vector<Node> nodes;
@@ -366,6 +366,8 @@ struct IRModel {
         int32_t meshIndex = -1;
         float alpha = 1.0f;
         Color color = Color(1.0f, 1.0f, 1.0f);
+        bool usesColor = false;
+        bool dropShadow = false;
         int32_t alphaTrackIndex = -1;
         int32_t colorTrackIndex = -1;
     };

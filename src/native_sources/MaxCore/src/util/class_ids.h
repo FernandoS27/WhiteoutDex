@@ -15,10 +15,11 @@ namespace core_ids {
     // Standard Max bones
     inline const Class_ID BONE_OBJ_ID = BONE_OBJ_CLASSID;
 
-    // CAT (runtime detection via interface preferred, but ClassIDs useful for quick checks)
+    // CAT (ClassIDs verified against 3ds Max 2025)
     inline const Class_ID CAT_PARENT_ID = Class_ID(0x56AE72E5, 0x389B6659);
-    inline const Class_ID CAT_BONE_ID   = Class_ID(0x2E6A0807, 0x15A72B1E);
-    inline const Class_ID HUB_ID        = Class_ID(0x73DC4833, 0x65B45AEA);
+    inline const Class_ID CAT_BONE_ID   = Class_ID(0x2E6A0C09, 0x43D5C9C0);
+    inline const Class_ID HUB_ID        = Class_ID(0x73DC4833, 0x65C93CAA);
+    inline const Class_ID IK_TARGET_ID  = Class_ID(0x67A52F20, 0x2EAC1B81);
 
     // Helpers
     inline const Class_ID DUMMY_ID       = Class_ID(DUMMY_CLASS_ID, 0);
