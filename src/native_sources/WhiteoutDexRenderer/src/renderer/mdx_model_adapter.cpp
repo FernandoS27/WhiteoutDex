@@ -333,19 +333,21 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
 
     for (int i = 0; i < (int)model_.textures.size(); i++) {
         const auto& tex = model_.textures[i];
+        TextureData td;
         if (tex.replaceableId == 1 || tex.replaceableId == 2) {
-            result.push_back(GenerateTeamColorTexture(i, (int)tex.replaceableId));
+            td = GenerateTeamColorTexture(i, (int)tex.replaceableId);
         } else if (!tex.fileName.empty()) {
-            result.push_back(LoadTextureFile(tex.fileName, i, (int)tex.replaceableId));
+            td = LoadTextureFile(tex.fileName, i, (int)tex.replaceableId);
         } else {
             // Empty texture → 4x4 white
-            TextureData td;
             td.textureId     = i;
             td.replaceableId = (int)tex.replaceableId;
             td.width = td.height = 4;
             td.rgba.assign(4 * 4 * 4, 255);
-            result.push_back(std::move(td));
         }
+        // Propagate MDX texture wrap flags (0x1 = WrapWidth/U, 0x2 = WrapHeight/V)
+        td.wrapFlags = tex.flags & 0x3;
+        result.push_back(std::move(td));
     }
     return result;
 }
@@ -431,7 +433,10 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
 
 SkeletonData MdxModelAdapter::GetSkeleton() {
     SkeletonData sk;
-    sk.boneCount = hierarchy_.BoneCount();
+    // Use the full hierarchy node count (bones + helpers + emitters + etc.)
+    // as the palette size. MDX vertices can skin to ANY node type via objectId,
+    // not just bones. The palette is indexed by node position in the
+    // topologically-sorted hierarchy (same as allNodeMatrices from Evaluate).
     sk.nodeCount = hierarchy_.NodeCount();
 
     // MDX vertices — both v800 and v1200 — are authored in the default pose
@@ -443,21 +448,15 @@ SkeletonData MdxModelAdapter::GetSkeleton() {
     // for this skinning convention — using them shifts every HD vertex into
     // bone-local space and the model explodes. mdx-m3-viewer ignores BPOS for
     // skinning for the same reason.
-    sk.inverseBindMatrices.assign(sk.boneCount, XMMatrixIdentity());
+    sk.inverseBindMatrices.assign(sk.nodeCount, XMMatrixIdentity());
 
-    // Extract billboard flags + rest pivots from hierarchy nodes (bone nodes only).
-    // The billboard post-process in Renderer::ApplyFrameState() needs both:
-    // the flags (to know which bones to billboard) and the rest pivot (as the
-    // rotation center, since a delta matrix's translation column is NOT the
-    // pivot — it's pivot − R·pivot + t_local, which depends on the animation).
-    sk.boneBillboardFlags.assign(sk.boneCount, 0);
-    sk.bonePivots.assign(sk.boneCount, XMFLOAT3{0, 0, 0});
+    // Extract billboard flags + rest pivots from ALL hierarchy nodes (any node
+    // type can be a skinning target and may have billboard flags). Indexed by
+    // node position in the hierarchy — matches allNodeMatrices indexing.
+    sk.billboardFlags.assign(sk.nodeCount, 0);
+    sk.nodePivots.assign(sk.nodeCount, XMFLOAT3{0, 0, 0});
     const auto& nodes = hierarchy_.Nodes();
     for (int i = 0; i < (int)nodes.size(); i++) {
-        if (nodes[i].source != HierarchyNode::Source::Bone) continue;
-        int bi = nodes[i].sourceIndex;
-        if (bi < 0 || bi >= sk.boneCount) continue;
-
         uint32_t nf = nodes[i].flags;
         uint32_t bbf = 0;
         using NF = whiteout::mdx::Node::NodeFlag;
@@ -465,10 +464,10 @@ SkeletonData MdxModelAdapter::GetSkeleton() {
         if (nf & (uint32_t)NF::BillboardedLockX) bbf |= BONE_BILLBOARD_LOCK_X;
         if (nf & (uint32_t)NF::BillboardedLockY) bbf |= BONE_BILLBOARD_LOCK_Y;
         if (nf & (uint32_t)NF::BillboardedLockZ) bbf |= BONE_BILLBOARD_LOCK_Z;
-        sk.boneBillboardFlags[bi] = bbf;
+        sk.billboardFlags[i] = bbf;
 
         const auto& p = nodes[i].pivot;
-        sk.bonePivots[bi] = {p.x, p.y, p.z};
+        sk.nodePivots[i] = {p.x, p.y, p.z};
     }
 
     return sk;
@@ -482,6 +481,10 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
     std::vector<SkinWeightData> result;
     result.reserve(model_.geosets.size());
 
+    // MDX matrixIndices reference nodes by objectId. Map to the node's position
+    // in the topologically-sorted hierarchy (same index space as allNodeMatrices
+    // and the GPU bone palette). Any node type (bone, helper, etc.) is valid.
+
     for (int gi = 0; gi < (int)model_.geosets.size(); gi++) {
         const auto& gs = model_.geosets[gi];
         int vc = (int)gs.vertexPositions.size();
@@ -491,11 +494,22 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
 
         if (!gs.skinData.empty()) {
             // v1200: packed u8: 4 bone indices + 4 weights per vertex (8 bytes each)
+            // SKIN bytes are indices into the geoset's local matrixIndices (MATS) table,
+            // which stores objectIds. If MATS is empty, treat as direct objectId.
             for (int v = 0; v < vc; v++) {
                 int base = v * 8;
                 if (base + 7 < (int)gs.skinData.size()) {
                     for (int k = 0; k < 4; k++) {
-                        sw.influences[v].boneIdx[k] = (int)gs.skinData[base + k];
+                        uint8_t raw = gs.skinData[base + k];
+                        // Resolve to objectId via matrixIndices (if available)
+                        int objectId;
+                        if (!gs.matrixIndices.empty() && raw < gs.matrixIndices.size())
+                            objectId = (int)gs.matrixIndices[raw];
+                        else
+                            objectId = (int)raw;
+                        // Map objectId → node position in hierarchy
+                        int nodeIdx = hierarchy_.ObjectIdToNodeIndex(objectId);
+                        sw.influences[v].boneIdx[k] = (nodeIdx >= 0) ? nodeIdx : 0;
                         sw.influences[v].weight[k]  = gs.skinData[base + 4 + k] / 255.0f;
                     }
                 }
@@ -515,7 +529,9 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
                     if (count > 4) count = 4;  // clamp to 4 influences
                     float w = (count > 0) ? 1.0f / (float)count : 0.0f;
                     for (u32 k = 0; k < count && (start + k) < gs.matrixIndices.size(); k++) {
-                        sw.influences[v].boneIdx[k] = (int)gs.matrixIndices[start + k];
+                        int objectId = (int)gs.matrixIndices[start + k];
+                        int nodeIdx = hierarchy_.ObjectIdToNodeIndex(objectId);
+                        sw.influences[v].boneIdx[k] = (nodeIdx >= 0) ? nodeIdx : 0;
                         sw.influences[v].weight[k]  = w;
                     }
                 }
@@ -727,7 +743,9 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     hierarchy_.Evaluate(timeMs, seqStart_, seqEnd_,
                         model_.globalSequences, boneWorld, allNodes,
                         &cameraPos_, globalTimeMs);
-    fs.boneWorldMatrices = std::move(boneWorld);
+    // Use ALL node matrices as the skinning palette (indexed by node position
+    // in the hierarchy). Vertices can reference any node type via objectId.
+    fs.boneWorldMatrices = std::move(allNodes);
 
     // Helper: compute effective time for a track, handling global sequences.
     // If the track uses a globalSequenceId, wraps by the global sequence duration
@@ -839,10 +857,10 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     // This matches mdx-m3-viewer's particle spawn (location = pivot + random,
     // then location · worldMatrix).
     auto worldOf = [&](int nodeIdx) -> XMMATRIX {
-        if (nodeIdx < 0 || nodeIdx >= (int)allNodes.size()) return XMMatrixIdentity();
+        if (nodeIdx < 0 || nodeIdx >= (int)fs.boneWorldMatrices.size()) return XMMatrixIdentity();
         const auto& piv = nodes[nodeIdx].pivot;
         XMMATRIX pivotT = XMMatrixTranslation(piv.x, piv.y, piv.z);
-        return pivotT * allNodes[nodeIdx];
+        return pivotT * fs.boneWorldMatrices[nodeIdx];
     };
 
     for (int i = 0; i < (int)model_.particleEmitters2.size(); i++) {
@@ -851,6 +869,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         ps.emitterId = i;
 
         int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)pe.node.objectId);
+
         ps.transform = worldOf(nodeIdx);
 
         { auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
@@ -951,8 +970,8 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     for (int i = 0; i < (int)model_.collisionShapes.size(); i++) {
         const auto& cs = model_.collisionShapes[i];
         int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)cs.node.objectId);
-        fs.collisionTransforms[i] = (nodeIdx >= 0 && nodeIdx < (int)allNodes.size())
-                                     ? allNodes[nodeIdx] : XMMatrixIdentity();
+        fs.collisionTransforms[i] = (nodeIdx >= 0 && nodeIdx < (int)fs.boneWorldMatrices.size())
+                                     ? fs.boneWorldMatrices[nodeIdx] : XMMatrixIdentity();
     }
 
     // Texture animation evaluation

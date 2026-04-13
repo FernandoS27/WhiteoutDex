@@ -93,7 +93,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Loaded: " << meshes.size() << " meshes, "
               << textures.size() << " textures, "
               << materials.size() << " materials, "
-              << skeleton.boneCount << " bones\n";
+              << skeleton.nodeCount << " nodes\n";
     if (!pe1Configs.empty())
         std::cout << "  PE1: " << pe1Configs.size() << " emitter(s)\n";
     {
@@ -135,6 +135,11 @@ int main(int argc, char* argv[]) {
 
     // Camera defaults
     renderer.SetCamera(30.0f, 45.0f, 300.0f, 0, 0, 50.0f);
+
+    // Populate camera combo with model cameras
+    auto cameraPresets = adapter.GetCameraPresets();
+    if (!cameraPresets.empty())
+        renderer.SetCameraPresets(cameraPresets);
 
     // Main loop
     auto startTime = std::chrono::steady_clock::now();

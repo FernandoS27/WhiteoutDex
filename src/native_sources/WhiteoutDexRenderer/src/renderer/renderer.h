@@ -263,6 +263,7 @@ private:
     ID3D11VertexShader*     lineVertexShader_   = nullptr;
     ID3D11PixelShader*      linePixelShader_    = nullptr;
     ID3D11InputLayout*      lineInputLayout_    = nullptr;
+    ID3D11ComputeShader*    skinComputeShader_  = nullptr;
 
     // Constant buffers
     ID3D11Buffer*           cbPerFrame_ = nullptr;
@@ -294,6 +295,9 @@ private:
     ID3D11BlendState*         bsModulate_   = nullptr;
     ID3D11BlendState*         bsModulate2x_ = nullptr;
     ID3D11SamplerState*       samplerLinear_ = nullptr;
+    // Per-texture wrap mode samplers: index = wrapFlags (0x0..0x3)
+    // bit 0 = WrapWidth (U repeat), bit 1 = WrapHeight (V repeat)
+    ID3D11SamplerState*       samplerWrap_[4] = {};
 
     // 1x1 white default texture
     ID3D11ShaderResourceView* defaultTexSRV_ = nullptr;

@@ -79,6 +79,7 @@ struct TextureData {
     int replaceableId;
     std::vector<uint8_t> rgba;  // RGBA8 pixels
     int width, height;
+    uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V); default = wrap both
 };
 
 struct MaterialLayerData {
@@ -105,11 +106,10 @@ enum BoneBillboardFlag : uint32_t {
 };
 
 struct SkeletonData {
-    int boneCount;   // total bones that affect skin (indices into inverseBindMatrices)
-    int nodeCount;   // total hierarchy nodes (bones + helpers + emitters + collisions)
-    std::vector<XMMATRIX> inverseBindMatrices;  // boneCount entries
-    std::vector<uint32_t> boneBillboardFlags;    // boneCount entries (BoneBillboardFlag)
-    std::vector<XMFLOAT3> bonePivots;            // boneCount entries — rest pivot positions
+    int nodeCount;   // palette size: total hierarchy nodes (bones + helpers + emitters etc.)
+    std::vector<XMMATRIX> inverseBindMatrices;  // nodeCount entries (indexed by node position)
+    std::vector<uint32_t> billboardFlags;        // nodeCount entries (indexed by node position)
+    std::vector<XMFLOAT3> nodePivots;            // nodeCount entries (indexed by node position)
 };
 
 struct SkinWeightData {
@@ -125,7 +125,7 @@ struct CollisionShapeData {
 
 // Per-frame animated state — computed by the adapter, then passed to ApplyFrameState().
 struct FrameState {
-    std::vector<XMMATRIX>  boneWorldMatrices;  // boneCount entries (skinning bones)
+    std::vector<XMMATRIX>  boneWorldMatrices;  // all hierarchy node world matrices (indexed by node position)
     std::vector<XMMATRIX>  geosetTransforms;   // one per geoset (node world TM for unskinned meshes)
     std::vector<float>     geosetAlphas;       // one per geoset
     std::vector<XMFLOAT3>  geosetColors;       // one per geoset

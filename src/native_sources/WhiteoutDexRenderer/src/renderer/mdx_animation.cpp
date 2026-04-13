@@ -522,7 +522,7 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
         XMMATRIX worldM = localM * parentWorld;
 
         // NOTE: Billboard rotation is applied in Renderer::ApplyFrameState()
-        // using boneBillboardFlags, NOT here. This ensures billboarding works
+        // using billboardFlags, NOT here. This ensures billboarding works
         // uniformly for both Max and MDX adapter paths.
 
         allNodeMatrices[i] = worldM;

@@ -26,6 +26,7 @@ struct StagedTexture {
     int width  = 0;
     int height = 0;
     int replaceableId = 0;
+    uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V)
 };
 
 struct StagedMaterialLayer {
@@ -61,6 +62,15 @@ struct GPUGeoset {
 
     std::vector<Vertex> baseVertices;
     bool hasSkinning    = false;
+
+    // GPU compute skinning resources
+    ID3D11Buffer*             baseVertBuf  = nullptr; // SRV source (immutable copy of baseVertices)
+    ID3D11ShaderResourceView* baseVertSRV  = nullptr;
+    ID3D11Buffer*             weightBuf    = nullptr; // SRV source (packed bone indices + weights)
+    ID3D11ShaderResourceView* weightSRV    = nullptr;
+    ID3D11Buffer*             skinnedBuf   = nullptr; // UAV output (also bound as vertex buffer)
+    ID3D11UnorderedAccessView* skinnedUAV  = nullptr;
+
     float geosetAlpha   = 1.0f;
     XMFLOAT3 geosetColor = {1,1,1};
     XMMATRIX worldMatrix = XMMatrixIdentity();
@@ -68,6 +78,9 @@ struct GPUGeoset {
 
     void Release() {
         SafeRelease(vb); SafeRelease(ib);
+        SafeRelease(baseVertBuf); SafeRelease(baseVertSRV);
+        SafeRelease(weightBuf); SafeRelease(weightSRV);
+        SafeRelease(skinnedBuf); SafeRelease(skinnedUAV);
         indexCount = 0; vertexCount = 0;
         baseVertices.clear(); baseVertices.shrink_to_fit();
     }
@@ -76,6 +89,7 @@ struct GPUGeoset {
 struct GPUTexture {
     ID3D11Texture2D*          tex = nullptr;
     ID3D11ShaderResourceView* srv = nullptr;
+    uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V)
 
     void Release() { SafeRelease(srv); SafeRelease(tex); }
 };
@@ -128,8 +142,12 @@ struct ModelInstance {
     // ---- Skinning ----
     SkinningSystem skinning;
     bool skinDirty = false;
-    std::vector<uint32_t> boneBillboardFlags;  // per-bone billboard flags
-    std::vector<XMFLOAT3> bonePivots;          // per-bone rest pivots (for billboard rotation center)
+    std::vector<uint32_t> billboardFlags;  // per-node billboard flags
+    std::vector<XMFLOAT3> nodePivots;     // per-node rest pivots (for billboard rotation center)
+
+    // GPU node palette (StructuredBuffer of offset matrices, one per model)
+    ID3D11Buffer*             nodePaletteBuf = nullptr;
+    ID3D11ShaderResourceView* nodePaletteSRV = nullptr;
 
     // ---- Particle system ----
     ParticleSystem particles;
@@ -183,6 +201,7 @@ struct ModelInstance {
         for (auto& [id, t] : gpuTextures) t.Release();
         gpuTextures.clear();
         gpuMaterials.clear();
+        SafeRelease(nodePaletteBuf); SafeRelease(nodePaletteSRV);
         SafeRelease(particleVB); particleVBSize = 0;
         SafeRelease(ribbonVB); ribbonVBSize = 0;
     }

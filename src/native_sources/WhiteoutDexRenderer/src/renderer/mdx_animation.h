@@ -1,6 +1,6 @@
 #pragma once
 // ============================================================================
-// MDX Animation Evaluator — Track interpolation + bone hierarchy evaluation
+// MDX Animation Evaluator — Track interpolation + node hierarchy evaluation
 // No Max SDK dependency. Uses WhiteoutLib types + DirectXMath.
 // ============================================================================
 
@@ -62,7 +62,7 @@ public:
 
     // Evaluate the full hierarchy at the given time for the active sequence.
     // Returns world matrices for ALL nodes (indexed by node position in nodes_).
-    // Also fills boneWorldMatrices (indexed by bone index 0..boneCount-1).
+    // Also fills boneWorldMatrices (indexed by bone source index, for Max adapter).
     // cameraPos is used for billboard node facing (pass nullptr to skip billboarding).
     void Evaluate(int timeMs, int seqStart, int seqEnd,
                   const std::vector<whiteout::u32>& globalSequences,
@@ -71,7 +71,7 @@ public:
                   const XMFLOAT3* cameraPos = nullptr,
                   int globalTimeMs = -1) const;
 
-    int BoneCount() const { return boneCount_; }
+    int BoneCount() const { return boneCount_; }  // bone-only count (for Max adapter boneWorldMatrices)
     int NodeCount() const { return (int)nodes_.size(); }
     const std::vector<HierarchyNode>& Nodes() const { return nodes_; }
 

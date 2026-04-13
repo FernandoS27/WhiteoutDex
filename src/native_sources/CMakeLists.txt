@@ -114,6 +114,7 @@ else()
     # Build from source
     # -----------------------------------------------------------------
     set(WHITEOUT_ENABLE_CASC    ON  CACHE BOOL "" FORCE)
+    set(WHITEOUT_ENABLE_MPQ     ON  CACHE BOOL "" FORCE)
     set(WHITEOUT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(WHITEOUT_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
     add_subdirectory("${WHITEOUT_DIR}" "${CMAKE_BINARY_DIR}/WhiteoutLib" EXCLUDE_FROM_ALL)

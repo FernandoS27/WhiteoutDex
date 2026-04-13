@@ -76,7 +76,7 @@ struct ParticleEmitterState {
     float emissionRate = 0;
     float speed        = 0;
     float variation    = 0;
-    float coneAngle    = 0;    // latitude, degrees
+    float coneAngle    = 0;    // latitude, radians
     float gravity      = 0;
     float width        = 0;
     float length       = 0;

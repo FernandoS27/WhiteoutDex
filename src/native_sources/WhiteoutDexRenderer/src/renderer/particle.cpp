@@ -177,8 +177,20 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
                 ComputeUV(em.config, lifeFactor, true, u0, v0, u1, v1);
 
                 XMFLOAT3 corners[4];
-                if (em.config.xyQuad) {
-                    // XY-aligned quads: axis-aligned in local/model space (matches engine)
+                if (em.config.xyQuad && em.config.modelSpace) {
+                    // XY-aligned in emitter local space, then transformed to world
+                    XMFLOAT3 local[4] = {
+                        {p.position.x - halfScale, p.position.y - halfScale, p.position.z},
+                        {p.position.x + halfScale, p.position.y - halfScale, p.position.z},
+                        {p.position.x + halfScale, p.position.y + halfScale, p.position.z},
+                        {p.position.x - halfScale, p.position.y + halfScale, p.position.z},
+                    };
+                    for (int c = 0; c < 4; c++) {
+                        XMVECTOR wc = XMVector3Transform(XMLoadFloat3(&local[c]), em.state.transform);
+                        XMStoreFloat3(&corners[c], wc);
+                    }
+                } else if (em.config.xyQuad) {
+                    // XY-aligned quads in world space (no emitter rotation)
                     corners[0] = {worldPos.x - halfScale, worldPos.y - halfScale, worldPos.z};
                     corners[1] = {worldPos.x + halfScale, worldPos.y - halfScale, worldPos.z};
                     corners[2] = {worldPos.x + halfScale, worldPos.y + halfScale, worldPos.z};
@@ -327,7 +339,6 @@ void ParticleSystem::SpawnParticle(ParticleEmitter& em, float dt) {
     auto& st = em.state;
 
     constexpr float kPi = 3.14159265f;
-    constexpr float kDegToRad = kPi / 180.0f;
 
     // Spawn position: random within width x length rectangle in XY plane
     float hw = st.width * 0.5f;
@@ -344,7 +355,7 @@ void ParticleSystem::SpawnParticle(ParticleEmitter& em, float dt) {
     // Emission direction: sequential Y/Z rotation matching RE pseudocode
     // Start along +Z, rotate by latitude around Y, then by longitude around Z
     float spd = st.speed * (1.0f + RandF(-st.variation, st.variation));
-    float rotLat = st.coneAngle * kDegToRad * RandF(-1.0f, 1.0f);
+    float rotLat = st.coneAngle * RandF(-1.0f, 1.0f);
     float sinLat = sinf(rotLat), cosLat = cosf(rotLat);
 
     // Longitude is derived from LineEmitter flag (PE2 has no longitude field):

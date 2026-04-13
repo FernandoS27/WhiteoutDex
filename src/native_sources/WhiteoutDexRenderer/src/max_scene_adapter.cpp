@@ -1072,11 +1072,10 @@ std::vector<MaterialData> MaxSceneAdapter::GetMaterials() {
 
 SkeletonData MaxSceneAdapter::GetSkeleton() {
     SkeletonData sd;
-    sd.boneCount = (int)bones_.size();
-    sd.nodeCount = sd.boneCount;
-    sd.inverseBindMatrices.resize(sd.boneCount);
-    sd.boneBillboardFlags.resize(sd.boneCount, 0);
-    for (int i = 0; i < sd.boneCount; i++) {
+    sd.nodeCount = (int)bones_.size();
+    sd.inverseBindMatrices.resize(sd.nodeCount);
+    sd.billboardFlags.resize(sd.nodeCount, 0);
+    for (int i = 0; i < sd.nodeCount; i++) {
         INode* node = bones_[i].node;
         Matrix3 inv = Inverse(node->GetNodeTM(0));
         bones_[i].inverseBind = inv;
@@ -1095,7 +1094,7 @@ SkeletonData MaxSceneAdapter::GetSkeleton() {
         if (node->GetUserPropInt(_T("BillboardedLockX"), val) && val) flags |= BONE_BILLBOARD_LOCK_X;
         if (node->GetUserPropInt(_T("BillboardedLockY"), val) && val) flags |= BONE_BILLBOARD_LOCK_Y;
         if (node->GetUserPropInt(_T("BillboardedLockZ"), val) && val) flags |= BONE_BILLBOARD_LOCK_Z;
-        sd.boneBillboardFlags[i] = flags;
+        sd.billboardFlags[i] = flags;
     }
     return sd;
 }

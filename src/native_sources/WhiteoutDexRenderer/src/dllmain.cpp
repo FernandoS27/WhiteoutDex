@@ -265,8 +265,8 @@ Value* ndxStart_cf(Value** arg_list, int count)
     int ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
     mprintf(_M("\nWhiteoutDex: === STARTED in %d ms ===\n"), ms);
-    mprintf(_M("  %d meshes, %d textures, %d materials, %d bones\n"),
-            (int)meshes.size(), (int)textures.size(), (int)materials.size(), skeleton.boneCount);
+    mprintf(_M("  %d meshes, %d textures, %d materials, %d nodes\n"),
+            (int)meshes.size(), (int)textures.size(), (int)materials.size(), skeleton.nodeCount);
     mprintf(_M("  %d particles, %d ribbons, %d collisions\n"),
             (int)particles.size(), (int)ribbons.size(), (int)collisions.size());
 
