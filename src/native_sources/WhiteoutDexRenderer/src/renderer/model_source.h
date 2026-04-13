@@ -44,7 +44,10 @@ public:
     virtual void SetCameraPosition(float x, float y, float z) { (void)x; (void)y; (void)z; }
 
     // ---- Per-frame (called by the HOST every frame on its own thread) ----
-    virtual FrameState Evaluate(int timeMs) = 0;
+    // globalTimeMs = wall-clock milliseconds since model load (for global
+    // sequences that run independently of the active animation). If -1,
+    // falls back to timeMs (MaxSceneAdapter does not need separate timing).
+    virtual FrameState Evaluate(int timeMs, int globalTimeMs = -1) = 0;
 
     // ---- Sequence info (for playback UI) ----
     struct SequenceInfo {

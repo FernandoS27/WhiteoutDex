@@ -148,7 +148,7 @@ public:
 
     void SetActiveSequence(int sequenceIndex) override;  // no-op for Max
 
-    FrameState Evaluate(int timeMs) override;
+    FrameState Evaluate(int timeMs, int globalTimeMs = -1) override;
 
     std::vector<SequenceInfo> GetSequences() override;
 

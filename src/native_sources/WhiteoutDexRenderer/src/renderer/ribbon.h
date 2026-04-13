@@ -16,15 +16,13 @@
 namespace WhiteoutDex {
 
 // ============================================================================
-// Single ribbon segment (recorded position in time)
+// Single ribbon edge: explicit above/below world-space vertices.
+// Matches CRibbonEmitter::gxVertices[2*pos+0/1] storage.
 // ============================================================================
 struct RibbonSegment {
-    XMFLOAT3 position = {0,0,0};  // world position when created
-    XMFLOAT3 up       = {0,0,1};  // local up direction at creation
-    float    above     = 20.0f;    // height above at creation
-    float    below     = 20.0f;    // height below at creation
-    float    age       = 0;        // time since creation
-    float    initLife  = 0;        // original lifespan
+    XMFLOAT3 top = {0,0,0};   // above-center vertex (currPos + vertical*above)
+    XMFLOAT3 bot = {0,0,0};   // below-center vertex (currPos - vertical*below)
+    float    age = 0;         // seconds since creation
 };
 
 // ============================================================================
@@ -94,13 +92,6 @@ public:
     int GetEmitterVertCount(int emitterId) const;
 
 private:
-    void SpawnInterpolatedSegment(RibbonEmitter& em, float t, float omt,
-                                   const XMFLOAT3& prevDirScaled,
-                                   const XMFLOAT3& currDirScaled,
-                                   float age);
-
-    void SpawnSegmentAtCurrent(RibbonEmitter& em);
-
     std::unordered_map<int, RibbonEmitter> emitters_;
 };
 

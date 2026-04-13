@@ -61,6 +61,11 @@ struct ParticleEmitterConfig {
     bool xyQuad      = false;
     bool sortZ       = false;
     bool lineEmitter = false;
+    bool unfogged    = false;
+
+    // Misc
+    int  count         = 0;   // max live particles cap (0 = unlimited)
+    int  priorityPlane = 0;   // render sort plane
 };
 
 // ============================================================================

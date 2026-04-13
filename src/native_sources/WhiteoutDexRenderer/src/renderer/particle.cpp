@@ -35,7 +35,7 @@ int  ParticleSystem::EmitterCount() const { return (int)emitters_.size(); }
 // ============================================================================
 
 void ParticleSystem::Simulate(float dt) {
-    if (dt <= 0) dt = 1.0f / 60.0f;
+    if (dt < 0) dt = 0;        // dt==0 = frozen (parent paused)
     if (dt > 0.5f) dt = 0.5f;  // engine clamps to [0, 0.5]
 
     for (auto& [id, em] : emitters_) {
@@ -44,17 +44,21 @@ void ParticleSystem::Simulate(float dt) {
         parts.erase(std::remove_if(parts.begin(), parts.end(),
             [](const Particle& p) { return p.lifeSpan <= 0; }), parts.end());
 
-        // Squirt/burst mode: emit all at once when emissionRate first becomes nonzero
-        if (em.config.squirt && !em.squirtDone) {
-            int numToEmit = (int)em.state.emissionRate;
-            if (numToEmit > 0) {
+        // Squirt/burst mode: one-shot burst on each rising edge of emissionRate from 0
+        if (em.config.squirt) {
+            // Arm when emissionRate drops to 0 so the next spike re-triggers the burst
+            if (em.state.emissionRate <= 0) {
+                em.squirtDone = false;
+            } else if (!em.squirtDone) {
+                // Burst spawns the emissionRate
+                int numToEmit = (int)(em.state.emissionRate);
                 for (int i = 0; i < numToEmit; ++i)
                     SpawnParticle(em, dt);
                 em.squirtDone = true;
             }
         }
-        // Normal emission
-        else if (!em.config.squirt && em.state.visibility > 0.01f && em.state.emissionRate > 0) {
+        // Normal emission (non-squirt emitters only)
+        else if (em.state.visibility > 0.01f && em.state.emissionRate > 0) {
             em.accumEmission += em.state.emissionRate * dt;
             int numEmitted = 0;
             while (em.accumEmission >= 1.0f) {

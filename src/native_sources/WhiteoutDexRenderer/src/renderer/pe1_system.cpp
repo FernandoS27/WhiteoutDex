@@ -44,7 +44,7 @@ const PE1EmitterConfig* PE1System::GetConfig(int emitterId) const {
 
 PE1SimResult PE1System::Simulate(float dt, uint32_t& nextHandle) {
     PE1SimResult result;
-    if (dt <= 0) dt = 1.0f / 60.0f;
+    if (dt < 0) dt = 0;        // dt==0 = frozen (parent paused)
     if (dt > 0.5f) dt = 0.5f;
 
     for (auto& [id, em] : emitters_) {

@@ -109,6 +109,7 @@ struct SkeletonData {
     int nodeCount;   // total hierarchy nodes (bones + helpers + emitters + collisions)
     std::vector<XMMATRIX> inverseBindMatrices;  // boneCount entries
     std::vector<uint32_t> boneBillboardFlags;    // boneCount entries (BoneBillboardFlag)
+    std::vector<XMFLOAT3> bonePivots;            // boneCount entries — rest pivot positions
 };
 
 struct SkinWeightData {
@@ -164,6 +165,14 @@ struct FrameState {
         float alpha;
     };
     std::vector<LayerAlphaState> layerAlphas;
+
+    // Per-layer animated texture ID (KMTF tracks)
+    struct LayerTextureIdState {
+        int materialId;
+        int layerIndex;
+        int textureId;
+    };
+    std::vector<LayerTextureIdState> layerTextureIds;
 
     // Attachment per-frame state
     struct AttachmentFrameState {

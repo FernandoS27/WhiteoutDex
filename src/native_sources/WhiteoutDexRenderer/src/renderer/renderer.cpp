@@ -8,6 +8,7 @@
 #include "resource.h"
 #include "team_glow_data.h"
 #include "mdx_model_adapter.h"
+#include "file_content_provider.h"
 #include <whiteout/models/mdx/parser.h>
 
 // PE1 model template — full definition (uses MdxModelAdapter which is now fully included)
@@ -123,6 +124,7 @@ void Renderer::SetPE1ChildCoordSpace(CoordSpace space) {
 
 void Renderer::SetPE1BasePath(const std::string& basePath) {
     pe1BasePath_ = basePath;
+    contentProvider_.SetBasePath(basePath);
 }
 
 void Renderer::SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig>& configs) {
@@ -162,6 +164,10 @@ void Renderer::UpdateAttachments() {
             child->pe1Depth = mi->pe1Depth + 1;
             child->pe1Adapter = tmpl->adapter;
             child->pe1BirthTimeMs = currentTimeMs_;
+            // Pick a random sequence
+            auto seqs = tmpl->adapter->GetSequences();
+            if (!seqs.empty())
+                child->pe1SequenceIdx = rand() % (int)seqs.size();
 
             stageModelFromTemplate(child.get(), *tmpl);
             models_[childH] = std::move(child);
@@ -178,32 +184,18 @@ std::shared_ptr<Renderer::PE1ModelTemplate> Renderer::getOrLoadTemplate(const st
     auto it = pe1TemplateCache_.find(modelPath);
     if (it != pe1TemplateCache_.end()) return it->second;
 
-    // Resolve model file path relative to pe1BasePath_
-    namespace fs = std::filesystem;
-    fs::path fullPath = modelPath;
-    if (!pe1BasePath_.empty() && fullPath.is_relative())
-        fullPath = fs::path(pe1BasePath_) / modelPath;
-
-    // Try original, then with alternate extensions
-    auto tryPath = [](const fs::path& p) -> bool { return fs::exists(p); };
-    if (!tryPath(fullPath)) {
-        // Try .mdx / .mdl extension swap
-        fs::path alt = fullPath;
-        std::string ext = alt.extension().string();
-        if (ext == ".mdx") alt.replace_extension(".mdl");
-        else alt.replace_extension(".mdx");
-        if (tryPath(alt)) fullPath = alt;
-        else {
-            pe1TemplateCache_[modelPath] = nullptr;  // cache miss
-            return nullptr;
-        }
+    // Try to read the model file via the content provider (disk → CASC → MPQ).
+    auto fileData = contentProvider_.ReadFile(modelPath);
+    if (!fileData || fileData->empty()) {
+        pe1TemplateCache_[modelPath] = nullptr;  // cache miss
+        return nullptr;
     }
 
-    // Parse MDX file
+    // Parse MDX from memory buffer
     whiteout::mdx::Parser mdxParser;
     whiteout::mdx::Model model;
     try {
-        model = mdxParser.parse(fullPath.string());
+        model = mdxParser.parse(std::span<const whiteout::u8>(fileData->data(), fileData->size()));
     } catch (...) {
         pe1TemplateCache_[modelPath] = nullptr;
         return nullptr;
@@ -211,11 +203,12 @@ std::shared_ptr<Renderer::PE1ModelTemplate> Renderer::getOrLoadTemplate(const st
 
     // basePath for texture resolution: use pe1BasePath_ (war3 data root)
     // so textures like "Textures\Footprint00.blp" resolve correctly
-    fs::path texBasePath = pe1BasePath_.empty() ? fullPath.parent_path() : fs::path(pe1BasePath_);
+    namespace fs = std::filesystem;
+    fs::path texBasePath = pe1BasePath_.empty() ? fs::path(modelPath).parent_path() : fs::path(pe1BasePath_);
 
     auto tmpl = std::make_shared<PE1ModelTemplate>();
     auto adapter = std::make_shared<MdxModelAdapter>(
-        std::move(model), texBasePath, pe1ChildCoordSpace_);
+        std::move(model), texBasePath, pe1ChildCoordSpace_, &contentProvider_);
     tmpl->adapter = adapter;
     tmpl->meshes = adapter->GetMeshes();
     tmpl->textures = adapter->GetTextures();
@@ -281,6 +274,7 @@ void Renderer::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate&
         }
         mi->skinning.SetSkeleton(tmpl.skeleton.boneCount, invBind.data());
         mi->boneBillboardFlags = tmpl.skeleton.boneBillboardFlags;
+        mi->bonePivots         = tmpl.skeleton.bonePivots;
         mi->skinDirty = true;
     }
     // Skin weights
@@ -324,6 +318,7 @@ void Renderer::UpdatePE1(float dt) {
         if (!mi) continue;
         if (mi->pe1Depth >= kMaxPE1Depth) continue;
         if (!mi->pe1.HasEmitters()) continue;
+        if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent — skip sub-emitter sim
 
         auto result = mi->pe1.Simulate(dt, nextModelHandle_);
 
@@ -372,6 +367,8 @@ void Renderer::EvaluatePE1Children() {
         uint32_t handle;
         std::shared_ptr<IModelSource> adapter;
         int localTimeMs;
+        int seqIdx;
+        int globalTimeMs;  // unclamped elapsed since birth (for global sequences)
     };
     std::vector<ChildEval> toEval;
     XMFLOAT3 camPos;
@@ -382,20 +379,24 @@ void Renderer::EvaluatePE1Children() {
         int timeMs = currentTimeMs_.load();
         for (auto& [h, mi] : models_) {
             if (!mi->isPE1Child || !mi->pe1Adapter) continue;
+            if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent — skip eval
             int localTime = timeMs - mi->pe1BirthTimeMs;
+            if (localTime < 0) localTime = 0;
+            int globalTime = localTime;  // unclamped wall-clock elapsed since birth
             auto seqs = mi->pe1Adapter->GetSequences();
             if (!seqs.empty()) {
-                int dur = seqs[0].endMs - seqs[0].startMs;
-                if (dur > 0) localTime = seqs[0].startMs + (localTime % dur);
+                int seqIdx = mi->pe1SequenceIdx % (int)seqs.size();
+                int dur = seqs[seqIdx].endMs - seqs[seqIdx].startMs;
+                if (dur > 0) localTime = seqs[seqIdx].startMs + (localTime % dur);
             }
-            toEval.push_back({h, mi->pe1Adapter, localTime});
+            toEval.push_back({h, mi->pe1Adapter, localTime, mi->pe1SequenceIdx, globalTime});
         }
     }
 
     for (auto& ce : toEval) {
-        // Update camera position for billboard evaluation
         ce.adapter->SetCameraPosition(camPos.x, camPos.y, camPos.z);
-        FrameState fs = ce.adapter->Evaluate(ce.localTimeMs);
+        ce.adapter->SetActiveSequence(ce.seqIdx);
+        FrameState fs = ce.adapter->Evaluate(ce.localTimeMs, ce.globalTimeMs);
         ApplyFrameState(ce.handle, fs, ce.localTimeMs);
     }
 }
@@ -516,6 +517,7 @@ uint32_t Renderer::AddModel(const std::vector<MeshData>& meshes,
         }
         mi->skinning.SetSkeleton(skeleton.boneCount, invBindFlat.data());
         mi->boneBillboardFlags = skeleton.boneBillboardFlags;
+        mi->bonePivots         = skeleton.bonePivots;
         mi->skinDirty = true;
     }
 
@@ -588,47 +590,71 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
     if (!state.boneWorldMatrices.empty()) {
         int bc = (int)state.boneWorldMatrices.size();
         XMFLOAT3 camPos = camera_.GetSource();
+        XMVECTOR camP = XMLoadFloat3(&camPos);
+        XMVECTOR worldUp = XMVectorSet(0, 0, 1, 0);
 
         std::vector<float> worldFlat(bc * 16);
         for (int i = 0; i < bc; i++) {
             XMMATRIX boneM = state.boneWorldMatrices[i];
 
-            // Apply billboard: replace rotation to face camera, preserve position + scale
             uint32_t bbFlags = (i < (int)mi->boneBillboardFlags.size()) ? mi->boneBillboardFlags[i] : 0;
             if (bbFlags != 0) {
-                XMVECTOR wS, wR, wT;
-                if (XMMatrixDecompose(&wS, &wR, &wT, boneM)) {
-                    XMVECTOR camP = XMLoadFloat3(&camPos);
-                    XMVECTOR toCamera = XMVectorSubtract(camP, wT);
-                    float dist = XMVectorGetX(XMVector3Length(toCamera));
-                    if (dist > 0.001f) {
-                        XMVECTOR worldUp = XMVectorSet(0, 0, 1, 0);
+                // For a billboarded bone we want vertices to rotate around the
+                // bone's animated pivot world-position toward the camera. The
+                // delta matrix's translation column is NOT the pivot (it's
+                // pivot − R·pivot + t_local), so we instead:
+                //   1) transform the rest pivot through the delta to get the
+                //      animated world pivot position P_w
+                //   2) build boneM = T(-P_rest) · R_cam · T(P_w)
+                // which gives (v − P_rest) · R_cam + P_w — i.e. rotate vertex
+                // around its rest pivot toward the camera, then place at the
+                // animated world pivot. This ignores animated scale for
+                // billboards, which matches typical Wc3 usage.
+                XMFLOAT3 pivF = (i < (int)mi->bonePivots.size())
+                                  ? mi->bonePivots[i] : XMFLOAT3{0, 0, 0};
+                XMVECTOR pivRest = XMLoadFloat3(&pivF);
+                pivRest = XMVectorSetW(pivRest, 1.0f);
+                XMVECTOR pivWorld = XMVector3Transform(pivRest, boneM);
 
-                        if (bbFlags & BONE_BILLBOARD_FULL) {
-                            // fwd points FROM camera TO bone so the front face faces the viewer
-                            XMVECTOR fwd = XMVector3Normalize(XMVectorNegate(toCamera));
-                            XMVECTOR right = XMVector3Cross(fwd, worldUp);
-                            float rightLen = XMVectorGetX(XMVector3Length(right));
-                            if (rightLen < 0.001f) {
-                                right = XMVectorSet(1, 0, 0, 0);
-                            }
-                            right = XMVector3Normalize(right);
-                            XMVECTOR up = XMVector3Normalize(XMVector3Cross(right, fwd));
-                            XMMATRIX bbRot = XMMATRIX(right, fwd, up, XMVectorSet(0,0,0,1));
-                            boneM = XMMatrixScalingFromVector(wS) * bbRot * XMMatrixTranslationFromVector(wT);
-                        } else if (bbFlags & BONE_BILLBOARD_LOCK_Z) {
-                            XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
-                            float yaw = atan2f(tc.y, tc.x);
-                            boneM = XMMatrixScalingFromVector(wS) * XMMatrixRotationZ(yaw) * XMMatrixTranslationFromVector(wT);
-                        } else if (bbFlags & BONE_BILLBOARD_LOCK_Y) {
-                            XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
-                            float angle = atan2f(tc.z, tc.x);
-                            boneM = XMMatrixScalingFromVector(wS) * XMMatrixRotationY(angle) * XMMatrixTranslationFromVector(wT);
-                        } else if (bbFlags & BONE_BILLBOARD_LOCK_X) {
-                            XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
-                            float angle = atan2f(tc.z, tc.y);
-                            boneM = XMMatrixScalingFromVector(wS) * XMMatrixRotationX(angle) * XMMatrixTranslationFromVector(wT);
-                        }
+                XMVECTOR toCamera = XMVectorSubtract(camP, pivWorld);
+                float dist = XMVectorGetX(XMVector3Length(toCamera));
+                if (dist > 0.001f) {
+                    XMMATRIX bbRot = XMMatrixIdentity();
+                    bool haveRot = false;
+
+                    if (bbFlags & BONE_BILLBOARD_FULL) {
+                        // fwd points FROM camera TO bone so the front face faces the viewer
+                        XMVECTOR fwd = XMVector3Normalize(XMVectorNegate(toCamera));
+                        XMVECTOR right = XMVector3Cross(fwd, worldUp);
+                        float rightLen = XMVectorGetX(XMVector3Length(right));
+                        if (rightLen < 0.001f)
+                            right = XMVectorSet(1, 0, 0, 0);
+                        right = XMVector3Normalize(right);
+                        XMVECTOR up = XMVector3Normalize(XMVector3Cross(right, fwd));
+                        bbRot = XMMATRIX(right, fwd, up, XMVectorSet(0,0,0,1));
+                        haveRot = true;
+                    } else if (bbFlags & BONE_BILLBOARD_LOCK_Z) {
+                        XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
+                        float yaw = atan2f(tc.y, tc.x);
+                        bbRot = XMMatrixRotationZ(yaw);
+                        haveRot = true;
+                    } else if (bbFlags & BONE_BILLBOARD_LOCK_Y) {
+                        XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
+                        float angle = atan2f(tc.z, tc.x);
+                        bbRot = XMMatrixRotationY(angle);
+                        haveRot = true;
+                    } else if (bbFlags & BONE_BILLBOARD_LOCK_X) {
+                        XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
+                        float angle = atan2f(tc.z, tc.y);
+                        bbRot = XMMatrixRotationX(angle);
+                        haveRot = true;
+                    }
+
+                    if (haveRot) {
+                        XMMATRIX T_negRest = XMMatrixTranslation(-pivF.x, -pivF.y, -pivF.z);
+                        XMFLOAT3 pwf; XMStoreFloat3(&pwf, pivWorld);
+                        XMMATRIX T_world   = XMMatrixTranslation(pwf.x, pwf.y, pwf.z);
+                        boneM = T_negRest * bbRot * T_world;
                     }
                 }
             }
@@ -709,6 +735,16 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
         }
     }
 
+    // Per-layer texture ID animation (KMTF tracks)
+    for (auto& lt : state.layerTextureIds) {
+        if (lt.materialId >= 0 && lt.materialId < (int)mi->gpuMaterials.size()) {
+            auto& layers = mi->gpuMaterials[lt.materialId].cpu.layers;
+            if (lt.layerIndex >= 0 && lt.layerIndex < (int)layers.size()) {
+                layers[lt.layerIndex].textureId = lt.textureId;
+            }
+        }
+    }
+
     // PE1 (model particle emitter) states
     for (auto& ps : state.pe1States) {
         PE1EmitterState st;
@@ -722,23 +758,40 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
         mi->pe1.UpdateEmitterState(ps.emitterId, st);
     }
 
-    // Update attachment child model transforms
+    // Update attachment child model transforms + visibility
     for (auto& as : state.attachmentStates) {
         if (as.attachmentIndex < 0 || as.attachmentIndex >= (int)mi->attachmentSlots.size()) continue;
         auto& slot = mi->attachmentSlots[as.attachmentIndex];
-        if (slot.childModelHandle != 0) {
-            auto* child = getModel(slot.childModelHandle);
-            if (child) {
-                child->worldTransform = as.transform;
-                // Hide if visibility <= 0
-                for (auto& geo : child->gpuGeosets)
-                    geo.geosetAlpha = (as.visibility > 0.5f) ? 1.0f : 0.0f;
+        if (slot.childModelHandle == 0) continue;
+        auto* child = getModel(slot.childModelHandle);
+        if (!child) continue;
+
+        bool visible = (as.visibility > 0.02f);
+        child->worldTransform = as.transform;
+
+        // When becoming visible: pick a new random animation and restart from frame 0
+        if (visible && !slot.wasVisible) {
+            child->pe1BirthTimeMs = timeMs;
+            // Pick a random sequence each time visibility turns on
+            if (child->pe1Adapter) {
+                auto seqs = child->pe1Adapter->GetSequences();
+                if (!seqs.empty())
+                    child->pe1SequenceIdx = rand() % (int)seqs.size();
             }
+            slot.wasVisible = true;
+        } else if (!visible) {
+            slot.wasVisible = false;
         }
+
+        // Authoritative parent-driven visibility. The child's own animation
+        // still writes geoset/layer alphas via EvaluatePE1Children; the
+        // renderer multiplies them by parentVisibility at draw time.
+        child->parentVisibility = visible ? as.visibility : 0.0f;
     }
 
-    // Advance simulation clock (replaces old SetTime)
-    currentTimeMs_ = timeMs;
+    // Advance simulation clock — only from non-child models
+    if (!mi->isPE1Child)
+        currentTimeMs_ = timeMs;
 }
 
 void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
@@ -806,6 +859,36 @@ void Renderer::ProcessCameraPresets() {
     SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
     cameraLocked_ = false;
     cameraDirty_ = false;
+}
+
+void Renderer::SetSequences(const std::vector<std::string>& names) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    pendingSequenceNames_ = names;
+    sequencesDirty_ = true;
+}
+
+int Renderer::GetActiveSequenceIndex() const {
+    return activeSequence_.load();
+}
+
+void Renderer::ProcessSequences() {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    if (!sequencesDirty_ || !cmbSequence_) return;
+
+    SendMessageW(cmbSequence_, CB_RESETCONTENT, 0, 0);
+    for (auto& n : pendingSequenceNames_) {
+        std::wstring wn(n.begin(), n.end());
+        SendMessageW(cmbSequence_, CB_ADDSTRING, 0, (LPARAM)wn.c_str());
+    }
+    if (!pendingSequenceNames_.empty()) {
+        // Reveal label + combo
+        ShowWindow(lblSequence_, SW_SHOW);
+        ShowWindow(cmbSequence_, SW_SHOW);
+        SendMessageW(cmbSequence_, CB_SETCURSEL, 0, 0);
+        activeSequence_ = 0;
+    }
+    pendingSequenceNames_.clear();
+    sequencesDirty_ = false;
 }
 
 // ============================================================================
@@ -938,6 +1021,7 @@ void Renderer::UpdateAnimation() {
         for (auto& [h, miPtr] : models_) {
             auto* mi = miPtr.get();
             if (!mi->skinning.HasSkeleton() || !mi->skinning.IsReady()) continue;
+            if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent — skip skinning
             mi->skinning.ComputeOffsetMatrices();
             for (auto& geo : mi->gpuGeosets) {
                 if (!geo.hasSkinning || geo.baseVertices.empty() || !geo.vb) continue;
@@ -976,8 +1060,10 @@ void Renderer::UpdateAnimation() {
 
 void Renderer::UpdateParticles(float dt) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    for (auto& [h, mi] : models_)
+    for (auto& [h, mi] : models_) {
+        if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
         mi->particles.Simulate(dt);
+    }
 }
 
 void Renderer::RenderParticles() {
@@ -994,6 +1080,7 @@ void Renderer::RenderParticles() {
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
         if (!mi->particles.HasEmitters()) continue;
+        if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
         pitch   = camera_.GetPitch();
         yaw     = camera_.GetYaw();
         viewMat = camera_.GetViewMatrix();
@@ -1099,8 +1186,10 @@ void Renderer::RenderParticles() {
 
 void Renderer::UpdateRibbons(float dt) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    for (auto& [h, mi] : models_)
+    for (auto& [h, mi] : models_) {
+        if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
         mi->ribbons.Simulate(dt);
+    }
 }
 
 void Renderer::RenderRibbons() {
@@ -1114,6 +1203,7 @@ void Renderer::RenderRibbons() {
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
         if (!mi->ribbons.HasEmitters()) continue;
+        if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
         viewMat = camera_.GetViewMatrix();
         mi->ribbons.BuildStrips(verts, emitterIds);
         for (int eid : emitterIds) {
@@ -1216,8 +1306,10 @@ void Renderer::RenderCollisions() {
     XMMATRIX viewMat;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        for (auto& [h, mi] : models_)
+        for (auto& [h, mi] : models_) {
+            if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
             shapes.insert(shapes.end(), mi->collisionShapes.begin(), mi->collisionShapes.end());
+        }
         if (shapes.empty()) return;
         viewMat = camera_.GetViewMatrix();
     }
@@ -1343,6 +1435,7 @@ void Renderer::RenderThread(int width, int height) {
     fpsTimer = lastTime;
     const double targetDt = 1.0 / 60.0;
     int frameCount = 0;
+    int lastParentTimeMs = currentTimeMs_.load();
 
     while (running_) {
         while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -1361,11 +1454,23 @@ void Renderer::RenderThread(int width, int height) {
         }
         lastTime = now;
 
+        // Particle/ribbon/PE1 simulation dt is derived from the parent's
+        // animation clock so everything stays locked to Max's timeline:
+        // when Max is paused or scrubbing, sims freeze; when playing, sims
+        // advance at exactly the parent's playback rate.
+        int curParentMs = currentTimeMs_.load();
+        int parentDtMs  = curParentMs - lastParentTimeMs;
+        if (parentDtMs < 0)   parentDtMs = 0;     // backward scrub → freeze
+        if (parentDtMs > 100) parentDtMs = 100;   // clamp big jumps
+        lastParentTimeMs = curParentMs;
+        float parentDt = (float)parentDtMs / 1000.0f;
+
         // Process any staged data from API thread
         ProcessStagedData();
 
         // Process pending camera preset updates
         ProcessCameraPresets();
+        ProcessSequences();
 
         // Load attachment child models (lazy, first frame only)
         UpdateAttachments();
@@ -1376,10 +1481,10 @@ void Renderer::RenderThread(int width, int height) {
         // Phase 4: Skin vertices with current bone matrices
         UpdateAnimation();
 
-        // Phase 5: Simulate particles
-        UpdateParticles((float)elapsed);
-        UpdatePE1((float)elapsed);
-        UpdateRibbons((float)elapsed);
+        // Phase 5: Simulate particles (parent-clock dt)
+        UpdateParticles(parentDt);
+        UpdatePE1(parentDt);
+        UpdateRibbons(parentDt);
 
         RenderFrame();
         frameCount++;
@@ -1511,6 +1616,16 @@ bool Renderer::CreateRenderWindow(int w, int h) {
         x, 2, 150, 200, hwnd_, (HMENU)(INT_PTR)IDC_CAMERA, hInst, nullptr);
     SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)L"Free Camera");
     SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
+    x += 158;
+
+    // Sequence combo box (hidden until SetSequences() is called — standalone viewer)
+    lblSequence_ = CreateWindowW(L"STATIC", L"Animation:",
+        WS_CHILD | SS_CENTERIMAGE,
+        x, 4, 64, 20, hwnd_, nullptr, hInst, nullptr);
+    x += 66;
+    cmbSequence_ = CreateWindowW(L"COMBOBOX", L"",
+        WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL,
+        x, 2, 180, 300, hwnd_, (HMENU)(INT_PTR)IDC_SEQUENCE, hInst, nullptr);
 
     return true;
 }
@@ -1525,7 +1640,7 @@ LRESULT CALLBACK Renderer::RenderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
     } else {
         self = reinterpret_cast<Renderer*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
     }
-    if (!self) return DefWindowProc(hwnd, msg, wParam, lParam);
+    if (!self) return DefWindowProcW(hwnd, msg, wParam, lParam);
 
     // Forward mouse messages to parent WndProc logic
     switch (msg) {
@@ -1535,7 +1650,7 @@ LRESULT CALLBACK Renderer::RenderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
     case WM_MOUSEMOVE:   case WM_MOUSEWHEEL:
         return Renderer::WndProc(hwnd, msg, wParam, lParam);
     }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 LRESULT CALLBACK Renderer::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -1548,7 +1663,7 @@ LRESULT CALLBACK Renderer::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         self = reinterpret_cast<Renderer*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
     }
     if (self) return self->HandleMessage(hwnd, msg, wParam, lParam);
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 LRESULT Renderer::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -1673,6 +1788,13 @@ LRESULT Renderer::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
                 break;
             }
+            case IDC_SEQUENCE: {
+                if (code == CBN_SELCHANGE) {
+                    int sel = (int)SendMessageW(cmbSequence_, CB_GETCURSEL, 0, 0);
+                    if (sel >= 0) activeSequence_ = sel;
+                }
+                break;
+            }
         }
         return 0;
     }
@@ -1680,7 +1802,7 @@ LRESULT Renderer::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         hwnd_ = nullptr;  // prevent double DestroyWindow in thread cleanup
         running_ = false; PostQuitMessage(0); return 0;
     }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 // ============================================================================
@@ -2106,6 +2228,7 @@ void Renderer::RenderGeosets() {
     std::vector<GeosetRef> refs;
     for (auto& [h, miPtr] : models_) {
         auto* mi = miPtr.get();
+        if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
         for (int i = 0; i < (int)mi->gpuGeosets.size(); i++) {
             auto& geo = mi->gpuGeosets[i];
             int ro = 1;
@@ -2138,7 +2261,7 @@ void Renderer::RenderGeosets() {
         if (matId >= 0 && matId < (int)mi->gpuMaterials.size())
             mat = &mi->gpuMaterials[matId];
 
-        float geoAlpha = geo.geosetAlpha;
+        float geoAlpha = geo.geosetAlpha * mi->parentVisibility;
         if (geoAlpha < 0.01f) continue;
         XMFLOAT3 geoColor = geo.geosetColor;
 

@@ -129,6 +129,7 @@ struct ModelInstance {
     SkinningSystem skinning;
     bool skinDirty = false;
     std::vector<uint32_t> boneBillboardFlags;  // per-bone billboard flags
+    std::vector<XMFLOAT3> bonePivots;          // per-bone rest pivots (for billboard rotation center)
 
     // ---- Particle system ----
     ParticleSystem particles;
@@ -156,8 +157,14 @@ struct ModelInstance {
         AttachmentConfig config;
         uint32_t childModelHandle = 0;  // 0 = not yet loaded
         bool loaded = false;
+        bool wasVisible = false;        // tracks first-visible for animation start
     };
     std::vector<AttachmentSlot> attachmentSlots;
+
+    // Visibility multiplier driven by the parent model when this instance is
+    // hosted as an attachment child. 1 = fully visible, 0 = fully hidden.
+    // Authoritative source: only the parent's ApplyFrameState writes this.
+    float parentVisibility = 1.0f;
 
     // ---- PE1 (model particle emitter) ----
     PE1System pe1;

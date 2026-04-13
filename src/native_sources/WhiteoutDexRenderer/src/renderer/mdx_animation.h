@@ -68,7 +68,8 @@ public:
                   const std::vector<whiteout::u32>& globalSequences,
                   std::vector<XMMATRIX>& boneWorldMatrices,
                   std::vector<XMMATRIX>& allNodeMatrices,
-                  const XMFLOAT3* cameraPos = nullptr) const;
+                  const XMFLOAT3* cameraPos = nullptr,
+                  int globalTimeMs = -1) const;
 
     int BoneCount() const { return boneCount_; }
     int NodeCount() const { return (int)nodes_.size(); }

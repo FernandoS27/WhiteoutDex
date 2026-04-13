@@ -12,34 +12,83 @@ using namespace whiteout::mdx;
 namespace WhiteoutDex {
 
 // ============================================================================
-// Helper: find bracketing keyframes for a given time
-// Returns pair(lo, hi) indices. If time <= first key, returns (0,0).
-// If time >= last key, returns (last,last).
+// Helper: find bracketing keyframes for a given time, restricted to a
+// sequence's [seqStart, seqEnd] range.
+//
+// MDX tracks concatenate keyframes from all sequences into a single list, so
+// evaluation must filter by the active sequence range — otherwise we bracket
+// across into a neighbouring sequence and slerp between unrelated poses.
+//
+// When timeMs falls in the "gap" between seqStart and the first in-range
+// keyframe, or between the last in-range keyframe and seqEnd, we wrap around
+// (last → first through the loop point) instead of clamping. This matches
+// mdx-m3-viewer's behaviour for looping sequences and keeps animation smooth
+// across the loop boundary.
+//
+//   segLen = (firstKey - lastKey) + (seqEnd - seqStart)     // positive
+//   post-last  (timeMs ∈ [lastKey, seqEnd)): pos = timeMs - lastKey
+//   pre-first  (timeMs ∈ [seqStart, firstKey)): pos = (timeMs - seqStart) + (seqEnd - lastKey)
+//   t = pos / segLen
 // ============================================================================
 
+struct KeyBracket {
+    int lo = -1;
+    int hi = -1;
+    float t = 0.0f;
+};
+
 template<typename KeyType>
-static std::pair<int, int> FindBracket(const KeyType* keys, int count, int timeMs) {
-    if (count == 0) return {-1, -1};
-    if (count == 1 || timeMs <= (int)keys[0].frame) return {0, 0};
-    if (timeMs >= (int)keys[count - 1].frame) return {count - 1, count - 1};
-    for (int i = 0; i < count - 1; i++) {
-        if (timeMs >= (int)keys[i].frame && timeMs < (int)keys[i + 1].frame)
-            return {i, i + 1};
+static KeyBracket FindBracket(const KeyType* keys, int count, int timeMs,
+                              int seqStart, int seqEnd) {
+    KeyBracket b;
+    if (count == 0) return b;
+
+    // Locate in-sequence keyframe index range [rangeLo, rangeHi].
+    int rangeLo = -1, rangeHi = -1;
+    for (int i = 0; i < count; i++) {
+        int f = (int)keys[i].frame;
+        if (f > seqEnd) break;
+        if (f >= seqStart) {
+            if (rangeLo < 0) rangeLo = i;
+            rangeHi = i;
+        }
     }
-    return {count - 1, count - 1};
-}
+    if (rangeLo < 0) return b;                      // no keys in this sequence
+    if (rangeLo == rangeHi) { b.lo = b.hi = rangeLo; return b; }
 
-template<typename KeyType>
-static float InterpolationFactor(const KeyType* keys, int lo, int hi) {
-    if (lo == hi) return 0.0f;
-    float range = (float)(keys[hi].frame - keys[lo].frame);
-    return range > 0 ? 1.0f : 0.0f; // placeholder — caller provides time
-}
+    int firstFrame = (int)keys[rangeLo].frame;
+    int lastFrame  = (int)keys[rangeHi].frame;
 
-static float CalcT(uint32_t frameLo, uint32_t frameHi, int timeMs) {
-    if (frameLo == frameHi) return 0.0f;
-    float t = (float)(timeMs - (int)frameLo) / (float)((int)frameHi - (int)frameLo);
-    return std::clamp(t, 0.0f, 1.0f);
+    // Wrap region: timeMs is in the gap between lastFrame and firstFrame
+    // (going forward through the loop point). Bracket = (lastKey, firstKey).
+    if (timeMs < firstFrame || timeMs >= lastFrame) {
+        int loopLen = seqEnd - seqStart;
+        int segLen  = (firstFrame - lastFrame) + loopLen;
+        b.lo = rangeHi;
+        b.hi = rangeLo;
+        if (segLen <= 0) { b.t = 0.0f; return b; }
+        int pos;
+        if (timeMs >= lastFrame) pos = timeMs - lastFrame;
+        else                     pos = (timeMs - seqStart) + (seqEnd - lastFrame);
+        float t = (float)pos / (float)segLen;
+        b.t = std::clamp(t, 0.0f, 1.0f);
+        return b;
+    }
+
+    // Normal bracket within the in-range span
+    for (int i = rangeLo; i < rangeHi; i++) {
+        int fa = (int)keys[i].frame;
+        int fb = (int)keys[i + 1].frame;
+        if (timeMs >= fa && timeMs < fb) {
+            b.lo = i;
+            b.hi = i + 1;
+            int denom = fb - fa;
+            b.t = denom > 0 ? (float)(timeMs - fa) / (float)denom : 0.0f;
+            return b;
+        }
+    }
+    b.lo = b.hi = rangeHi;
+    return b;
 }
 
 // ============================================================================
@@ -89,23 +138,21 @@ float EvaluateTrackF32(const Track<f32>& track, int timeMs, int seqStart, int se
     if (interp == InterpolationType::None || interp == InterpolationType::Linear) {
         auto keys = const_cast<Track<f32>&>(track).keys();
         int count = (int)keys.size();
-        auto [lo, hi] = FindBracket(keys.data(), count, timeMs);
-        if (lo < 0) return defaultVal;
-        if (lo == hi) return keys[lo].value;
-        if (interp == InterpolationType::None) return keys[lo].value;
-        float t = CalcT(keys[lo].frame, keys[hi].frame, timeMs);
-        return keys[lo].value + (keys[hi].value - keys[lo].value) * t;
+        auto br = FindBracket(keys.data(), count, timeMs, seqStart, seqEnd);
+        if (br.lo < 0) return defaultVal;
+        if (br.lo == br.hi) return keys[br.lo].value;
+        if (interp == InterpolationType::None) return keys[br.lo].value;
+        return keys[br.lo].value + (keys[br.hi].value - keys[br.lo].value) * br.t;
     } else {
         auto keys = const_cast<Track<f32>&>(track).tangentKeys();
         int count = (int)keys.size();
-        auto [lo, hi] = FindBracket(keys.data(), count, timeMs);
-        if (lo < 0) return defaultVal;
-        if (lo == hi) return keys[lo].value;
-        float t = CalcT(keys[lo].frame, keys[hi].frame, timeMs);
+        auto br = FindBracket(keys.data(), count, timeMs, seqStart, seqEnd);
+        if (br.lo < 0) return defaultVal;
+        if (br.lo == br.hi) return keys[br.lo].value;
         if (interp == InterpolationType::Hermite)
-            return HermiteInterp(keys[lo].value, keys[lo].outTan, keys[hi].inTan, keys[hi].value, t);
+            return HermiteInterp(keys[br.lo].value, keys[br.lo].outTan, keys[br.hi].inTan, keys[br.hi].value, br.t);
         else // Bezier
-            return BezierInterp(keys[lo].value, keys[lo].outTan, keys[hi].inTan, keys[hi].value, t);
+            return BezierInterp(keys[br.lo].value, keys[br.lo].outTan, keys[br.hi].inTan, keys[br.hi].value, br.t);
     }
 }
 
@@ -119,9 +166,19 @@ u32 EvaluateTrackU32(const Track<u32>& track, int timeMs, int seqStart, int seqE
     auto keys = const_cast<Track<u32>&>(track).keys();
     int count = (int)keys.size();
     if (count == 0) return defaultVal;
-    // Find last key <= timeMs
-    u32 val = keys[0].value;
+
+    // Step semantics: hold the most recent in-sequence key whose frame <= timeMs,
+    // falling back to the first in-sequence key if timeMs precedes it.
+    int rangeLo = -1, rangeHi = -1;
     for (int i = 0; i < count; i++) {
+        int f = (int)keys[i].frame;
+        if (f > seqEnd) break;
+        if (f >= seqStart) { if (rangeLo < 0) rangeLo = i; rangeHi = i; }
+    }
+    if (rangeLo < 0) return defaultVal;
+
+    u32 val = keys[rangeLo].value;
+    for (int i = rangeLo; i <= rangeHi; i++) {
         if ((int)keys[i].frame <= timeMs) val = keys[i].value;
         else break;
     }
@@ -140,23 +197,21 @@ Vector3f EvaluateTrackVec3(const Track<Vector3f>& track, int timeMs, int seqStar
     if (interp == InterpolationType::None || interp == InterpolationType::Linear) {
         auto keys = const_cast<Track<Vector3f>&>(track).keys();
         int count = (int)keys.size();
-        auto [lo, hi] = FindBracket(keys.data(), count, timeMs);
-        if (lo < 0) return defaultVal;
-        if (lo == hi) return keys[lo].value;
-        if (interp == InterpolationType::None) return keys[lo].value;
-        float t = CalcT(keys[lo].frame, keys[hi].frame, timeMs);
-        return Vector3f::lerp(keys[lo].value, keys[hi].value, t);
+        auto br = FindBracket(keys.data(), count, timeMs, seqStart, seqEnd);
+        if (br.lo < 0) return defaultVal;
+        if (br.lo == br.hi) return keys[br.lo].value;
+        if (interp == InterpolationType::None) return keys[br.lo].value;
+        return Vector3f::lerp(keys[br.lo].value, keys[br.hi].value, br.t);
     } else {
         auto keys = const_cast<Track<Vector3f>&>(track).tangentKeys();
         int count = (int)keys.size();
-        auto [lo, hi] = FindBracket(keys.data(), count, timeMs);
-        if (lo < 0) return defaultVal;
-        if (lo == hi) return keys[lo].value;
-        float t = CalcT(keys[lo].frame, keys[hi].frame, timeMs);
+        auto br = FindBracket(keys.data(), count, timeMs, seqStart, seqEnd);
+        if (br.lo < 0) return defaultVal;
+        if (br.lo == br.hi) return keys[br.lo].value;
         if (interp == InterpolationType::Hermite)
-            return HermiteInterpV3(keys[lo].value, keys[lo].outTan, keys[hi].inTan, keys[hi].value, t);
+            return HermiteInterpV3(keys[br.lo].value, keys[br.lo].outTan, keys[br.hi].inTan, keys[br.hi].value, br.t);
         else
-            return BezierInterpV3(keys[lo].value, keys[lo].outTan, keys[hi].inTan, keys[hi].value, t);
+            return BezierInterpV3(keys[br.lo].value, keys[br.lo].outTan, keys[br.hi].inTan, keys[br.hi].value, br.t);
     }
 }
 
@@ -172,21 +227,20 @@ Quaternion EvaluateTrackQuat(const Track<Quaternion>& track, int timeMs, int seq
     if (interp == InterpolationType::None || interp == InterpolationType::Linear) {
         auto keys = const_cast<Track<Quaternion>&>(track).keys();
         int count = (int)keys.size();
-        auto [lo, hi] = FindBracket(keys.data(), count, timeMs);
-        if (lo < 0) return defaultVal;
-        if (lo == hi) return keys[lo].value;
-        if (interp == InterpolationType::None) return keys[lo].value;
-        float t = CalcT(keys[lo].frame, keys[hi].frame, timeMs);
-        return Quaternion::slerp(keys[lo].value, keys[hi].value, t);
+        auto br = FindBracket(keys.data(), count, timeMs, seqStart, seqEnd);
+        if (br.lo < 0) return defaultVal;
+        if (br.lo == br.hi) return keys[br.lo].value;
+        if (interp == InterpolationType::None) return keys[br.lo].value;
+        return Quaternion::slerp(keys[br.lo].value, keys[br.hi].value, br.t);
     } else {
         auto keys = const_cast<Track<Quaternion>&>(track).tangentKeys();
         int count = (int)keys.size();
-        auto [lo, hi] = FindBracket(keys.data(), count, timeMs);
-        if (lo < 0) return defaultVal;
-        if (lo == hi) return keys[lo].value;
-        float t = CalcT(keys[lo].frame, keys[hi].frame, timeMs);
+        auto br = FindBracket(keys.data(), count, timeMs, seqStart, seqEnd);
+        if (br.lo < 0) return defaultVal;
+        if (br.lo == br.hi) return keys[br.lo].value;
         // For hermite/bezier quaternion tracks, use squad
-        return Quaternion::squad(keys[lo].value, keys[lo].outTan, keys[hi].inTan, keys[hi].value, t);
+        // return Quaternion::slerp(keys[br.lo].value, keys[br.hi].value, br.t);
+        return Quaternion::squad(keys[br.lo].value, keys[br.lo].outTan, keys[br.hi].inTan, keys[br.hi].value, br.t);
     }
 }
 
@@ -367,13 +421,22 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
                              const std::vector<u32>& globalSequences,
                              std::vector<XMMATRIX>& boneWorldMatrices,
                              std::vector<XMMATRIX>& allNodeMatrices,
-                             const XMFLOAT3* cameraPos) const {
+                             const XMFLOAT3* cameraPos,
+                             int globalTimeMs) const {
     int nc = (int)nodes_.size();
     allNodeMatrices.resize(nc);
 
     static const Vector3f defaultT = {0, 0, 0};
     static const Quaternion defaultR = {0, 0, 0, 1};  // identity
     static const Vector3f defaultS = {1, 1, 1};
+
+    // Cache each node's evaluated local TRS so children with DontInherit flags
+    // can rebuild their parent's contribution selectively without having to
+    // decompose a delta matrix (decompose can't cleanly separate rotation from
+    // the pivot-offset encoded in the delta's translation column).
+    std::vector<Vector3f>   localTs(nc);
+    std::vector<Quaternion> localRs(nc);
+    std::vector<Vector3f>   localSs(nc);
 
     for (int i = 0; i < nc; i++) {
         const auto& n = nodes_[i];
@@ -388,7 +451,8 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
                     if (duration > 0) {
                         es = 0;
                         ee = (int)duration;
-                        et = (int)std::fmod((float)timeMs, (float)duration);
+                        int gsTime = (globalTimeMs >= 0) ? globalTimeMs : timeMs;
+                        et = (int)std::fmod((float)gsTime, (float)duration);
                     }
                 }
             }
@@ -412,33 +476,46 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
             ? EvaluateTrackVec3(*n.scaling, sTime, sStart, sEnd, defaultS)
             : defaultS;
 
+        localTs[i] = localT;
+        localRs[i] = localR;
+        localSs[i] = localS;
+
         XMMATRIX localM = Vec3QuatScaleToXMMatrix(localT, localR, localS, n.pivot);
 
         // Parent composition
         XMMATRIX parentWorld = XMMatrixIdentity();
-        if (n.parentIdx >= 0 && n.parentIdx < nc)
+        if (n.parentIdx >= 0 && n.parentIdx < nc) {
             parentWorld = allNodeMatrices[n.parentIdx];
 
-        // DontInherit flags (rare but needed for correctness)
-        uint32_t flags = n.flags;
-        using NF = Node::NodeFlag;
-        if (flags & (uint32_t)NF::DontInheritTranslation ||
-            flags & (uint32_t)NF::DontInheritRotation ||
-            flags & (uint32_t)NF::DontInheritScaling) {
-            // Decompose parent
-            XMVECTOR pS, pR, pT;
-            if (XMMatrixDecompose(&pS, &pR, &pT, parentWorld)) {
-                XMVECTOR one  = XMVectorSet(1,1,1,1);
-                XMVECTOR zero = XMVectorSet(0,0,0,0);
-                XMVECTOR idR  = XMQuaternionIdentity();
+            // DontInherit flags: rebuild the direct parent's contribution with
+            // the flagged TRS components zeroed out, using the parent's cached
+            // local TRS (NOT its delta matrix, which encodes rotation effect
+            // on pivot inseparably from translation). Ancestors above the
+            // parent are unaffected — only the direct parent's contribution is
+            // filtered, matching typical Wc3 usage where the flag decouples a
+            // node (e.g. a billboard emitter) from its direct parent bone.
+            uint32_t flags = n.flags;
+            using NF = Node::NodeFlag;
+            if (flags & ((uint32_t)NF::DontInheritTranslation |
+                         (uint32_t)NF::DontInheritRotation |
+                         (uint32_t)NF::DontInheritScaling)) {
+                const auto& parent = nodes_[n.parentIdx];
+                Vector3f   pT = localTs[n.parentIdx];
+                Quaternion pR = localRs[n.parentIdx];
+                Vector3f   pS = localSs[n.parentIdx];
 
-                if (flags & (uint32_t)NF::DontInheritTranslation) pT = zero;
-                if (flags & (uint32_t)NF::DontInheritRotation)    pR = idR;
-                if (flags & (uint32_t)NF::DontInheritScaling)     pS = one;
+                if (flags & (uint32_t)NF::DontInheritTranslation) pT = {0, 0, 0};
+                if (flags & (uint32_t)NF::DontInheritRotation)    pR = {0, 0, 0, 1};
+                if (flags & (uint32_t)NF::DontInheritScaling)     pS = {1, 1, 1};
 
-                parentWorld = XMMatrixScalingFromVector(pS) *
-                              XMMatrixRotationQuaternion(pR) *
-                              XMMatrixTranslationFromVector(pT);
+                XMMATRIX filteredParentLocal =
+                    Vec3QuatScaleToXMMatrix(pT, pR, pS, parent.pivot);
+
+                XMMATRIX grandparentWorld = XMMatrixIdentity();
+                if (parent.parentIdx >= 0 && parent.parentIdx < nc)
+                    grandparentWorld = allNodeMatrices[parent.parentIdx];
+
+                parentWorld = filteredParentLocal * grandparentWorld;
             }
         }
 

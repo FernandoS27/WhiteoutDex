@@ -27,6 +27,12 @@ static WhiteoutDex::Renderer*        g_renderer = nullptr;
 static bool                           g_running  = false;
 static HINSTANCE                      g_hInstance = nullptr;
 static DWORD                          g_lastTimeChangedTick = 0;
+static std::chrono::steady_clock::time_point g_wallClockStart;
+
+static int wallClockElapsedMs() {
+    auto now = std::chrono::steady_clock::now();
+    return (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - g_wallClockStart).count();
+}
 
 // ============================================================================
 // TimeChange callback — asks adapter to Evaluate, passes result to renderer
@@ -45,7 +51,7 @@ public:
         // Update camera position for billboard evaluation (no-op for MaxSceneAdapter)
         XMFLOAT3 cp = g_renderer->GetCameraPosition();
         g_adapter->SetCameraPosition(cp.x, cp.y, cp.z);
-        WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs);
+        WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs, wallClockElapsedMs());
         g_renderer->ApplyFrameState(state, timeMs);
     }
 };
@@ -81,7 +87,7 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
                 ? (int)((float)t / (float)tpf * 1000.0f / (float)fps) : 0;
             XMFLOAT3 cp = g_renderer->GetCameraPosition();
             g_adapter->SetCameraPosition(cp.x, cp.y, cp.z);
-            WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs);
+            WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs, wallClockElapsedMs());
             g_renderer->ApplyFrameState(state, timeMs);
         }
     }
@@ -169,11 +175,19 @@ Value* ndxStart_cf(Value** arg_list, int count)
         return Integer::intern(-1);
     }
 
-    // Make renderer window float above Max
+    // Make renderer window float above Max.
+    // Use GetAncestor(GA_ROOT) to guarantee we hand a top-level window to
+    // GWLP_HWNDPARENT — if GetMAXHWnd() returns a child window (viewport,
+    // panel, etc.) passing it directly causes undefined behaviour and can
+    // silently reparent the renderer as a child of that narrow panel,
+    // which clips the title bar down to a single character ("W").
     Interface* ip = GetCOREInterface();
     HWND ndxWnd = FindWindowW(L"WhiteoutDexRendererClass", nullptr);
-    if (ndxWnd && ip)
-        SetWindowLongPtrW(ndxWnd, GWLP_HWNDPARENT, (LONG_PTR)ip->GetMAXHWnd());
+    if (ndxWnd && ip) {
+        HWND maxHwnd = ip->GetMAXHWnd();
+        HWND maxRoot = GetAncestor(maxHwnd, GA_ROOT);
+        SetWindowLongPtrW(ndxWnd, GWLP_HWNDPARENT, (LONG_PTR)(maxRoot ? maxRoot : maxHwnd));
+    }
 
     // Collect scene data
     TimeValue savedTime = ip->GetTime();
@@ -235,13 +249,14 @@ Value* ndxStart_cf(Value** arg_list, int count)
     int timeMs = (tpf > 0 && fps > 0)
         ? (int)((float)t / (float)tpf * 1000.0f / (float)fps) : 0;
 
-    WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs);
+    WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs, 0);
     g_renderer->ApplyFrameState(state, timeMs);
 
     // Register time callback
     g_timeCallback = new NdxTimeCallback();
     ip->RegisterTimeChangeCallback(g_timeCallback);
     g_running = true;
+    g_wallClockStart = std::chrono::steady_clock::now();
 
     // Start material polling timer (500ms interval)
     g_materialTimerId = SetTimer(nullptr, 0, 500, MaterialPollTimer);

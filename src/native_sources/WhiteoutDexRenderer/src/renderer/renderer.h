@@ -11,6 +11,7 @@
 #include "ribbon.h"
 #include "model_types.h"
 #include "model_instance.h"
+#include "file_content_provider.h"
 #include <unordered_map>
 #include <memory>
 
@@ -60,6 +61,9 @@ public:
     void SetPE1BasePath(const std::string& basePath);
     uint32_t GetFocusModelHandle() const { return focusModelHandle_; }
 
+    // Access the unified file content provider (disk + CASC + MPQ)
+    FileContentProvider& GetContentProvider() { return contentProvider_; }
+
     // Backward-compatible single-model API (operates on focus model)
     void LoadModel(const std::vector<MeshData>& meshes,
                    const std::vector<TextureData>& textures,
@@ -87,6 +91,10 @@ public:
     void SetCameraPresets(const std::vector<CameraPreset>& presets);
     int  GetActiveCameraIndex() const;
     bool IsCameraLocked() const { return cameraLocked_; }
+
+    // Sequence picker (used by standalone viewer; safe to ignore from Max plugin)
+    void SetSequences(const std::vector<std::string>& names);
+    int  GetActiveSequenceIndex() const;
 
 private:
     // Render thread
@@ -174,8 +182,10 @@ private:
     HWND chkRibbons_ = nullptr, chkCollisions_ = nullptr;
     HWND btnTeamColor_ = nullptr;
     HWND cmbCamera_ = nullptr;
+    HWND lblSequence_ = nullptr;
+    HWND cmbSequence_ = nullptr;
     enum { IDC_GRID=1001, IDC_PARTICLES, IDC_RIBBONS, IDC_COLLISIONS,
-           IDC_TEAMCOLOR, IDC_CAMERA };
+           IDC_TEAMCOLOR, IDC_CAMERA, IDC_SEQUENCE };
 
     // Mouse
     bool                  lmbDown_ = false;
@@ -216,6 +226,7 @@ private:
     CoordSpace pe1ChildCoordSpace_ = CoordSpace::MDX;
 
     std::string pe1BasePath_;  // root directory for resolving PE1 model + texture paths
+    FileContentProvider contentProvider_; // unified file resolution (disk + CASC + MPQ)
     std::shared_ptr<PE1ModelTemplate> getOrLoadTemplate(const std::string& modelPath);
     void stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl);
 
@@ -227,6 +238,12 @@ private:
     std::vector<CameraPreset> pendingCameraPresets_;
     bool cameraDirty_ = false;
     bool cameraLocked_ = false;
+
+    // Sequence picker (standalone viewer)
+    std::vector<std::string> pendingSequenceNames_;
+    bool sequencesDirty_ = false;
+    void ProcessSequences();
+    std::atomic<int> activeSequence_{0};
 
     // Window icon
     HICON icon_ = nullptr;

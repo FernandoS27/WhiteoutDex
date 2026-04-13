@@ -60,7 +60,7 @@ int MaxSceneAdapter::MapParticleFilterMode(int bpfm) {
         case 1: return 3;  // Add → Additive
         case 2: return 5;  // Modulate
         case 3: return 6;  // Mod2X → Modulate2x
-        case 4: return 1;  // AlphaKey → Transparent
+        case 4: return 4;  // AlphaKey → AddAlpha
         default: return 2; // fallback Blend
     }
 }
@@ -1222,6 +1222,10 @@ std::vector<ParticleEmitterConfig> MaxSceneAdapter::GetParticleConfigs() {
         if(PB2Int(obj, L"TailDecayRepeat", 0, iv)) cfg.tailDecayRepeat = iv;
 
         if(PB2Bool(obj, L"SortPrimitives", 0, bv)) cfg.sortZ = bv != 0;
+        if(PB2Bool(obj, L"Unfogged", 0, bv))       cfg.unfogged = bv != 0;
+
+        if(PB2Int(obj, L"Count", 0, iv))         cfg.count         = iv;
+        if(PB2Int(obj, L"PriorityPlane", 0, iv)) cfg.priorityPlane = iv;
 
         mprintf(_M("  Particle %d: '%s' tex=%d fm=%d unshaded=%d\n"),
                 pi.emitterId, pi.node->GetName(), pi.textureId, cfg.filterMode, (int)cfg.unshaded);
@@ -1339,7 +1343,7 @@ void MaxSceneAdapter::SetActiveSequence(int) {}
 // IModelSource::Evaluate() — compute per-frame state from Max scene
 // ============================================================================
 
-FrameState MaxSceneAdapter::Evaluate(int timeMs) {
+FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
     // Convert ms to Max ticks
     int tpf = GetTicksPerFrame(), fps = GetFrameRate();
     TimeValue t = (tpf > 0 && fps > 0)
@@ -1446,7 +1450,7 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
         PB2Float(obj,L"EmissionRate",t,fv); ps.emissionRate=fv;
         PB2Float(obj,L"Speed",t,fv);        ps.speed=fv;
         PB2Float(obj,L"Variation",t,fv);    ps.variation=fv;
-        PB2Float(obj,L"ConeAngle",t,fv);    ps.coneAngle=fv;
+        PB2Float(obj,L"ConeAngle",t,fv);    ps.coneAngle=fv * (3.14159265f / 180.0f); // deg→rad
         PB2Float(obj,L"Gravity",t,fv);      ps.gravity=fv;
         PB2Float(obj,L"Width",t,fv);        ps.width=fv;
         PB2Float(obj,L"Height",t,fv);       ps.length=fv;
