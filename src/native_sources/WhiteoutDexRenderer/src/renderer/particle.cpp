@@ -157,7 +157,7 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
             float alpha, scale;
             Interpolate3Seg(em.config, lifeFactor, color, alpha, scale);
 
-            if (alpha < 0.5f) continue;
+            if (alpha <= 0.0f) continue;
 
             XMFLOAT4 vertColor = {color.x, color.y, color.z, alpha / 255.0f};
 
@@ -234,11 +234,11 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
                 float inv = 1.0f / vLen;
                 XMFLOAT3 tailDir = {vx * inv, vy * inv, vz * inv};
 
-                // Tail endpoint: velocity * tailLength (proportional to speed)
+                // Tail endpoint: normalized direction * tailLength (fixed length)
                 XMFLOAT3 tailEnd = {
-                    worldPos.x - worldVel.x * em.config.tailLength,
-                    worldPos.y - worldVel.y * em.config.tailLength,
-                    worldPos.z - worldVel.z * em.config.tailLength
+                    worldPos.x - tailDir.x * em.config.tailLength,
+                    worldPos.y - tailDir.y * em.config.tailLength,
+                    worldPos.z - tailDir.z * em.config.tailLength
                 };
 
                 // Width direction: camera-facing perpendicular to velocity.
@@ -380,17 +380,11 @@ void ParticleSystem::SpawnParticle(ParticleEmitter& em, float dt) {
     p.lifeSpan = cfg.lifeSpan;
     p.initLife = cfg.lifeSpan;
 
-    // Sub-frame age randomization: distribute births within the time step
-    // RE sets p.age = elapsed * random[0,1), pre-advancing position/velocity
+    // Sub-frame age: RE sets p.m_age = elapsed * random[0,1) without
+    // pre-integrating position/velocity. We just subtract from lifeSpan
+    // so the particle appears slightly aged (matches keyframe interpolation).
     float subAge = dt * RandF(0.0f, 1.0f);
-    if (subAge > 0) {
-        float az = -(em.state.gravity);
-        p.position.x += p.velocity.x * subAge;
-        p.position.y += p.velocity.y * subAge;
-        p.position.z += p.velocity.z * subAge + 0.5f * az * subAge * subAge;
-        p.velocity.z += az * subAge;
-        p.lifeSpan   -= subAge;
-    }
+    p.lifeSpan -= subAge;
 
     em.particles.push_back(p);
 }
