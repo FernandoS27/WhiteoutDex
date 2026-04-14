@@ -120,7 +120,7 @@ void FileContentProvider::SetBasePath(const std::filesystem::path& basePath) {
 
 // Texture file extensions used to classify resolve strategy.
 static constexpr const char* kTextureExts[] = {
-    ".blp", ".dds", ".tga", ".png",
+    ".blp", ".dds", ".tga", ".png", ".tif",
 };
 
 static constexpr const char* kModelExts[] = {
