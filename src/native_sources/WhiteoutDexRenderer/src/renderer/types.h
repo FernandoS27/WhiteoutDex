@@ -12,7 +12,6 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
-#include <d3dcompiler.h>
 #include <whiteout/vector_types.h>
 
 #include <cmath>
@@ -26,7 +25,6 @@
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
-#pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 

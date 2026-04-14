@@ -5,6 +5,85 @@
 # Parent provides: MaxSDK (interface lib), MAX_VERSION, whiteout_lib
 # ============================================================================
 
+# ============================================================================
+# Slang shader compilation (compile-time: .slang → DXBC → embedded C++ header)
+# ============================================================================
+
+set(SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/shaders")
+set(SHADER_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+file(MAKE_DIRECTORY "${SHADER_OUT_DIR}")
+
+find_program(SLANGC slangc
+    HINTS "${SLANG_DIR}/bin" "$ENV{SLANG_DIR}/bin"
+    DOC   "Path to Slang compiler (slangc)")
+
+if(NOT SLANGC)
+    message(FATAL_ERROR
+        "slangc not found. Install the Slang SDK from https://github.com/shader-slang/slang/releases "
+        "and set -DSLANG_DIR=<path-to-slang-sdk> or add slangc to PATH.")
+endif()
+message(STATUS "Using slangc: ${SLANGC}")
+
+# Common Slang flags: column-major matrices (matches C++ transpose-before-upload convention)
+# Use DXC as the downstream compiler instead of FXC for DXBC output
+set(SLANG_COMMON_FLAGS -matrix-layout-column-major -I "${SHADER_SRC_DIR}"
+    -default-downstream-compiler hlsl dxc)
+
+# Shader entry points: <slang_file>  <entry>  <stage>  <output_name>
+set(SHADER_ENTRIES
+    "mesh.slang|vsMain|vertex|kMeshVS"
+    "mesh.slang|psMain|fragment|kMeshPS"
+    "line.slang|vsLine|vertex|kLineVS"
+    "line.slang|psLine|fragment|kLinePS"
+    "skin.slang|csSkin|compute|kSkinCS"
+)
+
+set(SHADER_DXBC_FILES "")
+set(SHADER_DXBC_NAMES "")
+
+foreach(entry IN LISTS SHADER_ENTRIES)
+    string(REPLACE "|" ";" parts "${entry}")
+    list(GET parts 0 src_file)
+    list(GET parts 1 entry_name)
+    list(GET parts 2 stage)
+    list(GET parts 3 var_name)
+
+    set(dxbc_path "${SHADER_OUT_DIR}/${var_name}.dxbc")
+
+    add_custom_command(
+        OUTPUT  "${dxbc_path}"
+        COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
+                ${SLANG_COMMON_FLAGS}
+                -entry ${entry_name} -stage ${stage}
+                -target dxbc -profile sm_5_0
+                -o "${dxbc_path}"
+        DEPENDS "${SHADER_SRC_DIR}/${src_file}"
+                "${SHADER_SRC_DIR}/common.slang"
+        COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.dxbc"
+        VERBATIM
+    )
+
+    list(APPEND SHADER_DXBC_FILES "${dxbc_path}")
+    list(APPEND SHADER_DXBC_NAMES "${var_name}")
+endforeach()
+
+# Embed all DXBC blobs into a single C++ header
+set(COMPILED_SHADERS_H "${SHADER_OUT_DIR}/compiled_shaders.h")
+
+add_custom_command(
+    OUTPUT  "${COMPILED_SHADERS_H}"
+    COMMAND "${CMAKE_COMMAND}"
+            "-DSHADER_DIR=${SHADER_OUT_DIR}"
+            "-DOUTPUT=${COMPILED_SHADERS_H}"
+            -P "${SHADER_SRC_DIR}/embed_shaders.cmake"
+    DEPENDS ${SHADER_DXBC_FILES}
+            "${SHADER_SRC_DIR}/embed_shaders.cmake"
+    COMMENT "Embedding compiled shaders into compiled_shaders.h"
+    VERBATIM
+)
+
+add_custom_target(WhiteoutDexShaders DEPENDS "${COMPILED_SHADERS_H}")
+
 # ---- Static library: standalone renderer + MDX adapter ----
 add_library(WhiteoutDexRendererLib STATIC
     src/renderer/renderer.cpp
@@ -18,6 +97,8 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/file_content_provider.cpp
 )
 
+add_dependencies(WhiteoutDexRendererLib WhiteoutDexShaders)
+
 set_target_properties(WhiteoutDexRendererLib PROPERTIES
     CXX_STANDARD          20
     CXX_STANDARD_REQUIRED ON
@@ -26,13 +107,13 @@ set_target_properties(WhiteoutDexRendererLib PROPERTIES
 target_include_directories(WhiteoutDexRendererLib PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer"
+    "${SHADER_OUT_DIR}"
 )
 
 target_link_libraries(WhiteoutDexRendererLib PUBLIC
     whiteout_lib
     d3d11.lib
     dxgi.lib
-    d3dcompiler.lib
     user32.lib
     gdi32.lib
     comdlg32.lib

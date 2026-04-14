@@ -5,7 +5,7 @@
 
 #include "renderer.h"
 #include "constants.h"
-#include "shaders.h"
+#include "compiled_shaders.h"
 #include "resource.h"
 #include "team_glow_data.h"
 #include "mdx_model_adapter.h"
@@ -2132,65 +2132,41 @@ void Renderer::CleanupD3D() {
 }
 
 // ============================================================================
-// Shaders (same as Phase 1)
+// Shaders — loaded from precompiled DXBC bytecode (Slang → slangc → DXBC)
 // ============================================================================
 
-static ID3DBlob* CompileShader(const char* src, const char* entry, const char* target) {
-    ID3DBlob* blob = nullptr;
-    ID3DBlob* errors = nullptr;
-    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
-#ifdef _DEBUG
-    flags |= D3DCOMPILE_DEBUG;
-#endif
-    HRESULT hr = D3DCompile(src, strlen(src), nullptr, nullptr, nullptr,
-                            entry, target, flags, 0, &blob, &errors);
-    if (FAILED(hr)) {
-        if (errors) { OutputDebugStringA((char*)errors->GetBufferPointer()); errors->Release(); }
-        return nullptr;
-    }
-    SafeRelease(errors);
-    return blob;
-}
-
 bool Renderer::CreateShaders() {
+    using namespace WhiteoutDex::Shaders;
+
     // Mesh shader (VS + particle/ribbon PS)
     {
-        ID3DBlob* vs = CompileShader(g_vertexShaderSrc, "VSMain", "vs_5_0");
-        ID3DBlob* ps = CompileShader(g_pixelShaderSrc,  "PSMain", "ps_5_0");
-        if (!vs || !ps) return false;
-        device_->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &vertexShader_);
-        device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &pixelShader_);
+        device_->CreateVertexShader(kMeshVS, sizeof(kMeshVS), nullptr, &vertexShader_);
+        device_->CreatePixelShader(kMeshPS, sizeof(kMeshPS), nullptr, &pixelShader_);
         D3D11_INPUT_ELEMENT_DESC layout[] = {
             {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0},
             {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
             {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0},
             {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 40, D3D11_INPUT_PER_VERTEX_DATA, 0},
         };
-        device_->CreateInputLayout(layout, 4, vs->GetBufferPointer(), vs->GetBufferSize(), &inputLayout_);
-        vs->Release(); ps->Release();
+        device_->CreateInputLayout(layout, 4, kMeshVS, sizeof(kMeshVS), &inputLayout_);
     }
     // Line shader
     {
-        ID3DBlob* vs = CompileShader(g_lineVertexShaderSrc, "VSLine", "vs_5_0");
-        ID3DBlob* ps = CompileShader(g_linePixelShaderSrc,  "PSLine", "ps_5_0");
-        if (!vs || !ps) return false;
-        device_->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &lineVertexShader_);
-        device_->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &linePixelShader_);
+        device_->CreateVertexShader(kLineVS, sizeof(kLineVS), nullptr, &lineVertexShader_);
+        device_->CreatePixelShader(kLinePS, sizeof(kLinePS), nullptr, &linePixelShader_);
         D3D11_INPUT_ELEMENT_DESC layout[] = {
             {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0},
             {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
         };
-        device_->CreateInputLayout(layout, 2, vs->GetBufferPointer(), vs->GetBufferSize(), &lineInputLayout_);
-        vs->Release(); ps->Release();
+        device_->CreateInputLayout(layout, 2, kLineVS, sizeof(kLineVS), &lineInputLayout_);
     }
     // Compute shader: GPU vertex skinning
     {
-        ID3DBlob* cs = CompileShader(g_skinComputeShaderSrc, "CSSkin", "cs_5_0");
-        if (!cs) return false;
-        device_->CreateComputeShader(cs->GetBufferPointer(), cs->GetBufferSize(), nullptr, &skinComputeShader_);
-        cs->Release();
+        device_->CreateComputeShader(kSkinCS, sizeof(kSkinCS), nullptr, &skinComputeShader_);
     }
-    return true;
+    return vertexShader_ && pixelShader_ && inputLayout_
+        && lineVertexShader_ && linePixelShader_ && lineInputLayout_
+        && skinComputeShader_;
 }
 
 // ============================================================================
