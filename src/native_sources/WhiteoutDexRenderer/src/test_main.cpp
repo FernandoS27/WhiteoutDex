@@ -1,11 +1,11 @@
 // ============================================================================
 // WhiteoutDex Standalone Test Harness
-// Loads an .mdx file via MdxModelAdapter → Renderer, no 3ds Max required.
+// Loads an .mdx file via MdxModelAdapter → RenderService, no 3ds Max required.
 // Usage: WhiteoutDexTest.exe <path-to-mdx-file>
 // ============================================================================
 
-#include "renderer/renderer.h"
-#include "renderer/mdx_model_adapter.h"
+#include "renderer/render_service.h"
+#include "io/mdx_model_adapter.h"
 #include <whiteout/models/mdx/parser.h>
 #include <filesystem>
 #include <iostream>
@@ -64,7 +64,7 @@ int main(int argc, char* argv[]) {
               << ", " << model.ribbonEmitters.size() << " ribbons\n";
 
     // Open renderer (initializes the FileContentProvider which discovers WC3)
-    WhiteoutDex::Renderer renderer;
+    WhiteoutDex::RenderService renderer;
     if (!renderer.Open(1024, 768)) {
         std::cerr << "Failed to open renderer window\n";
         return 1;

@@ -1,17 +1,8 @@
 #pragma once
 // ============================================================================
-// WhiteoutDex Real-Time Renderer — Common Types
+// WhiteoutDex Real-Time Renderer — Common Types (public, platform-free)
 // ============================================================================
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <d3d11.h>
-#include <dxgi.h>
 #include <whiteout/vector_types.h>
 
 #include <cmath>
@@ -23,11 +14,6 @@
 #include <algorithm>
 #include <cstring>
 
-#pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "dxgi.lib")
-#pragma comment(lib, "user32.lib")
-#pragma comment(lib, "gdi32.lib")
-
 using whiteout::Vector2f;
 using whiteout::Vector3f;
 using whiteout::Vector4f;
@@ -35,12 +21,6 @@ using whiteout::Matrix44f;
 using whiteout::Quaternion;
 
 namespace WhiteoutDex {
-
-// Safe COM release
-template<typename T>
-inline void SafeRelease(T*& ptr) {
-    if (ptr) { ptr->Release(); ptr = nullptr; }
-}
 
 // Vertex format for Phase 1 (position + normal + color + uv)
 struct Vertex {

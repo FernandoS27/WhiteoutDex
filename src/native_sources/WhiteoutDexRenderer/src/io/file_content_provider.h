@@ -7,6 +7,8 @@
 // ============================================================================
 #pragma once
 
+#include "content_provider.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -16,7 +18,7 @@
 
 namespace WhiteoutDex {
 
-class FileContentProvider {
+class FileContentProvider : public IContentProvider {
 public:
     FileContentProvider();
     ~FileContentProvider();
@@ -35,7 +37,7 @@ public:
     /// If actualExt is non-null, it receives the extension of the file that
     /// was actually found (e.g. ".dds" when the request was for ".blp").
     std::optional<std::vector<uint8_t>> ReadFile(const std::string& path,
-                                                  std::string* actualExt = nullptr) const;
+                                                  std::string* actualExt = nullptr) const override;
 
     /// Whether a CASC storage was successfully opened.
     bool HasCasc() const;

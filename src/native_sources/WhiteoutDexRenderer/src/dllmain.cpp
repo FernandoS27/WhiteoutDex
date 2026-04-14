@@ -1,6 +1,6 @@
 // ============================================================================
 // WhiteoutDex — All-in-One Max SDK Plugin (.dlx)
-// Adapter-Pattern: MaxSceneAdapter → IModelSource → Renderer
+// Adapter-Pattern: MaxSceneAdapter → IModelSource → RenderService
 //
 // MaxScript API:
 //   ndxStart()   → Extract scene + open renderer + start sync
@@ -8,7 +8,7 @@
 // ============================================================================
 
 #include "max_scene_adapter.h"
-#include "renderer/renderer.h"
+#include "renderer/render_service.h"
 
 #include <max.h>
 #include <maxversion.h>
@@ -23,7 +23,7 @@
 // Global state
 // ============================================================================
 static WhiteoutDex::MaxSceneAdapter* g_adapter  = nullptr;
-static WhiteoutDex::Renderer*        g_renderer = nullptr;
+static WhiteoutDex::RenderService*   g_renderer = nullptr;
 static bool                           g_running  = false;
 static HINSTANCE                      g_hInstance = nullptr;
 static DWORD                          g_lastTimeChangedTick = 0;
@@ -167,8 +167,8 @@ Value* ndxStart_cf(Value** arg_list, int count)
 
     if (g_running) NdxCleanup();
 
-    // Create renderer
-    g_renderer = new WhiteoutDex::Renderer();
+    // Create render service
+    g_renderer = new WhiteoutDex::RenderService();
     if (!g_renderer->Open(800, 600)) {
         mprintf(_M("WhiteoutDex: ERROR - Could not open renderer window\n"));
         delete g_renderer; g_renderer = nullptr;

@@ -1,21 +1,33 @@
 #pragma once
 // ============================================================================
-// WhiteoutDex Real-Time Renderer — Core Renderer
-// Adapter-pattern API: LoadModel() + ApplyFrameState()
+// WhiteoutDex Real-Time Renderer — Render Service
+// Synchronous rendering API: InitDevice() + Tick() + RenderFrame()
 // ============================================================================
 
 #include "types.h"
+#include "dx_types.h"
 #include "camera.h"
 #include "animation.h"
 #include "particle.h"
 #include "ribbon.h"
 #include "model_types.h"
 #include "model_instance.h"
+#include "content_provider.h"
 #include "file_content_provider.h"
+#include "render_target.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
+#include <optional>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 
 namespace WhiteoutDex {
+
+class RenderWindow;
 
 // Line vertex for grid/bone rendering
 struct LineVertex {
@@ -24,13 +36,13 @@ struct LineVertex {
 };
 
 // ============================================================================
-// Main Renderer Class
+// Render Service — synchronous rendering API
 // ============================================================================
 
-class Renderer {
+class RenderService {
 public:
-    Renderer();
-    ~Renderer();
+    RenderService();
+    ~RenderService();
 
     // Lifecycle
     bool Open(int width, int height);
@@ -64,6 +76,21 @@ public:
     // Access the unified file content provider (disk + CASC + MPQ)
     FileContentProvider& GetContentProvider() { return contentProvider_; }
 
+    // Inject an external content provider (takes precedence over the built-in one)
+    void SetContentProvider(std::shared_ptr<IContentProvider> provider);
+
+    // ---- Device & render target management ----
+    bool           InitDevice();  // Create D3D11 device + shaders + states (no window)
+    RenderTargetId CreateSwapChainTarget(void* nativeWindowHandle, int width, int height);
+    RenderTargetId CreateOffscreenTarget(int width, int height);
+    void           DestroyRenderTarget(RenderTargetId id);
+    void           ResizeRenderTarget(RenderTargetId id, int width, int height);
+    void           RenderFrame(RenderTargetId targetId);
+    void           Present(RenderTargetId targetId);
+    bool           IsDeviceReady() const { return device_ != nullptr; }
+    ID3D11Device*        GetDevice()  const { return device_; }
+    ID3D11DeviceContext* GetContext() const { return context_; }
+
     // Backward-compatible single-model API (operates on focus model)
     void LoadModel(const std::vector<MeshData>& meshes,
                    const std::vector<TextureData>& textures,
@@ -91,27 +118,66 @@ public:
     void SetCameraPresets(const std::vector<CameraPreset>& presets);
     int  GetActiveCameraIndex() const;
     bool IsCameraLocked() const { return cameraLocked_; }
+    void SetCameraLocked(bool locked) { cameraLocked_ = locked; }
 
     // Sequence picker (used by standalone viewer; safe to ignore from Max plugin)
     void SetSequences(const std::vector<std::string>& names);
     int  GetActiveSequenceIndex() const;
+    void SetActiveSequence(int index) { activeSequence_ = index; }
+
+    // ---- Camera manipulation (thread-safe, locks dataMutex_) ----
+    void RotateCamera(int dx, int dy);
+    void PanCamera(int dx, int dy);
+    void ZoomCamera(int delta);
+    void ZoomCameraSmooth(int dy);
+    void ResetCamera();
+    void SnapCameraToFace(int faceIndex);   // applies preset camera angle
+
+    // ViewCube queries (called from RenderWindow message handlers)
+    int  HitTestViewCube(int mx, int my);
+    RECT GetViewCubeRect() const;
+    void SetViewCubeHovered(bool hovered) { vcHovered_ = hovered; }
+
+    // Display flags
+    void SetDisplayFlags(const DisplayFlags& flags);
+    DisplayFlags GetDisplayFlags() const;
+
+    // Team color raw access (for WM_DRAWITEM swatch rendering)
+    COLORREF GetTeamColorRaw() const { return teamColor_; }
+
+    // Pending data transfer (RenderWindow consumes from render thread)
+    std::optional<std::vector<CameraPreset>> TakePendingCameraPresets();
+    std::optional<std::vector<std::string>>  TakePendingSequences();
+
+    // Resize the primary render target (called from WM_SIZE handler)
+    void ResizePrimaryTarget(int width, int height);
+
+    // Frame statistics (for title bar display)
+    void GetFrameStats(int& geosets, int& textures, int& nodes,
+                       int& particles, int& segments) const;
+
+    // ---- Simulation ----
+    // Call once per frame to advance simulation (particles, PE1, ribbons, etc.)
+    void Tick(float dt);
+
+    // Set animation time (ms) from external clock (Max timeline, game loop, etc.)
+    void SetAnimationTime(int ms);
+    int  GetAnimationTime() const;
+
+    // Shut down device: release model GPU resources + DX11 cleanup
+    void ShutdownDevice();
+
+    // Set the primary render target (used by ResizePrimaryTarget / RenderViewCube)
+    void SetPrimaryTarget(RenderTargetId id) { primaryTargetId_ = id; }
 
 private:
-    // Render thread
-    void RenderThread(int width, int height);
-
-    // Win32 window
-    bool CreateRenderWindow(int width, int height);
-    static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-    static LRESULT CALLBACK RenderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-    LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    // Win32 render window (owned — owns the render thread)
+    std::unique_ptr<RenderWindow> renderWindow_;
 
     // DirectX 11
-    bool InitD3D();
     void CleanupD3D();
     bool CreateShaders();
     bool CreateDefaultResources();
-    bool ResizeBuffers(int width, int height);
 
     // GPU resource management
     void ProcessStagedData();
@@ -120,10 +186,10 @@ private:
     void CreateNodePalette(ModelInstance& mi);
     void ReleaseModelGPU();
 
-    // Phase 4: Animation update
+    // Animation update
     void UpdateAnimation();
 
-    // Phase 5: Particle simulation + rendering
+    // Particle simulation + rendering
     void UpdateParticles(float dt);
     void RenderParticles();
 
@@ -134,7 +200,7 @@ private:
     void UpdatePE1(float dt);
     void EvaluatePE1Children();
 
-    // Phase 5b: Ribbon rendering
+    // Ribbon simulation + rendering
     void UpdateRibbons(float dt);
     void RenderRibbons();
 
@@ -150,22 +216,17 @@ private:
     void ApplyPE1FrameStates(ModelInstance& mi, const FrameState& state);
     void ApplyAttachmentStates(ModelInstance& mi, const FrameState& state, int timeMs);
 
-    // Team color + camera presets
+    // Team color
     void UpdateTeamColorTextures();
-    void ProcessCameraPresets();
 
     // Rendering
-    void RenderFrame();
     void RenderGrid();
     void RenderGeosets();
     void ApplyFilterMode(int filterMode, int matFlags);
 
-    // ViewCube
+    // ViewCube (creation + rendering stay private; hit-test/snap/rect are public)
     bool CreateViewCube();
     void RenderViewCube();
-    int  HitTestViewCube(int mx, int my);
-    void SnapCameraToFace(int faceIndex);
-    RECT GetViewCubeRect() const;
 
     static int GetRenderOrder(int filterMode) {
         switch (filterMode) {
@@ -176,39 +237,16 @@ private:
         }
     }
 
-    // Thread & sync
-    std::thread           renderThread_;
-    std::atomic<bool>     running_{false};
-    std::atomic<bool>     initialized_{false};
-    std::mutex            dataMutex_;
+    // Sync
+    mutable std::mutex    dataMutex_;
 
-    // Win32
-    HWND                  hwnd_ = nullptr;      // parent window (toolbar)
-    HWND                  hwndRender_ = nullptr; // child window (DX11 surface)
     int                   width_ = 800;
     int                   height_ = 600;
-    static const int      kToolbarH = 28;
-
-    // Toolbar controls
-    HWND chkGrid_ = nullptr, chkParticles_ = nullptr;
-    HWND chkRibbons_ = nullptr, chkCollisions_ = nullptr;
-    HWND btnTeamColor_ = nullptr;
-    HWND cmbCamera_ = nullptr;
-    HWND lblSequence_ = nullptr;
-    HWND cmbSequence_ = nullptr;
-    enum { IDC_GRID=1001, IDC_PARTICLES, IDC_RIBBONS, IDC_COLLISIONS,
-           IDC_TEAMCOLOR, IDC_CAMERA, IDC_SEQUENCE };
-
-    // Mouse
-    bool                  lmbDown_ = false;
-    bool                  rmbDown_ = false;
-    bool                  mmbDown_ = false;
-    POINT                 lastMouse_ = {0, 0};
 
     // Camera
     Camera                camera_;
 
-    // ---- Display toggles (keyboard shortcuts) ----
+    // ---- Display toggles ----
     bool                  showGrid_       = true;
     bool                  showParticles_  = true;
     bool                  showRibbons_    = true;
@@ -229,7 +267,7 @@ private:
         return (it != models_.end()) ? it->second.get() : nullptr;
     }
 
-    // ---- PE1 model template cache (PE1ModelTemplate defined in renderer.cpp) ----
+    // ---- PE1 model template cache (PE1ModelTemplate defined in render_service.cpp) ----
     struct PE1ModelTemplate;
     std::unordered_map<std::string, std::shared_ptr<PE1ModelTemplate>> pe1TemplateCache_;
     static constexpr int kMaxPE1Depth = 3;
@@ -239,8 +277,26 @@ private:
 
     std::string pe1BasePath_;  // root directory for resolving PE1 model + texture paths
     FileContentProvider contentProvider_; // unified file resolution (disk + CASC + MPQ)
+    std::shared_ptr<IContentProvider> externalContentProvider_; // optional injected provider
+    IContentProvider* activeContentProvider_ = nullptr;         // points to external or built-in
     std::shared_ptr<PE1ModelTemplate> getOrLoadTemplate(const std::string& modelPath);
+    std::shared_ptr<PE1ModelTemplate> loadTemplateSync(const std::string& modelPath);
     void stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl);
+
+    // ---- Async PE1 template loader ----
+    void StartTemplateLoader();
+    void StopTemplateLoader();
+    void DrainTemplateResults();
+    void TemplateLoaderFunc();
+
+    std::thread                     templateLoaderThread_;
+    std::atomic<bool>               templateLoaderRunning_{false};
+    std::mutex                      templateQueueMutex_;
+    std::condition_variable         templateQueueCV_;
+    std::deque<std::string>         templateLoadQueue_;
+    std::unordered_set<std::string> templateLoadPending_;   // paths queued or in-flight
+    std::mutex                      templateResultMutex_;
+    std::vector<std::pair<std::string, std::shared_ptr<PE1ModelTemplate>>> templateLoadResults_;
 
     // Team color (shared across all models)
     COLORREF teamColor_ = RGB(255, 0, 0);
@@ -254,19 +310,22 @@ private:
     // Sequence picker (standalone viewer)
     std::vector<std::string> pendingSequenceNames_;
     bool sequencesDirty_ = false;
-    void ProcessSequences();
     std::atomic<int> activeSequence_{0};
-
-    // Window icon
-    HICON icon_ = nullptr;
 
     // ---- DX11 core ----
     ID3D11Device*           device_       = nullptr;
     ID3D11DeviceContext*    context_      = nullptr;
-    IDXGISwapChain*         swapChain_    = nullptr;
-    ID3D11RenderTargetView* rtv_          = nullptr;
-    ID3D11DepthStencilView* dsv_          = nullptr;
-    ID3D11Texture2D*        depthBuffer_  = nullptr;
+
+    // ---- Render targets ----
+    std::unordered_map<RenderTargetId, RenderTarget> targets_;
+    RenderTargetId nextTargetId_    = 1;
+    RenderTargetId primaryTargetId_ = 0;  // set by RenderThread after creating the swap chain target
+
+    // Helper: get primary target (may be null)
+    RenderTarget* primaryTarget() {
+        auto it = targets_.find(primaryTargetId_);
+        return (it != targets_.end()) ? &it->second : nullptr;
+    }
 
     // Shaders
     ID3D11VertexShader*     vertexShader_       = nullptr;
@@ -315,8 +374,9 @@ private:
     ID3D11ShaderResourceView* defaultTexSRV_ = nullptr;
     ID3D11Texture2D*          defaultTex_    = nullptr;
 
-    // Animation time
-    std::atomic<int>        currentTimeMs_{0};
+    // Animation time (set from API thread via SetAnimationTime / ApplyFrameState,
+    //                  read from render thread in Tick / EvaluatePE1Children)
+    std::atomic<int>        animationTimeMs_{0};
 };
 
 } // namespace WhiteoutDex

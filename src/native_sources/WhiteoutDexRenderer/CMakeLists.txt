@@ -86,15 +86,17 @@ add_custom_target(WhiteoutDexShaders DEPENDS "${COMPILED_SHADERS_H}")
 
 # ---- Static library: standalone renderer + MDX adapter ----
 add_library(WhiteoutDexRendererLib STATIC
-    src/renderer/renderer.cpp
+    src/renderer/render_service.cpp
+    src/renderer/render_target.cpp
+    src/ui/render_window.cpp
     src/renderer/particle.cpp
     src/renderer/ribbon.cpp
-    src/renderer/mdx_animation.cpp
-    src/renderer/mdx_model_adapter.cpp
-    src/renderer/team_glow_data.cpp
     src/renderer/pe1_system.cpp
-    src/renderer/file_resolver.cpp
-    src/renderer/file_content_provider.cpp
+    src/io/mdx_animation.cpp
+    src/io/mdx_model_adapter.cpp
+    src/io/team_glow_data.cpp
+    src/io/file_resolver.cpp
+    src/io/file_content_provider.cpp
 )
 
 add_dependencies(WhiteoutDexRendererLib WhiteoutDexShaders)
@@ -107,6 +109,8 @@ set_target_properties(WhiteoutDexRendererLib PROPERTIES
 target_include_directories(WhiteoutDexRendererLib PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/io"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ui"
     "${SHADER_OUT_DIR}"
 )
 
@@ -152,6 +156,8 @@ set_target_properties(WhiteoutDexExtractor PROPERTIES
 target_include_directories(WhiteoutDexExtractor PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/io"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ui"
 )
 
 target_compile_definitions(WhiteoutDexExtractor PRIVATE

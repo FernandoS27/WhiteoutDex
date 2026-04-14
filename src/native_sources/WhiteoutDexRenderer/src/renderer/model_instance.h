@@ -6,6 +6,7 @@
 // ============================================================================
 
 #include "types.h"
+#include "dx_types.h"
 #include "animation.h"
 #include "particle.h"
 #include "ribbon.h"

@@ -3,7 +3,7 @@
 // ============================================================================
 
 #include "mdx_model_adapter.h"
-#include "file_content_provider.h"
+#include "content_provider.h"
 #include "team_glow_data.h"
 #include <cmath>
 #include <cstdio>
@@ -143,7 +143,7 @@ inline Vector3f toXM(const Vector3f& v) { return v; }
 
 MdxModelAdapter::MdxModelAdapter(whiteout::mdx::Model model, fs::path basePath,
                                  CoordSpace /*space*/,
-                                 FileContentProvider* contentProvider)
+                                 IContentProvider* contentProvider)
     : model_(std::move(model))
     , basePath_(std::move(basePath))
     , resolver_(basePath_)

@@ -4,7 +4,7 @@
 // ============================================================================
 
 #include "max_scene_adapter.h"
-#include "renderer/team_glow_data.h"
+#include "io/team_glow_data.h"
 
 #include <maxscript/maxscript.h>
 #include <maxscript/foundation/numbers.h>

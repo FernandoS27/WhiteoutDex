@@ -13,7 +13,7 @@
 
 namespace WhiteoutDex {
 
-class FileContentProvider;
+class IContentProvider;
 
 class MdxModelAdapter : public IModelSource {
 public:
@@ -24,7 +24,7 @@ public:
     explicit MdxModelAdapter(whiteout::mdx::Model model,
                              std::filesystem::path basePath = {},
                              CoordSpace space = CoordSpace::MDX,
-                             FileContentProvider* contentProvider = nullptr);
+                             IContentProvider* contentProvider = nullptr);
 
     // ---- IModelSource static data ----
     std::vector<MeshData>              GetMeshes()          override;
@@ -57,7 +57,7 @@ private:
     whiteout::mdx::Model model_;
     std::filesystem::path basePath_;
     FileResolver resolver_;
-    FileContentProvider* contentProvider_ = nullptr;
+    IContentProvider* contentProvider_ = nullptr;
     MdxHierarchy hierarchy_;
 
     // Active sequence

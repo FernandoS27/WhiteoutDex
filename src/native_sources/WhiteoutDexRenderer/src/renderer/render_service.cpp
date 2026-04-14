@@ -1,9 +1,9 @@
 // ============================================================================
-// WhiteoutDex Real-Time Renderer — Core Implementation
-// Phase 4: Matrix-based CPU Vertex Skinning
+// WhiteoutDex Real-Time Renderer — Render Service Implementation
 // ============================================================================
 
-#include "renderer.h"
+#include "render_service.h"
+#include "render_window.h"
 #include "constants.h"
 #include "compiled_shaders.h"
 #include "resource.h"
@@ -15,7 +15,7 @@
 #include <cstring>
 
 // PE1 model template — full definition (uses MdxModelAdapter which is now fully included)
-struct WhiteoutDex::Renderer::PE1ModelTemplate {
+struct WhiteoutDex::RenderService::PE1ModelTemplate {
     std::shared_ptr<MdxModelAdapter> adapter;
     std::vector<MeshData> meshes;
     std::vector<TextureData> textures;
@@ -27,51 +27,42 @@ struct WhiteoutDex::Renderer::PE1ModelTemplate {
     std::vector<CollisionShapeData> collisionConfigs;
     std::vector<PE1EmitterConfig> pe1Configs;
 };
-#include <windowsx.h>
-#include <commdlg.h>
-
-#pragma comment(lib, "comdlg32.lib")
 
 namespace WhiteoutDex {
-
-static const wchar_t* WINDOW_CLASS = L"WhiteoutDexRendererClass";
-static const wchar_t* WINDOW_TITLE = L"Whiteout Renderer";
 
 // ============================================================================
 // Constructor / Destructor
 // ============================================================================
 
-Renderer::Renderer() {}
-Renderer::~Renderer() { Close(); }
+RenderService::RenderService() {
+    activeContentProvider_ = &contentProvider_;
+    StartTemplateLoader();
+}
+RenderService::~RenderService() { StopTemplateLoader(); Close(); }
 
 // ============================================================================
 // Lifecycle
 // ============================================================================
 
-bool Renderer::Open(int width, int height) {
-    if (running_) return true;
-    
-    // Join any previous thread that exited (e.g. user closed the window)
-    if (renderThread_.joinable()) renderThread_.join();
-    
-    running_ = true;
-    initialized_ = false;
-    renderThread_ = std::thread(&Renderer::RenderThread, this, width, height);
-    for (int i = 0; i < 500 && !initialized_ && running_; ++i) Sleep(10);
-    return initialized_;
+bool RenderService::Open(int width, int height) {
+    if (renderWindow_ && renderWindow_->IsOpen()) return true;
+    if (renderWindow_) renderWindow_->Close();   // join any previous thread
+    width_ = width;
+    height_ = height;
+    renderWindow_ = std::make_unique<RenderWindow>(*this);
+    return renderWindow_->Open(width, height);
 }
 
-void Renderer::Close() {
-    running_ = false;
-    if (renderThread_.joinable()) {
-        if (hwnd_) PostMessage(hwnd_, WM_CLOSE, 0, 0);
-        renderThread_.join();
+void RenderService::Close() {
+    if (renderWindow_) {
+        renderWindow_->Close();
+        renderWindow_.reset();
     }
 }
 
-bool Renderer::IsOpen() const { return running_ && initialized_; }
+bool RenderService::IsOpen() const { return renderWindow_ && renderWindow_->IsOpen(); }
 
-void Renderer::SetCamera(float pitch, float yaw, float distance,
+void RenderService::SetCamera(float pitch, float yaw, float distance,
                          float tx, float ty, float tz) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     camera_.SetPitch(pitch);
@@ -84,7 +75,7 @@ void Renderer::SetCamera(float pitch, float yaw, float distance,
 // Model Data Input (called from API/MaxScript thread)
 // ============================================================================
 
-void Renderer::ClearModel() {
+void RenderService::ClearModel() {
     std::lock_guard<std::mutex> lock(dataMutex_);
     for (auto& [h, mi] : models_) {
         mi->stagedClear = true;
@@ -93,7 +84,7 @@ void Renderer::ClearModel() {
     focusModelHandle_ = 0;
 }
 
-void Renderer::RemoveModel(uint32_t handle) {
+void RenderService::RemoveModel(uint32_t handle) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     auto it = models_.find(handle);
     if (it != models_.end()) {
@@ -105,7 +96,7 @@ void Renderer::RemoveModel(uint32_t handle) {
     }
 }
 
-void Renderer::SetAttachmentConfigs(uint32_t handle, const std::vector<AttachmentConfig>& configs) {
+void RenderService::SetAttachmentConfigs(uint32_t handle, const std::vector<AttachmentConfig>& configs) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     auto* mi = getModel(handle);
     if (!mi) return;
@@ -120,16 +111,23 @@ void Renderer::SetAttachmentConfigs(uint32_t handle, const std::vector<Attachmen
     }
 }
 
-void Renderer::SetPE1ChildCoordSpace(CoordSpace space) {
+void RenderService::SetPE1ChildCoordSpace(CoordSpace space) {
     pe1ChildCoordSpace_ = space;
 }
 
-void Renderer::SetPE1BasePath(const std::string& basePath) {
+void RenderService::SetContentProvider(std::shared_ptr<IContentProvider> provider) {
+    externalContentProvider_ = std::move(provider);
+    activeContentProvider_ = externalContentProvider_
+                                 ? externalContentProvider_.get()
+                                 : static_cast<IContentProvider*>(&contentProvider_);
+}
+
+void RenderService::SetPE1BasePath(const std::string& basePath) {
     pe1BasePath_ = basePath;
     contentProvider_.SetBasePath(basePath);
 }
 
-void Renderer::SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig>& configs) {
+void RenderService::SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig>& configs) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     auto* mi = getModel(handle);
     if (!mi) return;
@@ -141,7 +139,7 @@ void Renderer::SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig
 // Attachment Model Loading
 // ============================================================================
 
-void Renderer::UpdateAttachments() {
+void RenderService::UpdateAttachments() {
     std::lock_guard<std::mutex> lock(dataMutex_);
 
     // Collect handles to avoid modifying models_ during iteration
@@ -165,7 +163,7 @@ void Renderer::UpdateAttachments() {
             child->isPE1Child = true;  // reuse the flag for "child model"
             child->pe1Depth = mi->pe1Depth + 1;
             child->pe1Adapter = tmpl->adapter;
-            child->pe1BirthTimeMs = currentTimeMs_;
+            child->pe1BirthTimeMs = animationTimeMs_;
             // Pick a random sequence
             auto seqs = tmpl->adapter->GetSequences();
             if (!seqs.empty())
@@ -182,16 +180,29 @@ void Renderer::UpdateAttachments() {
 // PE1 Model Template Cache
 // ============================================================================
 
-std::shared_ptr<Renderer::PE1ModelTemplate> Renderer::getOrLoadTemplate(const std::string& modelPath) {
+std::shared_ptr<RenderService::PE1ModelTemplate> RenderService::getOrLoadTemplate(const std::string& modelPath) {
+    // 1. Cache hit (includes cached failures as nullptr)
     auto it = pe1TemplateCache_.find(modelPath);
     if (it != pe1TemplateCache_.end()) return it->second;
 
-    // Try to read the model file via the content provider (disk → CASC → MPQ).
-    auto fileData = contentProvider_.ReadFile(modelPath);
-    if (!fileData || fileData->empty()) {
-        pe1TemplateCache_[modelPath] = nullptr;  // cache miss
-        return nullptr;
+    // 2. Already queued for async load — skip this frame
+    {
+        std::lock_guard<std::mutex> lock(templateQueueMutex_);
+        if (templateLoadPending_.count(modelPath)) return nullptr;
+
+        // 3. Queue for async load
+        templateLoadPending_.insert(modelPath);
+        templateLoadQueue_.push_back(modelPath);
     }
+    templateQueueCV_.notify_one();
+    return nullptr;
+}
+
+std::shared_ptr<RenderService::PE1ModelTemplate> RenderService::loadTemplateSync(const std::string& modelPath) {
+    // Try to read the model file via the active content provider.
+    auto fileData = activeContentProvider_->ReadFile(modelPath);
+    if (!fileData || fileData->empty())
+        return nullptr;
 
     // Parse MDX from memory buffer
     whiteout::mdx::Parser mdxParser;
@@ -199,7 +210,6 @@ std::shared_ptr<Renderer::PE1ModelTemplate> Renderer::getOrLoadTemplate(const st
     try {
         model = mdxParser.parse(std::span<const whiteout::u8>(fileData->data(), fileData->size()));
     } catch (...) {
-        pe1TemplateCache_[modelPath] = nullptr;
         return nullptr;
     }
 
@@ -210,7 +220,7 @@ std::shared_ptr<Renderer::PE1ModelTemplate> Renderer::getOrLoadTemplate(const st
 
     auto tmpl = std::make_shared<PE1ModelTemplate>();
     auto adapter = std::make_shared<MdxModelAdapter>(
-        std::move(model), texBasePath, pe1ChildCoordSpace_, &contentProvider_);
+        std::move(model), texBasePath, pe1ChildCoordSpace_, activeContentProvider_);
     tmpl->adapter = adapter;
     tmpl->meshes = adapter->GetMeshes();
     tmpl->textures = adapter->GetTextures();
@@ -222,11 +232,66 @@ std::shared_ptr<Renderer::PE1ModelTemplate> Renderer::getOrLoadTemplate(const st
     tmpl->collisionConfigs = adapter->GetCollisionShapes();
     tmpl->pe1Configs = adapter->GetPE1Configs();
 
-    pe1TemplateCache_[modelPath] = tmpl;
     return tmpl;
 }
 
-void Renderer::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl) {
+// ============================================================================
+// Async PE1 Template Loader
+// ============================================================================
+
+void RenderService::StartTemplateLoader() {
+    templateLoaderRunning_ = true;
+    templateLoaderThread_ = std::thread(&RenderService::TemplateLoaderFunc, this);
+}
+
+void RenderService::StopTemplateLoader() {
+    templateLoaderRunning_ = false;
+    templateQueueCV_.notify_one();
+    if (templateLoaderThread_.joinable())
+        templateLoaderThread_.join();
+}
+
+void RenderService::TemplateLoaderFunc() {
+    while (templateLoaderRunning_) {
+        std::string path;
+        {
+            std::unique_lock<std::mutex> lock(templateQueueMutex_);
+            templateQueueCV_.wait_for(lock, std::chrono::milliseconds(50),
+                [this] { return !templateLoadQueue_.empty() || !templateLoaderRunning_; });
+            if (!templateLoaderRunning_) break;
+            if (templateLoadQueue_.empty()) continue;
+            path = std::move(templateLoadQueue_.front());
+            templateLoadQueue_.pop_front();
+        }
+
+        auto tmpl = loadTemplateSync(path);
+
+        {
+            std::lock_guard<std::mutex> lock(templateResultMutex_);
+            templateLoadResults_.emplace_back(std::move(path), std::move(tmpl));
+        }
+    }
+}
+
+void RenderService::DrainTemplateResults() {
+    std::vector<std::pair<std::string, std::shared_ptr<PE1ModelTemplate>>> results;
+    {
+        std::lock_guard<std::mutex> lock(templateResultMutex_);
+        results.swap(templateLoadResults_);
+    }
+
+    if (results.empty()) return;
+
+    for (auto& [path, tmpl] : results) {
+        pe1TemplateCache_[path] = tmpl;
+        {
+            std::lock_guard<std::mutex> lock(templateQueueMutex_);
+            templateLoadPending_.erase(path);
+        }
+    }
+}
+
+void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl) {
     // Stage textures
     for (auto& tex : tmpl.textures) {
         StagedTexture& st = mi->stagedTextures[tex.textureId];
@@ -303,7 +368,7 @@ void Renderer::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate&
 // PE1 Model Particle Lifecycle
 // ============================================================================
 
-void Renderer::UpdatePE1(float dt) {
+void RenderService::UpdatePE1(float dt) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     std::vector<uint32_t> toRemove;
 
@@ -334,7 +399,7 @@ void Renderer::UpdatePE1(float dt) {
             child->isPE1Child = true;
             child->pe1Depth = mi->pe1Depth + 1;
             child->pe1Adapter = tmpl->adapter;
-            child->pe1BirthTimeMs = currentTimeMs_;
+            child->pe1BirthTimeMs = animationTimeMs_;
 
             stageModelFromTemplate(child.get(), *tmpl);
             models_[birth.handle] = std::move(child);
@@ -360,7 +425,7 @@ void Renderer::UpdatePE1(float dt) {
     }
 }
 
-void Renderer::EvaluatePE1Children() {
+void RenderService::EvaluatePE1Children() {
     struct ChildEval {
         uint32_t handle;
         std::shared_ptr<IModelSource> adapter;
@@ -374,7 +439,7 @@ void Renderer::EvaluatePE1Children() {
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
         camPos = camera_.GetSource();
-        int timeMs = currentTimeMs_.load();
+        int timeMs = animationTimeMs_.load();
         for (auto& [h, mi] : models_) {
             if (!mi->isPE1Child || !mi->pe1Adapter) continue;
             if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent — skip eval
@@ -403,7 +468,7 @@ void Renderer::EvaluatePE1Children() {
 // Update Materials (hot-reload without full model rebuild)
 // ============================================================================
 
-void Renderer::UpdateMaterials(uint32_t handle, const std::vector<MaterialData>& materials,
+void RenderService::UpdateMaterials(uint32_t handle, const std::vector<MaterialData>& materials,
                                const std::vector<TextureData>& textures) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     auto* mi = getModel(handle);
@@ -436,7 +501,7 @@ void Renderer::UpdateMaterials(uint32_t handle, const std::vector<MaterialData>&
     mi->stagedDirty = true;
 }
 
-void Renderer::UpdateMaterials(const std::vector<MaterialData>& materials,
+void RenderService::UpdateMaterials(const std::vector<MaterialData>& materials,
                                const std::vector<TextureData>& textures) {
     UpdateMaterials(focusModelHandle_, materials, textures);
 }
@@ -445,7 +510,7 @@ void Renderer::UpdateMaterials(const std::vector<MaterialData>& materials,
 // Multi-Model Loading API
 // ============================================================================
 
-uint32_t Renderer::AddModel(const std::vector<MeshData>& meshes,
+uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
                             const std::vector<TextureData>& textures,
                             const std::vector<MaterialData>& materials,
                             const SkeletonData& skeleton,
@@ -555,7 +620,7 @@ uint32_t Renderer::AddModel(const std::vector<MeshData>& meshes,
 }
 
 // Backward-compatible single-model API
-void Renderer::LoadModel(const std::vector<MeshData>& meshes,
+void RenderService::LoadModel(const std::vector<MeshData>& meshes,
                          const std::vector<TextureData>& textures,
                          const std::vector<MaterialData>& materials,
                          const SkeletonData& skeleton,
@@ -573,7 +638,7 @@ void Renderer::LoadModel(const std::vector<MeshData>& meshes,
 // ApplyFrameState helpers
 // ============================================================================
 
-void Renderer::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state) {
+void RenderService::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state) {
     if (state.boneWorldMatrices.empty()) return;
 
     int bc = (int)state.boneWorldMatrices.size();
@@ -637,7 +702,7 @@ void Renderer::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state) {
     mi.skinning.UpdateNodeMatrices(bc, worldFlat.data());
 }
 
-void Renderer::ApplyGeosetStates(ModelInstance& mi, const FrameState& state) {
+void RenderService::ApplyGeosetStates(ModelInstance& mi, const FrameState& state) {
     for (int i = 0; i < (int)state.geosetTransforms.size() && i < (int)mi.gpuGeosets.size(); i++)
         mi.gpuGeosets[i].worldMatrix = state.geosetTransforms[i];
 
@@ -648,7 +713,7 @@ void Renderer::ApplyGeosetStates(ModelInstance& mi, const FrameState& state) {
         mi.gpuGeosets[i].geosetColor = state.geosetColors[i];
 }
 
-void Renderer::ApplyLayerStates(ModelInstance& mi, const FrameState& state) {
+void RenderService::ApplyLayerStates(ModelInstance& mi, const FrameState& state) {
     // Texture animations (per-layer) — clear stale entries from previous frame
     mi.matTexAnim.clear();
     for (auto& ta : state.texAnims) {
@@ -675,7 +740,7 @@ void Renderer::ApplyLayerStates(ModelInstance& mi, const FrameState& state) {
     }
 }
 
-void Renderer::ApplyParticleFrameStates(ModelInstance& mi, const FrameState& state) {
+void RenderService::ApplyParticleFrameStates(ModelInstance& mi, const FrameState& state) {
     for (auto& ps : state.particleStates) {
         ParticleEmitterState st;
         st.transform    = ps.transform;
@@ -691,7 +756,7 @@ void Renderer::ApplyParticleFrameStates(ModelInstance& mi, const FrameState& sta
     }
 }
 
-void Renderer::ApplyRibbonFrameStates(ModelInstance& mi, const FrameState& state) {
+void RenderService::ApplyRibbonFrameStates(ModelInstance& mi, const FrameState& state) {
     for (auto& rs : state.ribbonStates) {
         RibbonEmitterState st;
         st.transform   = rs.transform;
@@ -705,7 +770,7 @@ void Renderer::ApplyRibbonFrameStates(ModelInstance& mi, const FrameState& state
     }
 }
 
-void Renderer::ApplyPE1FrameStates(ModelInstance& mi, const FrameState& state) {
+void RenderService::ApplyPE1FrameStates(ModelInstance& mi, const FrameState& state) {
     for (auto& ps : state.pe1States) {
         PE1EmitterState st;
         st.transform    = ps.transform;
@@ -719,7 +784,7 @@ void Renderer::ApplyPE1FrameStates(ModelInstance& mi, const FrameState& state) {
     }
 }
 
-void Renderer::ApplyAttachmentStates(ModelInstance& mi, const FrameState& state, int timeMs) {
+void RenderService::ApplyAttachmentStates(ModelInstance& mi, const FrameState& state, int timeMs) {
     for (auto& as : state.attachmentStates) {
         if (as.attachmentIndex < 0 || as.attachmentIndex >= (int)mi.attachmentSlots.size()) continue;
         auto& slot = mi.attachmentSlots[as.attachmentIndex];
@@ -754,7 +819,7 @@ void Renderer::ApplyAttachmentStates(ModelInstance& mi, const FrameState& state,
 // Apply Pre-computed Frame State
 // ============================================================================
 
-void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int timeMs) {
+void RenderService::ApplyFrameState(uint32_t handle, const FrameState& state, int timeMs) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     auto* mi = getModel(handle);
     if (!mi) return;
@@ -773,10 +838,10 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
     ApplyAttachmentStates(*mi, state, timeMs);
 
     if (!mi->isPE1Child)
-        currentTimeMs_ = timeMs;
+        animationTimeMs_ = timeMs;
 }
 
-void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
+void RenderService::ApplyFrameState(const FrameState& state, int timeMs) {
     ApplyFrameState(focusModelHandle_, state, timeMs);
 }
 
@@ -784,7 +849,7 @@ void Renderer::ApplyFrameState(const FrameState& state, int timeMs) {
 // Team Color Texture Update
 // ============================================================================
 
-void Renderer::UpdateTeamColorTextures() {
+void RenderService::UpdateTeamColorTextures() {
     std::lock_guard<std::mutex> lock(dataMutex_);
     uint8_t r = GetRValue(teamColor_);
     uint8_t g = GetGValue(teamColor_);
@@ -814,70 +879,129 @@ void Renderer::UpdateTeamColorTextures() {
 // Camera Presets
 // ============================================================================
 
-void Renderer::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
+void RenderService::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
     teamColor_ = RGB(r, g, b);
     UpdateTeamColorTextures();
-    if (btnTeamColor_) InvalidateRect(btnTeamColor_, nullptr, TRUE);
+    if (renderWindow_) renderWindow_->InvalidateTeamColorSwatch();
 }
 
-void Renderer::SetCameraPresets(const std::vector<CameraPreset>& presets) {
+void RenderService::SetCameraPresets(const std::vector<CameraPreset>& presets) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     pendingCameraPresets_ = presets;
     cameraDirty_ = true;
 }
 
-int Renderer::GetActiveCameraIndex() const {
-    return cmbCamera_ ? (int)SendMessageW(cmbCamera_, CB_GETCURSEL, 0, 0) : 0;
+int RenderService::GetActiveCameraIndex() const {
+    return renderWindow_ ? renderWindow_->GetActiveCameraIndex() : 0;
 }
 
-void Renderer::ProcessCameraPresets() {
+std::optional<std::vector<CameraPreset>> RenderService::TakePendingCameraPresets() {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    if (!cameraDirty_ || !cmbCamera_) return;
-    SendMessageW(cmbCamera_, CB_RESETCONTENT, 0, 0);
-    SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)L"Free Camera");
-    for (auto& p : pendingCameraPresets_)
-        SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)p.name.c_str());
-    cameraPresets_ = std::move(pendingCameraPresets_);
-    SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
-    cameraLocked_ = false;
+    if (!cameraDirty_) return std::nullopt;
     cameraDirty_ = false;
+    return std::move(pendingCameraPresets_);
 }
 
-void Renderer::SetSequences(const std::vector<std::string>& names) {
+void RenderService::SetSequences(const std::vector<std::string>& names) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     pendingSequenceNames_ = names;
     sequencesDirty_ = true;
 }
 
-int Renderer::GetActiveSequenceIndex() const {
+int RenderService::GetActiveSequenceIndex() const {
     return activeSequence_.load();
 }
 
-void Renderer::ProcessSequences() {
+std::optional<std::vector<std::string>> RenderService::TakePendingSequences() {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    if (!sequencesDirty_ || !cmbSequence_) return;
-
-    SendMessageW(cmbSequence_, CB_RESETCONTENT, 0, 0);
-    for (auto& n : pendingSequenceNames_) {
-        std::wstring wn(n.begin(), n.end());
-        SendMessageW(cmbSequence_, CB_ADDSTRING, 0, (LPARAM)wn.c_str());
-    }
-    if (!pendingSequenceNames_.empty()) {
-        // Reveal label + combo
-        ShowWindow(lblSequence_, SW_SHOW);
-        ShowWindow(cmbSequence_, SW_SHOW);
-        SendMessageW(cmbSequence_, CB_SETCURSEL, 0, 0);
-        activeSequence_ = 0;
-    }
-    pendingSequenceNames_.clear();
+    if (!sequencesDirty_) return std::nullopt;
     sequencesDirty_ = false;
+    auto result = std::move(pendingSequenceNames_);
+    pendingSequenceNames_.clear();
+    return result;
+}
+
+// ============================================================================
+// Camera Manipulation (thread-safe wrappers)
+// ============================================================================
+
+void RenderService::RotateCamera(int dx, int dy) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    camera_.Rotate(dx, dy);
+}
+
+void RenderService::PanCamera(int dx, int dy) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    camera_.Pan(dx, dy);
+}
+
+void RenderService::ZoomCamera(int delta) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    camera_.Zoom(delta);
+}
+
+void RenderService::ZoomCameraSmooth(int dy) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    camera_.ZoomSmooth((float)dy * camera_.GetDistance() / Camera::kFactorRelDist);
+}
+
+void RenderService::ResetCamera() {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    camera_.Reset();
+}
+
+void RenderService::SetDisplayFlags(const DisplayFlags& flags) {
+    showGrid_       = flags.showGrid;
+    showParticles_  = flags.showParticles;
+    showRibbons_    = flags.showRibbons;
+    showCollisions_ = flags.showCollisions;
+}
+
+DisplayFlags RenderService::GetDisplayFlags() const {
+    return { showGrid_, showParticles_, showRibbons_, showCollisions_ };
+}
+
+// ============================================================================
+// Synchronous Service API
+// ============================================================================
+
+void RenderService::Tick(float dt) {
+    DrainTemplateResults();
+    ProcessStagedData();
+    UpdateAttachments();
+    EvaluatePE1Children();
+    UpdateAnimation();
+    UpdateParticles(dt);
+    UpdatePE1(dt);
+    UpdateRibbons(dt);
+}
+
+void RenderService::SetAnimationTime(int ms) { animationTimeMs_ = ms; }
+int  RenderService::GetAnimationTime() const { return animationTimeMs_.load(); }
+
+void RenderService::ShutdownDevice() {
+    ReleaseModelGPU();
+    CleanupD3D();
+}
+
+void RenderService::GetFrameStats(int& geosets, int& textures, int& nodes,
+                              int& particles, int& segments) const {
+    geosets = textures = nodes = particles = segments = 0;
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    for (auto& [h, mi] : models_) {
+        geosets   += (int)mi->gpuGeosets.size();
+        textures  += (int)mi->gpuTextures.size();
+        nodes     += mi->skinning.NodeCount();
+        particles += mi->particles.GetTotalParticleCount();
+        segments  += mi->ribbons.GetTotalSegmentCount();
+    }
 }
 
 // ============================================================================
 // Staged → GPU Resource Upload (render thread only)
 // ============================================================================
 
-void Renderer::UploadStagedTextures(ModelInstance& mi) {
+void RenderService::UploadStagedTextures(ModelInstance& mi) {
     for (auto& [id, st] : mi.stagedTextures) {
         if (st.width <= 0 || st.height <= 0) continue;
 
@@ -907,7 +1031,7 @@ void Renderer::UploadStagedTextures(ModelInstance& mi) {
     mi.stagedTextures.clear();
 }
 
-void Renderer::UploadStagedGeosets(ModelInstance& mi) {
+void RenderService::UploadStagedGeosets(ModelInstance& mi) {
     for (auto& [id, sg] : mi.stagedGeosets) {
         GPUGeoset gg;
         gg.geosetId    = id;
@@ -1004,7 +1128,7 @@ void Renderer::UploadStagedGeosets(ModelInstance& mi) {
     mi.stagedGeosets.clear();
 }
 
-void Renderer::CreateNodePalette(ModelInstance& mi) {
+void RenderService::CreateNodePalette(ModelInstance& mi) {
     for (auto& geo : mi.gpuGeosets)
         geo.hasSkinning = true;
 
@@ -1027,7 +1151,7 @@ void Renderer::CreateNodePalette(ModelInstance& mi) {
     }
 }
 
-void Renderer::ProcessStagedData() {
+void RenderService::ProcessStagedData() {
     std::lock_guard<std::mutex> lock(dataMutex_);
 
     // Remove models marked for clear
@@ -1065,7 +1189,7 @@ void Renderer::ProcessStagedData() {
     }
 }
 
-void Renderer::ReleaseModelGPU() {
+void RenderService::ReleaseModelGPU() {
     for (auto& [h, miPtr] : models_)
         miPtr->ReleaseGPU();
 }
@@ -1073,10 +1197,10 @@ void Renderer::ReleaseModelGPU() {
 // Build a packed Texture2DArray for a material.
 // All layer textures are CPU-resized (nearest-neighbor) to the max (w,h) found
 // ============================================================================
-// Phase 4: Animation Update (render thread)
+// Animation Update (render thread)
 // ============================================================================
 
-void Renderer::UpdateAnimation() {
+void RenderService::UpdateAnimation() {
     // GPU compute skinning: upload bone palette, dispatch per geoset
     std::lock_guard<std::mutex> lock(dataMutex_);
 
@@ -1146,10 +1270,10 @@ void Renderer::UpdateAnimation() {
 }
 
 // ============================================================================
-// Phase 5: Particle Simulation + Rendering (render thread)
+// Particle Simulation + Rendering (render thread)
 // ============================================================================
 
-void Renderer::UpdateParticles(float dt) {
+void RenderService::UpdateParticles(float dt) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     for (auto& [h, mi] : models_) {
         if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
@@ -1157,7 +1281,7 @@ void Renderer::UpdateParticles(float dt) {
     }
 }
 
-void Renderer::RenderParticles() {
+void RenderService::RenderParticles() {
     for (auto& [_mh, _mi] : models_) {
     auto* mi = _mi.get();
 
@@ -1278,10 +1402,10 @@ void Renderer::RenderParticles() {
 }
 
 // ============================================================================
-// Phase 5b: Ribbon Simulation + Rendering (render thread)
+// Ribbon Simulation + Rendering (render thread)
 // ============================================================================
 
-void Renderer::UpdateRibbons(float dt) {
+void RenderService::UpdateRibbons(float dt) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     for (auto& [h, mi] : models_) {
         if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
@@ -1289,7 +1413,7 @@ void Renderer::UpdateRibbons(float dt) {
     }
 }
 
-void Renderer::RenderRibbons() {
+void RenderService::RenderRibbons() {
     for (auto& [_mh, _mi] : models_) {
     auto* mi = _mi.get();
     Matrix44f viewMat;
@@ -1404,7 +1528,7 @@ void Renderer::RenderRibbons() {
 // Collision Shape Wireframe Rendering
 // ============================================================================
 
-void Renderer::RenderCollisions() {
+void RenderService::RenderCollisions() {
     std::vector<CollisionShape> shapes;
     Matrix44f viewMat;
     {
@@ -1513,416 +1637,10 @@ void Renderer::RenderCollisions() {
 }
 
 // ============================================================================
-// Render Thread
-// ============================================================================
-
-void Renderer::RenderThread(int width, int height) {
-    width_ = width;
-    height_ = height;
-
-    if (!CreateRenderWindow(width, height)) { running_ = false; return; }
-    if (!InitD3D())                         { running_ = false; return; }
-    if (!CreateShaders())                   { running_ = false; return; }
-    if (!CreateDefaultResources())          { running_ = false; return; }
-
-    ShowWindow(hwnd_, SW_SHOW);
-    UpdateWindow(hwnd_);
-    initialized_ = true;
-
-    MSG msg = {};
-    LARGE_INTEGER freq, lastTime, now, fpsTimer;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&lastTime);
-    fpsTimer = lastTime;
-    const double targetDt = 1.0 / 60.0;
-    int frameCount = 0;
-    int lastParentTimeMs = currentTimeMs_.load();
-
-    while (running_) {
-        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) { running_ = false; break; }
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-        if (!running_) break;
-
-        QueryPerformanceCounter(&now);
-        double elapsed = (double)(now.QuadPart - lastTime.QuadPart) / freq.QuadPart;
-        if (elapsed < targetDt) {
-            DWORD sleepMs = (DWORD)((targetDt - elapsed) * 1000.0);
-            if (sleepMs > 1) Sleep(sleepMs - 1);
-            continue;
-        }
-        lastTime = now;
-
-        // Particle/ribbon/PE1 simulation dt is derived from the parent's
-        // animation clock so everything stays locked to Max's timeline:
-        // when Max is paused or scrubbing, sims freeze; when playing, sims
-        // advance at exactly the parent's playback rate.
-        int curParentMs = currentTimeMs_.load();
-        int parentDtMs  = curParentMs - lastParentTimeMs;
-        if (parentDtMs < 0)   parentDtMs = 0;     // backward scrub → freeze
-        if (parentDtMs > 100) parentDtMs = 100;   // clamp big jumps
-        lastParentTimeMs = curParentMs;
-        float parentDt = (float)parentDtMs / 1000.0f;
-
-        // Process any staged data from API thread
-        ProcessStagedData();
-
-        // Process pending camera preset updates
-        ProcessCameraPresets();
-        ProcessSequences();
-
-        // Load attachment child models (lazy, first frame only)
-        UpdateAttachments();
-
-        // PE1: Evaluate child model animations
-        EvaluatePE1Children();
-
-        // Phase 4: Skin vertices with current bone matrices
-        UpdateAnimation();
-
-        // Phase 5: Simulate particles (parent-clock dt)
-        UpdateParticles(parentDt);
-        UpdatePE1(parentDt);
-        UpdateRibbons(parentDt);
-
-        RenderFrame();
-        frameCount++;
-
-        double fpsDt = (double)(now.QuadPart - fpsTimer.QuadPart) / freq.QuadPart;
-        if (fpsDt >= 1.0) {
-            int nGeo = 0, nTex = 0, nNodes = 0, nParts = 0, nSegs = 0;
-            {
-                std::lock_guard<std::mutex> lock(dataMutex_);
-                for (auto& [h, mi] : models_) {
-                    nGeo += (int)mi->gpuGeosets.size();
-                    nTex += (int)mi->gpuTextures.size();
-                    nNodes += mi->skinning.NodeCount();
-                    nParts += mi->particles.GetTotalParticleCount();
-                    nSegs += mi->ribbons.GetTotalSegmentCount();
-                }
-            }
-            wchar_t title[300];
-            swprintf_s(title,
-                L"Whiteout Renderer \u2014 %d FPS | %d geo, %d tex, %d nodes, %d parts, %d segs",
-                frameCount, nGeo, nTex, nNodes, nParts, nSegs
-            );
-            SetWindowTextW(hwnd_, title);
-            frameCount = 0;
-            fpsTimer = now;
-        }
-    }
-
-    ReleaseModelGPU();
-    CleanupD3D();
-    if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
-    if (icon_) { DestroyIcon(icon_); icon_ = nullptr; }
-    UnregisterClassW(WINDOW_CLASS, GetModuleHandle(nullptr));
-    initialized_ = false;
-}
-
-// ============================================================================
-// Win32 Window
-// ============================================================================
-
-bool Renderer::CreateRenderWindow(int w, int h) {
-    // Get HINSTANCE of the module containing this code (DLL or EXE)
-    HMODULE hMod = nullptr;
-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                       (LPCWSTR)&Renderer::WndProc, &hMod);
-    HINSTANCE hInst = hMod ? (HINSTANCE)hMod : GetModuleHandle(nullptr);
-
-    // Load icon from embedded resource
-    icon_ = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_WHITEOUT_ICON));
-
-    // Register parent window class
-    WNDCLASSEXW wc = {};
-    wc.cbSize        = sizeof(wc);
-    wc.style         = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc   = Renderer::WndProc;
-    wc.hInstance      = hInst;
-    wc.hCursor        = LoadCursor(nullptr, IDC_ARROW);
-    wc.hIcon          = icon_;
-    wc.hIconSm        = icon_;
-    wc.hbrBackground  = (HBRUSH)(COLOR_BTNFACE + 1);
-    wc.lpszClassName  = WINDOW_CLASS;
-    if (!RegisterClassExW(&wc))
-        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
-
-    // Register child (render surface) window class
-    static const wchar_t* RENDER_CLASS = L"WhiteoutDexRenderSurface";
-    WNDCLASSEXW rc = {};
-    rc.cbSize        = sizeof(rc);
-    rc.style         = CS_HREDRAW | CS_VREDRAW;
-    rc.lpfnWndProc   = Renderer::RenderWndProc;
-    rc.hInstance      = hInst;
-    rc.hCursor        = LoadCursor(nullptr, IDC_ARROW);
-    rc.hbrBackground  = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    rc.lpszClassName  = RENDER_CLASS;
-    if (!RegisterClassExW(&rc))
-        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
-
-    // Create parent window
-    RECT adj = {0, 0, w, h + kToolbarH};
-    AdjustWindowRect(&adj, WS_OVERLAPPEDWINDOW, FALSE);
-    hwnd_ = CreateWindowExW(WS_EX_TOPMOST, WINDOW_CLASS, WINDOW_TITLE, WS_OVERLAPPEDWINDOW,
-                            CW_USEDEFAULT, CW_USEDEFAULT,
-                            adj.right - adj.left, adj.bottom - adj.top,
-                            nullptr, nullptr, hInst, this);
-    if (!hwnd_) return false;
-
-    // Create DX11 render child window (below toolbar)
-    hwndRender_ = CreateWindowExW(0, RENDER_CLASS, L"", WS_CHILD | WS_VISIBLE,
-                                   0, kToolbarH, w, h,
-                                   hwnd_, nullptr, hInst, this);
-    if (!hwndRender_) return false;
-
-    // Create toolbar controls in parent window
-    int x = 8;
-    auto mkChk = [&](const wchar_t* label, int id, bool checked) -> HWND {
-        int labelW = (int)wcslen(label) * 7 + 28;
-        HWND ctl = CreateWindowW(L"BUTTON", label,
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            x, 4, labelW, 20, hwnd_, (HMENU)(INT_PTR)id, hInst, nullptr);
-        if (ctl && checked) SendMessage(ctl, BM_SETCHECK, BST_CHECKED, 0);
-        x += labelW + 8;
-        return ctl;
-    };
-    chkGrid_       = mkChk(L"Grid",       IDC_GRID,       showGrid_);
-    chkParticles_  = mkChk(L"Particles",  IDC_PARTICLES,  showParticles_);
-    chkRibbons_    = mkChk(L"Ribbons",    IDC_RIBBONS,    showRibbons_);
-    chkCollisions_ = mkChk(L"Collisions", IDC_COLLISIONS, showCollisions_);
-
-    // Separator
-    x += 4;
-
-    // Team color label + swatch
-    CreateWindowW(L"STATIC", L"Team:",
-        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
-        x, 4, 36, 20, hwnd_, nullptr, hInst, nullptr);
-    x += 38;
-    btnTeamColor_ = CreateWindowW(L"BUTTON", L"",
-        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-        x, 4, 22, 20, hwnd_, (HMENU)(INT_PTR)IDC_TEAMCOLOR, hInst, nullptr);
-    x += 30;
-
-    // Camera combo box
-    CreateWindowW(L"STATIC", L"Camera:",
-        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
-        x, 4, 50, 20, hwnd_, nullptr, hInst, nullptr);
-    x += 52;
-    cmbCamera_ = CreateWindowW(L"COMBOBOX", L"",
-        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-        x, 2, 150, 200, hwnd_, (HMENU)(INT_PTR)IDC_CAMERA, hInst, nullptr);
-    SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)L"Free Camera");
-    SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
-    x += 158;
-
-    // Sequence combo box (hidden until SetSequences() is called — standalone viewer)
-    lblSequence_ = CreateWindowW(L"STATIC", L"Animation:",
-        WS_CHILD | SS_CENTERIMAGE,
-        x, 4, 64, 20, hwnd_, nullptr, hInst, nullptr);
-    x += 66;
-    cmbSequence_ = CreateWindowW(L"COMBOBOX", L"",
-        WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL,
-        x, 2, 180, 300, hwnd_, (HMENU)(INT_PTR)IDC_SEQUENCE, hInst, nullptr);
-
-    return true;
-}
-
-// Child (DX11 render surface) WndProc — forwards mouse input
-LRESULT CALLBACK Renderer::RenderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    Renderer* self = nullptr;
-    if (msg == WM_NCCREATE) {
-        auto cs = reinterpret_cast<CREATESTRUCT*>(lParam);
-        self = static_cast<Renderer*>(cs->lpCreateParams);
-        SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-    } else {
-        self = reinterpret_cast<Renderer*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
-    }
-    if (!self) return DefWindowProcW(hwnd, msg, wParam, lParam);
-
-    // Forward mouse messages to parent WndProc logic
-    switch (msg) {
-    case WM_LBUTTONDOWN: case WM_LBUTTONUP:
-    case WM_RBUTTONDOWN: case WM_RBUTTONUP:
-    case WM_MBUTTONDOWN: case WM_MBUTTONUP:
-    case WM_MOUSEMOVE:   case WM_MOUSEWHEEL:
-        return Renderer::WndProc(hwnd, msg, wParam, lParam);
-    }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
-}
-
-LRESULT CALLBACK Renderer::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    Renderer* self = nullptr;
-    if (msg == WM_NCCREATE) {
-        auto cs = reinterpret_cast<CREATESTRUCT*>(lParam);
-        self = static_cast<Renderer*>(cs->lpCreateParams);
-        SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
-    } else {
-        self = reinterpret_cast<Renderer*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
-    }
-    if (self) return self->HandleMessage(hwnd, msg, wParam, lParam);
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
-}
-
-LRESULT Renderer::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_SIZE: {
-        int w = LOWORD(lParam), h = HIWORD(lParam);
-        int renderH = h - kToolbarH;
-        if (w > 0 && renderH > 0) {
-            // Resize child render window
-            if (hwndRender_) MoveWindow(hwndRender_, 0, kToolbarH, w, renderH, TRUE);
-            if (device_) { width_ = w; height_ = renderH; ResizeBuffers(w, renderH); }
-        }
-        return 0;
-    }
-    case WM_LBUTTONDOWN: {
-        int mx = GET_X_LPARAM(lParam), my = GET_Y_LPARAM(lParam);
-        int vcHit = HitTestViewCube(mx, my);
-        if (vcHit >= 0) {
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            if (vcHit == 6) camera_.Reset();       // Home
-            else SnapCameraToFace(vcHit);           // Face click
-            return 0;
-        }
-        lmbDown_ = true;
-        lastMouse_ = {mx, my};
-        SetCapture(hwnd); return 0;
-    }
-    case WM_LBUTTONUP:
-        lmbDown_ = false;
-        if (!rmbDown_ && !mmbDown_) ReleaseCapture(); return 0;
-    case WM_RBUTTONDOWN:
-        rmbDown_ = true;
-        lastMouse_ = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-        SetCapture(hwnd); return 0;
-    case WM_RBUTTONUP:
-        rmbDown_ = false;
-        if (!lmbDown_ && !mmbDown_) ReleaseCapture(); return 0;
-    case WM_MBUTTONDOWN:
-        mmbDown_ = true;
-        lastMouse_ = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-        SetCapture(hwnd); return 0;
-    case WM_MBUTTONUP:
-        mmbDown_ = false;
-        if (!lmbDown_ && !rmbDown_) ReleaseCapture(); return 0;
-    case WM_MOUSEMOVE: {
-        POINT cur = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-        int dx = cur.x - lastMouse_.x, dy = cur.y - lastMouse_.y;
-        lastMouse_ = cur;
-        // Track ViewCube hover
-        RECT vcr = GetViewCubeRect();
-        vcHovered_ = (cur.x >= vcr.left && cur.x <= vcr.right && cur.y >= vcr.top && cur.y <= vcr.bottom);
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        if (!cameraLocked_) {
-            if (lmbDown_) camera_.Rotate(dx, dy);   // inverted Y like Magos
-            if (rmbDown_) camera_.Pan(-dx, dy);
-            if (mmbDown_) camera_.ZoomSmooth((float)dy * camera_.GetDistance() / Camera::kFactorRelDist);
-        }
-        return 0;
-    }
-    case WM_MOUSEWHEEL: {
-        if (!cameraLocked_) {
-            int delta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            camera_.Zoom(delta * 30);
-        }
-        return 0;
-    }
-    case WM_KEYDOWN: {
-        return 0;
-    }
-    case WM_DRAWITEM: {
-        DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
-        if (dis->CtlID == IDC_TEAMCOLOR) {
-            HBRUSH brush = CreateSolidBrush(teamColor_);
-            FillRect(dis->hDC, &dis->rcItem, brush);
-            DeleteObject(brush);
-            DrawEdge(dis->hDC, &dis->rcItem, EDGE_SUNKEN, BF_RECT);
-        }
-        return TRUE;
-    }
-    case WM_COMMAND: {
-        int id = LOWORD(wParam);
-        int code = HIWORD(wParam);
-        switch (id) {
-            case IDC_GRID:       showGrid_       = (SendMessage(chkGrid_, BM_GETCHECK, 0, 0) == BST_CHECKED); break;
-            case IDC_PARTICLES:  showParticles_  = (SendMessage(chkParticles_, BM_GETCHECK, 0, 0) == BST_CHECKED); break;
-            case IDC_RIBBONS:    showRibbons_    = (SendMessage(chkRibbons_, BM_GETCHECK, 0, 0) == BST_CHECKED); break;
-            case IDC_COLLISIONS: showCollisions_ = (SendMessage(chkCollisions_, BM_GETCHECK, 0, 0) == BST_CHECKED); break;
-            case IDC_TEAMCOLOR: {
-                CHOOSECOLORW cc = {};
-                static COLORREF customColors[16] = {};
-                cc.lStructSize = sizeof(cc);
-                cc.hwndOwner = hwnd_;
-                cc.rgbResult = teamColor_;
-                cc.lpCustColors = customColors;
-                cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-                if (ChooseColorW(&cc)) {
-                    teamColor_ = cc.rgbResult;
-                    UpdateTeamColorTextures();
-                    InvalidateRect(btnTeamColor_, nullptr, TRUE);
-                }
-                break;
-            }
-            case IDC_CAMERA: {
-                if (code == CBN_SELCHANGE) {
-                    int sel = (int)SendMessageW(cmbCamera_, CB_GETCURSEL, 0, 0);
-                    if (sel == 0) {
-                        // Free Camera — no action, user controls camera
-                        cameraLocked_ = false;
-                    } else {
-                        int idx = sel - 1;
-                        std::lock_guard<std::mutex> lock(dataMutex_);
-                        if (idx >= 0 && idx < (int)cameraPresets_.size()) {
-                            auto& p = cameraPresets_[idx];
-                            camera_.SetPitch(p.pitch);
-                            camera_.SetYaw(p.yaw);
-                            camera_.SetDistance(p.distance);
-                            camera_.SetTarget(p.target.x, p.target.y, p.target.z);
-                            cameraLocked_ = p.isLive;
-                        }
-                    }
-                }
-                break;
-            }
-            case IDC_SEQUENCE: {
-                if (code == CBN_SELCHANGE) {
-                    int sel = (int)SendMessageW(cmbSequence_, CB_GETCURSEL, 0, 0);
-                    if (sel >= 0) activeSequence_ = sel;
-                }
-                break;
-            }
-        }
-        return 0;
-    }
-    case WM_DESTROY:
-        hwnd_ = nullptr;  // prevent double DestroyWindow in thread cleanup
-        running_ = false; PostQuitMessage(0); return 0;
-    }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
-}
-
-// ============================================================================
 // DirectX 11 Initialization
 // ============================================================================
 
-bool Renderer::InitD3D() {
-    DXGI_SWAP_CHAIN_DESC scd = {};
-    scd.BufferCount = 1;
-    scd.BufferDesc.Width = width_;
-    scd.BufferDesc.Height = height_;
-    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    scd.BufferDesc.RefreshRate = {60, 1};
-    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd.OutputWindow = hwndRender_;
-    scd.SampleDesc = {1, 0};
-    scd.Windowed = TRUE;
-    scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-
+bool RenderService::InitDevice() {
     D3D_FEATURE_LEVEL featureLevel;
     D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0};
     UINT flags = 0;
@@ -1939,7 +1657,6 @@ bool Renderer::InitD3D() {
         for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
             DXGI_ADAPTER_DESC1 desc;
             adapter->GetDesc1(&desc);
-            // Skip software/remote adapters
             if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) { adapter->Release(); continue; }
             if (desc.DedicatedVideoMemory > bestVRAM) {
                 if (bestAdapter) bestAdapter->Release();
@@ -1951,22 +1668,20 @@ bool Renderer::InitD3D() {
         }
     }
 
-    // When using an explicit adapter, DriverType must be D3D_DRIVER_TYPE_UNKNOWN
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+    HRESULT hr = D3D11CreateDevice(
         bestAdapter, bestAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
         nullptr, flags, levels, 1, D3D11_SDK_VERSION,
-        &scd, &swapChain_, &device_, &featureLevel, &context_);
+        &device_, &featureLevel, &context_);
     if (bestAdapter) bestAdapter->Release();
     if (factory) factory->Release();
     if (FAILED(hr)) return false;
-    if (!ResizeBuffers(width_, height_)) return false;
 
     // Rasterizer states
     {
         D3D11_RASTERIZER_DESC rd = {};
         rd.FillMode = D3D11_FILL_SOLID;
         rd.CullMode = D3D11_CULL_BACK;
-        rd.FrontCounterClockwise = TRUE;  // Max uses CCW winding
+        rd.FrontCounterClockwise = TRUE;
         rd.DepthClipEnable = TRUE;
         rd.AntialiasedLineEnable = TRUE;
         device_->CreateRasterizerState(&rd, &rsDefault_);
@@ -1979,7 +1694,7 @@ bool Renderer::InitD3D() {
         D3D11_DEPTH_STENCIL_DESC dd = {};
         dd.DepthEnable = TRUE;
         dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
-        dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;  // WC3 uses LEQUAL
+        dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
         device_->CreateDepthStencilState(&dd, &dsDefault_);
         dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
         device_->CreateDepthStencilState(&dd, &dsNoWrite_);
@@ -1987,17 +1702,15 @@ bool Renderer::InitD3D() {
         device_->CreateDepthStencilState(&dd, &dsDisabled_);
     }
 
-    // Blend states — one per FilterMode (ported from Magos ModelMaterialLayer::UseMaterial)
+    // Blend states
     {
         D3D11_BLEND_DESC bd = {};
         auto& rt = bd.RenderTarget[0];
         rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 
-        // Opaque (FILTER_NONE)
         rt.BlendEnable = FALSE;
         device_->CreateBlendState(&bd, &bsOpaque_);
 
-        // Alpha test (FILTER_TRANSPARENT) — uses alpha blend + discard in shader
         rt.BlendEnable = TRUE;
         rt.SrcBlend = D3D11_BLEND_SRC_ALPHA;
         rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
@@ -2006,35 +1719,23 @@ bool Renderer::InitD3D() {
         rt.DestBlendAlpha = D3D11_BLEND_ZERO;
         rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
         device_->CreateBlendState(&bd, &bsAlphaTest_);
-
-        // Alpha blend (FILTER_BLEND)
-        // Same as alpha test but with depth write off (handled in render)
         device_->CreateBlendState(&bd, &bsAlphaBlend_);
 
-        // Additive (FILTER_ADDITIVE) — SrcAlpha + One
         rt.SrcBlend = D3D11_BLEND_SRC_ALPHA;
         rt.DestBlend = D3D11_BLEND_ONE;
         device_->CreateBlendState(&bd, &bsAdditive_);
-
-        // Add Alpha (FILTER_ADD_ALPHA) — SrcAlpha + One
-        // out = src.rgb * src.a + dst. Alpha channel controls glow intensity.
-        rt.SrcBlend = D3D11_BLEND_SRC_ALPHA;
-        rt.DestBlend = D3D11_BLEND_ONE;
         device_->CreateBlendState(&bd, &bsAddAlpha_);
 
-        // Modulate (FILTER_MODULATE) — Magos: Zero + SrcColor
         rt.SrcBlend = D3D11_BLEND_ZERO;
         rt.DestBlend = D3D11_BLEND_SRC_COLOR;
         device_->CreateBlendState(&bd, &bsModulate_);
 
-        // Modulate 2x (FILTER_MODULATE_2X) — out = 2 * src * dst
-        // via DestColor + SrcColor → src*dst + dst*src = 2*src*dst
         rt.SrcBlend = D3D11_BLEND_DEST_COLOR;
         rt.DestBlend = D3D11_BLEND_SRC_COLOR;
         device_->CreateBlendState(&bd, &bsModulate2x_);
     }
 
-    // Sampler
+    // Samplers
     {
         D3D11_SAMPLER_DESC sd = {};
         sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -2044,13 +1745,12 @@ bool Renderer::InitD3D() {
         sd.MaxLOD = D3D11_FLOAT32_MAX;
         device_->CreateSamplerState(&sd, &samplerLinear_);
 
-        // Per-texture wrap mode variants: index = wrapFlags (bit0=U, bit1=V)
         D3D11_TEXTURE_ADDRESS_MODE modes[2] = {
             D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE_ADDRESS_WRAP
         };
         for (int i = 0; i < 4; i++) {
-            sd.AddressU = modes[(i >> 0) & 1];  // bit 0 = WrapWidth (U)
-            sd.AddressV = modes[(i >> 1) & 1];  // bit 1 = WrapHeight (V)
+            sd.AddressU = modes[(i >> 0) & 1];
+            sd.AddressV = modes[(i >> 1) & 1];
             sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
             device_->CreateSamplerState(&sd, &samplerWrap_[i]);
         }
@@ -2081,36 +1781,123 @@ bool Renderer::InitD3D() {
         device_->CreateShaderResourceView(defaultTex_, nullptr, &defaultTexSRV_);
     }
 
+    // Shaders + default geometry (grid, view cube) are part of device init
+    if (!CreateShaders())          { CleanupD3D(); return false; }
+    if (!CreateDefaultResources()) { CleanupD3D(); return false; }
+
     return true;
 }
 
-bool Renderer::ResizeBuffers(int w, int h) {
-    if (!device_ || !swapChain_) return false;
-    context_->OMSetRenderTargets(0, nullptr, nullptr);
-    SafeRelease(rtv_); SafeRelease(dsv_); SafeRelease(depthBuffer_);
+RenderTargetId RenderService::CreateSwapChainTarget(void* nativeWindowHandle, int w, int h) {
+    if (!device_) return 0;
 
-    swapChain_->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH);
+    IDXGIDevice* dxgiDevice = nullptr;
+    IDXGIAdapter* dxgiAdapter = nullptr;
+    IDXGIFactory* dxgiFactory = nullptr;
+    device_->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
+    if (dxgiDevice) dxgiDevice->GetAdapter(&dxgiAdapter);
+    if (dxgiAdapter) dxgiAdapter->GetParent(__uuidof(IDXGIFactory), (void**)&dxgiFactory);
 
-    ID3D11Texture2D* backBuffer = nullptr;
-    swapChain_->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&backBuffer);
-    if (!backBuffer) return false;
-    device_->CreateRenderTargetView(backBuffer, nullptr, &rtv_);
-    SafeRelease(backBuffer);
+    if (!dxgiFactory) {
+        SafeRelease(dxgiAdapter);
+        SafeRelease(dxgiDevice);
+        return 0;
+    }
 
+    DXGI_SWAP_CHAIN_DESC scd = {};
+    scd.BufferCount = 1;
+    scd.BufferDesc.Width = w;
+    scd.BufferDesc.Height = h;
+    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.BufferDesc.RefreshRate = {60, 1};
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.OutputWindow = static_cast<HWND>(nativeWindowHandle);
+    scd.SampleDesc = {1, 0};
+    scd.Windowed = TRUE;
+    scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+
+    RenderTarget target;
+    target.id = nextTargetId_++;
+    HRESULT hr = dxgiFactory->CreateSwapChain(device_, &scd, &target.swapChain);
+    SafeRelease(dxgiFactory);
+    SafeRelease(dxgiAdapter);
+    SafeRelease(dxgiDevice);
+
+    if (FAILED(hr) || !target.swapChain) return 0;
+    if (!target.Resize(device_, w, h)) {
+        target.Release();
+        return 0;
+    }
+
+    RenderTargetId id = target.id;
+    targets_[id] = std::move(target);
+    return id;
+}
+
+RenderTargetId RenderService::CreateOffscreenTarget(int w, int h) {
+    if (!device_) return 0;
+
+    RenderTarget target;
+    target.id = nextTargetId_++;
+
+    // Create the color texture
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = w;
+    td.Height = h;
+    td.MipLevels = td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    device_->CreateTexture2D(&td, nullptr, &target.colorTex);
+    if (!target.colorTex) return 0;
+    device_->CreateRenderTargetView(target.colorTex, nullptr, &target.rtv);
+
+    // Depth buffer
     D3D11_TEXTURE2D_DESC dd = {};
-    dd.Width = w; dd.Height = h;
+    dd.Width = w;
+    dd.Height = h;
     dd.MipLevels = dd.ArraySize = 1;
     dd.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
     dd.SampleDesc = {1, 0};
     dd.Usage = D3D11_USAGE_DEFAULT;
     dd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-    device_->CreateTexture2D(&dd, nullptr, &depthBuffer_);
-    device_->CreateDepthStencilView(depthBuffer_, nullptr, &dsv_);
-    width_ = w; height_ = h;
-    return true;
+    device_->CreateTexture2D(&dd, nullptr, &target.depthBuf);
+    device_->CreateDepthStencilView(target.depthBuf, nullptr, &target.dsv);
+
+    target.width = w;
+    target.height = h;
+
+    RenderTargetId id = target.id;
+    targets_[id] = std::move(target);
+    return id;
 }
 
-void Renderer::CleanupD3D() {
+void RenderService::DestroyRenderTarget(RenderTargetId id) {
+    auto it = targets_.find(id);
+    if (it != targets_.end()) {
+        it->second.Release();
+        targets_.erase(it);
+    }
+}
+
+void RenderService::ResizeRenderTarget(RenderTargetId id, int w, int h) {
+    auto it = targets_.find(id);
+    if (it != targets_.end()) {
+        it->second.Resize(device_, w, h);
+    }
+}
+
+void RenderService::ResizePrimaryTarget(int w, int h) {
+    auto* target = primaryTarget();
+    if (!target || !device_) return;
+    context_->OMSetRenderTargets(0, nullptr, nullptr);
+    target->Resize(device_, w, h);
+    width_ = w;
+    height_ = h;
+}
+
+void RenderService::CleanupD3D() {
     if (context_) context_->ClearState();
     SafeRelease(defaultTexSRV_); SafeRelease(defaultTex_);
     SafeRelease(samplerLinear_);
@@ -2127,15 +1914,17 @@ void Renderer::CleanupD3D() {
     SafeRelease(skinComputeShader_);
     SafeRelease(inputLayout_);
     SafeRelease(pixelShader_); SafeRelease(vertexShader_);
-    SafeRelease(dsv_); SafeRelease(depthBuffer_); SafeRelease(rtv_);
-    SafeRelease(swapChain_); SafeRelease(context_); SafeRelease(device_);
+    for (auto& [id, target] : targets_) target.Release();
+    targets_.clear();
+    primaryTargetId_ = 0;
+    SafeRelease(context_); SafeRelease(device_);
 }
 
 // ============================================================================
 // Shaders — loaded from precompiled DXBC bytecode (Slang → slangc → DXBC)
 // ============================================================================
 
-bool Renderer::CreateShaders() {
+bool RenderService::CreateShaders() {
     using namespace WhiteoutDex::Shaders;
 
     // Mesh shader (VS + particle/ribbon PS)
@@ -2170,10 +1959,10 @@ bool Renderer::CreateShaders() {
 }
 
 // ============================================================================
-// Default Resources (Grid only — test triangle removed in Phase 2)
+// Default Resources (Grid)
 // ============================================================================
 
-bool Renderer::CreateDefaultResources() {
+bool RenderService::CreateDefaultResources() {
     std::vector<LineVertex> lines;
     const float extent = 500.0f;
     const float step   = 50.0f;
@@ -2209,7 +1998,7 @@ bool Renderer::CreateDefaultResources() {
 // FilterMode Application (ported from Magos ModelMaterialLayer::UseMaterial)
 // ============================================================================
 
-void Renderer::ApplyFilterMode(int filterMode, int matFlags) {
+void RenderService::ApplyFilterMode(int filterMode, int matFlags) {
     bool twoSided    = (matFlags & MAT_TWO_SIDED) != 0;
     bool unshaded    = (matFlags & MAT_UNSHADED) != 0;
     bool noDepthTest = (matFlags & MAT_NO_DEPTH_TEST) != 0;
@@ -2260,25 +2049,28 @@ void Renderer::ApplyFilterMode(int filterMode, int matFlags) {
 // Frame Rendering
 // ============================================================================
 
-void Renderer::RenderFrame() {
-    if (!rtv_ || !context_) return;
+void RenderService::RenderFrame(RenderTargetId targetId) {
+    auto it = targets_.find(targetId);
+    if (it == targets_.end()) return;
+    auto& target = it->second;
+    if (!target.rtv || !context_) return;
 
     float clearColor[4] = {0.39f, 0.39f, 0.40f, 1.0f};  // Magos-matched gray
-    context_->ClearRenderTargetView(rtv_, clearColor);
-    context_->ClearDepthStencilView(dsv_, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
+    context_->ClearRenderTargetView(target.rtv, clearColor);
+    context_->ClearDepthStencilView(target.dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
     D3D11_VIEWPORT vp = {};
-    vp.Width = (float)width_; vp.Height = (float)height_;
+    vp.Width = (float)target.width; vp.Height = (float)target.height;
     vp.MaxDepth = 1.0f;
     context_->RSSetViewports(1, &vp);
-    context_->OMSetRenderTargets(1, &rtv_, dsv_);
+    context_->OMSetRenderTargets(1, &target.rtv, target.dsv);
 
     Matrix44f view, proj;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
         view = camera_.GetViewMatrix();
     }
-    float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
+    float aspect = (target.height > 0) ? (float)target.width / (float)target.height : 1.0f;
     proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
 
     // Update constant buffer
@@ -2305,11 +2097,15 @@ void Renderer::RenderFrame() {
     if (showRibbons_) RenderRibbons();
     if (showCollisions_) RenderCollisions();
     RenderViewCube();
-
-    swapChain_->Present(1, 0);
 }
 
-void Renderer::RenderGrid() {
+void RenderService::Present(RenderTargetId targetId) {
+    auto it = targets_.find(targetId);
+    if (it != targets_.end() && it->second.swapChain)
+        it->second.swapChain->Present(1, 0);
+}
+
+void RenderService::RenderGrid() {
     if (!gridVB_) return;
     context_->IASetInputLayout(lineInputLayout_);
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
@@ -2329,7 +2125,7 @@ void Renderer::RenderGrid() {
 // Geoset Rendering (4-bucket sort by FilterMode, like Magos Model::Render)
 // ============================================================================
 
-void Renderer::RenderGeosets() {
+void RenderService::RenderGeosets() {
     if (models_.empty()) return;
 
     context_->IASetInputLayout(inputLayout_);
@@ -2481,7 +2277,7 @@ void Renderer::RenderGeosets() {
 // ViewCube — 3D orientation cube in top-right corner with Home button
 // ============================================================================
 
-RECT Renderer::GetViewCubeRect() const {
+RECT RenderService::GetViewCubeRect() const {
     int s = kViewCubeSize;
     int margin = 10;
     int cubeTop = margin + 28;
@@ -2574,7 +2370,7 @@ static bool CreateFaceLabelTexture(ID3D11Device* device,
     return true;
 }
 
-bool Renderer::CreateViewCube() {
+bool RenderService::CreateViewCube() {
     // Generate face label texture via GDI
     CreateFaceLabelTexture(device_, &vcFaceTex_, &vcFaceTexSRV_);
 
@@ -2663,7 +2459,7 @@ bool Renderer::CreateViewCube() {
     return true;
 }
 
-void Renderer::RenderViewCube() {
+void RenderService::RenderViewCube() {
     if (!vcCubeVB_ || !vcCubeIB_) return;
 
     // Save main viewport, set ViewCube viewport (top-right corner)
@@ -2680,7 +2476,9 @@ void Renderer::RenderViewCube() {
 
     // Clear depth only in this viewport area
     // (We render on top of the scene background)
-    context_->ClearDepthStencilView(dsv_, D3D11_CLEAR_DEPTH, 1.0f, 0);
+    auto* pt = primaryTarget();
+    if (!pt) return;
+    context_->ClearDepthStencilView(pt->dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
 
     // Build view matrix: same rotation as camera, but fixed distance, looking at origin
     Matrix44f vcView;
@@ -2828,7 +2626,7 @@ void Renderer::RenderViewCube() {
 }
 
 // Hit test: returns face index 0-5, 6=Home, -1=none
-int Renderer::HitTestViewCube(int mx, int my) {
+int RenderService::HitTestViewCube(int mx, int my) {
     RECT r = GetViewCubeRect();
 
     // Home button area (above the cube, only when hovering)
@@ -2896,7 +2694,7 @@ int Renderer::HitTestViewCube(int mx, int my) {
     return bestFace;
 }
 
-void Renderer::SnapCameraToFace(int faceIndex) {
+void RenderService::SnapCameraToFace(int faceIndex) {
     constexpr float HALF_PI = std::numbers::pi_v<float> / 2.0f;
     // Face order: Front(+Y), Back(-Y), Left(-X), Right(+X), Top(+Z), Bottom(-Z)
     switch (faceIndex) {
