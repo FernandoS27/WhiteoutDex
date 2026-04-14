@@ -171,3 +171,86 @@ float4 PSLine(PS_INPUT input) : SV_TARGET {
     return input.Color;
 }
 )HLSL";
+
+// ============================================================================
+// Compute shader: GPU vertex skinning
+// Each thread skins one vertex: position (4x4) + normal (3x3), 4 influences.
+// ============================================================================
+static const char* g_skinComputeShaderSrc = R"HLSL(
+
+// Matches the C++ Vertex struct: pos(3) + normal(3) + color(4) + uv(2) = 12 floats = 48 bytes
+struct Vertex {
+    float3 position;
+    float3 normal;
+    float4 color;
+    float2 uv;
+};
+
+// Per-vertex bone influences (4 indices + 4 weights)
+struct VertexWeight {
+    uint4  boneIdx;
+    float4 weight;
+};
+
+// Node palette — offset matrices (invBind * current), one per hierarchy node
+StructuredBuffer<float4x4>   NodePalette : register(t0);
+StructuredBuffer<Vertex>     BaseVerts   : register(t1);
+StructuredBuffer<VertexWeight> Weights   : register(t2);
+
+RWStructuredBuffer<Vertex>   OutVerts    : register(u0);
+
+[numthreads(256, 1, 1)]
+void CSSkin(uint3 dtid : SV_DispatchThreadID) {
+    uint idx = dtid.x;
+
+    // Bounds check (dispatch may overshoot)
+    uint vertCount, stride;
+    BaseVerts.GetDimensions(vertCount, stride);
+    if (idx >= vertCount) return;
+
+    Vertex base = BaseVerts[idx];
+    VertexWeight w = Weights[idx];
+
+    float3 posSum = float3(0, 0, 0);
+    float3 nrmSum = float3(0, 0, 0);
+    float totalW  = 0;
+
+    uint nodeCount, nodeStride;
+    NodePalette.GetDimensions(nodeCount, nodeStride);
+
+    uint bones[4] = { w.boneIdx.x, w.boneIdx.y, w.boneIdx.z, w.boneIdx.w };
+    float wts[4]  = { w.weight.x,  w.weight.y,  w.weight.z,  w.weight.w  };
+
+    [unroll]
+    for (int j = 0; j < 4; j++) {
+        float bw = wts[j];
+        if (bw < 0.0001) continue;
+        if (bones[j] >= nodeCount) continue;
+
+        float4x4 mat = NodePalette[bones[j]];
+
+        // Position: full 4x4 transform
+        // StructuredBuffer<float4x4> stores row-major bytes but HLSL reads
+        // them as column-major, effectively transposing the matrix.
+        // Use mul(M, v) instead of mul(v, M) to compensate.
+        posSum += bw * mul(mat, float4(base.position, 1.0)).xyz;
+
+        // Normal: 3x3 rotation only (no translation)
+        nrmSum += bw * mul((float3x3)mat, base.normal);
+
+        totalW += bw;
+    }
+
+    Vertex result;
+    if (totalW < 0.0001) {
+        result = base;          // no valid weights — passthrough
+    } else {
+        result.position = posSum;
+        result.normal   = normalize(nrmSum);
+        result.color    = base.color;
+        result.uv       = base.uv;
+    }
+
+    OutVerts[idx] = result;
+}
+)HLSL";

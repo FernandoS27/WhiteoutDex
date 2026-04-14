@@ -153,6 +153,13 @@ for %%V in (2016 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 2027) do (
                         echo [%%V]   %%~nxF  --^> output + AppData
                     )
                 )
+
+                REM Standalone renderer (no Max SDK dependency, but built alongside)
+                if exist "standalone\WhiteoutDexRenderer.exe" (
+                    if not exist "%OUTPUT_DIR%\Standalone" mkdir "%OUTPUT_DIR%\Standalone"
+                    copy /Y "standalone\WhiteoutDexRenderer.exe" "%OUTPUT_DIR%\Standalone\" >nul
+                    echo [%%V]   WhiteoutDexRenderer.exe -^> Standalone\
+                )
                 popd
             )
         ) else (

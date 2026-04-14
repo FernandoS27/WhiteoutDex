@@ -1,7 +1,7 @@
 #pragma once
 // ============================================================================
-// MDX Animation Evaluator — Track interpolation + bone hierarchy evaluation
-// No Max SDK dependency. Uses WhiteoutLib types + DirectXMath.
+// MDX Animation Evaluator — Track interpolation + node hierarchy evaluation
+// No Max SDK dependency. Uses WhiteoutLib types.
 // ============================================================================
 
 #include "model_types.h"
@@ -62,15 +62,16 @@ public:
 
     // Evaluate the full hierarchy at the given time for the active sequence.
     // Returns world matrices for ALL nodes (indexed by node position in nodes_).
-    // Also fills boneWorldMatrices (indexed by bone index 0..boneCount-1).
+    // Also fills boneWorldMatrices (indexed by bone source index, for Max adapter).
     // cameraPos is used for billboard node facing (pass nullptr to skip billboarding).
     void Evaluate(int timeMs, int seqStart, int seqEnd,
                   const std::vector<whiteout::u32>& globalSequences,
-                  std::vector<XMMATRIX>& boneWorldMatrices,
-                  std::vector<XMMATRIX>& allNodeMatrices,
-                  const XMFLOAT3* cameraPos = nullptr) const;
+                  std::vector<Matrix44f>& boneWorldMatrices,
+                  std::vector<Matrix44f>& allNodeMatrices,
+                  const Vector3f* cameraPos = nullptr,
+                  int globalTimeMs = -1) const;
 
-    int BoneCount() const { return boneCount_; }
+    int BoneCount() const { return boneCount_; }  // bone-only count (for Max adapter boneWorldMatrices)
     int NodeCount() const { return (int)nodes_.size(); }
     const std::vector<HierarchyNode>& Nodes() const { return nodes_; }
 
@@ -84,13 +85,13 @@ private:
 };
 
 // ============================================================================
-// Utility: Convert WhiteoutLib Matrix44f / 3x4 bind pose to XMMATRIX
+// Utility: Convert WhiteoutLib 3x4 bind pose to Matrix44f
 // ============================================================================
 
-XMMATRIX BindPose3x4ToXMMatrix(const std::array<whiteout::f32, 12>& bp);
-XMMATRIX Vec3QuatScaleToXMMatrix(const whiteout::Vector3f& t,
-                                  const whiteout::Quaternion& r,
-                                  const whiteout::Vector3f& s,
-                                  const whiteout::Vector3f& pivot);
+Matrix44f BindPose3x4ToMatrix44f(const std::array<whiteout::f32, 12>& bp);
+Matrix44f Vec3QuatScaleToMatrix44f(const whiteout::Vector3f& t,
+                                   const whiteout::Quaternion& r,
+                                   const whiteout::Vector3f& s,
+                                   const whiteout::Vector3f& pivot);
 
 } // namespace WhiteoutDex

@@ -59,7 +59,7 @@ Track<MdxT> convertTrack(const ir::Track<IrT>& irTrack,
         static_cast<int>(irTrack.interpolation));
     out.globalSequenceId = (irTrack.globalSequenceIndex >= 0)
                                ? static_cast<uint32_t>(irTrack.globalSequenceIndex)
-                               : 0xFFFFFFFF;
+                               : Track<MdxT>::kNoGlobalSequence;
     out.keyCount = irTrack.keys.size();
 
     bool hasTangents = (irTrack.interpolation == ir::InterpolationType::Hermite ||
@@ -233,7 +233,8 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         Texture mdxTex;
         mdxTex.fileName = tex.filePath;
         mdxTex.replaceableId = tex.replaceableId;
-        mdxTex.flags = (tex.wrapU ? 1u : 0u) | (tex.wrapV ? 2u : 0u);
+        mdxTex.flags = (tex.wrapU ? Texture::Flag::WrapWidth : Texture::Flag::None)
+                     | (tex.wrapV ? Texture::Flag::WrapHeight : Texture::Flag::None);
         model.textures.push_back(std::move(mdxTex));
     }
 
@@ -248,7 +249,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         Texture fallbackTex;
         fallbackTex.fileName = "Textures\\white.blp";
         fallbackTex.replaceableId = 0;
-        fallbackTex.flags = 0;
+        fallbackTex.flags = Texture::Flag::None;
         model.textures.push_back(std::move(fallbackTex));
 
         wdx::Material fallbackMat;
@@ -274,7 +275,8 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         mdxSeq.intervalStart = mdx_transform::ticksToMs(seq.startTime);
         mdxSeq.intervalEnd = mdx_transform::ticksToMs(seq.endTime);
         mdxSeq.moveSpeed = seq.moveSpeed;
-        mdxSeq.flags = seq.flags | (seq.isLooping ? 0u : 1u);
+        mdxSeq.flags = static_cast<Sequence::Flag>(seq.flags)
+                     | (seq.isLooping ? Sequence::Flag::None : Sequence::Flag::NonLooping);
         mdxSeq.rarity = seq.rarity;
         model.sequences.push_back(std::move(mdxSeq));
     }
@@ -701,7 +703,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             // flags bit 0 = use color (static or animated)
             bool hasNonWhiteColor = (irGa.color.r < 0.999f || irGa.color.g < 0.999f || irGa.color.b < 0.999f);
             if (ga.colorTracks.isUsed || hasNonWhiteColor)
-                ga.flags = 1u;
+                ga.flags = GeosetAnimation::Flag::Color;
             model.geosetAnimations.push_back(std::move(ga));
         }
     } else {

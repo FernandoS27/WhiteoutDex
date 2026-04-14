@@ -16,15 +16,13 @@
 namespace WhiteoutDex {
 
 // ============================================================================
-// Single ribbon segment (recorded position in time)
+// Single ribbon edge: explicit above/below world-space vertices.
+// Matches CRibbonEmitter::gxVertices[2*pos+0/1] storage.
 // ============================================================================
 struct RibbonSegment {
-    XMFLOAT3 position = {0,0,0};  // world position when created
-    XMFLOAT3 up       = {0,0,1};  // local up direction at creation
-    float    above     = 20.0f;    // height above at creation
-    float    below     = 20.0f;    // height below at creation
-    float    age       = 0;        // time since creation
-    float    initLife  = 0;        // original lifespan
+    Vector3f top = {0,0,0};   // above-center vertex (currPos + vertical*above)
+    Vector3f bot = {0,0,0};   // below-center vertex (currPos - vertical*below)
+    float    age = 0;         // seconds since creation
 };
 
 // ============================================================================
@@ -45,11 +43,11 @@ struct RibbonEmitterConfig {
 // Per-frame ribbon emitter state (animatable values + transform)
 // ============================================================================
 struct RibbonEmitterState {
-    XMMATRIX transform = XMMatrixIdentity();
+    Matrix44f transform = Matrix44f::identity();
     float above      = 20.0f;
     float below      = 20.0f;
     float alpha      = 1.0f;     // 0-1
-    XMFLOAT3 color   = {1,1,1};  // vertex color RGB (0-1)
+    Vector3f color   = {1,1,1};  // vertex color RGB (0-1)
     float visibility = 1.0f;
     int   slot       = 0;        // texture slot for atlas
 };
@@ -65,12 +63,12 @@ struct RibbonEmitter {
     float                       startTime     = 0;  // fractional edge time accumulator
     bool                        posSet        = false;
     // Previous/current frame transform history (for Hermite interpolation)
-    XMFLOAT3                    prevPos       = {0,0,0};
-    XMFLOAT3                    currPos       = {0,0,0};
-    XMFLOAT3                    prevDir       = {0,0,1};
-    XMFLOAT3                    currDir       = {0,0,1};
-    XMFLOAT3                    prevVertical  = {0,1,0};
-    XMFLOAT3                    currVertical  = {0,1,0};
+    Vector3f                    prevPos       = {0,0,0};
+    Vector3f                    currPos       = {0,0,0};
+    Vector3f                    prevDir       = {0,0,1};
+    Vector3f                    currDir       = {0,0,1};
+    Vector3f                    prevVertical  = {0,1,0};
+    Vector3f                    currVertical  = {0,1,0};
 };
 
 // ============================================================================
@@ -86,21 +84,18 @@ public:
 
     void Simulate(float dt);
 
-    int BuildStrips(std::vector<Vertex>& outVerts,
-                    std::vector<int>& outEmitterIds) const;
+    struct StripResult {
+        std::vector<Vertex> vertices;
+        std::vector<int> emitterIds;
+    };
+
+    StripResult BuildStrips() const;
 
     const RibbonEmitterConfig* GetConfig(int id) const;
     int GetTotalSegmentCount() const;
     int GetEmitterVertCount(int emitterId) const;
 
 private:
-    void SpawnInterpolatedSegment(RibbonEmitter& em, float t, float omt,
-                                   const XMFLOAT3& prevDirScaled,
-                                   const XMFLOAT3& currDirScaled,
-                                   float age);
-
-    void SpawnSegmentAtCurrent(RibbonEmitter& em);
-
     std::unordered_map<int, RibbonEmitter> emitters_;
 };
 

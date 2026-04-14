@@ -1,25 +1,30 @@
 #pragma once
 // ============================================================================
 // MDX Model Adapter — Translates WhiteoutLib MDX types to IModelSource.
-// No Max SDK dependency. Uses WhiteoutLib + DirectXMath.
+// No Max SDK dependency. Uses WhiteoutLib types.
 // ============================================================================
 
 #include "model_source.h"
 #include "mdx_animation.h"
+#include "file_resolver.h"
 #include <whiteout/models/mdx/types.h>
 #include <string>
 #include <filesystem>
 
 namespace WhiteoutDex {
 
+class FileContentProvider;
+
 class MdxModelAdapter : public IModelSource {
 public:
     // Construct from a parsed MDX model. basePath is the directory containing
     // the .mdx file, used to resolve relative texture paths.
     // space: MDX = raw coordinates, Max = swizzle (y, -x, z) for Max integration
+    // contentProvider: optional; when set, falls back to CASC/MPQ for textures
     explicit MdxModelAdapter(whiteout::mdx::Model model,
                              std::filesystem::path basePath = {},
-                             CoordSpace space = CoordSpace::MDX);
+                             CoordSpace space = CoordSpace::MDX,
+                             FileContentProvider* contentProvider = nullptr);
 
     // ---- IModelSource static data ----
     std::vector<MeshData>              GetMeshes()          override;
@@ -40,7 +45,7 @@ public:
     void SetCameraPosition(float x, float y, float z) override;
 
     // ---- Per-frame evaluation ----
-    FrameState Evaluate(int timeMs) override;
+    FrameState Evaluate(int timeMs, int globalTimeMs = -1) override;
 
     // ---- Sequence info ----
     std::vector<SequenceInfo> GetSequences() override;
@@ -51,7 +56,8 @@ public:
 private:
     whiteout::mdx::Model model_;
     std::filesystem::path basePath_;
-    CoordSpace space_ = CoordSpace::MDX;
+    FileResolver resolver_;
+    FileContentProvider* contentProvider_ = nullptr;
     MdxHierarchy hierarchy_;
 
     // Active sequence
@@ -60,11 +66,10 @@ private:
     int seqEnd_   = 0;
 
     // Camera position for billboard evaluation
-    XMFLOAT3 cameraPos_ = {0, -350, 50};
+    Vector3f cameraPos_ = {0, -350, 50};
 
     // Helpers
     int MapPE2FilterMode(whiteout::u32 mdxMode) const;
-    int MapLayerFilterMode(whiteout::mdx::Layer::FilterMode fm) const;
     int MapShadingFlags(whiteout::mdx::Layer::ShadingFlag sf) const;
 
     TextureData LoadTextureFile(const std::string& path, int textureId,

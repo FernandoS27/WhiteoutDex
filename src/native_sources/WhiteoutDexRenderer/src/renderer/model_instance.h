@@ -26,6 +26,7 @@ struct StagedTexture {
     int width  = 0;
     int height = 0;
     int replaceableId = 0;
+    uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V)
 };
 
 struct StagedMaterialLayer {
@@ -61,13 +62,25 @@ struct GPUGeoset {
 
     std::vector<Vertex> baseVertices;
     bool hasSkinning    = false;
+
+    // GPU compute skinning resources
+    ID3D11Buffer*             baseVertBuf  = nullptr; // SRV source (immutable copy of baseVertices)
+    ID3D11ShaderResourceView* baseVertSRV  = nullptr;
+    ID3D11Buffer*             weightBuf    = nullptr; // SRV source (packed bone indices + weights)
+    ID3D11ShaderResourceView* weightSRV    = nullptr;
+    ID3D11Buffer*             skinnedBuf   = nullptr; // UAV output (also bound as vertex buffer)
+    ID3D11UnorderedAccessView* skinnedUAV  = nullptr;
+
     float geosetAlpha   = 1.0f;
-    XMFLOAT3 geosetColor = {1,1,1};
-    XMMATRIX worldMatrix = XMMatrixIdentity();
+    Vector3f geosetColor = {1,1,1};
+    Matrix44f worldMatrix = Matrix44f::identity();
     int priorityPlane   = 0;
 
     void Release() {
         SafeRelease(vb); SafeRelease(ib);
+        SafeRelease(baseVertBuf); SafeRelease(baseVertSRV);
+        SafeRelease(weightBuf); SafeRelease(weightSRV);
+        SafeRelease(skinnedBuf); SafeRelease(skinnedUAV);
         indexCount = 0; vertexCount = 0;
         baseVertices.clear(); baseVertices.shrink_to_fit();
     }
@@ -76,6 +89,7 @@ struct GPUGeoset {
 struct GPUTexture {
     ID3D11Texture2D*          tex = nullptr;
     ID3D11ShaderResourceView* srv = nullptr;
+    uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V)
 
     void Release() { SafeRelease(srv); SafeRelease(tex); }
 };
@@ -89,10 +103,10 @@ struct GPUMaterial {
 // ============================================================================
 struct CollisionShape {
     int type = 0;            // 0=box, 1=sphere
-    XMFLOAT3 vmin = {0,0,0};
-    XMFLOAT3 vmax = {0,0,0};
+    Vector3f vmin = {0,0,0};
+    Vector3f vmax = {0,0,0};
     float radius = 0;
-    XMMATRIX transform = XMMatrixIdentity();
+    Matrix44f transform = Matrix44f::identity();
 };
 
 // ============================================================================
@@ -111,7 +125,7 @@ struct ModelInstance {
 
     // World transform for the entire model instance
     // (identity for focus model, per-particle transform for PE1 children)
-    XMMATRIX worldTransform = XMMatrixIdentity();
+    Matrix44f worldTransform = Matrix44f::identity();
 
     // ---- Staged data (CPU side, written by API thread under dataMutex_) ----
     std::unordered_map<int, StagedGeoset>   stagedGeosets;
@@ -128,7 +142,12 @@ struct ModelInstance {
     // ---- Skinning ----
     SkinningSystem skinning;
     bool skinDirty = false;
-    std::vector<uint32_t> boneBillboardFlags;  // per-bone billboard flags
+    std::vector<uint32_t> billboardFlags;  // per-node billboard flags
+    std::vector<Vector3f> nodePivots;     // per-node rest pivots (for billboard rotation center)
+
+    // GPU node palette (StructuredBuffer of offset matrices, one per model)
+    ID3D11Buffer*             nodePaletteBuf = nullptr;
+    ID3D11ShaderResourceView* nodePaletteSRV = nullptr;
 
     // ---- Particle system ----
     ParticleSystem particles;
@@ -156,8 +175,14 @@ struct ModelInstance {
         AttachmentConfig config;
         uint32_t childModelHandle = 0;  // 0 = not yet loaded
         bool loaded = false;
+        bool wasVisible = false;        // tracks first-visible for animation start
     };
     std::vector<AttachmentSlot> attachmentSlots;
+
+    // Visibility multiplier driven by the parent model when this instance is
+    // hosted as an attachment child. 1 = fully visible, 0 = fully hidden.
+    // Authoritative source: only the parent's ApplyFrameState writes this.
+    float parentVisibility = 1.0f;
 
     // ---- PE1 (model particle emitter) ----
     PE1System pe1;
@@ -176,6 +201,7 @@ struct ModelInstance {
         for (auto& [id, t] : gpuTextures) t.Release();
         gpuTextures.clear();
         gpuMaterials.clear();
+        SafeRelease(nodePaletteBuf); SafeRelease(nodePaletteSRV);
         SafeRelease(particleVB); particleVBSize = 0;
         SafeRelease(ribbonVB); ribbonVBSize = 0;
     }

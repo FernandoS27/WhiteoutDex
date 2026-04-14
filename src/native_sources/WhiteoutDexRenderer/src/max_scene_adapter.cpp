@@ -12,6 +12,8 @@
 #include <chrono>
 #include <algorithm>
 #include <cwchar>
+#include <cstring>
+#include <numbers>
 
 using namespace WhiteoutDex;
 
@@ -40,39 +42,6 @@ void MaxSceneAdapter::PackMatrix(const Matrix3& tm, float* dst) {
 // ============================================================================
 // FilterMode Mapping
 // ============================================================================
-
-int MaxSceneAdapter::MapMaterialFilterMode(int wc3fm) {
-    // Wc3Material.ms dropdown (1-based): 1=None, 2=Transparent, 3=Blend,
-    //   4=Additive, 5=AddAlpha, 6=Modulate, 7=Modulate2x
-    // Renderer FilterMode (0-based): 0=None .. 6=Modulate2x
-    int fm = wc3fm - 1;
-    if (fm < 0) fm = 0;
-    if (fm > 6) fm = 6;
-    return fm;
-}
-
-int MaxSceneAdapter::MapParticleFilterMode(int bpfm) {
-    // Wc3Particles2 PB_BLEND: 0=Blend,1=Add,2=Modulate,3=Mod2X,4=AlphaKey
-    // Renderer FilterMode:    0=None,1=Transparent,2=Blend,3=Additive,
-    //                         4=AddAlpha,5=Modulate,6=Modulate2x
-    switch (bpfm) {
-        case 0: return 2;  // Blend
-        case 1: return 3;  // Add → Additive
-        case 2: return 5;  // Modulate
-        case 3: return 6;  // Mod2X → Modulate2x
-        case 4: return 1;  // AlphaKey → Transparent
-        default: return 2; // fallback Blend
-    }
-}
-
-int MaxSceneAdapter::MapRibbonFilterMode(int rbfm) {
-    // Matches Wc3Material-style 1-based dropdown → 0-based renderer enum
-    switch (rbfm) {
-        case 1: return 0; case 2: return 1; case 3: return 2;
-        case 4: return 3; case 5: return 4; case 6: return 5;
-        case 7: return 6; default: return 2;
-    }
-}
 
 // ============================================================================
 // IParamBlock2 helpers (unchanged from extract.cpp)
@@ -400,7 +369,7 @@ void MaxSceneAdapter::CollectScene() {
     auto snapMtl = [&](Mtl* mtl, int key) {
         MaterialSnapshot snap;
         int wc3fm = 1; PB2Int(mtl, L"filterMode", 0, wc3fm);
-        snap.filterMode = MapMaterialFilterMode(wc3fm);
+        snap.filterMode = MapFilterMode(wc3fm - 1);
         BOOL flag = FALSE; int flags = 0;
         if (PB2Bool(mtl, L"twoSided", 0, flag) && flag)      flags |= 1;
         if (PB2Bool(mtl, L"unshaded", 0, flag) && flag)      flags |= 2;
@@ -510,7 +479,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     MaterialLayerInfo layer;
 
     int wc3fm = 1; PB2Int(mtl, L"filterMode", 0, wc3fm);
-    layer.filterMode = MapMaterialFilterMode(wc3fm);
+    layer.filterMode = MapFilterMode(wc3fm - 1);
     float opacity = 100; PB2Float(mtl, L"opacity", 0, opacity);
     layer.alpha = std::min(opacity / 100.0f, 1.0f);
 
@@ -1072,22 +1041,17 @@ std::vector<MaterialData> MaxSceneAdapter::GetMaterials() {
 
 SkeletonData MaxSceneAdapter::GetSkeleton() {
     SkeletonData sd;
-    sd.boneCount = (int)bones_.size();
-    sd.nodeCount = sd.boneCount;
-    sd.inverseBindMatrices.resize(sd.boneCount);
-    sd.boneBillboardFlags.resize(sd.boneCount, 0);
-    for (int i = 0; i < sd.boneCount; i++) {
+    sd.nodeCount = (int)bones_.size();
+    sd.inverseBindMatrices.resize(sd.nodeCount);
+    sd.billboardFlags.resize(sd.nodeCount, 0);
+    for (int i = 0; i < sd.nodeCount; i++) {
         INode* node = bones_[i].node;
         Matrix3 inv = Inverse(node->GetNodeTM(0));
         bones_[i].inverseBind = inv;
         float m16[16];
         PackMatrix(inv, m16);
-        sd.inverseBindMatrices[i] = XMMATRIX(
-            m16[0], m16[1], m16[2],  m16[3],
-            m16[4], m16[5], m16[6],  m16[7],
-            m16[8], m16[9], m16[10], m16[11],
-            m16[12],m16[13],m16[14], m16[15]
-        );
+        sd.inverseBindMatrices[i] = {};
+        memcpy(&sd.inverseBindMatrices[i].data[0][0], m16, 64);
         // Read billboard flags from user properties
         int val = 0;
         uint32_t flags = 0;
@@ -1095,7 +1059,7 @@ SkeletonData MaxSceneAdapter::GetSkeleton() {
         if (node->GetUserPropInt(_T("BillboardedLockX"), val) && val) flags |= BONE_BILLBOARD_LOCK_X;
         if (node->GetUserPropInt(_T("BillboardedLockY"), val) && val) flags |= BONE_BILLBOARD_LOCK_Y;
         if (node->GetUserPropInt(_T("BillboardedLockZ"), val) && val) flags |= BONE_BILLBOARD_LOCK_Z;
-        sd.boneBillboardFlags[i] = flags;
+        sd.billboardFlags[i] = flags;
     }
     return sd;
 }
@@ -1173,7 +1137,7 @@ std::vector<ParticleEmitterConfig> MaxSceneAdapter::GetParticleConfigs() {
 
         // Wc3Particles2 PB2 param names (from Particles.h enum)
         int blendMode = 0; PB2Int(obj, L"BlendMode", 0, blendMode);
-        cfg.filterMode = MapParticleFilterMode(blendMode);
+        cfg.filterMode = MapPE2BlendMode(blendMode);
 
         if(PB2Int(obj, L"TextureRows", 0, iv)) cfg.rows = iv;
         if(PB2Int(obj, L"TextureCols", 0, iv)) cfg.cols = iv;
@@ -1222,6 +1186,10 @@ std::vector<ParticleEmitterConfig> MaxSceneAdapter::GetParticleConfigs() {
         if(PB2Int(obj, L"TailDecayRepeat", 0, iv)) cfg.tailDecayRepeat = iv;
 
         if(PB2Bool(obj, L"SortPrimitives", 0, bv)) cfg.sortZ = bv != 0;
+        if(PB2Bool(obj, L"Unfogged", 0, bv))       cfg.unfogged = bv != 0;
+
+        if(PB2Int(obj, L"Count", 0, iv))         cfg.count         = iv;
+        if(PB2Int(obj, L"PriorityPlane", 0, iv)) cfg.priorityPlane = iv;
 
         mprintf(_M("  Particle %d: '%s' tex=%d fm=%d unshaded=%d\n"),
                 pi.emitterId, pi.node->GetName(), pi.textureId, cfg.filterMode, (int)cfg.unshaded);
@@ -1248,9 +1216,9 @@ std::vector<RibbonEmitterConfig> MaxSceneAdapter::GetRibbonConfigs() {
         Mtl* mtl = ri.node->GetMtl();
         if (mtl && mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
             int wc3fm = 0; PB2Int(mtl, L"filterMode", 0, wc3fm);
-            cfg.filterMode = MapMaterialFilterMode(wc3fm);
+            cfg.filterMode = MapFilterMode(wc3fm - 1);
         } else {
-            cfg.filterMode = MapRibbonFilterMode(4); // fallback: old default
+            cfg.filterMode = MapFilterMode(3); // fallback: Additive (old default)
         }
 
         // Wc3Ribbon PB2 param names
@@ -1339,7 +1307,7 @@ void MaxSceneAdapter::SetActiveSequence(int) {}
 // IModelSource::Evaluate() — compute per-frame state from Max scene
 // ============================================================================
 
-FrameState MaxSceneAdapter::Evaluate(int timeMs) {
+FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
     // Convert ms to Max ticks
     int tpf = GetTicksPerFrame(), fps = GetFrameRate();
     TimeValue t = (tpf > 0 && fps > 0)
@@ -1355,12 +1323,8 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
         for (int i = 0; i < bc; i++) {
             float m16[16];
             PackMatrix(bones_[i].node->GetNodeTM(t), m16);
-            state.boneWorldMatrices[i] = XMMATRIX(
-                m16[0], m16[1], m16[2],  m16[3],
-                m16[4], m16[5], m16[6],  m16[7],
-                m16[8], m16[9], m16[10], m16[11],
-                m16[12],m16[13],m16[14], m16[15]
-            );
+            state.boneWorldMatrices[i] = {};
+            memcpy(&state.boneWorldMatrices[i].data[0][0], m16, 64);
         }
     }
 
@@ -1370,15 +1334,11 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
         state.geosetTransforms.resize(c);
         for (int i = 0; i < c; i++) {
             INode* node = geosets_[i].node;
-            if (!node) { state.geosetTransforms[i] = XMMatrixIdentity(); continue; }
+            if (!node) { state.geosetTransforms[i] = Matrix44f::identity(); continue; }
             float m16[16];
             PackMatrix(node->GetNodeTM(t), m16);
-            state.geosetTransforms[i] = XMMATRIX(
-                m16[0], m16[1], m16[2],  m16[3],
-                m16[4], m16[5], m16[6],  m16[7],
-                m16[8], m16[9], m16[10], m16[11],
-                m16[12],m16[13],m16[14], m16[15]
-            );
+            state.geosetTransforms[i] = {};
+            memcpy(&state.geosetTransforms[i].data[0][0], m16, 64);
         }
 
         state.geosetAlphas.resize(c, 1.0f);
@@ -1438,15 +1398,13 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
 
         float m16[16];
         PackMatrix(pi.node->GetNodeTM(t), m16);
-        ps.transform = XMMATRIX(
-            m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
-            m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]
-        );
+        ps.transform = {};
+        memcpy(&ps.transform.data[0][0], m16, 64);
         float fv=0;
         PB2Float(obj,L"EmissionRate",t,fv); ps.emissionRate=fv;
         PB2Float(obj,L"Speed",t,fv);        ps.speed=fv;
         PB2Float(obj,L"Variation",t,fv);    ps.variation=fv;
-        PB2Float(obj,L"ConeAngle",t,fv);    ps.coneAngle=fv;
+        PB2Float(obj,L"ConeAngle",t,fv);    ps.coneAngle=fv * (std::numbers::pi_v<float> / 180.0f); // deg→rad
         PB2Float(obj,L"Gravity",t,fv);      ps.gravity=fv;
         PB2Float(obj,L"Width",t,fv);        ps.width=fv;
         PB2Float(obj,L"Height",t,fv);       ps.length=fv;
@@ -1462,10 +1420,8 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
 
         float m16[16];
         PackMatrix(ri.node->GetNodeTM(t), m16);
-        rs.transform = XMMATRIX(
-            m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
-            m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]
-        );
+        rs.transform = {};
+        memcpy(&rs.transform.data[0][0], m16, 64);
         float fv=0; Color cv;
         if(PB2Float(obj,L"Height Above",t,fv)) rs.above=fv; else rs.above=20;
         if(PB2Float(obj,L"Height Below",t,fv)) rs.below=fv; else rs.below=20;
@@ -1481,10 +1437,9 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
     for (auto& ci : collisions_) {
         float m16[16];
         PackMatrix(ci.node->GetNodeTM(t), m16);
-        state.collisionTransforms.push_back(XMMATRIX(
-            m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
-            m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]
-        ));
+        Matrix44f cm = {};
+        memcpy(&cm.data[0][0], m16, 64);
+        state.collisionTransforms.push_back(cm);
     }
 
     // Attachment transforms
@@ -1492,24 +1447,22 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs) {
         auto& ai = attachments_[i];
         float m16[16];
         PackMatrix(ai.node->GetNodeTM(t), m16);
-        XMMATRIX tm(m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
-                    m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]);
+        Matrix44f tm = {};
+        memcpy(&tm.data[0][0], m16, 64);
         float vis = ai.node->GetVisibility(t);
         state.attachmentStates.push_back({i, tm, vis});
     }
 
     // PE1 emitter states
-    constexpr float kDegToRad = 3.14159265f / 180.0f;
+    constexpr float kDegToRad = std::numbers::pi_v<float> / 180.0f;
     for (auto& pi : pe1Emitters_) {
         Object* obj = GetBaseObject(pi.node); if (!obj) continue;
         FrameState::PE1FrameState ps;
         ps.emitterId = pi.emitterId;
         float m16[16];
         PackMatrix(pi.node->GetNodeTM(t), m16);
-        ps.transform = XMMATRIX(
-            m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
-            m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]
-        );
+        ps.transform = {};
+        memcpy(&ps.transform.data[0][0], m16, 64);
         float fv = 0;
         PB2Float(obj, L"Speed", t, fv);         ps.speed = fv;
         PB2Float(obj, L"EmissionRate", t, fv);  ps.emissionRate = fv;
@@ -1625,7 +1578,7 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
     auto snapshotMtl = [&](Mtl* mtl) -> MaterialSnapshot {
         MaterialSnapshot snap;
         int wc3fm = 1; PB2Int(mtl, L"filterMode", 0, wc3fm);
-        snap.filterMode = MapMaterialFilterMode(wc3fm);
+        snap.filterMode = MapFilterMode(wc3fm - 1);
 
         BOOL flag = FALSE; int flags = 0;
         if (PB2Bool(mtl, L"twoSided", 0, flag) && flag)      flags |= 1;

@@ -14,6 +14,8 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/mdx_model_adapter.cpp
     src/renderer/team_glow_data.cpp
     src/renderer/pe1_system.cpp
+    src/renderer/file_resolver.cpp
+    src/renderer/file_content_provider.cpp
 )
 
 set_target_properties(WhiteoutDexRendererLib PROPERTIES
@@ -35,6 +37,14 @@ target_link_libraries(WhiteoutDexRendererLib PUBLIC
     gdi32.lib
     comdlg32.lib
 )
+
+if(TARGET whiteout_casc)
+    target_link_libraries(WhiteoutDexRendererLib PUBLIC whiteout_casc)
+endif()
+
+if(TARGET whiteout_mpq)
+    target_link_libraries(WhiteoutDexRendererLib PUBLIC whiteout_mpq)
+endif()
 
 if(MSVC)
     target_compile_options(WhiteoutDexRendererLib PRIVATE
@@ -88,13 +98,29 @@ if(MSVC)
     )
 endif()
 
-# ---- Standalone test harness (no Max SDK) ----
-option(WHITEOUTDEX_BUILD_TEST "Build standalone MDX test viewer" OFF)
-if(WHITEOUTDEX_BUILD_TEST)
-    add_executable(WhiteoutDexTest src/test_main.cpp src/resource.rc)
-    set_target_properties(WhiteoutDexTest PROPERTIES
-        CXX_STANDARD          20
-        CXX_STANDARD_REQUIRED ON
+# ---- Standalone executable: MDX viewer (no Max SDK) ----
+add_executable(WhiteoutDexRendererStandalone
+    src/test_main.cpp
+    src/resource.rc
+)
+
+set_target_properties(WhiteoutDexRendererStandalone PROPERTIES
+    CXX_STANDARD          20
+    CXX_STANDARD_REQUIRED ON
+    OUTPUT_NAME           "WhiteoutDexRenderer"
+    RUNTIME_OUTPUT_DIRECTORY         "${CMAKE_BINARY_DIR}/standalone"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_BINARY_DIR}/standalone"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/standalone"
+)
+
+target_link_libraries(WhiteoutDexRendererStandalone PRIVATE
+    WhiteoutDexRendererLib
+    comdlg32
+)
+
+if(MSVC)
+    target_compile_options(WhiteoutDexRendererStandalone PRIVATE
+        /W3 /EHsc
+        /wd4100 /wd4127 /wd4244 /wd4267
     )
-    target_link_libraries(WhiteoutDexTest PRIVATE WhiteoutDexRendererLib)
 endif()

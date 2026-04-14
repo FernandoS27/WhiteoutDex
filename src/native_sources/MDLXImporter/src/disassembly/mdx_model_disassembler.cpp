@@ -310,10 +310,10 @@ void MdxModelDisassembler::mapSequences(const wdx::Model& mdx, ir::IRModel& ir) 
         irSeq.name = seq.name;
         irSeq.startTime = mdx_coord::msToTicks(seq.intervalStart);
         irSeq.endTime = mdx_coord::msToTicks(seq.intervalEnd);
-        irSeq.isLooping = (seq.flags & 1) == 0; // MDX flag bit 0 = NonLooping
+        irSeq.isLooping = !hasFlag(seq.flags, wdx::Sequence::Flag::NonLooping);
         irSeq.rarity = seq.rarity;
         irSeq.moveSpeed = seq.moveSpeed;
-        irSeq.flags = seq.flags;
+        irSeq.flags = static_cast<uint32_t>(seq.flags);
 
         irSeq.extentMin = Point3(seq.extent.minimum.x, seq.extent.minimum.y, seq.extent.minimum.z);
         irSeq.extentMax = Point3(seq.extent.maximum.x, seq.extent.maximum.y, seq.extent.maximum.z);
@@ -335,8 +335,8 @@ void MdxModelDisassembler::mapTextures(const wdx::Model& mdx, ir::IRModel& ir) {
         ir::Texture irTex;
         irTex.filePath = tex.fileName;
         irTex.replaceableId = static_cast<int32_t>(tex.replaceableId);
-        irTex.wrapU = (tex.flags & 1) != 0;
-        irTex.wrapV = (tex.flags & 2) != 0;
+        irTex.wrapU = hasFlag(tex.flags, wdx::Texture::Flag::WrapWidth);
+        irTex.wrapV = hasFlag(tex.flags, wdx::Texture::Flag::WrapHeight);
         ir.textures.push_back(std::move(irTex));
     }
 }
@@ -348,7 +348,7 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
     for (const auto& mat : mdx.materials) {
         ir::Material irMat;
         irMat.priorityPlane = static_cast<int32_t>(mat.priorityPlane);
-        irMat.flags = mat.flags;
+        irMat.flags = static_cast<uint32_t>(mat.flags);
         irMat.shaderName = mat.shader;
 
         for (const auto& layer : mat.layers) {
@@ -639,8 +639,8 @@ void MdxModelDisassembler::mapGeosetAnimations(const wdx::Model& mdx, ir::IRMode
         irGA.meshIndex = static_cast<int32_t>(ga.geosetId);
         irGA.alpha = ga.alpha;
         irGA.color = Color(ga.color.z, ga.color.y, ga.color.x);  // MDX BGR → RGB
-        irGA.dropShadow = (ga.flags & 0x1) != 0;  // bit 0: drop shadow
-        irGA.usesColor  = (ga.flags & 0x2) != 0;  // bit 1: uses color
+        irGA.dropShadow = hasFlag(ga.flags, wdx::GeosetAnimation::Flag::DropShadow);
+        irGA.usesColor  = hasFlag(ga.flags, wdx::GeosetAnimation::Flag::Color);
 
         if (ga.alphaTracks.isUsed)
             irGA.alphaTrackIndex = storeFloatTrack(ir, mapFloatTrack(ga.alphaTracks));

@@ -3,8 +3,10 @@
 // ============================================================================
 
 #include "mdx_model_adapter.h"
+#include "file_content_provider.h"
 #include "team_glow_data.h"
 #include <cmath>
+#include <cstdio>
 #include <whiteout/textures/blp/blp.h>
 #include <whiteout/textures/dds/parser.h>
 #include <whiteout/textures/tga/parser.h>
@@ -17,21 +19,141 @@ using namespace whiteout;
 using namespace whiteout::mdx;
 namespace fs = std::filesystem;
 
-// MDX→Max coordinate swizzle helpers
-static inline XMFLOAT3 swizzlePos(const Vector3f& v) { return {v.y, -v.x, v.z}; }
-static inline XMFLOAT3 swizzleNorm(const Vector3f& v) { return {v.y, -v.x, v.z}; }
-static inline XMFLOAT3 rawPos(const Vector3f& v) { return {v.x, v.y, v.z}; }
-static inline XMFLOAT3 rawNorm(const Vector3f& v) { return {v.x, v.y, v.z}; }
+// ============================================================================
+// MDX → Max (renderer-native) coordinate transform
+// Mirrors MDLXImporter's transformToMaxCoordinates, but operates directly on
+// whiteout::mdx::Model so the entire model is in renderer-native space after
+// load. Applied once in the adapter constructor; all downstream getters then
+// just copy values without per-call swizzling.
+//   MDX(x,y,z)        → Max(y, -x, z)       positions / normals
+//   MDX quat(x,y,z,w) → Max quat(y, -x, z, w)
+//   MDX(x,y,z)        → Max(y,  x, z)       scale (no negation)
+//   MDX(x,y,z,w)      → Max(y, -x, z, w)    tangent (w = handedness, kept)
+//   Bind pose 3x4:    full basis change M_max = C^-1 · M_mdx · C
+// ============================================================================
+namespace {
+
+inline void swizPos(Vector3f& v)   { v = {v.y, -v.x, v.z}; }
+inline void swizScale(Vector3f& v) { v = {v.y,  v.x, v.z}; }
+inline void swizQuat(Quaternion& q){ q = {q.y, -q.x, q.z, q.w}; }
+inline void swizTangent(Vector4f& t){ t = {t.y, -t.x, t.z, t.w}; }
+
+template <typename T, typename Fn>
+void transformTrack(Track<T>& track, Fn fn) {
+    if (!track.isUsed || track.keys_data.empty()) return;
+    if (isSmoothInterpolation(track.interpolationType)) {
+        for (auto& k : track.tangentKeys()) {
+            fn(k.value);
+            fn(k.inTan);
+            fn(k.outTan);
+        }
+    } else {
+        for (auto& k : track.keys()) {
+            fn(k.value);
+        }
+    }
+}
+
+void transformNodeTracks(Node& n) {
+    transformTrack(n.translationTracks, [](Vector3f& v){ swizPos(v); });
+    transformTrack(n.rotationTracks,    [](Quaternion& q){ swizQuat(q); });
+    transformTrack(n.scalingTracks,     [](Vector3f& v){ swizScale(v); });
+}
+
+// 3x4 bind pose layout (per BindPose3x4ToMatrix44f):
+//   row0 basis X = bp[0..2]
+//   row1 basis Y = bp[3..5]
+//   row2 basis Z = bp[6..8]
+//   row3 trans   = bp[9..11]
+// Apply full basis change M_max = C^-1 · M_mdx · C with C = [0 -1 0; 1 0 0; 0 0 1]
+void transformBindPose(std::array<f32, 12>& bp) {
+    Vector3f r0{bp[0], bp[1], bp[2]};
+    Vector3f r1{bp[3], bp[4], bp[5]};
+    Vector3f r2{bp[6], bp[7], bp[8]};
+    Vector3f t {bp[9], bp[10], bp[11]};
+
+    bp[0] =  r1.y; bp[1] = -r1.x; bp[2] =  r1.z;
+    bp[3] = -r0.y; bp[4] =  r0.x; bp[5] = -r0.z;
+    bp[6] =  r2.y; bp[7] = -r2.x; bp[8] =  r2.z;
+    swizPos(t);
+    bp[9] = t.x; bp[10] = t.y; bp[11] = t.z;
+}
+
+void TransformMdxModelToMaxCoords(whiteout::mdx::Model& m) {
+    // Geosets: positions, normals, tangents, extents
+    for (auto& gs : m.geosets) {
+        for (auto& v : gs.vertexPositions) swizPos(v);
+        for (auto& v : gs.vertexNormals)   swizPos(v);
+        for (auto& t : gs.tangents)        swizTangent(t);
+        swizPos(gs.extent.minimum);
+        swizPos(gs.extent.maximum);
+        for (auto& ext : gs.sequenceExtents) {
+            swizPos(ext.minimum);
+            swizPos(ext.maximum);
+        }
+    }
+
+    // Pivot points (indexed by objectId)
+    for (auto& p : m.pivotPoints) swizPos(p);
+
+    // Sequence and model extents
+    for (auto& s : m.sequences) {
+        swizPos(s.extent.minimum);
+        swizPos(s.extent.maximum);
+    }
+    swizPos(m.modelExtent.minimum);
+    swizPos(m.modelExtent.maximum);
+
+    // Node-bearing structures: transform their TRS tracks
+    for (auto& b  : m.bones)             transformNodeTracks(b.node);
+    for (auto& h  : m.helpers)           transformNodeTracks(h.node);
+    for (auto& a  : m.attachments)       transformNodeTracks(a.node);
+    for (auto& l  : m.lights)            transformNodeTracks(l.node);
+    for (auto& pe : m.particleEmitters)  transformNodeTracks(pe.node);
+    for (auto& pe : m.particleEmitters2) transformNodeTracks(pe.node);
+    for (auto& re : m.ribbonEmitters)    transformNodeTracks(re.node);
+    for (auto& eo : m.eventObjects)      transformNodeTracks(eo.node);
+    for (auto& ce : m.cornEmitters)      transformNodeTracks(ce.node);
+    for (auto& cs : m.collisionShapes) {
+        transformNodeTracks(cs.node);
+        for (auto& v : cs.vertices) swizPos(v);
+    }
+
+    // Cameras: static + animated positions
+    for (auto& c : m.cameras) {
+        swizPos(c.position);
+        swizPos(c.targetPosition);
+        transformTrack(c.positionTracks,       [](Vector3f& v){ swizPos(v); });
+        transformTrack(c.targetPositionTracks, [](Vector3f& v){ swizPos(v); });
+    }
+
+    // Reforged bind poses
+    for (auto& bp : m.bindPoses) transformBindPose(bp);
+
+    // Note: TextureAnimation tracks are 2D UV-space — no 3D swizzle.
+}
+
+inline Vector3f toXM(const Vector3f& v) { return v; }
+
+} // namespace
 
 // ============================================================================
 // Constructor
 // ============================================================================
 
 MdxModelAdapter::MdxModelAdapter(whiteout::mdx::Model model, fs::path basePath,
-                                 CoordSpace space)
+                                 CoordSpace /*space*/,
+                                 FileContentProvider* contentProvider)
     : model_(std::move(model))
     , basePath_(std::move(basePath))
-    , space_(space) {
+    , resolver_(basePath_)
+    , contentProvider_(contentProvider) {
+    // Apply the full MDX → renderer-native coordinate transform once, on the
+    // whole model. Both standalone and Max-plugin PE1 paths load raw MDX, so
+    // both need this. The CoordSpace parameter is now ignored (kept for ABI
+    // compatibility with existing call sites).
+    TransformMdxModelToMaxCoords(model_);
+
     hierarchy_.Build(model_);
 }
 
@@ -54,13 +176,10 @@ std::vector<MeshData> MdxModelAdapter::GetMeshes() {
         mesh.normals.resize(vc);
         mesh.uvs.resize(vc);
 
-        bool swiz = (space_ == CoordSpace::Max);
         for (int v = 0; v < vc; v++) {
-            mesh.positions[v] = swiz ? swizzlePos(gs.vertexPositions[v])
-                                     : rawPos(gs.vertexPositions[v]);
+            mesh.positions[v] = toXM(gs.vertexPositions[v]);
             if (v < (int)gs.vertexNormals.size())
-                mesh.normals[v] = swiz ? swizzleNorm(gs.vertexNormals[v])
-                                       : rawNorm(gs.vertexNormals[v]);
+                mesh.normals[v] = toXM(gs.vertexNormals[v]);
             if (!gs.textureCoordinateSets.empty() &&
                 v < (int)gs.textureCoordinateSets[0].size()) {
                 mesh.uvs[v] = {gs.textureCoordinateSets[0][v].x,
@@ -89,10 +208,18 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     td.replaceableId = replaceableId;
     td.width = td.height = 0;
 
-    fs::path texPath = basePath_ / path;
+    // Parse a texture from a decoded result into td.
+    auto applyResult = [&](whiteout::textures::Texture& tex) {
+        if (tex.format() != whiteout::textures::PixelFormat::RGBA8)
+            tex.format(whiteout::textures::PixelFormat::RGBA8);
+        auto pixels = tex.mipData(0);
+        td.width  = (int)tex.width();
+        td.height = (int)tex.height();
+        td.rgba.assign(pixels.begin(), pixels.end());
+    };
 
-    // Try BLP first, then DDS, TGA, PNG with different extensions
-    auto tryParse = [&](const fs::path& p) -> bool {
+    // Try parsing from a file path on disk.
+    auto tryParsePath = [&](const fs::path& p) -> bool {
         std::string ext = p.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
@@ -112,30 +239,58 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
             result = parser.parse(p.string());
         }
 
-        if (result) {
-            if (result->format() != whiteout::textures::PixelFormat::RGBA8)
-                result->format(whiteout::textures::PixelFormat::RGBA8);
-            auto pixels = result->mipData(0);
-            td.width  = (int)result->width();
-            td.height = (int)result->height();
-            td.rgba.assign(pixels.begin(), pixels.end());
-            return true;
-        }
+        if (result) { applyResult(*result); return true; }
         return false;
     };
 
-    // Try original path
-    if (fs::exists(texPath) && tryParse(texPath))
-        return td;
+    // Try parsing from a memory buffer (CASC/MPQ source).
+    auto tryParseBuffer = [&](std::span<const uint8_t> buf, const std::string& ext) -> bool {
+        std::optional<whiteout::textures::Texture> result;
 
-    // Try swapping extension: .blp <-> .dds <-> .tga <-> .png
-    static const char* exts[] = {".blp", ".dds", ".tga", ".png"};
-    for (auto* e : exts) {
-        fs::path alt = texPath;
-        alt.replace_extension(e);
-        if (fs::exists(alt) && tryParse(alt))
-            return td;
+        if (ext == ".blp") {
+            whiteout::textures::blp::Parser parser;
+            result = parser.parse(buf);
+        } else if (ext == ".dds") {
+            whiteout::textures::dds::Parser parser;
+            result = parser.parse(buf);
+        } else if (ext == ".tga") {
+            whiteout::textures::tga::Parser parser;
+            result = parser.parse(buf);
+        } else if (ext == ".png") {
+            whiteout::textures::png::Parser parser;
+            result = parser.parse(buf);
+        }
+
+        if (result) { applyResult(*result); return true; }
+        return false;
+    };
+
+    // 1. Try local disk via FileResolver.
+    fs::path resolved = resolver_.ResolveTexture(path);
+    if (!resolved.empty() && tryParsePath(resolved)) {
+        std::fprintf(stdout, "  [tex %d] loaded %s\n", textureId, resolved.string().c_str());
+        return td;
     }
+
+    // 2. Try CASC/MPQ via FileContentProvider.
+    if (contentProvider_) {
+        std::string foundExt;
+        auto data = contentProvider_->ReadFile(path, &foundExt);
+        if (data) {
+            if (foundExt.empty()) {
+                foundExt = fs::path(path).extension().string();
+                std::transform(foundExt.begin(), foundExt.end(), foundExt.begin(), ::tolower);
+            }
+            if (tryParseBuffer(*data, foundExt)) {
+                std::fprintf(stdout, "  [tex %d] loaded from archive: %s\n",
+                             textureId, path.c_str());
+                return td;
+            }
+        }
+    }
+
+    std::fprintf(stderr, "  [tex %d] NOT FOUND: '%s' (base: %s)\n",
+                 textureId, path.c_str(), resolver_.BasePath().string().c_str());
 
     // Fallback: 4x4 magenta checkerboard
     td.width  = 4;
@@ -178,19 +333,21 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
 
     for (int i = 0; i < (int)model_.textures.size(); i++) {
         const auto& tex = model_.textures[i];
+        TextureData td;
         if (tex.replaceableId == 1 || tex.replaceableId == 2) {
-            result.push_back(GenerateTeamColorTexture(i, (int)tex.replaceableId));
+            td = GenerateTeamColorTexture(i, (int)tex.replaceableId);
         } else if (!tex.fileName.empty()) {
-            result.push_back(LoadTextureFile(tex.fileName, i, (int)tex.replaceableId));
+            td = LoadTextureFile(tex.fileName, i, (int)tex.replaceableId);
         } else {
             // Empty texture → 4x4 white
-            TextureData td;
             td.textureId     = i;
             td.replaceableId = (int)tex.replaceableId;
             td.width = td.height = 4;
             td.rgba.assign(4 * 4 * 4, 255);
-            result.push_back(std::move(td));
         }
+        // Propagate MDX texture wrap flags (0x1 = WrapWidth/U, 0x2 = WrapHeight/V)
+        td.wrapFlags = static_cast<uint32_t>(tex.flags) & 0x3;
+        result.push_back(std::move(td));
     }
     return result;
 }
@@ -198,13 +355,6 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
 // ============================================================================
 // GetMaterials — Map Layer FilterMode + ShadingFlags to renderer types
 // ============================================================================
-
-int MdxModelAdapter::MapLayerFilterMode(Layer::FilterMode fm) const {
-    // Layer::FilterMode maps 1:1 to renderer FilterMode for values 0-6
-    int v = (int)fm;
-    if (v >= 0 && v <= 6) return v;
-    return FILTER_NONE;
-}
 
 int MdxModelAdapter::MapShadingFlags(Layer::ShadingFlag sf) const {
     int flags = 0;
@@ -228,12 +378,41 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
         md.priorityPlane = (int)mat.priorityPlane;
         md.sortOrder     = 0;
 
-        for (const auto& layer : mat.layers) {
+        std::fprintf(stdout, "  [mat %d] %d layer(s)\n", i, (int)mat.layers.size());
+
+        for (int li = 0; li < (int)mat.layers.size(); ++li) {
+            const auto& layer = mat.layers[li];
             MaterialLayerData ld;
-            ld.filterMode = MapLayerFilterMode(layer.filterMode);
-            ld.textureId  = (int)layer.textureId;
+            ld.filterMode = MapFilterMode((int)layer.filterMode);
             ld.alpha      = layer.alpha;
             ld.flags      = MapShadingFlags(layer.shadingFlags);
+
+            // Texture resolution:
+            //   Classic (v800-v1100): layer.textureId indexes the texture array.
+            //   Reforged (v1200+): layer.textureId is unused (0) and textures
+            //     live in layer.subTextures[], one per slot. This applies to
+            //     *all* v1200 layers — the is_hd flag only controls PBR shading
+            //     (fresnel, emissive gain), not texture storage layout. We
+            //     only sample the diffuse map, so grab the DiffuseMap slot;
+            //     if no DiffuseMap is present fall back to subTextures[0].
+            if (!layer.subTextures.empty()) {
+                int diffuseTex = (int)layer.subTextures[0].textureId;
+                for (const auto& sub : layer.subTextures) {
+                    if (sub.slot == Layer::SlotType::DiffuseMap) {
+                        diffuseTex = (int)sub.textureId;
+                        break;
+                    }
+                }
+                ld.textureId = diffuseTex;
+            } else {
+                ld.textureId = (int)layer.textureId;
+            }
+
+            std::fprintf(stdout,
+                "    layer %d: fm=%d tex=%d alpha=%.2f flags=0x%x is_hd=%d subTex=%d\n",
+                li, (int)layer.filterMode, ld.textureId, ld.alpha, ld.flags,
+                (int)layer.is_hd, (int)layer.subTextures.size());
+
             md.layers.push_back(ld);
         }
         result.push_back(std::move(md));
@@ -247,47 +426,41 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
 
 SkeletonData MdxModelAdapter::GetSkeleton() {
     SkeletonData sk;
-    sk.boneCount = hierarchy_.BoneCount();
+    // Use the full hierarchy node count (bones + helpers + emitters + etc.)
+    // as the palette size. MDX vertices can skin to ANY node type via objectId,
+    // not just bones. The palette is indexed by node position in the
+    // topologically-sorted hierarchy (same as allNodeMatrices from Evaluate).
     sk.nodeCount = hierarchy_.NodeCount();
 
-    if (model_.version >= 1200 && !model_.bindPoses.empty()) {
-        // Reforged: use bindPoses directly (3x4 → 4x4 → invert)
-        sk.inverseBindMatrices.resize(sk.boneCount);
-        for (int i = 0; i < sk.boneCount && i < (int)model_.bindPoses.size(); i++) {
-            XMMATRIX bp = BindPose3x4ToXMMatrix(model_.bindPoses[i]);
-            XMVECTOR det;
-            sk.inverseBindMatrices[i] = XMMatrixInverse(&det, bp);
-        }
-    } else {
-        // Classic v800: evaluate hierarchy at rest pose (frame 0 of first seq)
-        int restStart = 0, restEnd = 0;
-        if (!model_.sequences.empty()) {
-            restStart = (int)model_.sequences[0].intervalStart;
-            restEnd   = (int)model_.sequences[0].intervalEnd;
-        }
-        std::vector<XMMATRIX> boneWorld, allNodes;
-        hierarchy_.Evaluate(restStart, restStart, restEnd,
-                            model_.globalSequences, boneWorld, allNodes);
+    // MDX vertices — both v800 and v1200 — are authored in the default pose
+    // (every bone T=0, R=identity, S=1). Our local matrix formula
+    // M = T(-pivot)·S·R·T(pivot+t) evaluates to identity at default, so the
+    // hierarchy produces identity bone world matrices in the bind pose and
+    // inverseBind must also be identity. The v1200 BPOS chunk stores absolute
+    // bind-pose world matrices as metadata, but they are NOT the inverse-bind
+    // for this skinning convention — using them shifts every HD vertex into
+    // bone-local space and the model explodes. mdx-m3-viewer ignores BPOS for
+    // skinning for the same reason.
+    sk.inverseBindMatrices.assign(sk.nodeCount, Matrix44f::identity());
 
-        sk.inverseBindMatrices.resize(sk.boneCount);
-        for (int i = 0; i < sk.boneCount; i++) {
-            XMVECTOR det;
-            sk.inverseBindMatrices[i] = XMMatrixInverse(&det, boneWorld[i]);
-        }
-    }
-
-    // Extract billboard flags from hierarchy nodes (bone nodes only)
-    sk.boneBillboardFlags.resize(sk.boneCount, 0);
+    // Extract billboard flags + rest pivots from ALL hierarchy nodes (any node
+    // type can be a skinning target and may have billboard flags). Indexed by
+    // node position in the hierarchy — matches allNodeMatrices indexing.
+    sk.billboardFlags.assign(sk.nodeCount, 0);
+    sk.nodePivots.assign(sk.nodeCount, Vector3f{0, 0, 0});
     const auto& nodes = hierarchy_.Nodes();
-    for (int i = 0; i < (int)nodes.size() && i < sk.boneCount; i++) {
+    for (int i = 0; i < (int)nodes.size(); i++) {
         uint32_t nf = nodes[i].flags;
         uint32_t bbf = 0;
         using NF = whiteout::mdx::Node::NodeFlag;
         if (nf & (uint32_t)NF::Billboarded)      bbf |= BONE_BILLBOARD_FULL;
-        if (nf & (uint32_t)NF::BillboardedLockX)  bbf |= BONE_BILLBOARD_LOCK_X;
-        if (nf & (uint32_t)NF::BillboardedLockY)  bbf |= BONE_BILLBOARD_LOCK_Y;
-        if (nf & (uint32_t)NF::BillboardedLockZ)  bbf |= BONE_BILLBOARD_LOCK_Z;
-        sk.boneBillboardFlags[i] = bbf;
+        if (nf & (uint32_t)NF::BillboardedLockX) bbf |= BONE_BILLBOARD_LOCK_X;
+        if (nf & (uint32_t)NF::BillboardedLockY) bbf |= BONE_BILLBOARD_LOCK_Y;
+        if (nf & (uint32_t)NF::BillboardedLockZ) bbf |= BONE_BILLBOARD_LOCK_Z;
+        sk.billboardFlags[i] = bbf;
+
+        const auto& p = nodes[i].pivot;
+        sk.nodePivots[i] = {p.x, p.y, p.z};
     }
 
     return sk;
@@ -301,6 +474,10 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
     std::vector<SkinWeightData> result;
     result.reserve(model_.geosets.size());
 
+    // MDX matrixIndices reference nodes by objectId. Map to the node's position
+    // in the topologically-sorted hierarchy (same index space as allNodeMatrices
+    // and the GPU bone palette). Any node type (bone, helper, etc.) is valid.
+
     for (int gi = 0; gi < (int)model_.geosets.size(); gi++) {
         const auto& gs = model_.geosets[gi];
         int vc = (int)gs.vertexPositions.size();
@@ -310,11 +487,22 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
 
         if (!gs.skinData.empty()) {
             // v1200: packed u8: 4 bone indices + 4 weights per vertex (8 bytes each)
+            // SKIN bytes are indices into the geoset's local matrixIndices (MATS) table,
+            // which stores objectIds. If MATS is empty, treat as direct objectId.
             for (int v = 0; v < vc; v++) {
                 int base = v * 8;
                 if (base + 7 < (int)gs.skinData.size()) {
                     for (int k = 0; k < 4; k++) {
-                        sw.influences[v].boneIdx[k] = (int)gs.skinData[base + k];
+                        uint8_t raw = gs.skinData[base + k];
+                        // Resolve to objectId via matrixIndices (if available)
+                        int objectId;
+                        if (!gs.matrixIndices.empty() && raw < gs.matrixIndices.size())
+                            objectId = (int)gs.matrixIndices[raw];
+                        else
+                            objectId = (int)raw;
+                        // Map objectId → node position in hierarchy
+                        int nodeIdx = hierarchy_.ObjectIdToNodeIndex(objectId);
+                        sw.influences[v].boneIdx[k] = (nodeIdx >= 0) ? nodeIdx : 0;
                         sw.influences[v].weight[k]  = gs.skinData[base + 4 + k] / 255.0f;
                     }
                 }
@@ -334,7 +522,9 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
                     if (count > 4) count = 4;  // clamp to 4 influences
                     float w = (count > 0) ? 1.0f / (float)count : 0.0f;
                     for (u32 k = 0; k < count && (start + k) < gs.matrixIndices.size(); k++) {
-                        sw.influences[v].boneIdx[k] = (int)gs.matrixIndices[start + k];
+                        int objectId = (int)gs.matrixIndices[start + k];
+                        int nodeIdx = hierarchy_.ObjectIdToNodeIndex(objectId);
+                        sw.influences[v].boneIdx[k] = (nodeIdx >= 0) ? nodeIdx : 0;
                         sw.influences[v].weight[k]  = w;
                     }
                 }
@@ -377,7 +567,8 @@ std::vector<ParticleEmitterConfig> MdxModelAdapter::GetParticleConfigs() {
         cfg.lifeSpan   = pe.lifespan;
         cfg.squirt     = (pe.squirt != 0);
 
-        // 3-segment color (MDX stores as Vector3f, need to assign RGB)
+        // 3-segment color — MDX PE2 segmentColor is stored RGB (per spec),
+        // unlike KGAC geoset anim colors which are BGR.
         cfg.startColor = {pe.segmentColor[0].x, pe.segmentColor[0].y, pe.segmentColor[0].z};
         cfg.midColor   = {pe.segmentColor[1].x, pe.segmentColor[1].y, pe.segmentColor[1].z};
         cfg.endColor   = {pe.segmentColor[2].x, pe.segmentColor[2].y, pe.segmentColor[2].z};
@@ -419,6 +610,10 @@ std::vector<ParticleEmitterConfig> MdxModelAdapter::GetParticleConfigs() {
         cfg.sortZ       = (nf & (u32)Node::NodeFlag::SortPrimitives) != 0;
         cfg.unshaded    = (nf & (u32)Node::NodeFlag::Unshaded)   != 0;
         cfg.lineEmitter = (nf & (u32)Node::NodeFlag::LineEmitter) != 0;
+        cfg.unfogged    = (nf & (u32)Node::NodeFlag::Unfogged)   != 0;
+
+        cfg.priorityPlane = (int)pe.priorityPlane;
+        // MDX has no per-emitter Count cap; leave at default (0 = unlimited)
 
         result.push_back(cfg);
     }
@@ -437,24 +632,47 @@ std::vector<RibbonEmitterConfig> MdxModelAdapter::GetRibbonConfigs() {
         const auto& rb = model_.ribbonEmitters[i];
         RibbonEmitterConfig cfg;
 
-        // Resolve texture through material
+        // Resolve texture + layer flags through material. For ribbons the
+        // engine binds CWar3Mat per-layer, so unshaded/twoSided come from the
+        // LAYER shading flags, not the node — most Wc3 ribbons set Unshaded
+        // on the layer (the node flag is rarely used for ribbons).
         if (rb.materialId < (u32)model_.materials.size() &&
             !model_.materials[rb.materialId].layers.empty()) {
             const auto& layer = model_.materials[rb.materialId].layers[0];
-            cfg.textureId  = (int)layer.textureId;
-            cfg.filterMode = MapLayerFilterMode(layer.filterMode);
+
+            // Texture resolution — same logic as GetMaterials():
+            //   Classic (v800-v1100): layer.textureId indexes the texture array.
+            //   Reforged (v1200+): layer.textureId is 0 (unused); textures
+            //     live in layer.subTextures[]. Pick the DiffuseMap slot, or
+            //     fall back to subTextures[0].
+            if (!layer.subTextures.empty()) {
+                int diffuseTex = (int)layer.subTextures[0].textureId;
+                for (const auto& sub : layer.subTextures) {
+                    if (sub.slot == Layer::SlotType::DiffuseMap) {
+                        diffuseTex = (int)sub.textureId;
+                        break;
+                    }
+                }
+                cfg.textureId = diffuseTex;
+            } else {
+                cfg.textureId = (int)layer.textureId;
+            }
+
+            cfg.filterMode = MapFilterMode((int)layer.filterMode);
+
+            u32 sf = (u32)layer.shadingFlags;
+            cfg.unshaded = (sf & (u32)Layer::ShadingFlag::Unshaded) != 0;
+            cfg.twoSided = (sf & (u32)Layer::ShadingFlag::TwoSided) != 0;
         }
+        // Ribbons are double-sided in the engine regardless of layer flag
+        // (CRibbonEmitter::Render does not bind a cull state).
+        cfg.twoSided = true;
 
         cfg.rows     = (int)rb.rows;
         cfg.cols     = (int)rb.columns;
         cfg.emission = (float)rb.emissionRate;
         cfg.life     = rb.lifespan;
         cfg.gravity  = rb.gravity;
-
-        // Flags from node
-        u32 nf = (u32)rb.node.flags;
-        cfg.unshaded = (nf & (u32)Node::NodeFlag::Unshaded) != 0;
-        cfg.twoSided = true; // ribbons are typically two-sided
 
         result.push_back(cfg);
     }
@@ -510,23 +728,28 @@ void MdxModelAdapter::SetCameraPosition(float x, float y, float z) {
 // Evaluate — Per-frame animation evaluation
 // ============================================================================
 
-FrameState MdxModelAdapter::Evaluate(int timeMs) {
+FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     FrameState fs;
 
     // Evaluate bone hierarchy (pass camera position for billboard nodes)
-    std::vector<XMMATRIX> boneWorld, allNodes;
+    std::vector<Matrix44f> boneWorld, allNodes;
     hierarchy_.Evaluate(timeMs, seqStart_, seqEnd_,
                         model_.globalSequences, boneWorld, allNodes,
-                        &cameraPos_);
-    fs.boneWorldMatrices = std::move(boneWorld);
+                        &cameraPos_, globalTimeMs);
+    // Use ALL node matrices as the skinning palette (indexed by node position
+    // in the hierarchy). Vertices can reference any node type via objectId.
+    fs.boneWorldMatrices = std::move(allNodes);
 
     // Helper: compute effective time for a track, handling global sequences.
-    // If the track uses a globalSequenceId, wraps timeMs by the global sequence duration.
+    // If the track uses a globalSequenceId, wraps by the global sequence duration
+    // using wall-clock time (globalTimeMs) so that global sequences run
+    // independently of the active animation sequence.
     auto effectiveTime = [&](u32 gsId) -> std::tuple<int, int, int> {
-        if (gsId != 0xFFFFFFFF && gsId < (u32)model_.globalSequences.size()) {
+        if (gsId != whiteout::mdx::Track<whiteout::f32>::kNoGlobalSequence && gsId < (u32)model_.globalSequences.size()) {
             u32 duration = model_.globalSequences[gsId];
             if (duration > 0) {
-                int t = (int)std::fmod((float)timeMs, (float)duration);
+                int gsTime = (globalTimeMs >= 0) ? globalTimeMs : timeMs;
+                int t = (int)std::fmod((float)gsTime, (float)duration);
                 return {t, 0, (int)duration};
             }
         }
@@ -536,7 +759,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
     // GeosetAnimation evaluation
     int geosetCount = (int)model_.geosets.size();
     fs.geosetAlphas.assign(geosetCount, 1.0f);
-    fs.geosetColors.assign(geosetCount, XMFLOAT3(1, 1, 1));
+    fs.geosetColors.assign(geosetCount, Vector3f(1, 1, 1));
 
     for (const auto& ga : model_.geosetAnimations) {
         int gid = (int)ga.geosetId;
@@ -550,9 +773,9 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         if (ga.colorTracks.isUsed) {
             auto [t, s, e] = effectiveTime(ga.colorTracks.globalSequenceId);
             Vector3f color = EvaluateTrackVec3(ga.colorTracks, t, s, e, ga.color);
-            fs.geosetColors[gid] = {color.z, color.y, color.x};
+            fs.geosetColors[gid] = {color.x, color.y, color.z};
         } else {
-            fs.geosetColors[gid] = {ga.color.z, ga.color.y, ga.color.x};
+            fs.geosetColors[gid] = {ga.color.x, ga.color.y, ga.color.z};
         }
     }
 
@@ -573,19 +796,74 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         }
     }
 
+    // Layer texture ID (KMTF) evaluation — animated texture swap per layer
+    // Classic (v800-v1100): KMTF track lives on layer.textureIdTracks.
+    // Reforged (v1200+): parser moves KMTF into subTexture.tracks; we evaluate
+    //   the DiffuseMap subtexture's track (falling back to subTextures[0]).
+    for (int mi = 0; mi < (int)model_.materials.size(); mi++) {
+        const auto& mat = model_.materials[mi];
+        for (int li = 0; li < (int)mat.layers.size(); li++) {
+            const auto& layer = mat.layers[li];
+
+            const Track<u32>* kmtf = nullptr;
+            u32 defaultTexId = layer.textureId;
+
+            if (layer.textureIdTracks.isUsed) {
+                // Classic path
+                kmtf = &layer.textureIdTracks;
+            } else if (!layer.subTextures.empty()) {
+                // Reforged path: find DiffuseMap subtexture's track
+                const Layer::SubTexture* diffuse = &layer.subTextures[0];
+                for (const auto& sub : layer.subTextures) {
+                    if (sub.slot == Layer::SlotType::DiffuseMap) {
+                        diffuse = &sub;
+                        break;
+                    }
+                }
+                if (diffuse->tracks.isUsed) {
+                    kmtf = &diffuse->tracks;
+                    defaultTexId = diffuse->textureId;
+                }
+            }
+
+            if (!kmtf) continue;
+
+            auto [t, s, e] = effectiveTime(kmtf->globalSequenceId);
+            u32 texId = EvaluateTrackU32(*kmtf, t, s, e, defaultTexId);
+            FrameState::LayerTextureIdState lts;
+            lts.materialId = mi;
+            lts.layerIndex = li;
+            lts.textureId  = (int)texId;
+            fs.layerTextureIds.push_back(lts);
+        }
+    }
+
     // Particle emitter per-frame state
     fs.particleStates.resize(model_.particleEmitters2.size());
     const auto& nodes = hierarchy_.Nodes();
+
+    // Non-bone nodes (emitters, ribbons, attachments) live at their pivot in
+    // world space. The hierarchy's world matrix W is the "delta from bind"
+    // used for skinning (identity at default), so origin·W = origin, not the
+    // pivot. Pre-multiply by T(pivot) to turn it into an absolute transform:
+    //   origin · T(pivot) · W = pivot · W = animated pivot position
+    // This matches mdx-m3-viewer's particle spawn (location = pivot + random,
+    // then location · worldMatrix).
+    auto worldOf = [&](int nodeIdx) -> Matrix44f {
+        if (nodeIdx < 0 || nodeIdx >= (int)fs.boneWorldMatrices.size()) return Matrix44f::identity();
+        const auto& piv = nodes[nodeIdx].pivot;
+        Matrix44f pivotT = Matrix44f::translation({piv.x, piv.y, piv.z});
+        return pivotT * fs.boneWorldMatrices[nodeIdx];
+    };
 
     for (int i = 0; i < (int)model_.particleEmitters2.size(); i++) {
         const auto& pe = model_.particleEmitters2[i];
         auto& ps = fs.particleStates[i];
         ps.emitterId = i;
 
-        // Find node world matrix
         int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)pe.node.objectId);
-        ps.transform = (nodeIdx >= 0 && nodeIdx < (int)allNodes.size())
-                        ? allNodes[nodeIdx] : XMMatrixIdentity();
+
+        ps.transform = worldOf(nodeIdx);
 
         { auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
           ps.emissionRate = EvaluateTrackF32(pe.emissionRateTracks, t, s, e, pe.emissionRate); }
@@ -611,8 +889,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
     for (int i = 0; i < (int)model_.attachments.size(); i++) {
         const auto& att = model_.attachments[i];
         int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)att.node.objectId);
-        XMMATRIX tm = (nodeIdx >= 0 && nodeIdx < (int)allNodes.size())
-                       ? allNodes[nodeIdx] : XMMatrixIdentity();
+        Matrix44f tm = worldOf(nodeIdx);
         float vis = 1.0f;
         if (att.visibilityTracks.isUsed) {
             auto [t,s,e] = effectiveTime(att.visibilityTracks.globalSequenceId);
@@ -628,8 +905,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         ps.emitterId = i;
 
         int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)pe.node.objectId);
-        ps.transform = (nodeIdx >= 0 && nodeIdx < (int)allNodes.size())
-                        ? allNodes[nodeIdx] : XMMatrixIdentity();
+        ps.transform = worldOf(nodeIdx);
 
         // Evaluate animated tracks (lat/lon already in radians in MDX)
         { auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
@@ -657,8 +933,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         rs.emitterId = i;
 
         int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)rb.node.objectId);
-        rs.transform = (nodeIdx >= 0 && nodeIdx < (int)allNodes.size())
-                        ? allNodes[nodeIdx] : XMMatrixIdentity();
+        rs.transform = worldOf(nodeIdx);
 
         { auto [t,s,e] = effectiveTime(rb.heightAboveTracks.globalSequenceId);
           rs.above      = EvaluateTrackF32(rb.heightAboveTracks, t, s, e, rb.heightAbove); }
@@ -671,12 +946,15 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
         { auto [t,s,e] = effectiveTime(rb.textureSlotTracks.globalSequenceId);
           rs.slot       = (int)EvaluateTrackU32(rb.textureSlotTracks, t, s, e, rb.textureSlot); }
 
+        // MDX ribbon color is stored BGR (matches CImVector layout the engine
+        // uses internally); the renderer wants RGB, so swap channels — same
+        // convention applied to GeosetAnim colors above.
         if (rb.colorTracks.isUsed) {
             auto [t,s,e] = effectiveTime(rb.colorTracks.globalSequenceId);
             Vector3f c = EvaluateTrackVec3(rb.colorTracks, t, s, e, rb.color);
-            rs.color = {c.x, c.y, c.z};
+            rs.color = {c.z, c.y, c.x};
         } else {
-            rs.color = {rb.color.x, rb.color.y, rb.color.z};
+            rs.color = {rb.color.z, rb.color.y, rb.color.x};
         }
     }
 
@@ -685,8 +963,8 @@ FrameState MdxModelAdapter::Evaluate(int timeMs) {
     for (int i = 0; i < (int)model_.collisionShapes.size(); i++) {
         const auto& cs = model_.collisionShapes[i];
         int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)cs.node.objectId);
-        fs.collisionTransforms[i] = (nodeIdx >= 0 && nodeIdx < (int)allNodes.size())
-                                     ? allNodes[nodeIdx] : XMMatrixIdentity();
+        fs.collisionTransforms[i] = (nodeIdx >= 0 && nodeIdx < (int)fs.boneWorldMatrices.size())
+                                     ? fs.boneWorldMatrices[nodeIdx] : Matrix44f::identity();
     }
 
     // Texture animation evaluation

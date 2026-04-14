@@ -20,8 +20,8 @@ namespace WhiteoutDex {
 // Individual particle instance
 // ============================================================================
 struct Particle {
-    XMFLOAT3 position  = {0,0,0};
-    XMFLOAT3 velocity  = {0,0,0};
+    Vector3f position  = {0,0,0};
+    Vector3f velocity  = {0,0,0};
     float    lifeSpan  = 0;       // remaining
     float    initLife   = 0;       // original
 };
@@ -39,9 +39,9 @@ struct ParticleEmitterConfig {
     bool  squirt       = false;
 
     // 3-segment color/alpha/scale
-    XMFLOAT3 startColor  = {1,1,1};
-    XMFLOAT3 midColor    = {0.5f,0.5f,0.5f};
-    XMFLOAT3 endColor    = {0,0,0};
+    Vector3f startColor  = {1,1,1};
+    Vector3f midColor    = {0.5f,0.5f,0.5f};
+    Vector3f endColor    = {0,0,0};
     float startAlpha = 255, midAlpha = 128, endAlpha = 0;
     float startScale = 10, midScale = 10, endScale = 10;
     float midTime    = 0.5f;
@@ -61,17 +61,22 @@ struct ParticleEmitterConfig {
     bool xyQuad      = false;
     bool sortZ       = false;
     bool lineEmitter = false;
+    bool unfogged    = false;
+
+    // Misc
+    int  count         = 0;   // max live particles cap (0 = unlimited)
+    int  priorityPlane = 0;   // render sort plane
 };
 
 // ============================================================================
 // Per-frame emitter state (animatable values + transform from MaxScript)
 // ============================================================================
 struct ParticleEmitterState {
-    XMMATRIX transform = XMMatrixIdentity();
+    Matrix44f transform = Matrix44f::identity();
     float emissionRate = 0;
     float speed        = 0;
     float variation    = 0;
-    float coneAngle    = 0;    // latitude, degrees
+    float coneAngle    = 0;    // latitude, radians
     float gravity      = 0;
     float width        = 0;
     float length       = 0;
@@ -103,10 +108,13 @@ public:
 
     void Simulate(float dt);
 
-    int BuildBillboards(float cameraPitch, float cameraYaw,
-                        std::vector<Vertex>& outVerts,
-                        std::vector<int>& outEmitterIds,
-                        std::vector<int>& outVertCounts) const;
+    struct BillboardResult {
+        std::vector<Vertex> vertices;
+        std::vector<int> emitterIds;
+        std::vector<int> vertCounts;
+    };
+
+    BillboardResult BuildBillboards(float cameraPitch, float cameraYaw) const;
 
     const ParticleEmitterConfig* GetConfig(int id) const;
     int GetTotalParticleCount() const;
@@ -116,12 +124,12 @@ private:
     void SpawnParticle(ParticleEmitter& em, float dt);
 
     static void Interpolate3Seg(const ParticleEmitterConfig& cfg, float t,
-                                 XMFLOAT3& outColor, float& outAlpha, float& outScale);
+                                 Vector3f& outColor, float& outAlpha, float& outScale);
 
     static void ComputeUV(const ParticleEmitterConfig& cfg, float lifeFactor,
                            bool isHead, float& u0, float& v0, float& u1, float& v1);
 
-    static XMFLOAT3 Lerp3(const XMFLOAT3& a, const XMFLOAT3& b, float t);
+    static Vector3f Lerp3(const Vector3f& a, const Vector3f& b, float t);
 
     float RandF(float lo, float hi);
 

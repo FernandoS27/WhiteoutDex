@@ -21,7 +21,7 @@ enum class CoordSpace { MDX, Max };
 struct CameraPreset {
     std::wstring name;
     float pitch, yaw, distance;
-    XMFLOAT3 target;
+    Vector3f target;
     bool isLive = false;
 };
 
@@ -55,6 +55,24 @@ enum FilterMode {
     FILTER_MODULATE_2X = 6,
 };
 
+/// Map a raw integer (0-6) to a FilterMode value, clamped to valid range.
+/// Works for MDX Layer::FilterMode, Wc3Material (after subtracting 1), and ribbons.
+inline int MapFilterMode(int raw) {
+    if (raw < 0) return FILTER_NONE;
+    if (raw > 6) return FILTER_MODULATE_2X;
+    return raw;
+}
+
+/// Map a Wc3Particles2 blend mode (0-4) to the renderer FilterMode.
+inline int MapPE2BlendMode(int blendMode) {
+    // 0=Blend, 1=Add, 2=Modulate, 3=Mod2X, 4=AlphaKey
+    static constexpr int table[] = {
+        FILTER_BLEND, FILTER_ADDITIVE, FILTER_MODULATE, FILTER_MODULATE_2X, FILTER_ADD_ALPHA
+    };
+    if (blendMode >= 0 && blendMode < 5) return table[blendMode];
+    return FILTER_BLEND; // fallback
+}
+
 // Material flags (bitfield)
 enum MaterialFlags {
     MAT_TWO_SIDED    = 1,
@@ -68,9 +86,9 @@ enum MaterialFlags {
 struct MeshData {
     int geosetId;
     int materialId;
-    std::vector<XMFLOAT3> positions;
-    std::vector<XMFLOAT3> normals;
-    std::vector<XMFLOAT2> uvs;
+    std::vector<Vector3f> positions;
+    std::vector<Vector3f> normals;
+    std::vector<Vector2f> uvs;
     std::vector<uint32_t>  indices;
 };
 
@@ -79,6 +97,7 @@ struct TextureData {
     int replaceableId;
     std::vector<uint8_t> rgba;  // RGBA8 pixels
     int width, height;
+    uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V); default = wrap both
 };
 
 struct MaterialLayerData {
@@ -105,10 +124,10 @@ enum BoneBillboardFlag : uint32_t {
 };
 
 struct SkeletonData {
-    int boneCount;   // total bones that affect skin (indices into inverseBindMatrices)
-    int nodeCount;   // total hierarchy nodes (bones + helpers + emitters + collisions)
-    std::vector<XMMATRIX> inverseBindMatrices;  // boneCount entries
-    std::vector<uint32_t> boneBillboardFlags;    // boneCount entries (BoneBillboardFlag)
+    int nodeCount;   // palette size: total hierarchy nodes (bones + helpers + emitters etc.)
+    std::vector<Matrix44f> inverseBindMatrices;  // nodeCount entries (indexed by node position)
+    std::vector<uint32_t> billboardFlags;        // nodeCount entries (indexed by node position)
+    std::vector<Vector3f> nodePivots;            // nodeCount entries (indexed by node position)
 };
 
 struct SkinWeightData {
@@ -118,20 +137,20 @@ struct SkinWeightData {
 
 struct CollisionShapeData {
     int type;              // 0=box, 1=sphere, 2=plane, 3=cylinder
-    XMFLOAT3 vertices[2]; // min/max for box, center for sphere
+    Vector3f vertices[2]; // min/max for box, center for sphere
     float radius;
 };
 
 // Per-frame animated state — computed by the adapter, then passed to ApplyFrameState().
 struct FrameState {
-    std::vector<XMMATRIX>  boneWorldMatrices;  // boneCount entries (skinning bones)
-    std::vector<XMMATRIX>  geosetTransforms;   // one per geoset (node world TM for unskinned meshes)
+    std::vector<Matrix44f>  boneWorldMatrices;  // all hierarchy node world matrices (indexed by node position)
+    std::vector<Matrix44f>  geosetTransforms;   // one per geoset (node world TM for unskinned meshes)
     std::vector<float>     geosetAlphas;       // one per geoset
-    std::vector<XMFLOAT3>  geosetColors;       // one per geoset
+    std::vector<Vector3f>  geosetColors;       // one per geoset
 
     struct ParticleFrameState {
         int emitterId;
-        XMMATRIX transform;
+        Matrix44f transform;
         float emissionRate, speed, variation, coneAngle;
         float gravity, width, length, visibility;
     };
@@ -139,15 +158,15 @@ struct FrameState {
 
     struct RibbonFrameState {
         int emitterId;
-        XMMATRIX transform;
+        Matrix44f transform;
         float above, below, alpha;
-        XMFLOAT3 color;
+        Vector3f color;
         float visibility;
         int   slot;
     };
     std::vector<RibbonFrameState> ribbonStates;
 
-    std::vector<XMMATRIX>  collisionTransforms;
+    std::vector<Matrix44f>  collisionTransforms;
 
     struct TexAnimState {
         int materialId;
@@ -165,10 +184,18 @@ struct FrameState {
     };
     std::vector<LayerAlphaState> layerAlphas;
 
+    // Per-layer animated texture ID (KMTF tracks)
+    struct LayerTextureIdState {
+        int materialId;
+        int layerIndex;
+        int textureId;
+    };
+    std::vector<LayerTextureIdState> layerTextureIds;
+
     // Attachment per-frame state
     struct AttachmentFrameState {
         int attachmentIndex;
-        XMMATRIX transform;
+        Matrix44f transform;
         float visibility;
     };
     std::vector<AttachmentFrameState> attachmentStates;
@@ -176,7 +203,7 @@ struct FrameState {
     // PE1 (model particle emitter) per-frame state
     struct PE1FrameState {
         int emitterId;
-        XMMATRIX transform;
+        Matrix44f transform;
         float emissionRate, speed, latitude, longitude;  // lat/lon in radians
         float gravity, visibility;
     };

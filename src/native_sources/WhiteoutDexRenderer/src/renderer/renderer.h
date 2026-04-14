@@ -11,6 +11,7 @@
 #include "ribbon.h"
 #include "model_types.h"
 #include "model_instance.h"
+#include "file_content_provider.h"
 #include <unordered_map>
 #include <memory>
 
@@ -18,8 +19,8 @@ namespace WhiteoutDex {
 
 // Line vertex for grid/bone rendering
 struct LineVertex {
-    XMFLOAT3 position;
-    XMFLOAT4 color;
+    Vector3f position;
+    Vector4f color;
 };
 
 // ============================================================================
@@ -39,7 +40,7 @@ public:
     // Camera control (thread-safe)
     void SetCamera(float pitch, float yaw, float distance,
                    float targetX, float targetY, float targetZ);
-    XMFLOAT3 GetCameraPosition() const { return camera_.GetSource(); }
+    Vector3f GetCameraPosition() const { return camera_.GetSource(); }
 
     // Model data (thread-safe — called from API/MaxScript thread)
     void ClearModel();
@@ -59,6 +60,9 @@ public:
     void SetPE1ChildCoordSpace(CoordSpace space);
     void SetPE1BasePath(const std::string& basePath);
     uint32_t GetFocusModelHandle() const { return focusModelHandle_; }
+
+    // Access the unified file content provider (disk + CASC + MPQ)
+    FileContentProvider& GetContentProvider() { return contentProvider_; }
 
     // Backward-compatible single-model API (operates on focus model)
     void LoadModel(const std::vector<MeshData>& meshes,
@@ -88,6 +92,10 @@ public:
     int  GetActiveCameraIndex() const;
     bool IsCameraLocked() const { return cameraLocked_; }
 
+    // Sequence picker (used by standalone viewer; safe to ignore from Max plugin)
+    void SetSequences(const std::vector<std::string>& names);
+    int  GetActiveSequenceIndex() const;
+
 private:
     // Render thread
     void RenderThread(int width, int height);
@@ -107,6 +115,9 @@ private:
 
     // GPU resource management
     void ProcessStagedData();
+    void UploadStagedTextures(ModelInstance& mi);
+    void UploadStagedGeosets(ModelInstance& mi);
+    void CreateNodePalette(ModelInstance& mi);
     void ReleaseModelGPU();
 
     // Phase 4: Animation update
@@ -129,6 +140,15 @@ private:
 
     // Collision shape wireframes
     void RenderCollisions();
+
+    // ApplyFrameState helpers
+    void ApplyBoneMatrices(ModelInstance& mi, const FrameState& state);
+    void ApplyGeosetStates(ModelInstance& mi, const FrameState& state);
+    void ApplyLayerStates(ModelInstance& mi, const FrameState& state);
+    void ApplyParticleFrameStates(ModelInstance& mi, const FrameState& state);
+    void ApplyRibbonFrameStates(ModelInstance& mi, const FrameState& state);
+    void ApplyPE1FrameStates(ModelInstance& mi, const FrameState& state);
+    void ApplyAttachmentStates(ModelInstance& mi, const FrameState& state, int timeMs);
 
     // Team color + camera presets
     void UpdateTeamColorTextures();
@@ -174,8 +194,10 @@ private:
     HWND chkRibbons_ = nullptr, chkCollisions_ = nullptr;
     HWND btnTeamColor_ = nullptr;
     HWND cmbCamera_ = nullptr;
+    HWND lblSequence_ = nullptr;
+    HWND cmbSequence_ = nullptr;
     enum { IDC_GRID=1001, IDC_PARTICLES, IDC_RIBBONS, IDC_COLLISIONS,
-           IDC_TEAMCOLOR, IDC_CAMERA };
+           IDC_TEAMCOLOR, IDC_CAMERA, IDC_SEQUENCE };
 
     // Mouse
     bool                  lmbDown_ = false;
@@ -216,6 +238,7 @@ private:
     CoordSpace pe1ChildCoordSpace_ = CoordSpace::MDX;
 
     std::string pe1BasePath_;  // root directory for resolving PE1 model + texture paths
+    FileContentProvider contentProvider_; // unified file resolution (disk + CASC + MPQ)
     std::shared_ptr<PE1ModelTemplate> getOrLoadTemplate(const std::string& modelPath);
     void stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl);
 
@@ -227,6 +250,12 @@ private:
     std::vector<CameraPreset> pendingCameraPresets_;
     bool cameraDirty_ = false;
     bool cameraLocked_ = false;
+
+    // Sequence picker (standalone viewer)
+    std::vector<std::string> pendingSequenceNames_;
+    bool sequencesDirty_ = false;
+    void ProcessSequences();
+    std::atomic<int> activeSequence_{0};
 
     // Window icon
     HICON icon_ = nullptr;
@@ -246,6 +275,7 @@ private:
     ID3D11VertexShader*     lineVertexShader_   = nullptr;
     ID3D11PixelShader*      linePixelShader_    = nullptr;
     ID3D11InputLayout*      lineInputLayout_    = nullptr;
+    ID3D11ComputeShader*    skinComputeShader_  = nullptr;
 
     // Constant buffers
     ID3D11Buffer*           cbPerFrame_ = nullptr;
@@ -277,6 +307,9 @@ private:
     ID3D11BlendState*         bsModulate_   = nullptr;
     ID3D11BlendState*         bsModulate2x_ = nullptr;
     ID3D11SamplerState*       samplerLinear_ = nullptr;
+    // Per-texture wrap mode samplers: index = wrapFlags (0x0..0x3)
+    // bit 0 = WrapWidth (U repeat), bit 1 = WrapHeight (V repeat)
+    ID3D11SamplerState*       samplerWrap_[4] = {};
 
     // 1x1 white default texture
     ID3D11ShaderResourceView* defaultTexSRV_ = nullptr;

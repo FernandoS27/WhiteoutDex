@@ -23,13 +23,13 @@ wdx::Material MdxMaterialMapper::map(const ir::Material& irMat,
 {
     wdx::Material mat;
     mat.priorityPlane = irMat.priorityPlane;
-    mat.flags = irMat.flags;
+    mat.flags = static_cast<wdx::Material::Flag>(irMat.flags);
     mat.shader = irMat.shaderName;
     if (mat.shader.empty() && version > 800 && version < 1100)
         mat.shader = "Shader_HD_DefaultUnit";
 
     MDX_LOG(_T("  MaterialMapper: priority=%d flags=0x%X shader=\"%S\" layers=%d\n"),
-            mat.priorityPlane, mat.flags, mat.shader.c_str(), (int)irMat.layers.size());
+            mat.priorityPlane, static_cast<uint32_t>(mat.flags), mat.shader.c_str(), (int)irMat.layers.size());
 
     for (size_t i = 0; i < irMat.layers.size(); i++) {
         auto layer = mapLayer(irMat.layers[i], model, version);
@@ -118,7 +118,7 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
                 static_cast<int>(irTrack.interpolation));
             layer.alphaTracks.globalSequenceId = (irTrack.globalSequenceIndex >= 0)
                 ? static_cast<uint32_t>(irTrack.globalSequenceIndex)
-                : 0xFFFFFFFF;
+                : Track<whiteout::f32>::kNoGlobalSequence;
             layer.alphaTracks.keyCount = irTrack.keys.size();
 
             bool hasTangents = (irTrack.interpolation == ir::InterpolationType::Hermite ||
@@ -159,7 +159,7 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
                 static_cast<int>(irTrack.interpolation));
             layer.textureIdTracks.globalSequenceId = (irTrack.globalSequenceIndex >= 0)
                 ? static_cast<uint32_t>(irTrack.globalSequenceIndex)
-                : 0xFFFFFFFF;
+                : Track<whiteout::u32>::kNoGlobalSequence;
             layer.textureIdTracks.keyCount = irTrack.keys.size();
 
             using K = Track<whiteout::u32>::Key;
