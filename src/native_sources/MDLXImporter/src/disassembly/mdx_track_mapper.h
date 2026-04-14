@@ -29,7 +29,7 @@ ir::Track<DstT> mapTrack(const whiteout::mdx::Track<SrcT>& csrc, Convert convert
     auto& src = const_cast<whiteout::mdx::Track<SrcT>&>(csrc);
     ir::Track<DstT> dst;
     dst.interpolation = mapInterpolation(src.interpolationType);
-    dst.globalSequenceIndex = (src.globalSequenceId == 0xFFFFFFFF)
+    dst.globalSequenceIndex = (src.globalSequenceId == whiteout::mdx::Track<SrcT>::kNoGlobalSequence)
         ? -1 : static_cast<int32_t>(src.globalSequenceId);
 
     if (whiteout::mdx::isSmoothInterpolation(src.interpolationType)) {
@@ -88,7 +88,7 @@ inline ir::IntTrack mapIntTrack(const whiteout::mdx::Track<uint32_t>& src)
     auto& msrc = const_cast<whiteout::mdx::Track<uint32_t>&>(src);
     ir::Track<int32_t> dst;
     dst.interpolation = mapInterpolation(msrc.interpolationType);
-    dst.globalSequenceIndex = (msrc.globalSequenceId == 0xFFFFFFFF)
+    dst.globalSequenceIndex = (msrc.globalSequenceId == whiteout::mdx::Track<uint32_t>::kNoGlobalSequence)
         ? -1 : static_cast<int32_t>(msrc.globalSequenceId);
     auto keys = msrc.keys();
     dst.keys.reserve(keys.size());

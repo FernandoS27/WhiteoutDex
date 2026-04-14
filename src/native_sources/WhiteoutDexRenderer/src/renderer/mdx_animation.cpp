@@ -444,7 +444,7 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
         // Compute effective time per track, handling global sequences independently
         auto getEffTime = [&](const auto* track, int& et, int& es, int& ee) {
             et = timeMs; es = seqStart; ee = seqEnd;
-            if (track && track->isUsed && track->globalSequenceId != 0xFFFFFFFF) {
+            if (track && track->isUsed && track->globalSequenceId != whiteout::mdx::Track<whiteout::f32>::kNoGlobalSequence) {
                 u32 gsId = track->globalSequenceId;
                 if (gsId < (u32)globalSequences.size()) {
                     u32 duration = globalSequences[gsId];

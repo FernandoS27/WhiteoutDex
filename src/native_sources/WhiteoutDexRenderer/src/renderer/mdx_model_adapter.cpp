@@ -346,7 +346,7 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
             td.rgba.assign(4 * 4 * 4, 255);
         }
         // Propagate MDX texture wrap flags (0x1 = WrapWidth/U, 0x2 = WrapHeight/V)
-        td.wrapFlags = tex.flags & 0x3;
+        td.wrapFlags = static_cast<uint32_t>(tex.flags) & 0x3;
         result.push_back(std::move(td));
     }
     return result;
@@ -745,7 +745,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     // using wall-clock time (globalTimeMs) so that global sequences run
     // independently of the active animation sequence.
     auto effectiveTime = [&](u32 gsId) -> std::tuple<int, int, int> {
-        if (gsId != 0xFFFFFFFF && gsId < (u32)model_.globalSequences.size()) {
+        if (gsId != whiteout::mdx::Track<whiteout::f32>::kNoGlobalSequence && gsId < (u32)model_.globalSequences.size()) {
             u32 duration = model_.globalSequences[gsId];
             if (duration > 0) {
                 int gsTime = (globalTimeMs >= 0) ? globalTimeMs : timeMs;
