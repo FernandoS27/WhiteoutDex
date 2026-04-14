@@ -245,35 +245,31 @@ Quaternion EvaluateTrackQuat(const Track<Quaternion>& track, int timeMs, int seq
 }
 
 // ============================================================================
-// BindPose3x4ToXMMatrix: 3x4 row-major (a00..a23) → 4x4 XMMATRIX
+// BindPose3x4ToMatrix44f: 3x4 row-major (a00..a23) → 4x4 Matrix44f
 // ============================================================================
 
-XMMATRIX BindPose3x4ToXMMatrix(const std::array<f32, 12>& bp) {
-    return XMMATRIX(
-        bp[0], bp[1], bp[2],  0.0f,
-        bp[3], bp[4], bp[5],  0.0f,
-        bp[6], bp[7], bp[8],  0.0f,
-        bp[9], bp[10],bp[11], 1.0f
-    );
+Matrix44f BindPose3x4ToMatrix44f(const std::array<f32, 12>& bp) {
+    Matrix44f m{};
+    m.data[0] = {bp[0], bp[1], bp[2],  0.0f};
+    m.data[1] = {bp[3], bp[4], bp[5],  0.0f};
+    m.data[2] = {bp[6], bp[7], bp[8],  0.0f};
+    m.data[3] = {bp[9], bp[10],bp[11], 1.0f};
+    return m;
 }
 
 // ============================================================================
-// Vec3QuatScaleToXMMatrix: Compose T/R/S around a pivot point into XMMATRIX.
+// Vec3QuatScaleToMatrix44f: Compose T/R/S around a pivot point into Matrix44f.
 //   M = Translate(-pivot) * Scale * Rotate * Translate(pivot) * Translate(t)
 // ============================================================================
 
-XMMATRIX Vec3QuatScaleToXMMatrix(const Vector3f& t, const Quaternion& r,
-                                  const Vector3f& s, const Vector3f& pivot) {
-    XMVECTOR quat = XMVectorSet(r.x, r.y, r.z, r.w);
-    XMVECTOR scale = XMVectorSet(s.x, s.y, s.z, 1.0f);
-    XMVECTOR trans = XMVectorSet(t.x, t.y, t.z, 1.0f);
-    XMVECTOR piv   = XMVectorSet(pivot.x, pivot.y, pivot.z, 0.0f);
-
+Matrix44f Vec3QuatScaleToMatrix44f(const Vector3f& t, const Quaternion& r,
+                                    const Vector3f& s, const Vector3f& pivot) {
     // SRT around pivot: Translate(-pivot) * S * R * Translate(pivot + t)
-    XMMATRIX mS = XMMatrixScalingFromVector(scale);
-    XMMATRIX mR = XMMatrixRotationQuaternion(quat);
-    XMMATRIX mNegPiv = XMMatrixTranslationFromVector(XMVectorNegate(piv));
-    XMMATRIX mPosPivT = XMMatrixTranslationFromVector(XMVectorAdd(piv, trans));
+    // rotation() produces column-vector convention; transpose for row-vector (v * M)
+    Matrix44f mS = Matrix44f::scaling(s);
+    Matrix44f mR = Matrix44f::rotation(r).transpose();
+    Matrix44f mNegPiv = Matrix44f::translation({-pivot.x, -pivot.y, -pivot.z});
+    Matrix44f mPosPivT = Matrix44f::translation({pivot.x + t.x, pivot.y + t.y, pivot.z + t.z});
 
     return mNegPiv * mS * mR * mPosPivT;
 }
@@ -419,9 +415,9 @@ void MdxHierarchy::Build(const whiteout::mdx::Model& model) {
 
 void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
                              const std::vector<u32>& globalSequences,
-                             std::vector<XMMATRIX>& boneWorldMatrices,
-                             std::vector<XMMATRIX>& allNodeMatrices,
-                             const XMFLOAT3* cameraPos,
+                             std::vector<Matrix44f>& boneWorldMatrices,
+                             std::vector<Matrix44f>& allNodeMatrices,
+                             const Vector3f* cameraPos,
                              int globalTimeMs) const {
     int nc = (int)nodes_.size();
     allNodeMatrices.resize(nc);
@@ -480,10 +476,10 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
         localRs[i] = localR;
         localSs[i] = localS;
 
-        XMMATRIX localM = Vec3QuatScaleToXMMatrix(localT, localR, localS, n.pivot);
+        Matrix44f localM = Vec3QuatScaleToMatrix44f(localT, localR, localS, n.pivot);
 
         // Parent composition
-        XMMATRIX parentWorld = XMMatrixIdentity();
+        Matrix44f parentWorld = Matrix44f::identity();
         if (n.parentIdx >= 0 && n.parentIdx < nc) {
             parentWorld = allNodeMatrices[n.parentIdx];
 
@@ -508,10 +504,10 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
                 if (flags & (uint32_t)NF::DontInheritRotation)    pR = {0, 0, 0, 1};
                 if (flags & (uint32_t)NF::DontInheritScaling)     pS = {1, 1, 1};
 
-                XMMATRIX filteredParentLocal =
-                    Vec3QuatScaleToXMMatrix(pT, pR, pS, parent.pivot);
+                Matrix44f filteredParentLocal =
+                    Vec3QuatScaleToMatrix44f(pT, pR, pS, parent.pivot);
 
-                XMMATRIX grandparentWorld = XMMatrixIdentity();
+                Matrix44f grandparentWorld = Matrix44f::identity();
                 if (parent.parentIdx >= 0 && parent.parentIdx < nc)
                     grandparentWorld = allNodeMatrices[parent.parentIdx];
 
@@ -519,7 +515,7 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
             }
         }
 
-        XMMATRIX worldM = localM * parentWorld;
+        Matrix44f worldM = localM * parentWorld;
 
         // NOTE: Billboard rotation is applied in Renderer::ApplyFrameState()
         // using billboardFlags, NOT here. This ensures billboarding works

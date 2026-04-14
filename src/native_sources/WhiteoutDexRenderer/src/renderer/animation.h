@@ -55,14 +55,13 @@ public:
         for (int i = 0; i < nodeCount; i++) {
             // Load 16 floats as row-major 4x4 matrix
             const float* m = inverseBindData + i * 16;
-            inverseBindMatrices_[i] = XMMATRIX(
-                m[0], m[1], m[2],  m[3],
-                m[4], m[5], m[6],  m[7],
-                m[8], m[9], m[10], m[11],
-                m[12],m[13],m[14], m[15]
-            );
-            currentMatrices_[i]  = XMMatrixIdentity();
-            offsetMatrices_[i]   = XMMatrixIdentity(); // Safe default until nodes arrive
+            Matrix44f& mat = inverseBindMatrices_[i];
+            mat.data[0] = {m[0], m[1], m[2],  m[3]};
+            mat.data[1] = {m[4], m[5], m[6],  m[7]};
+            mat.data[2] = {m[8], m[9], m[10], m[11]};
+            mat.data[3] = {m[12],m[13],m[14], m[15]};
+            currentMatrices_[i]  = Matrix44f::identity();
+            offsetMatrices_[i]   = Matrix44f::identity(); // Safe default until nodes arrive
         }
     }
 
@@ -84,12 +83,11 @@ public:
         if (nodeCount != nodeCount_) return;
         for (int i = 0; i < nodeCount; i++) {
             const float* m = worldData + i * 16;
-            currentMatrices_[i] = XMMATRIX(
-                m[0], m[1], m[2],  m[3],
-                m[4], m[5], m[6],  m[7],
-                m[8], m[9], m[10], m[11],
-                m[12],m[13],m[14], m[15]
-            );
+            Matrix44f& mat = currentMatrices_[i];
+            mat.data[0] = {m[0], m[1], m[2],  m[3]};
+            mat.data[1] = {m[4], m[5], m[6],  m[7]};
+            mat.data[2] = {m[8], m[9], m[10], m[11]};
+            mat.data[3] = {m[12],m[13],m[14], m[15]};
         }
         matricesDirty_ = true;
         nodesReady_ = true;  // Safe to start skinning now
@@ -108,7 +106,7 @@ public:
         return (it != geosetWeights_.end()) ? &it->second : nullptr;
     }
 
-    const XMMATRIX* OffsetMatrices() const { return offsetMatrices_.data(); }
+    const Matrix44f* OffsetMatrices() const { return offsetMatrices_.data(); }
 
     // ---- Compute offset matrices (render thread, call once per frame) ----
 
@@ -139,12 +137,12 @@ public:
         for (int i = 0; i < (int)baseVerts.size(); i++) {
             const auto& inf = skin.vertices[i];
 
-            XMVECTOR posSum = XMVectorZero();
-            XMVECTOR nrmSum = XMVectorZero();
+            Vector3f posSum = {0, 0, 0};
+            Vector3f nrmSum = {0, 0, 0};
             float totalWeight = 0.0f;
 
-            XMVECTOR basePos = XMLoadFloat3(&baseVerts[i].position);
-            XMVECTOR baseNrm = XMLoadFloat3(&baseVerts[i].normal);
+            const Vector3f& basePos = baseVerts[i].position;
+            const Vector3f& baseNrm = baseVerts[i].normal;
 
             for (int j = 0; j < 4; j++) {
                 float w = inf.weight[j];
@@ -153,15 +151,13 @@ public:
                 int nIdx = inf.boneIdx[j];
                 if (nIdx < 0 || nIdx >= nodeCount_) continue;
 
-                const XMMATRIX& offset = offsetMatrices_[nIdx];
+                const Matrix44f& offset = offsetMatrices_[nIdx];
 
                 // Transform position (full 4x4)
-                posSum = XMVectorAdd(posSum,
-                    XMVectorScale(XMVector3Transform(basePos, offset), w));
+                posSum += whiteout::transform_point(basePos, offset) * w;
 
                 // Transform normal (3x3 rotation only, no translation)
-                nrmSum = XMVectorAdd(nrmSum,
-                    XMVectorScale(XMVector3TransformNormal(baseNrm, offset), w));
+                nrmSum += whiteout::transform_normal(baseNrm, offset) * w;
 
                 totalWeight += w;
             }
@@ -172,8 +168,8 @@ public:
                 continue;
             }
 
-            XMStoreFloat3(&outVerts[i].position, posSum);
-            XMStoreFloat3(&outVerts[i].normal, XMVector3Normalize(nrmSum));
+            outVerts[i].position = posSum;
+            outVerts[i].normal = nrmSum.normalized();
             outVerts[i].uv    = baseVerts[i].uv;
             outVerts[i].color = baseVerts[i].color;
         }
@@ -183,9 +179,9 @@ public:
 
 private:
     int nodeCount_ = 0;
-    std::vector<XMMATRIX> inverseBindMatrices_;  // set once at setup
-    std::vector<XMMATRIX> currentMatrices_;      // updated per frame
-    std::vector<XMMATRIX> offsetMatrices_;       // = invBind * current (precomputed)
+    std::vector<Matrix44f> inverseBindMatrices_;  // set once at setup
+    std::vector<Matrix44f> currentMatrices_;      // updated per frame
+    std::vector<Matrix44f> offsetMatrices_;       // = invBind * current (precomputed)
     std::unordered_map<int, GeosetSkinInfo> geosetWeights_;
     bool matricesDirty_ = false;
     bool nodesReady_ = false;   // true after first UpdateNodeMatrices call

@@ -18,7 +18,7 @@ namespace WhiteoutDex {
 // PE1 Emitter State (per-frame animatable values)
 // ============================================================================
 struct PE1EmitterState {
-    XMMATRIX transform = XMMatrixIdentity();
+    Matrix44f transform = Matrix44f::identity();
     float emissionRate = 0;
     float speed        = 0;
     float latitude     = 0;  // radians
@@ -31,8 +31,8 @@ struct PE1EmitterState {
 // PE1 Particle — individual model particle instance
 // ============================================================================
 struct PE1Particle {
-    XMFLOAT3 position  = {0,0,0};
-    XMFLOAT3 velocity  = {0,0,0};
+    Vector3f position  = {0,0,0};
+    Vector3f velocity  = {0,0,0};
     float    lifeSpan  = 0;       // remaining
     float    initLife   = 0;      // original
     uint32_t childModelHandle = 0;
@@ -55,13 +55,13 @@ struct PE1Emitter {
 struct PE1BirthEvent {
     uint32_t handle;
     int emitterId;
-    XMMATRIX worldTransform;
+    Matrix44f worldTransform;
 };
 
 struct PE1SimResult {
     std::vector<PE1BirthEvent> born;
     std::vector<uint32_t> died;
-    std::vector<std::pair<uint32_t, XMMATRIX>> transforms;
+    std::vector<std::pair<uint32_t, Matrix44f>> transforms;
 };
 
 // ============================================================================

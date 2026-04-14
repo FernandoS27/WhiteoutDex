@@ -1,7 +1,7 @@
 #pragma once
 // ============================================================================
 // MDX Model Adapter — Translates WhiteoutLib MDX types to IModelSource.
-// No Max SDK dependency. Uses WhiteoutLib + DirectXMath.
+// No Max SDK dependency. Uses WhiteoutLib types.
 // ============================================================================
 
 #include "model_source.h"
@@ -66,7 +66,7 @@ private:
     int seqEnd_   = 0;
 
     // Camera position for billboard evaluation
-    XMFLOAT3 cameraPos_ = {0, -350, 50};
+    Vector3f cameraPos_ = {0, -350, 50};
 
     // Helpers
     int MapPE2FilterMode(whiteout::u32 mdxMode) const;

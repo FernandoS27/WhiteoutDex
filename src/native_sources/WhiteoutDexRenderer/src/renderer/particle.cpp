@@ -4,6 +4,7 @@
 
 #include "particle.h"
 #include "sim_util.h"
+#include <numbers>
 
 namespace WhiteoutDex {
 
@@ -93,12 +94,12 @@ ParticleSystem::BillboardResult ParticleSystem::BuildBillboards(float cameraPitc
     float cosY = cosf(cameraYaw),   sinY = sinf(cameraYaw);
 
     // Camera direction (toward target)
-    XMFLOAT3 camFwd = {-cosP * cosY, -cosP * sinY, -sinP};
+    Vector3f camFwd = {-cosP * cosY, -cosP * sinY, -sinP};
 
     // For Z-up: right = (-sinY, cosY, 0), up depends on pitch
-    XMFLOAT3 camRight = {-sinY, cosY, 0};
+    Vector3f camRight = {-sinY, cosY, 0};
     // Up = cross(right, forward)
-    XMFLOAT3 camUp = {
+    Vector3f camUp = {
         -sinP * cosY,
         -sinP * sinY,
         cosP
@@ -126,8 +127,7 @@ ParticleSystem::BillboardResult ParticleSystem::BuildBillboards(float cameraPitc
             float cz = 0;
             if (em.config.sortZ) {
                 if (em.config.modelSpace) {
-                    XMVECTOR wPos = XMVector3Transform(XMLoadFloat3(&p.position), em.state.transform);
-                    XMFLOAT3 wp; XMStoreFloat3(&wp, wPos);
+                    Vector3f wp = whiteout::transform_point(p.position, em.state.transform);
                     cz = wp.x * camFwd.x + wp.y * camFwd.y + wp.z * camFwd.z;
                 } else {
                     cz = p.position.x * camFwd.x + p.position.y * camFwd.y + p.position.z * camFwd.z;
@@ -148,41 +148,39 @@ ParticleSystem::BillboardResult ParticleSystem::BuildBillboards(float cameraPitc
             float lifeFactor = (p.initLife > 0) ? (1.0f - p.lifeSpan / p.initLife) : 0;
 
             // Interpolate color, alpha, scale
-            XMFLOAT3 color;
+            Vector3f color;
             float alpha, scale;
             Interpolate3Seg(em.config, lifeFactor, color, alpha, scale);
 
             if (alpha <= 0.0f) continue;
 
-            XMFLOAT4 vertColor = {color.x, color.y, color.z, alpha / 255.0f};
+            Vector4f vertColor = {color.x, color.y, color.z, alpha / 255.0f};
 
             // Resolve world-space position for model-space particles
-            XMFLOAT3 worldPos = p.position;
+            Vector3f worldPos = p.position;
             if (em.config.modelSpace) {
-                XMVECTOR wPos = XMVector3Transform(XMLoadFloat3(&p.position), em.state.transform);
-                XMStoreFloat3(&worldPos, wPos);
+                worldPos = whiteout::transform_point(p.position, em.state.transform);
             }
 
             float halfScale = scale * 0.5f;
-            XMFLOAT3 normal = camFwd;
+            Vector3f normal = camFwd;
 
             // --- HEAD QUAD ---
             if (isHead) {
                 float u0, v0, u1, v1;
                 ComputeUV(em.config, lifeFactor, true, u0, v0, u1, v1);
 
-                XMFLOAT3 corners[4];
+                Vector3f corners[4];
                 if (em.config.xyQuad && em.config.modelSpace) {
                     // XY-aligned in emitter local space, then transformed to world
-                    XMFLOAT3 local[4] = {
+                    Vector3f local[4] = {
                         {p.position.x - halfScale, p.position.y - halfScale, p.position.z},
                         {p.position.x + halfScale, p.position.y - halfScale, p.position.z},
                         {p.position.x + halfScale, p.position.y + halfScale, p.position.z},
                         {p.position.x - halfScale, p.position.y + halfScale, p.position.z},
                     };
                     for (int c = 0; c < 4; c++) {
-                        XMVECTOR wc = XMVector3Transform(XMLoadFloat3(&local[c]), em.state.transform);
-                        XMStoreFloat3(&corners[c], wc);
+                        corners[c] = whiteout::transform_point(local[c], em.state.transform);
                     }
                 } else if (em.config.xyQuad) {
                     // XY-aligned quads in world space (no emitter rotation)
@@ -217,20 +215,19 @@ ParticleSystem::BillboardResult ParticleSystem::BuildBillboards(float cameraPitc
                 ComputeUV(em.config, lifeFactor, false, u0, v0, u1, v1);
 
                 // Tail: velocity-proportional (faster particles = longer tail)
-                XMFLOAT3 worldVel = p.velocity;
+                Vector3f worldVel = p.velocity;
                 if (em.config.modelSpace) {
-                    XMVECTOR wVel = XMVector3TransformNormal(XMLoadFloat3(&p.velocity), em.state.transform);
-                    XMStoreFloat3(&worldVel, wVel);
+                    worldVel = whiteout::transform_normal(p.velocity, em.state.transform);
                 }
                 float vx = worldVel.x, vy = worldVel.y, vz = worldVel.z;
                 float vLen = sqrtf(vx*vx + vy*vy + vz*vz);
                 if (vLen < kVectorEpsilon) continue; // skip zero-velocity tails
 
                 float inv = 1.0f / vLen;
-                XMFLOAT3 tailDir = {vx * inv, vy * inv, vz * inv};
+                Vector3f tailDir = {vx * inv, vy * inv, vz * inv};
 
                 // Tail endpoint: normalized direction * tailLength (fixed length)
-                XMFLOAT3 tailEnd = {
+                Vector3f tailEnd = {
                     worldPos.x - tailDir.x * em.config.tailLength,
                     worldPos.y - tailDir.y * em.config.tailLength,
                     worldPos.z - tailDir.z * em.config.tailLength
@@ -239,12 +236,12 @@ ParticleSystem::BillboardResult ParticleSystem::BuildBillboards(float cameraPitc
                 // Width direction: camera-facing perpendicular to velocity.
                 // cross(velocityDir, toCamera) gives a vector perpendicular to
                 // both the tail and the view direction (matches reference).
-                XMFLOAT3 tailMid = {
+                Vector3f tailMid = {
                     (worldPos.x + tailEnd.x) * 0.5f,
                     (worldPos.y + tailEnd.y) * 0.5f,
                     (worldPos.z + tailEnd.z) * 0.5f
                 };
-                XMFLOAT3 camSrc = {
+                Vector3f camSrc = {
                     tailMid.x + cosf(cameraPitch) * cosf(cameraYaw) * 1000.0f,
                     tailMid.y + cosf(cameraPitch) * sinf(cameraYaw) * 1000.0f,
                     tailMid.z + sinf(cameraPitch) * 1000.0f
@@ -258,13 +255,13 @@ ParticleSystem::BillboardResult ParticleSystem::BuildBillboards(float cameraPitc
                 float ry = tailDir.z * tcx - tailDir.x * tcz;
                 float rz = tailDir.x * tcy - tailDir.y * tcx;
                 float rLen = sqrtf(rx*rx + ry*ry + rz*rz);
-                XMFLOAT3 tailRight;
+                Vector3f tailRight;
                 if (rLen > kVectorEpsilon) {
                     float ri = 1.0f / rLen;
                     tailRight = {rx * ri, ry * ri, rz * ri};
                 } else {
                     // Fallback: velocity parallel to camera — use world up cross
-                    XMFLOAT3 altUp = {0, 0, 1};
+                    Vector3f altUp = {0, 0, 1};
                     if (fabsf(tailDir.z) > 0.999f) altUp = {0, 1, 0};
                     rx = tailDir.y * altUp.z - tailDir.z * altUp.y;
                     ry = tailDir.z * altUp.x - tailDir.x * altUp.z;
@@ -274,7 +271,7 @@ ParticleSystem::BillboardResult ParticleSystem::BuildBillboards(float cameraPitc
                     tailRight = {rx * ri, ry * ri, rz * ri};
                 }
 
-                XMFLOAT3 corners[4];
+                Vector3f corners[4];
                 // quad: tail-left, tail+right, head+right, head-left
                 corners[0] = {tailEnd.x - tailRight.x * halfScale,
                               tailEnd.y - tailRight.y * halfScale,
@@ -333,16 +330,15 @@ void ParticleSystem::SpawnParticle(ParticleEmitter& em, float dt) {
     auto& cfg = em.config;
     auto& st = em.state;
 
-    constexpr float kPi = XM_PI;
+    constexpr float kPi = std::numbers::pi_v<float>;
 
     // Spawn position: random within width x length rectangle in XY plane
     float hw = st.width * 0.5f;
     float hl = st.length * 0.5f;
-    XMFLOAT3 localPos = {RandF(-hw, hw), RandF(-hl, hl), 0};
+    Vector3f localPos = {RandF(-hw, hw), RandF(-hl, hl), 0};
 
     if (!cfg.modelSpace) {
-        XMVECTOR posV = XMVector3Transform(XMLoadFloat3(&localPos), st.transform);
-        XMStoreFloat3(&p.position, posV);
+        p.position = whiteout::transform_point(localPos, st.transform);
     } else {
         p.position = localPos;
     }
@@ -356,7 +352,7 @@ void ParticleSystem::SpawnParticle(ParticleEmitter& em, float dt) {
     // Longitude is derived from LineEmitter flag (PE2 has no longitude field):
     //   lineEmitter = true  → longitude = 0 (spread in XZ plane only)
     //   lineEmitter = false → longitude = π (full circle)
-    XMFLOAT3 localDir;
+    Vector3f localDir;
     if (cfg.lineEmitter) {
         localDir = {spd * sinLat, 0.0f, spd * cosLat};
     } else {
@@ -366,8 +362,7 @@ void ParticleSystem::SpawnParticle(ParticleEmitter& em, float dt) {
     }
 
     if (!cfg.modelSpace) {
-        XMVECTOR dirV = XMVector3TransformNormal(XMLoadFloat3(&localDir), st.transform);
-        XMStoreFloat3(&p.velocity, dirV);
+        p.velocity = whiteout::transform_normal(localDir, st.transform);
     } else {
         p.velocity = localDir;
     }
@@ -385,7 +380,7 @@ void ParticleSystem::SpawnParticle(ParticleEmitter& em, float dt) {
 }
 
 void ParticleSystem::Interpolate3Seg(const ParticleEmitterConfig& cfg, float t,
-                                      XMFLOAT3& outColor, float& outAlpha, float& outScale)
+                                      Vector3f& outColor, float& outAlpha, float& outScale)
 {
     if (t < cfg.midTime) {
         float f = (cfg.midTime > 0) ? t / cfg.midTime : 0;
@@ -450,9 +445,8 @@ void ParticleSystem::ComputeUV(const ParticleEmitterConfig& cfg, float lifeFacto
     v1 = cellH * (row + 1);
 }
 
-XMFLOAT3 ParticleSystem::Lerp3(const XMFLOAT3& a, const XMFLOAT3& b, float t) {
-    float inv = 1.0f - t;
-    return {inv*a.x + t*b.x, inv*a.y + t*b.y, inv*a.z + t*b.z};
+Vector3f ParticleSystem::Lerp3(const Vector3f& a, const Vector3f& b, float t) {
+    return Vector3f::lerp(a, b, t);
 }
 
 float ParticleSystem::RandF(float lo, float hi) {

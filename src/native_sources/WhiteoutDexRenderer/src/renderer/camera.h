@@ -32,7 +32,7 @@ public:
         pitch_    = kDefaultPitch;
         yaw_      = kDefaultYaw;
         distance_ = kDefaultDistance;
-        target_   = XMFLOAT3(0.f, 0.f, 50.f);  // center on model midpoint
+        target_   = Vector3f(0.f, 0.f, 50.f);  // center on model midpoint
     }
 
     void SetFromModel(float boundsRadius) {
@@ -78,17 +78,17 @@ public:
     }
 
     // Camera vectors (Magos coordinate system: Z-up, right-handed)
-    XMFLOAT3 GetSource() const {
+    Vector3f GetSource() const {
         float cosP = cosf(pitch_);
-        return XMFLOAT3(
+        return Vector3f(
             target_.x + distance_ * cosP * cosf(yaw_),
             target_.y + distance_ * cosP * sinf(yaw_),
             target_.z + distance_ * sinf(pitch_)
         );
     }
 
-    XMFLOAT3 GetTarget() const { return target_; }
-    XMFLOAT3 GetUp()     const { return XMFLOAT3(0.f, 0.f, 1.f); }
+    Vector3f GetTarget() const { return target_; }
+    Vector3f GetUp()     const { return Vector3f(0.f, 0.f, 1.f); }
 
     float GetPitch()    const { return pitch_; }
     float GetYaw()      const { return yaw_; }
@@ -100,22 +100,15 @@ public:
     void SetTarget(float x, float y, float z) { target_ = {x, y, z}; }
 
     // Build view matrix (right-handed, Z-up)
-    XMMATRIX GetViewMatrix() const {
-        XMFLOAT3 src = GetSource();
-        XMFLOAT3 tgt = GetTarget();
-        XMFLOAT3 up  = GetUp();
-        return XMMatrixLookAtRH(
-            XMLoadFloat3(&src),
-            XMLoadFloat3(&tgt),
-            XMLoadFloat3(&up)
-        );
+    Matrix44f GetViewMatrix() const {
+        return Matrix44f::look_at_rh(GetSource(), GetTarget(), GetUp());
     }
 
 private:
     float pitch_;
     float yaw_;
     float distance_;
-    XMFLOAT3 target_;
+    Vector3f target_;
 };
 
 } // namespace WhiteoutDex

@@ -21,7 +21,7 @@ enum class CoordSpace { MDX, Max };
 struct CameraPreset {
     std::wstring name;
     float pitch, yaw, distance;
-    XMFLOAT3 target;
+    Vector3f target;
     bool isLive = false;
 };
 
@@ -86,9 +86,9 @@ enum MaterialFlags {
 struct MeshData {
     int geosetId;
     int materialId;
-    std::vector<XMFLOAT3> positions;
-    std::vector<XMFLOAT3> normals;
-    std::vector<XMFLOAT2> uvs;
+    std::vector<Vector3f> positions;
+    std::vector<Vector3f> normals;
+    std::vector<Vector2f> uvs;
     std::vector<uint32_t>  indices;
 };
 
@@ -125,9 +125,9 @@ enum BoneBillboardFlag : uint32_t {
 
 struct SkeletonData {
     int nodeCount;   // palette size: total hierarchy nodes (bones + helpers + emitters etc.)
-    std::vector<XMMATRIX> inverseBindMatrices;  // nodeCount entries (indexed by node position)
+    std::vector<Matrix44f> inverseBindMatrices;  // nodeCount entries (indexed by node position)
     std::vector<uint32_t> billboardFlags;        // nodeCount entries (indexed by node position)
-    std::vector<XMFLOAT3> nodePivots;            // nodeCount entries (indexed by node position)
+    std::vector<Vector3f> nodePivots;            // nodeCount entries (indexed by node position)
 };
 
 struct SkinWeightData {
@@ -137,20 +137,20 @@ struct SkinWeightData {
 
 struct CollisionShapeData {
     int type;              // 0=box, 1=sphere, 2=plane, 3=cylinder
-    XMFLOAT3 vertices[2]; // min/max for box, center for sphere
+    Vector3f vertices[2]; // min/max for box, center for sphere
     float radius;
 };
 
 // Per-frame animated state — computed by the adapter, then passed to ApplyFrameState().
 struct FrameState {
-    std::vector<XMMATRIX>  boneWorldMatrices;  // all hierarchy node world matrices (indexed by node position)
-    std::vector<XMMATRIX>  geosetTransforms;   // one per geoset (node world TM for unskinned meshes)
+    std::vector<Matrix44f>  boneWorldMatrices;  // all hierarchy node world matrices (indexed by node position)
+    std::vector<Matrix44f>  geosetTransforms;   // one per geoset (node world TM for unskinned meshes)
     std::vector<float>     geosetAlphas;       // one per geoset
-    std::vector<XMFLOAT3>  geosetColors;       // one per geoset
+    std::vector<Vector3f>  geosetColors;       // one per geoset
 
     struct ParticleFrameState {
         int emitterId;
-        XMMATRIX transform;
+        Matrix44f transform;
         float emissionRate, speed, variation, coneAngle;
         float gravity, width, length, visibility;
     };
@@ -158,15 +158,15 @@ struct FrameState {
 
     struct RibbonFrameState {
         int emitterId;
-        XMMATRIX transform;
+        Matrix44f transform;
         float above, below, alpha;
-        XMFLOAT3 color;
+        Vector3f color;
         float visibility;
         int   slot;
     };
     std::vector<RibbonFrameState> ribbonStates;
 
-    std::vector<XMMATRIX>  collisionTransforms;
+    std::vector<Matrix44f>  collisionTransforms;
 
     struct TexAnimState {
         int materialId;
@@ -195,7 +195,7 @@ struct FrameState {
     // Attachment per-frame state
     struct AttachmentFrameState {
         int attachmentIndex;
-        XMMATRIX transform;
+        Matrix44f transform;
         float visibility;
     };
     std::vector<AttachmentFrameState> attachmentStates;
@@ -203,7 +203,7 @@ struct FrameState {
     // PE1 (model particle emitter) per-frame state
     struct PE1FrameState {
         int emitterId;
-        XMMATRIX transform;
+        Matrix44f transform;
         float emissionRate, speed, latitude, longitude;  // lat/lon in radians
         float gravity, visibility;
     };

@@ -20,8 +20,8 @@ namespace WhiteoutDex {
 // Individual particle instance
 // ============================================================================
 struct Particle {
-    XMFLOAT3 position  = {0,0,0};
-    XMFLOAT3 velocity  = {0,0,0};
+    Vector3f position  = {0,0,0};
+    Vector3f velocity  = {0,0,0};
     float    lifeSpan  = 0;       // remaining
     float    initLife   = 0;       // original
 };
@@ -39,9 +39,9 @@ struct ParticleEmitterConfig {
     bool  squirt       = false;
 
     // 3-segment color/alpha/scale
-    XMFLOAT3 startColor  = {1,1,1};
-    XMFLOAT3 midColor    = {0.5f,0.5f,0.5f};
-    XMFLOAT3 endColor    = {0,0,0};
+    Vector3f startColor  = {1,1,1};
+    Vector3f midColor    = {0.5f,0.5f,0.5f};
+    Vector3f endColor    = {0,0,0};
     float startAlpha = 255, midAlpha = 128, endAlpha = 0;
     float startScale = 10, midScale = 10, endScale = 10;
     float midTime    = 0.5f;
@@ -72,7 +72,7 @@ struct ParticleEmitterConfig {
 // Per-frame emitter state (animatable values + transform from MaxScript)
 // ============================================================================
 struct ParticleEmitterState {
-    XMMATRIX transform = XMMatrixIdentity();
+    Matrix44f transform = Matrix44f::identity();
     float emissionRate = 0;
     float speed        = 0;
     float variation    = 0;
@@ -124,12 +124,12 @@ private:
     void SpawnParticle(ParticleEmitter& em, float dt);
 
     static void Interpolate3Seg(const ParticleEmitterConfig& cfg, float t,
-                                 XMFLOAT3& outColor, float& outAlpha, float& outScale);
+                                 Vector3f& outColor, float& outAlpha, float& outScale);
 
     static void ComputeUV(const ParticleEmitterConfig& cfg, float lifeFactor,
                            bool isHead, float& u0, float& v0, float& u1, float& v1);
 
-    static XMFLOAT3 Lerp3(const XMFLOAT3& a, const XMFLOAT3& b, float t);
+    static Vector3f Lerp3(const Vector3f& a, const Vector3f& b, float t);
 
     float RandF(float lo, float hi);
 

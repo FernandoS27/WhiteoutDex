@@ -60,7 +60,7 @@ void transformNodeTracks(Node& n) {
     transformTrack(n.scalingTracks,     [](Vector3f& v){ swizScale(v); });
 }
 
-// 3x4 bind pose layout (per BindPose3x4ToXMMatrix):
+// 3x4 bind pose layout (per BindPose3x4ToMatrix44f):
 //   row0 basis X = bp[0..2]
 //   row1 basis Y = bp[3..5]
 //   row2 basis Z = bp[6..8]
@@ -133,7 +133,7 @@ void TransformMdxModelToMaxCoords(whiteout::mdx::Model& m) {
     // Note: TextureAnimation tracks are 2D UV-space — no 3D swizzle.
 }
 
-inline XMFLOAT3 toXM(const Vector3f& v) { return {v.x, v.y, v.z}; }
+inline Vector3f toXM(const Vector3f& v) { return v; }
 
 } // namespace
 
@@ -441,13 +441,13 @@ SkeletonData MdxModelAdapter::GetSkeleton() {
     // for this skinning convention — using them shifts every HD vertex into
     // bone-local space and the model explodes. mdx-m3-viewer ignores BPOS for
     // skinning for the same reason.
-    sk.inverseBindMatrices.assign(sk.nodeCount, XMMatrixIdentity());
+    sk.inverseBindMatrices.assign(sk.nodeCount, Matrix44f::identity());
 
     // Extract billboard flags + rest pivots from ALL hierarchy nodes (any node
     // type can be a skinning target and may have billboard flags). Indexed by
     // node position in the hierarchy — matches allNodeMatrices indexing.
     sk.billboardFlags.assign(sk.nodeCount, 0);
-    sk.nodePivots.assign(sk.nodeCount, XMFLOAT3{0, 0, 0});
+    sk.nodePivots.assign(sk.nodeCount, Vector3f{0, 0, 0});
     const auto& nodes = hierarchy_.Nodes();
     for (int i = 0; i < (int)nodes.size(); i++) {
         uint32_t nf = nodes[i].flags;
@@ -732,7 +732,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     FrameState fs;
 
     // Evaluate bone hierarchy (pass camera position for billboard nodes)
-    std::vector<XMMATRIX> boneWorld, allNodes;
+    std::vector<Matrix44f> boneWorld, allNodes;
     hierarchy_.Evaluate(timeMs, seqStart_, seqEnd_,
                         model_.globalSequences, boneWorld, allNodes,
                         &cameraPos_, globalTimeMs);
@@ -759,7 +759,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     // GeosetAnimation evaluation
     int geosetCount = (int)model_.geosets.size();
     fs.geosetAlphas.assign(geosetCount, 1.0f);
-    fs.geosetColors.assign(geosetCount, XMFLOAT3(1, 1, 1));
+    fs.geosetColors.assign(geosetCount, Vector3f(1, 1, 1));
 
     for (const auto& ga : model_.geosetAnimations) {
         int gid = (int)ga.geosetId;
@@ -849,10 +849,10 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     //   origin · T(pivot) · W = pivot · W = animated pivot position
     // This matches mdx-m3-viewer's particle spawn (location = pivot + random,
     // then location · worldMatrix).
-    auto worldOf = [&](int nodeIdx) -> XMMATRIX {
-        if (nodeIdx < 0 || nodeIdx >= (int)fs.boneWorldMatrices.size()) return XMMatrixIdentity();
+    auto worldOf = [&](int nodeIdx) -> Matrix44f {
+        if (nodeIdx < 0 || nodeIdx >= (int)fs.boneWorldMatrices.size()) return Matrix44f::identity();
         const auto& piv = nodes[nodeIdx].pivot;
-        XMMATRIX pivotT = XMMatrixTranslation(piv.x, piv.y, piv.z);
+        Matrix44f pivotT = Matrix44f::translation({piv.x, piv.y, piv.z});
         return pivotT * fs.boneWorldMatrices[nodeIdx];
     };
 
@@ -889,7 +889,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     for (int i = 0; i < (int)model_.attachments.size(); i++) {
         const auto& att = model_.attachments[i];
         int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)att.node.objectId);
-        XMMATRIX tm = worldOf(nodeIdx);
+        Matrix44f tm = worldOf(nodeIdx);
         float vis = 1.0f;
         if (att.visibilityTracks.isUsed) {
             auto [t,s,e] = effectiveTime(att.visibilityTracks.globalSequenceId);
@@ -964,7 +964,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         const auto& cs = model_.collisionShapes[i];
         int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)cs.node.objectId);
         fs.collisionTransforms[i] = (nodeIdx >= 0 && nodeIdx < (int)fs.boneWorldMatrices.size())
-                                     ? fs.boneWorldMatrices[nodeIdx] : XMMatrixIdentity();
+                                     ? fs.boneWorldMatrices[nodeIdx] : Matrix44f::identity();
     }
 
     // Texture animation evaluation

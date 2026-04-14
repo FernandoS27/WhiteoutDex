@@ -19,8 +19,8 @@ namespace WhiteoutDex {
 
 // Line vertex for grid/bone rendering
 struct LineVertex {
-    XMFLOAT3 position;
-    XMFLOAT4 color;
+    Vector3f position;
+    Vector4f color;
 };
 
 // ============================================================================
@@ -40,7 +40,7 @@ public:
     // Camera control (thread-safe)
     void SetCamera(float pitch, float yaw, float distance,
                    float targetX, float targetY, float targetZ);
-    XMFLOAT3 GetCameraPosition() const { return camera_.GetSource(); }
+    Vector3f GetCameraPosition() const { return camera_.GetSource(); }
 
     // Model data (thread-safe — called from API/MaxScript thread)
     void ClearModel();

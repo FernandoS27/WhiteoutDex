@@ -11,6 +11,8 @@
 #include "mdx_model_adapter.h"
 #include "file_content_provider.h"
 #include <whiteout/models/mdx/parser.h>
+#include <numbers>
+#include <cstring>
 
 // PE1 model template — full definition (uses MdxModelAdapter which is now fully included)
 struct WhiteoutDex::Renderer::PE1ModelTemplate {
@@ -256,8 +258,8 @@ void Renderer::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate&
         sg.vertices.resize(vc);
         for (int i = 0; i < vc; i++) {
             sg.vertices[i].position = mesh.positions[i];
-            sg.vertices[i].normal = (i < (int)mesh.normals.size()) ? mesh.normals[i] : XMFLOAT3{0,0,1};
-            sg.vertices[i].uv = (i < (int)mesh.uvs.size()) ? mesh.uvs[i] : XMFLOAT2{0,0};
+            sg.vertices[i].normal = (i < (int)mesh.normals.size()) ? mesh.normals[i] : Vector3f{0,0,1};
+            sg.vertices[i].uv = (i < (int)mesh.uvs.size()) ? mesh.uvs[i] : Vector2f{0,0};
             sg.vertices[i].color = {1,1,1,1};
         }
         sg.indices = mesh.indices;
@@ -266,12 +268,7 @@ void Renderer::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate&
     if (tmpl.skeleton.nodeCount > 0) {
         std::vector<float> invBind(tmpl.skeleton.nodeCount * 16);
         for (int i = 0; i < tmpl.skeleton.nodeCount; i++) {
-            XMFLOAT4X4 f44; XMStoreFloat4x4(&f44, tmpl.skeleton.inverseBindMatrices[i]);
-            float* dst = &invBind[i * 16];
-            dst[0]=f44._11; dst[1]=f44._12; dst[2]=f44._13; dst[3]=f44._14;
-            dst[4]=f44._21; dst[5]=f44._22; dst[6]=f44._23; dst[7]=f44._24;
-            dst[8]=f44._31; dst[9]=f44._32; dst[10]=f44._33; dst[11]=f44._34;
-            dst[12]=f44._41; dst[13]=f44._42; dst[14]=f44._43; dst[15]=f44._44;
+            memcpy(&invBind[i * 16], &tmpl.skeleton.inverseBindMatrices[i].data[0][0], 64);
         }
         mi->skinning.SetSkeleton(tmpl.skeleton.nodeCount, invBind.data());
         mi->billboardFlags = tmpl.skeleton.billboardFlags;
@@ -372,7 +369,7 @@ void Renderer::EvaluatePE1Children() {
         int globalTimeMs;  // unclamped elapsed since birth (for global sequences)
     };
     std::vector<ChildEval> toEval;
-    XMFLOAT3 camPos;
+    Vector3f camPos;
 
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
@@ -496,8 +493,8 @@ uint32_t Renderer::AddModel(const std::vector<MeshData>& meshes,
         sg.vertices.resize(vc);
         for (int i = 0; i < vc; i++) {
             sg.vertices[i].position = mesh.positions[i];
-            sg.vertices[i].normal   = (i < (int)mesh.normals.size()) ? mesh.normals[i] : XMFLOAT3{0,0,1};
-            sg.vertices[i].uv       = (i < (int)mesh.uvs.size()) ? mesh.uvs[i] : XMFLOAT2{0,0};
+            sg.vertices[i].normal   = (i < (int)mesh.normals.size()) ? mesh.normals[i] : Vector3f{0,0,1};
+            sg.vertices[i].uv       = (i < (int)mesh.uvs.size()) ? mesh.uvs[i] : Vector2f{0,0};
             sg.vertices[i].color    = {1.0f, 1.0f, 1.0f, 1.0f};
         }
         sg.indices = mesh.indices;
@@ -505,18 +502,10 @@ uint32_t Renderer::AddModel(const std::vector<MeshData>& meshes,
 
     // Skeleton
     if (skeleton.nodeCount > 0) {
-        // Convert XMMATRIX array to flat float array for existing SkinningSystem
+        // Convert Matrix44f array to flat float array for existing SkinningSystem
         std::vector<float> invBindFlat(skeleton.nodeCount * 16);
         for (int i = 0; i < skeleton.nodeCount; i++) {
-            // XMMATRIX stores row-major, SkinningSystem expects row-major 16 floats
-            const XMMATRIX& m = skeleton.inverseBindMatrices[i];
-            XMFLOAT4X4 f44;
-            XMStoreFloat4x4(&f44, m);
-            float* dst = &invBindFlat[i * 16];
-            dst[0]  = f44._11; dst[1]  = f44._12; dst[2]  = f44._13; dst[3]  = f44._14;
-            dst[4]  = f44._21; dst[5]  = f44._22; dst[6]  = f44._23; dst[7]  = f44._24;
-            dst[8]  = f44._31; dst[9]  = f44._32; dst[10] = f44._33; dst[11] = f44._34;
-            dst[12] = f44._41; dst[13] = f44._42; dst[14] = f44._43; dst[15] = f44._44;
+            memcpy(&invBindFlat[i * 16], &skeleton.inverseBindMatrices[i].data[0][0], 64);
         }
         mi->skinning.SetSkeleton(skeleton.nodeCount, invBindFlat.data());
         mi->billboardFlags = skeleton.billboardFlags;
@@ -588,83 +577,62 @@ void Renderer::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state) {
     if (state.boneWorldMatrices.empty()) return;
 
     int bc = (int)state.boneWorldMatrices.size();
-    XMFLOAT3 camPos = camera_.GetSource();
-    XMVECTOR camP = XMLoadFloat3(&camPos);
-    XMVECTOR worldUp = XMVectorSet(0, 0, 1, 0);
+    Vector3f camPos = camera_.GetSource();
+    Vector3f worldUp = {0, 0, 1};
 
     std::vector<float> worldFlat(bc * 16);
     for (int i = 0; i < bc; i++) {
-        XMMATRIX boneM = state.boneWorldMatrices[i];
+        Matrix44f boneM = state.boneWorldMatrices[i];
 
         uint32_t bbFlags = (i < (int)mi.billboardFlags.size()) ? mi.billboardFlags[i] : 0;
         if (bbFlags != 0) {
-            // For a billboarded bone we want vertices to rotate around the
-            // bone's animated pivot world-position toward the camera. The
-            // delta matrix's translation column is NOT the pivot (it's
-            // pivot − R·pivot + t_local), so we instead:
-            //   1) transform the rest pivot through the delta to get the
-            //      animated world pivot position P_w
-            //   2) build boneM = T(-P_rest) · R_cam · T(P_w)
-            // which gives (v − P_rest) · R_cam + P_w — i.e. rotate vertex
-            // around its rest pivot toward the camera, then place at the
-            // animated world pivot. This ignores animated scale for
-            // billboards, which matches typical Wc3 usage.
-            XMFLOAT3 pivF = (i < (int)mi.nodePivots.size())
-                              ? mi.nodePivots[i] : XMFLOAT3{0, 0, 0};
-            XMVECTOR pivRest = XMLoadFloat3(&pivF);
-            pivRest = XMVectorSetW(pivRest, 1.0f);
-            XMVECTOR pivWorld = XMVector3Transform(pivRest, boneM);
+            Vector3f pivF = (i < (int)mi.nodePivots.size())
+                              ? mi.nodePivots[i] : Vector3f{0, 0, 0};
+            Vector3f pivWorld = whiteout::transform_point(pivF, boneM);
 
-            XMVECTOR toCamera = XMVectorSubtract(camP, pivWorld);
-            float dist = XMVectorGetX(XMVector3Length(toCamera));
+            Vector3f toCamera = camPos - pivWorld;
+            float dist = toCamera.length();
             if (dist > kBillboardDistThreshold) {
-                XMMATRIX bbRot = XMMatrixIdentity();
+                Matrix44f bbRot = Matrix44f::identity();
                 bool haveRot = false;
 
                 if (bbFlags & BONE_BILLBOARD_FULL) {
-                    // fwd points FROM camera TO bone so the front face faces the viewer
-                    XMVECTOR fwd = XMVector3Normalize(XMVectorNegate(toCamera));
-                    XMVECTOR right = XMVector3Cross(fwd, worldUp);
-                    float rightLen = XMVectorGetX(XMVector3Length(right));
+                    Vector3f fwd = Vector3f{-toCamera.x, -toCamera.y, -toCamera.z}.normalized();
+                    Vector3f right = whiteout::cross(fwd, worldUp);
+                    float rightLen = right.length();
                     if (rightLen < kBillboardDistThreshold)
-                        right = XMVectorSet(1, 0, 0, 0);
-                    right = XMVector3Normalize(right);
-                    XMVECTOR up = XMVector3Normalize(XMVector3Cross(right, fwd));
-                    bbRot = XMMATRIX(right, fwd, up, XMVectorSet(0,0,0,1));
+                        right = {1, 0, 0};
+                    right = right.normalized();
+                    Vector3f up = whiteout::cross(right, fwd).normalized();
+                    bbRot = {};
+                    bbRot.data[0][0] = right.x; bbRot.data[0][1] = right.y; bbRot.data[0][2] = right.z;
+                    bbRot.data[1][0] = fwd.x;   bbRot.data[1][1] = fwd.y;   bbRot.data[1][2] = fwd.z;
+                    bbRot.data[2][0] = up.x;    bbRot.data[2][1] = up.y;    bbRot.data[2][2] = up.z;
+                    bbRot.data[3][3] = 1.0f;
                     haveRot = true;
                 } else if (bbFlags & BONE_BILLBOARD_LOCK_Z) {
-                    XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
-                    float yaw = atan2f(tc.y, tc.x);
-                    bbRot = XMMatrixRotationZ(yaw);
+                    float yaw = atan2f(toCamera.y, toCamera.x);
+                    bbRot = Matrix44f::rotation_z(yaw);
                     haveRot = true;
                 } else if (bbFlags & BONE_BILLBOARD_LOCK_Y) {
-                    XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
-                    float angle = atan2f(tc.z, tc.x);
-                    bbRot = XMMatrixRotationY(angle);
+                    float angle = atan2f(toCamera.z, toCamera.x);
+                    bbRot = Matrix44f::rotation_y(angle);
                     haveRot = true;
                 } else if (bbFlags & BONE_BILLBOARD_LOCK_X) {
-                    XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
-                    float angle = atan2f(tc.z, tc.y);
-                    bbRot = XMMatrixRotationX(angle);
+                    float angle = atan2f(toCamera.z, toCamera.y);
+                    bbRot = Matrix44f::rotation_x(angle);
                     haveRot = true;
                 }
 
                 if (haveRot) {
-                    XMMATRIX T_negRest = XMMatrixTranslation(-pivF.x, -pivF.y, -pivF.z);
-                    XMFLOAT3 pwf; XMStoreFloat3(&pwf, pivWorld);
-                    XMMATRIX T_world   = XMMatrixTranslation(pwf.x, pwf.y, pwf.z);
+                    Matrix44f T_negRest = Matrix44f::translation({-pivF.x, -pivF.y, -pivF.z});
+                    Matrix44f T_world   = Matrix44f::translation({pivWorld.x, pivWorld.y, pivWorld.z});
                     boneM = T_negRest * bbRot * T_world;
                 }
             }
         }
 
-        XMFLOAT4X4 f44;
-        XMStoreFloat4x4(&f44, boneM);
-        float* dst = &worldFlat[i * 16];
-        dst[0]  = f44._11; dst[1]  = f44._12; dst[2]  = f44._13; dst[3]  = f44._14;
-        dst[4]  = f44._21; dst[5]  = f44._22; dst[6]  = f44._23; dst[7]  = f44._24;
-        dst[8]  = f44._31; dst[9]  = f44._32; dst[10] = f44._33; dst[11] = f44._34;
-        dst[12] = f44._41; dst[13] = f44._42; dst[14] = f44._43; dst[15] = f44._44;
+        memcpy(&worldFlat[i * 16], &boneM.data[0][0], 64);
     }
     mi.skinning.UpdateNodeMatrices(bc, worldFlat.data());
 }
@@ -1043,12 +1011,12 @@ void Renderer::CreateNodePalette(ModelInstance& mi) {
     int nodeCount = mi.skinning.NodeCount();
     if (nodeCount > 0 && !mi.nodePaletteBuf) {
         D3D11_BUFFER_DESC bd = {};
-        bd.ByteWidth           = (UINT)(sizeof(XMMATRIX) * nodeCount);
+        bd.ByteWidth           = (UINT)(sizeof(Matrix44f) * nodeCount);
         bd.Usage               = D3D11_USAGE_DYNAMIC;
         bd.BindFlags           = D3D11_BIND_SHADER_RESOURCE;
         bd.CPUAccessFlags      = D3D11_CPU_ACCESS_WRITE;
         bd.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-        bd.StructureByteStride = sizeof(XMMATRIX); // 64 bytes = float4x4
+        bd.StructureByteStride = sizeof(Matrix44f); // 64 bytes = float4x4
         device_->CreateBuffer(&bd, nullptr, &mi.nodePaletteBuf);
 
         D3D11_SHADER_RESOURCE_VIEW_DESC srvd = {};
@@ -1138,7 +1106,7 @@ void Renderer::UpdateAnimation() {
         HRESULT hr = context_->Map(mi->nodePaletteBuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         if (FAILED(hr)) continue;
         memcpy(mapped.pData, mi->skinning.OffsetMatrices(),
-               sizeof(XMMATRIX) * mi->skinning.NodeCount());
+               sizeof(Matrix44f) * mi->skinning.NodeCount());
         context_->Unmap(mi->nodePaletteBuf, 0);
 
         // Bind node palette SRV (slot 0) — shared across all geosets of this model
@@ -1195,7 +1163,7 @@ void Renderer::RenderParticles() {
 
     // Snapshot all data under one lock
     float pitch, yaw;
-    XMMATRIX viewMat;
+    Matrix44f viewMat;
     ParticleSystem::BillboardResult bbResult;
     std::vector<ParticleEmitterConfig> configs;
     {
@@ -1273,15 +1241,15 @@ void Renderer::RenderParticles() {
             D3D11_MAPPED_SUBRESOURCE cbMapped;
             context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &cbMapped);
             CBPerFrame* cb = (CBPerFrame*)cbMapped.pData;
-            cb->world      = XMMatrixTranspose(XMMatrixIdentity());
+            cb->world      = Matrix44f::identity().transpose();
 
             float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-            XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 1.0f, 10000.0f);
-            cb->view       = XMMatrixTranspose(viewMat);
-            cb->projection = XMMatrixTranspose(proj);
+            Matrix44f proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
+            cb->view       = viewMat.transpose();
+            cb->projection = proj.transpose();
 
-            XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kDefaultLightDir));
-            XMStoreFloat4(&cb->lightDir, ld);
+            Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
+            cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
             cb->lightColor   = kParticleLightColor;
             cb->ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
             cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -1324,7 +1292,7 @@ void Renderer::UpdateRibbons(float dt) {
 void Renderer::RenderRibbons() {
     for (auto& [_mh, _mi] : models_) {
     auto* mi = _mi.get();
-    XMMATRIX viewMat;
+    Matrix44f viewMat;
     RibbonSystem::StripResult stripResult;
     std::vector<RibbonEmitterConfig> configs;
 
@@ -1396,13 +1364,13 @@ void Renderer::RenderRibbons() {
             D3D11_MAPPED_SUBRESOURCE cbMapped;
             context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &cbMapped);
             CBPerFrame* cb = (CBPerFrame*)cbMapped.pData;
-            cb->world      = XMMatrixTranspose(XMMatrixIdentity());
+            cb->world      = Matrix44f::identity().transpose();
             float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-            XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 1.0f, 10000.0f);
-            cb->view       = XMMatrixTranspose(viewMat);
-            cb->projection = XMMatrixTranspose(proj);
-            XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kDefaultLightDir));
-            XMStoreFloat4(&cb->lightDir, ld);
+            Matrix44f proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
+            cb->view       = viewMat.transpose();
+            cb->projection = proj.transpose();
+            Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
+            cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
             cb->lightColor   = kParticleLightColor;
             cb->ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
             cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -1438,7 +1406,7 @@ void Renderer::RenderRibbons() {
 
 void Renderer::RenderCollisions() {
     std::vector<CollisionShape> shapes;
-    XMMATRIX viewMat;
+    Matrix44f viewMat;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
         for (auto& [h, mi] : models_) {
@@ -1460,25 +1428,24 @@ void Renderer::RenderCollisions() {
     context_->OMSetDepthStencilState(dsDefault_, 0);
 
     // Line color: green for collision shapes
-    XMFLOAT4 col = {0.0f, 1.0f, 0.3f, 1.0f};
+    Vector4f col = {0.0f, 1.0f, 0.3f, 1.0f};
 
     for (auto& cs : shapes) {
         // Build line vertices in local space, then transform
-        struct LV { XMFLOAT3 pos; XMFLOAT4 col; };
+        struct LV { Vector3f pos; Vector4f col; };
         std::vector<LV> lines;
 
         if (cs.type == 0) {
             // Box: 12 edges
-            XMFLOAT3 mn = cs.vmin, mx = cs.vmax;
-            XMFLOAT3 corners[8] = {
+            Vector3f mn = cs.vmin, mx = cs.vmax;
+            Vector3f corners[8] = {
                 {mn.x,mn.y,mn.z}, {mx.x,mn.y,mn.z}, {mx.x,mx.y,mn.z}, {mn.x,mx.y,mn.z},
                 {mn.x,mn.y,mx.z}, {mx.x,mn.y,mx.z}, {mx.x,mx.y,mx.z}, {mn.x,mx.y,mx.z}
             };
             int edges[24] = {0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,5, 2,6, 3,7};
             for (int i = 0; i < 24; i += 2) {
-                XMVECTOR a = XMVector3Transform(XMLoadFloat3(&corners[edges[i]]), cs.transform);
-                XMVECTOR b = XMVector3Transform(XMLoadFloat3(&corners[edges[i+1]]), cs.transform);
-                XMFLOAT3 pa, pb; XMStoreFloat3(&pa, a); XMStoreFloat3(&pb, b);
+                Vector3f pa = whiteout::transform_point(corners[edges[i]], cs.transform);
+                Vector3f pb = whiteout::transform_point(corners[edges[i+1]], cs.transform);
                 lines.push_back({pa, col});
                 lines.push_back({pb, col});
             }
@@ -1489,15 +1456,14 @@ void Renderer::RenderCollisions() {
                 for (int i = 0; i < segs; i++) {
                     float a0 = (float)i / segs * 6.28318530f;
                     float a1 = (float)(i+1) / segs * 6.28318530f;
-                    XMFLOAT3 p0, p1;
+                    Vector3f p0, p1;
                     float c0 = cs.radius * cosf(a0), s0 = cs.radius * sinf(a0);
                     float c1 = cs.radius * cosf(a1), s1 = cs.radius * sinf(a1);
                     if (plane == 0)      { p0 = {cs.vmin.x+c0, cs.vmin.y+s0, cs.vmin.z}; p1 = {cs.vmin.x+c1, cs.vmin.y+s1, cs.vmin.z}; }
                     else if (plane == 1) { p0 = {cs.vmin.x+c0, cs.vmin.y, cs.vmin.z+s0}; p1 = {cs.vmin.x+c1, cs.vmin.y, cs.vmin.z+s1}; }
                     else                 { p0 = {cs.vmin.x, cs.vmin.y+c0, cs.vmin.z+s0}; p1 = {cs.vmin.x, cs.vmin.y+c1, cs.vmin.z+s1}; }
-                    XMVECTOR va = XMVector3Transform(XMLoadFloat3(&p0), cs.transform);
-                    XMVECTOR vb = XMVector3Transform(XMLoadFloat3(&p1), cs.transform);
-                    XMFLOAT3 pa, pb; XMStoreFloat3(&pa, va); XMStoreFloat3(&pb, vb);
+                    Vector3f pa = whiteout::transform_point(p0, cs.transform);
+                    Vector3f pb = whiteout::transform_point(p1, cs.transform);
                     lines.push_back({pa, col});
                     lines.push_back({pb, col});
                 }
@@ -1526,10 +1492,10 @@ void Renderer::RenderCollisions() {
             D3D11_MAPPED_SUBRESOURCE cbm;
             context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &cbm);
             CBPerFrame* cb = (CBPerFrame*)cbm.pData;
-            cb->world = XMMatrixTranspose(XMMatrixIdentity());
+            cb->world = Matrix44f::identity().transpose();
             float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-            cb->view = XMMatrixTranspose(viewMat);
-            cb->projection = XMMatrixTranspose(XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 1.0f, 10000.0f));
+            cb->view = viewMat.transpose();
+            cb->projection = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f).transpose();
             cb->lightDir = {0,0,0,0};
             cb->lightColor = kCollisionLightColor;
             cb->ambientColor = kCollisionAmbientColor;
@@ -2235,13 +2201,13 @@ bool Renderer::CreateDefaultResources() {
     std::vector<LineVertex> lines;
     const float extent = 500.0f;
     const float step   = 50.0f;
-    XMFLOAT4 gridColor  = {0.45f, 0.45f, 0.46f, 1.0f};  // subtle, close to background
-    XMFLOAT4 axisColorX = {0.75f, 0.2f,  0.2f,  1.0f};
-    XMFLOAT4 axisColorY = {0.2f,  0.75f, 0.2f,  1.0f};
-    XMFLOAT4 axisColorZ = {0.2f,  0.2f,  0.75f, 1.0f};
+    Vector4f gridColor  = {0.45f, 0.45f, 0.46f, 1.0f};  // subtle, close to background
+    Vector4f axisColorX = {0.75f, 0.2f,  0.2f,  1.0f};
+    Vector4f axisColorY = {0.2f,  0.75f, 0.2f,  1.0f};
+    Vector4f axisColorZ = {0.2f,  0.2f,  0.75f, 1.0f};
 
     for (float v = -extent; v <= extent; v += step) {
-        XMFLOAT4 c = (v == 0.0f) ? axisColorY : gridColor;
+        Vector4f c = (v == 0.0f) ? axisColorY : gridColor;
         lines.push_back({{v, -extent, 0.0f}, c});
         lines.push_back({{v,  extent, 0.0f}, c});
         c = (v == 0.0f) ? axisColorX : gridColor;
@@ -2331,24 +2297,24 @@ void Renderer::RenderFrame() {
     context_->RSSetViewports(1, &vp);
     context_->OMSetRenderTargets(1, &rtv_, dsv_);
 
-    XMMATRIX view, proj;
+    Matrix44f view, proj;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
         view = camera_.GetViewMatrix();
     }
     float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 1.0f, 10000.0f);
+    proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
 
     // Update constant buffer
     {
         D3D11_MAPPED_SUBRESOURCE mapped;
         context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         CBPerFrame* cb = (CBPerFrame*)mapped.pData;
-        cb->world      = XMMatrixTranspose(XMMatrixIdentity());
-        cb->view       = XMMatrixTranspose(view);
-        cb->projection = XMMatrixTranspose(proj);
-        XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kDefaultLightDir));
-        XMStoreFloat4(&cb->lightDir, ld);
+        cb->world      = Matrix44f::identity().transpose();
+        cb->view       = view.transpose();
+        cb->projection = proj.transpose();
+        Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
+        cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
         cb->lightColor   = kGeosetLightColor;
         cb->ambientColor = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, 0.0f};  // .a=0 no alpha test
         cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -2425,10 +2391,10 @@ void Renderer::RenderGeosets() {
         return a.geosetId < b.geosetId;
     });
 
-    XMMATRIX view2;
+    Matrix44f view2;
     { std::lock_guard<std::mutex> lock(dataMutex_); view2 = camera_.GetViewMatrix(); }
     float aspect2 = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    XMMATRIX proj2 = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect2, 1.0f, 10000.0f);
+    Matrix44f proj2 = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect2, 1.0f, 10000.0f);
 
     for (auto& ref : refs) {
         auto* mi = ref.mi;
@@ -2442,7 +2408,7 @@ void Renderer::RenderGeosets() {
 
         float geoAlpha = geo.geosetAlpha * mi->parentVisibility;
         if (geoAlpha < 0.01f) continue;
-        XMFLOAT3 geoColor = geo.geosetColor;
+        Vector3f geoColor = geo.geosetColor;
 
         int numLayers = mat ? (int)mat->cpu.layers.size() : 0;
         if (numLayers <= 0) numLayers = 1;
@@ -2500,13 +2466,13 @@ void Renderer::RenderGeosets() {
                 D3D11_MAPPED_SUBRESOURCE mapped;
                 context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
                 CBPerFrame* cb = (CBPerFrame*)mapped.pData;
-                XMMATRIX world = mi->worldTransform;
-                cb->world      = XMMatrixTranspose(world);
-                cb->view       = XMMatrixTranspose(view2);
-                cb->projection = XMMatrixTranspose(proj2);
+                Matrix44f world = mi->worldTransform;
+                cb->world      = world.transpose();
+                cb->view       = view2.transpose();
+                cb->projection = proj2.transpose();
 
-                XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kDefaultLightDir));
-                XMStoreFloat4(&cb->lightDir, ld);
+                Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
+                cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
                 cb->lightColor    = kGeosetLightColor;
                 cb->ambientColor  = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, alphaRef};
                 cb->extraParams   = {combinedAlpha, geoColor.x, geoColor.y, geoColor.z};
@@ -2654,10 +2620,10 @@ bool Renderer::CreateViewCube() {
     };
 
     std::vector<Vertex> verts;
-    auto addFace = [&](int face, XMFLOAT3 p0, XMFLOAT3 p1, XMFLOAT3 p2, XMFLOAT3 p3, XMFLOAT3 n) {
+    auto addFace = [&](int face, Vector3f p0, Vector3f p1, Vector3f p2, Vector3f p3, Vector3f n) {
         for (int c = 0; c < 4; c++) {
             auto [u, v] = uv(face, c);
-            XMFLOAT3 p = (c==0) ? p0 : (c==1) ? p1 : (c==2) ? p2 : p3;
+            Vector3f p = (c==0) ? p0 : (c==1) ? p1 : (c==2) ? p2 : p3;
             verts.push_back({p, n, {1,1,1,1}, {u, v}});
         }
     };
@@ -2695,7 +2661,7 @@ bool Renderer::CreateViewCube() {
 
     // Edge lines (12 edges of the cube)
     std::vector<LineVertex> edges;
-    XMFLOAT4 ec = {0.2f, 0.2f, 0.2f, 1.0f};
+    Vector4f ec = {0.2f, 0.2f, 0.2f, 1.0f};
     float e = s * 1.001f; // slight offset to draw over faces
     // Bottom square
     edges.push_back({{-e,-e,-e}, ec}); edges.push_back({{ e,-e,-e}, ec});
@@ -2741,29 +2707,29 @@ void Renderer::RenderViewCube() {
     context_->ClearDepthStencilView(dsv_, D3D11_CLEAR_DEPTH, 1.0f, 0);
 
     // Build view matrix: same rotation as camera, but fixed distance, looking at origin
-    XMMATRIX vcView;
+    Matrix44f vcView;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
         float dist = 3.5f; // fixed distance for the cube
         float cosP = cosf(camera_.GetPitch()), sinP = sinf(camera_.GetPitch());
         float cosY = cosf(camera_.GetYaw()),   sinY = sinf(camera_.GetYaw());
-        XMFLOAT3 eye = { dist * cosP * cosY, dist * cosP * sinY, dist * sinP };
-        XMFLOAT3 tgt = { 0, 0, 0 };
-        XMFLOAT3 up  = { 0, 0, 1 };
-        vcView = XMMatrixLookAtRH(XMLoadFloat3(&eye), XMLoadFloat3(&tgt), XMLoadFloat3(&up));
+        Vector3f eye = { dist * cosP * cosY, dist * cosP * sinY, dist * sinP };
+        Vector3f tgt = { 0, 0, 0 };
+        Vector3f up  = { 0, 0, 1 };
+        vcView = Matrix44f::look_at_rh(eye, tgt, up);
     }
-    XMMATRIX vcProj = XMMatrixPerspectiveFovRH(XM_PIDIV4, 1.0f, 0.1f, 100.0f);
+    Matrix44f vcProj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, 1.0f, 0.1f, 100.0f);
 
     // Update constant buffer for ViewCube
     {
         D3D11_MAPPED_SUBRESOURCE mapped;
         context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         CBPerFrame* cb = (CBPerFrame*)mapped.pData;
-        cb->world      = XMMatrixTranspose(XMMatrixIdentity());
-        cb->view       = XMMatrixTranspose(vcView);
-        cb->projection = XMMatrixTranspose(vcProj);
-        XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kViewCubeLightDir));
-        XMStoreFloat4(&cb->lightDir, ld);
+        cb->world      = Matrix44f::identity().transpose();
+        cb->view       = vcView.transpose();
+        cb->projection = vcProj.transpose();
+        Vector3f ldN = Vector3f{kViewCubeLightDir.x, kViewCubeLightDir.y, kViewCubeLightDir.z}.normalized();
+        cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
         cb->lightColor   = kViewCubeLightColor;
         cb->ambientColor = kViewCubeAmbientColor;
         cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -2816,9 +2782,9 @@ void Renderer::RenderViewCube() {
         D3D11_MAPPED_SUBRESOURCE mapped;
         context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         CBPerFrame* cb = (CBPerFrame*)mapped.pData;
-        cb->world = XMMatrixTranspose(XMMatrixIdentity());
-        cb->view = XMMatrixTranspose(XMMatrixIdentity());
-        cb->projection = XMMatrixTranspose(XMMatrixOrthographicRH(2.0f, 2.0f, -1, 1));
+        cb->world = Matrix44f::identity().transpose();
+        cb->view = Matrix44f::identity().transpose();
+        cb->projection = Matrix44f::orthographic_rh(2.0f, 2.0f, -1.0f, 1.0f).transpose();
         cb->lightDir = {0,0,0,0};
         cb->lightColor = {1,1,1,1};
         cb->ambientColor = {1,1,1,1};
@@ -2827,7 +2793,7 @@ void Renderer::RenderViewCube() {
         context_->Unmap(cbPerFrame_, 0);
 
         // House icon as dynamic lines
-        XMFLOAT4 hc = {0.7f, 0.7f, 0.7f, 1.0f};
+        Vector4f hc = {0.7f, 0.7f, 0.7f, 1.0f};
         LineVertex house[] = {
             {{-0.4f, -0.6f, 0}, hc}, {{ 0.4f, -0.6f, 0}, hc}, // bottom
             {{-0.4f, -0.6f, 0}, hc}, {{-0.4f,  0.0f, 0}, hc}, // left wall
@@ -2860,22 +2826,22 @@ void Renderer::RenderViewCube() {
     context_->RSSetViewports(1, &mainVp);
 
     // Restore main scene constant buffer
-    XMMATRIX view, proj;
+    Matrix44f view, proj;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
         view = camera_.GetViewMatrix();
     }
     float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 1.0f, 10000.0f);
+    proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
     {
         D3D11_MAPPED_SUBRESOURCE mapped;
         context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         CBPerFrame* cb = (CBPerFrame*)mapped.pData;
-        cb->world      = XMMatrixTranspose(XMMatrixIdentity());
-        cb->view       = XMMatrixTranspose(view);
-        cb->projection = XMMatrixTranspose(proj);
-        XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kDefaultLightDir));
-        XMStoreFloat4(&cb->lightDir, ld);
+        cb->world      = Matrix44f::identity().transpose();
+        cb->view       = view.transpose();
+        cb->projection = proj.transpose();
+        Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
+        cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
         cb->lightColor   = kGeosetLightColor;
         cb->ambientColor = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, 0.0f};  // .a=0 no alpha test
         cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -2903,43 +2869,48 @@ int Renderer::HitTestViewCube(int mx, int my) {
     float vcX = (float)(width_ - s - 10);
     float vcY = 10.0f + 28.0f;  // matches cube viewport offset
 
-    XMMATRIX vcView;
+    Matrix44f vcView;
     {
         float dist = 3.5f;
         float cosP = cosf(camera_.GetPitch()), sinP = sinf(camera_.GetPitch());
         float cosY = cosf(camera_.GetYaw()),   sinY = sinf(camera_.GetYaw());
-        XMFLOAT3 eye = { dist*cosP*cosY, dist*cosP*sinY, dist*sinP };
-        XMFLOAT3 up  = { 0, 0, 1 };
-        vcView = XMMatrixLookAtRH(XMLoadFloat3(&eye), XMVectorZero(), XMLoadFloat3(&up));
+        Vector3f eye = { dist*cosP*cosY, dist*cosP*sinY, dist*sinP };
+        Vector3f up  = { 0, 0, 1 };
+        vcView = Matrix44f::look_at_rh(eye, {0,0,0}, up);
     }
-    XMMATRIX vcProj = XMMatrixPerspectiveFovRH(XM_PIDIV4, 1.0f, 0.1f, 100.0f);
-    XMMATRIX vp_mat = vcView * vcProj;
+    Matrix44f vcProj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, 1.0f, 0.1f, 100.0f);
+    Matrix44f vp_mat = vcView * vcProj;
 
     // Face centers and normals
-    XMFLOAT3 centers[] = {{0,.5f,0},{0,-.5f,0},{-.5f,0,0},{.5f,0,0},{0,0,.5f},{0,0,-.5f}};
-    XMFLOAT3 normals[] = {{0,1,0},{0,-1,0},{-1,0,0},{1,0,0},{0,0,1},{0,0,-1}};
+    Vector3f centers[] = {{0,.5f,0},{0,-.5f,0},{-.5f,0,0},{.5f,0,0},{0,0,.5f},{0,0,-.5f}};
+    Vector3f normals[] = {{0,1,0},{0,-1,0},{-1,0,0},{1,0,0},{0,0,1},{0,0,-1}};
 
     // Camera direction for backface culling
     float cosP = cosf(camera_.GetPitch()), sinP = sinf(camera_.GetPitch());
     float cosY = cosf(camera_.GetYaw()),   sinY = sinf(camera_.GetYaw());
-    XMFLOAT3 camDir = { -cosP*cosY, -cosP*sinY, -sinP }; // toward target
+    Vector3f camDir = { -cosP*cosY, -cosP*sinY, -sinP }; // toward target
 
     int bestFace = -1;
     float bestDist = 1e9f;
 
     for (int i = 0; i < 6; i++) {
         // Backface cull: skip faces pointing AWAY from camera
-        // (visible faces have normal opposing camDir → negative dot)
         float dot = normals[i].x*camDir.x + normals[i].y*camDir.y + normals[i].z*camDir.z;
         if (dot > -0.05f) continue;
 
-        XMVECTOR p = XMLoadFloat3(&centers[i]);
-        XMVECTOR proj = XMVector3Project(p, vcX, vcY, (float)s, (float)s, 0, 1, vcProj, vcView, XMMatrixIdentity());
-        XMFLOAT3 sp;
-        XMStoreFloat3(&sp, proj);
+        // Project center through View*Proj, perspective divide, viewport remap
+        Vector3f c = centers[i];
+        float cx = c.x*vp_mat.data[0][0] + c.y*vp_mat.data[1][0] + c.z*vp_mat.data[2][0] + vp_mat.data[3][0];
+        float cy = c.x*vp_mat.data[0][1] + c.y*vp_mat.data[1][1] + c.z*vp_mat.data[2][1] + vp_mat.data[3][1];
+        float cw = c.x*vp_mat.data[0][3] + c.y*vp_mat.data[1][3] + c.z*vp_mat.data[2][3] + vp_mat.data[3][3];
+        if (fabsf(cw) < 1e-6f) continue;
+        float ndcX = cx / cw;
+        float ndcY = cy / cw;
+        float spx = vcX + (float)s * (1.0f + ndcX) * 0.5f;
+        float spy = vcY + (float)s * (1.0f - ndcY) * 0.5f;
 
-        float dx = sp.x - mx;
-        float dy = sp.y - my;
+        float dx = spx - mx;
+        float dy = spy - my;
         float d = dx*dx + dy*dy;
         if (d < bestDist && d < (s*s*0.06f)) { // tighter radius — only on the cube itself
             bestDist = d;
@@ -2950,12 +2921,12 @@ int Renderer::HitTestViewCube(int mx, int my) {
 }
 
 void Renderer::SnapCameraToFace(int faceIndex) {
-    constexpr float HALF_PI = XM_PIDIV2;
+    constexpr float HALF_PI = std::numbers::pi_v<float> / 2.0f;
     // Face order: Front(+Y), Back(-Y), Left(-X), Right(+X), Top(+Z), Bottom(-Z)
     switch (faceIndex) {
         case 0: camera_.SetYaw(HALF_PI);   camera_.SetPitch(0.0f); break;  // Front
         case 1: camera_.SetYaw(-HALF_PI);  camera_.SetPitch(0.0f); break;  // Back
-        case 2: camera_.SetYaw(XM_PI);      camera_.SetPitch(0.0f); break;  // Left
+        case 2: camera_.SetYaw(std::numbers::pi_v<float>);      camera_.SetPitch(0.0f); break;  // Left
         case 3: camera_.SetYaw(0.0f);      camera_.SetPitch(0.0f); break;  // Right
         case 4: camera_.SetYaw(HALF_PI);   camera_.SetPitch(1.55f); break; // Top
         case 5: camera_.SetYaw(HALF_PI);   camera_.SetPitch(-1.55f); break;// Bottom

@@ -20,8 +20,8 @@ namespace WhiteoutDex {
 // Matches CRibbonEmitter::gxVertices[2*pos+0/1] storage.
 // ============================================================================
 struct RibbonSegment {
-    XMFLOAT3 top = {0,0,0};   // above-center vertex (currPos + vertical*above)
-    XMFLOAT3 bot = {0,0,0};   // below-center vertex (currPos - vertical*below)
+    Vector3f top = {0,0,0};   // above-center vertex (currPos + vertical*above)
+    Vector3f bot = {0,0,0};   // below-center vertex (currPos - vertical*below)
     float    age = 0;         // seconds since creation
 };
 
@@ -43,11 +43,11 @@ struct RibbonEmitterConfig {
 // Per-frame ribbon emitter state (animatable values + transform)
 // ============================================================================
 struct RibbonEmitterState {
-    XMMATRIX transform = XMMatrixIdentity();
+    Matrix44f transform = Matrix44f::identity();
     float above      = 20.0f;
     float below      = 20.0f;
     float alpha      = 1.0f;     // 0-1
-    XMFLOAT3 color   = {1,1,1};  // vertex color RGB (0-1)
+    Vector3f color   = {1,1,1};  // vertex color RGB (0-1)
     float visibility = 1.0f;
     int   slot       = 0;        // texture slot for atlas
 };
@@ -63,12 +63,12 @@ struct RibbonEmitter {
     float                       startTime     = 0;  // fractional edge time accumulator
     bool                        posSet        = false;
     // Previous/current frame transform history (for Hermite interpolation)
-    XMFLOAT3                    prevPos       = {0,0,0};
-    XMFLOAT3                    currPos       = {0,0,0};
-    XMFLOAT3                    prevDir       = {0,0,1};
-    XMFLOAT3                    currDir       = {0,0,1};
-    XMFLOAT3                    prevVertical  = {0,1,0};
-    XMFLOAT3                    currVertical  = {0,1,0};
+    Vector3f                    prevPos       = {0,0,0};
+    Vector3f                    currPos       = {0,0,0};
+    Vector3f                    prevDir       = {0,0,1};
+    Vector3f                    currDir       = {0,0,1};
+    Vector3f                    prevVertical  = {0,1,0};
+    Vector3f                    currVertical  = {0,1,0};
 };
 
 // ============================================================================

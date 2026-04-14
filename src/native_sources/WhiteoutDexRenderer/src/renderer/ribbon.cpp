@@ -35,14 +35,9 @@ void RibbonSystem::UpdateEmitterState(int id, const RibbonEmitterState& st) {
 
     em.state = st;
 
-    XMVECTOR posV  = XMVector3Transform(XMVectorSet(0,0,0,1), st.transform);
-    XMVECTOR dirV  = XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(0,0,1,0), st.transform));
-    XMVECTOR vertV = XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(0,1,0,0), st.transform));
-
-    XMFLOAT3 newPos, newDir, newVert;
-    XMStoreFloat3(&newPos,  posV);
-    XMStoreFloat3(&newDir,  dirV);
-    XMStoreFloat3(&newVert, vertV);
+    Vector3f newPos  = whiteout::transform_point(Vector3f{0,0,0}, st.transform);
+    Vector3f newDir   = whiteout::transform_normal(Vector3f{0,0,1}, st.transform).normalized();
+    Vector3f newVert  = whiteout::transform_normal(Vector3f{0,1,0}, st.transform).normalized();
 
     if (em.posSet) {
         em.prevPos      = em.currPos;
@@ -115,19 +110,19 @@ void RibbonSystem::Simulate(float dt) {
                 float dz = em.currPos.z - em.prevPos.z;
                 float dist = sqrtf(dx*dx + dy*dy + dz*dz);
 
-                XMFLOAT3 prevDirS = {em.prevDir.x*dist, em.prevDir.y*dist, em.prevDir.z*dist};
-                XMFLOAT3 currDirS = {em.currDir.x*dist, em.currDir.y*dist, em.currDir.z*dist};
+                Vector3f prevDirS = {em.prevDir.x*dist, em.prevDir.y*dist, em.prevDir.z*dist};
+                Vector3f currDirS = {em.currDir.x*dist, em.currDir.y*dist, em.currDir.z*dist};
 
-                XMFLOAT3 above0 = {em.prevPos.x + em.prevVertical.x * em.state.above,
+                Vector3f above0 = {em.prevPos.x + em.prevVertical.x * em.state.above,
                                    em.prevPos.y + em.prevVertical.y * em.state.above,
                                    em.prevPos.z + em.prevVertical.z * em.state.above};
-                XMFLOAT3 above1 = {em.currPos.x + em.currVertical.x * em.state.above,
+                Vector3f above1 = {em.currPos.x + em.currVertical.x * em.state.above,
                                    em.currPos.y + em.currVertical.y * em.state.above,
                                    em.currPos.z + em.currVertical.z * em.state.above};
-                XMFLOAT3 below0 = {em.prevPos.x - em.prevVertical.x * em.state.below,
+                Vector3f below0 = {em.prevPos.x - em.prevVertical.x * em.state.below,
                                    em.prevPos.y - em.prevVertical.y * em.state.below,
                                    em.prevPos.z - em.prevVertical.z * em.state.below};
-                XMFLOAT3 below1 = {em.currPos.x - em.currVertical.x * em.state.below,
+                Vector3f below1 = {em.currPos.x - em.currVertical.x * em.state.below,
                                    em.currPos.y - em.currVertical.y * em.state.below,
                                    em.currPos.z - em.currVertical.z * em.state.below};
 
@@ -231,12 +226,12 @@ RibbonSystem::StripResult RibbonSystem::BuildStrips() const
 
         // Uniform color per emitter (engine writes diffuseClr to localMat
         // before draw — every vertex sees the same color).
-        XMFLOAT4 vertColor = {em.state.color.x, em.state.color.y, em.state.color.z,
+        Vector4f vertColor = {em.state.color.x, em.state.color.y, em.state.color.z,
                               em.state.alpha};
 
         // Engine has a single dummy normal (1,0,0) — ribbons are unshaded
         // in practice (the unshaded flag drives the shader path).
-        XMFLOAT3 normal = {1, 0, 0};
+        Vector3f normal = {1, 0, 0};
 
         // segs[0] is oldest, segs[N-1] is newest (head). Build a quad per
         // adjacent pair. Per-edge U animates from texL (age 0) to texR

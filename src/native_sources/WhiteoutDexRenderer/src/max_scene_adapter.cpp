@@ -12,6 +12,8 @@
 #include <chrono>
 #include <algorithm>
 #include <cwchar>
+#include <cstring>
+#include <numbers>
 
 using namespace WhiteoutDex;
 
@@ -1048,12 +1050,8 @@ SkeletonData MaxSceneAdapter::GetSkeleton() {
         bones_[i].inverseBind = inv;
         float m16[16];
         PackMatrix(inv, m16);
-        sd.inverseBindMatrices[i] = XMMATRIX(
-            m16[0], m16[1], m16[2],  m16[3],
-            m16[4], m16[5], m16[6],  m16[7],
-            m16[8], m16[9], m16[10], m16[11],
-            m16[12],m16[13],m16[14], m16[15]
-        );
+        sd.inverseBindMatrices[i] = {};
+        memcpy(&sd.inverseBindMatrices[i].data[0][0], m16, 64);
         // Read billboard flags from user properties
         int val = 0;
         uint32_t flags = 0;
@@ -1325,12 +1323,8 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
         for (int i = 0; i < bc; i++) {
             float m16[16];
             PackMatrix(bones_[i].node->GetNodeTM(t), m16);
-            state.boneWorldMatrices[i] = XMMATRIX(
-                m16[0], m16[1], m16[2],  m16[3],
-                m16[4], m16[5], m16[6],  m16[7],
-                m16[8], m16[9], m16[10], m16[11],
-                m16[12],m16[13],m16[14], m16[15]
-            );
+            state.boneWorldMatrices[i] = {};
+            memcpy(&state.boneWorldMatrices[i].data[0][0], m16, 64);
         }
     }
 
@@ -1340,15 +1334,11 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
         state.geosetTransforms.resize(c);
         for (int i = 0; i < c; i++) {
             INode* node = geosets_[i].node;
-            if (!node) { state.geosetTransforms[i] = XMMatrixIdentity(); continue; }
+            if (!node) { state.geosetTransforms[i] = Matrix44f::identity(); continue; }
             float m16[16];
             PackMatrix(node->GetNodeTM(t), m16);
-            state.geosetTransforms[i] = XMMATRIX(
-                m16[0], m16[1], m16[2],  m16[3],
-                m16[4], m16[5], m16[6],  m16[7],
-                m16[8], m16[9], m16[10], m16[11],
-                m16[12],m16[13],m16[14], m16[15]
-            );
+            state.geosetTransforms[i] = {};
+            memcpy(&state.geosetTransforms[i].data[0][0], m16, 64);
         }
 
         state.geosetAlphas.resize(c, 1.0f);
@@ -1408,15 +1398,13 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
 
         float m16[16];
         PackMatrix(pi.node->GetNodeTM(t), m16);
-        ps.transform = XMMATRIX(
-            m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
-            m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]
-        );
+        ps.transform = {};
+        memcpy(&ps.transform.data[0][0], m16, 64);
         float fv=0;
         PB2Float(obj,L"EmissionRate",t,fv); ps.emissionRate=fv;
         PB2Float(obj,L"Speed",t,fv);        ps.speed=fv;
         PB2Float(obj,L"Variation",t,fv);    ps.variation=fv;
-        PB2Float(obj,L"ConeAngle",t,fv);    ps.coneAngle=fv * (XM_PI / 180.0f); // deg→rad
+        PB2Float(obj,L"ConeAngle",t,fv);    ps.coneAngle=fv * (std::numbers::pi_v<float> / 180.0f); // deg→rad
         PB2Float(obj,L"Gravity",t,fv);      ps.gravity=fv;
         PB2Float(obj,L"Width",t,fv);        ps.width=fv;
         PB2Float(obj,L"Height",t,fv);       ps.length=fv;
@@ -1432,10 +1420,8 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
 
         float m16[16];
         PackMatrix(ri.node->GetNodeTM(t), m16);
-        rs.transform = XMMATRIX(
-            m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
-            m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]
-        );
+        rs.transform = {};
+        memcpy(&rs.transform.data[0][0], m16, 64);
         float fv=0; Color cv;
         if(PB2Float(obj,L"Height Above",t,fv)) rs.above=fv; else rs.above=20;
         if(PB2Float(obj,L"Height Below",t,fv)) rs.below=fv; else rs.below=20;
@@ -1451,10 +1437,9 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
     for (auto& ci : collisions_) {
         float m16[16];
         PackMatrix(ci.node->GetNodeTM(t), m16);
-        state.collisionTransforms.push_back(XMMATRIX(
-            m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
-            m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]
-        ));
+        Matrix44f cm = {};
+        memcpy(&cm.data[0][0], m16, 64);
+        state.collisionTransforms.push_back(cm);
     }
 
     // Attachment transforms
@@ -1462,24 +1447,22 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
         auto& ai = attachments_[i];
         float m16[16];
         PackMatrix(ai.node->GetNodeTM(t), m16);
-        XMMATRIX tm(m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
-                    m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]);
+        Matrix44f tm = {};
+        memcpy(&tm.data[0][0], m16, 64);
         float vis = ai.node->GetVisibility(t);
         state.attachmentStates.push_back({i, tm, vis});
     }
 
     // PE1 emitter states
-    constexpr float kDegToRad = XM_PI / 180.0f;
+    constexpr float kDegToRad = std::numbers::pi_v<float> / 180.0f;
     for (auto& pi : pe1Emitters_) {
         Object* obj = GetBaseObject(pi.node); if (!obj) continue;
         FrameState::PE1FrameState ps;
         ps.emitterId = pi.emitterId;
         float m16[16];
         PackMatrix(pi.node->GetNodeTM(t), m16);
-        ps.transform = XMMATRIX(
-            m16[0],m16[1],m16[2],m16[3], m16[4],m16[5],m16[6],m16[7],
-            m16[8],m16[9],m16[10],m16[11], m16[12],m16[13],m16[14],m16[15]
-        );
+        ps.transform = {};
+        memcpy(&ps.transform.data[0][0], m16, 64);
         float fv = 0;
         PB2Float(obj, L"Speed", t, fv);         ps.speed = fv;
         PB2Float(obj, L"EmissionRate", t, fv);  ps.emissionRate = fv;

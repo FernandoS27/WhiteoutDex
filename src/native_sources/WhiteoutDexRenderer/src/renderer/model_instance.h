@@ -72,8 +72,8 @@ struct GPUGeoset {
     ID3D11UnorderedAccessView* skinnedUAV  = nullptr;
 
     float geosetAlpha   = 1.0f;
-    XMFLOAT3 geosetColor = {1,1,1};
-    XMMATRIX worldMatrix = XMMatrixIdentity();
+    Vector3f geosetColor = {1,1,1};
+    Matrix44f worldMatrix = Matrix44f::identity();
     int priorityPlane   = 0;
 
     void Release() {
@@ -103,10 +103,10 @@ struct GPUMaterial {
 // ============================================================================
 struct CollisionShape {
     int type = 0;            // 0=box, 1=sphere
-    XMFLOAT3 vmin = {0,0,0};
-    XMFLOAT3 vmax = {0,0,0};
+    Vector3f vmin = {0,0,0};
+    Vector3f vmax = {0,0,0};
     float radius = 0;
-    XMMATRIX transform = XMMatrixIdentity();
+    Matrix44f transform = Matrix44f::identity();
 };
 
 // ============================================================================
@@ -125,7 +125,7 @@ struct ModelInstance {
 
     // World transform for the entire model instance
     // (identity for focus model, per-particle transform for PE1 children)
-    XMMATRIX worldTransform = XMMatrixIdentity();
+    Matrix44f worldTransform = Matrix44f::identity();
 
     // ---- Staged data (CPU side, written by API thread under dataMutex_) ----
     std::unordered_map<int, StagedGeoset>   stagedGeosets;
@@ -143,7 +143,7 @@ struct ModelInstance {
     SkinningSystem skinning;
     bool skinDirty = false;
     std::vector<uint32_t> billboardFlags;  // per-node billboard flags
-    std::vector<XMFLOAT3> nodePivots;     // per-node rest pivots (for billboard rotation center)
+    std::vector<Vector3f> nodePivots;     // per-node rest pivots (for billboard rotation center)
 
     // GPU node palette (StructuredBuffer of offset matrices, one per model)
     ID3D11Buffer*             nodePaletteBuf = nullptr;

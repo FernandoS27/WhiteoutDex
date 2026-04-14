@@ -13,7 +13,7 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <d3dcompiler.h>
-#include <DirectXMath.h>
+#include <whiteout/vector_types.h>
 
 #include <cmath>
 #include <vector>
@@ -30,7 +30,11 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 
-using namespace DirectX;
+using whiteout::Vector2f;
+using whiteout::Vector3f;
+using whiteout::Vector4f;
+using whiteout::Matrix44f;
+using whiteout::Quaternion;
 
 namespace WhiteoutDex {
 
@@ -42,23 +46,23 @@ inline void SafeRelease(T*& ptr) {
 
 // Vertex format for Phase 1 (position + normal + color + uv)
 struct Vertex {
-    XMFLOAT3 position;
-    XMFLOAT3 normal;
-    XMFLOAT4 color;
-    XMFLOAT2 uv;
+    Vector3f position;
+    Vector3f normal;
+    Vector4f color;
+    Vector2f uv;
 };
 
 // Constant buffer for vertex shader (per-frame)
 struct alignas(16) CBPerFrame {
-    XMMATRIX world;
-    XMMATRIX view;
-    XMMATRIX projection;
-    XMFLOAT4 lightDir;
-    XMFLOAT4 lightColor;
-    XMFLOAT4 ambientColor;   // .a = alpha test threshold
-    XMFLOAT4 extraParams;    // .x = geoset alpha multiplier (1.0 = full, 0.0 = invisible)
-    XMFLOAT4 texAnimParams;  // .x=uOffset, .y=vOffset, .z=uTiling, .w=vTiling (legacy path only)
-    XMFLOAT4 materialFlags;  // .x=unshaded, .y=constantColor, .z=texRotation, .w=reserved (legacy path only)
+    Matrix44f world;
+    Matrix44f view;
+    Matrix44f projection;
+    Vector4f lightDir;
+    Vector4f lightColor;
+    Vector4f ambientColor;   // .a = alpha test threshold
+    Vector4f extraParams;    // .x = geoset alpha multiplier (1.0 = full, 0.0 = invisible)
+    Vector4f texAnimParams;  // .x=uOffset, .y=vOffset, .z=uTiling, .w=vTiling (legacy path only)
+    Vector4f materialFlags;  // .x=unshaded, .y=constantColor, .z=texRotation, .w=reserved (legacy path only)
 };
 
 } // namespace WhiteoutDex

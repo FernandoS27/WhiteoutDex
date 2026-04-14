@@ -49,7 +49,7 @@ public:
 
         g_lastTimeChangedTick = GetTickCount();
         // Update camera position for billboard evaluation (no-op for MaxSceneAdapter)
-        XMFLOAT3 cp = g_renderer->GetCameraPosition();
+        Vector3f cp = g_renderer->GetCameraPosition();
         g_adapter->SetCameraPosition(cp.x, cp.y, cp.z);
         WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs, wallClockElapsedMs());
         g_renderer->ApplyFrameState(state, timeMs);
@@ -85,7 +85,7 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
             int tpf = GetTicksPerFrame(), fps = GetFrameRate();
             int timeMs = (tpf > 0 && fps > 0)
                 ? (int)((float)t / (float)tpf * 1000.0f / (float)fps) : 0;
-            XMFLOAT3 cp = g_renderer->GetCameraPosition();
+            Vector3f cp = g_renderer->GetCameraPosition();
             g_adapter->SetCameraPosition(cp.x, cp.y, cp.z);
             WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs, wallClockElapsedMs());
             g_renderer->ApplyFrameState(state, timeMs);

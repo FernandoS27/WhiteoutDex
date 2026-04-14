@@ -77,8 +77,8 @@ PE1SimResult PE1System::Simulate(float dt, uint32_t& nextHandle) {
             p.lifeSpan -= dt;
 
             // Update world transform for this particle's child model
-            XMMATRIX scale = XMMatrixScaling(em.config.scale, em.config.scale, em.config.scale);
-            XMMATRIX trans = XMMatrixTranslation(p.position.x, p.position.y, p.position.z);
+            Matrix44f scale = Matrix44f::scaling({em.config.scale, em.config.scale, em.config.scale});
+            Matrix44f trans = Matrix44f::translation({p.position.x, p.position.y, p.position.z});
             result.transforms.push_back({p.childModelHandle, scale * trans});
         }
     }
@@ -97,9 +97,8 @@ void PE1System::SpawnParticle(PE1Emitter& em, float dt,
     auto& st = em.state;
 
     // Position: emitter origin in world space
-    XMVECTOR origin = XMVectorSet(0, 0, 0, 1);
-    XMVECTOR wPos = XMVector4Transform(origin, st.transform);
-    XMStoreFloat3(&p.position, wPos);
+    Vector3f wPos = whiteout::transform_point(Vector3f{0, 0, 0}, st.transform);
+    p.position = wPos;
 
     // Velocity cone (matches engine CParticleEmitter::CreateParticle)
     // lat/lon are in radians (MDX adapter passes directly, Max adapter converts deg→rad)
@@ -108,7 +107,7 @@ void PE1System::SpawnParticle(PE1Emitter& em, float dt,
 
     // Initial velocity along +Z
     float speed = st.speed;
-    XMFLOAT3 vel = {0, 0, speed};
+    Vector3f vel = {0, 0, speed};
 
     // Rotate by theta around Y (latitude spread)
     float sinT = sinf(theta), cosT = cosf(theta);
@@ -121,12 +120,7 @@ void PE1System::SpawnParticle(PE1Emitter& em, float dt,
     vel.x = vel.x * cosP;
 
     // Transform velocity to world space (direction only, w=0)
-    XMVECTOR velV = XMVectorSet(vel.x, vel.y, vel.z, 0);
-    XMVECTOR wVel = XMVector4Transform(velV, st.transform);
-    // Engine: vel = WorldMatrixTransform(vel) - WorldMatrixTransform(origin)
-    // This is equivalent to TransformNormal (w=0 transform)
-    wVel = XMVectorSubtract(wVel, XMVectorSet(0, 0, 0, 0)); // no-op for w=0
-    XMStoreFloat3(&p.velocity, wVel);
+    p.velocity = whiteout::transform_normal(vel, st.transform);
 
     p.lifeSpan = cfg.lifespan;
     p.initLife = cfg.lifespan;
@@ -150,8 +144,8 @@ void PE1System::SpawnParticle(PE1Emitter& em, float dt,
     }
 
     // Compute initial world transform
-    XMMATRIX scale = XMMatrixScaling(cfg.scale, cfg.scale, cfg.scale);
-    XMMATRIX trans = XMMatrixTranslation(p.position.x, p.position.y, p.position.z);
+    Matrix44f scale = Matrix44f::scaling({cfg.scale, cfg.scale, cfg.scale});
+    Matrix44f trans = Matrix44f::translation({p.position.x, p.position.y, p.position.z});
     PE1BirthEvent birth;
     birth.handle = p.childModelHandle;
     birth.emitterId = p.emitterId;
