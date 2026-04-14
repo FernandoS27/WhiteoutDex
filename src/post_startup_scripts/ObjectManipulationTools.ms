@@ -205,7 +205,7 @@ global PPT = PPT_Ops()
 -- ================================================================
 -- Original struct with poly tools added
 -- ================================================================
-struct ObjectManipulationTools
+struct WdxObjectManipulationTools
 (
 	isPoppedOut = false,
 	savedIndex = undefined,
@@ -325,15 +325,14 @@ struct ObjectManipulationTools
 	mainRollout = rollout mainRollout "Object Manipulation Tools" width:440 height:362
 	(
 		local self
-		button popOutBtn "Undock" pos:[379, 2] width:56 height:18 tooltip:"Undock / Dock"
 
 		/* =========================================
 		   OBJECT TOOLS (original - unchanged)
 		   ========================================= */
 		groupBox grpTools "Tools" pos:[8,32] width:296 height:125
 
-		-- Row 1: Hierarchy
-		label lblHierarchy "Hierarchy" pos:[20,54] width:90 height:15
+		-- Row 1: WdxHierarchy
+		label lblHierarchy "WdxHierarchy" pos:[20,54] width:90 height:15
 		button btnCopyHierarchy  "Copy"  pos:[130,51] width:80 height:20 tooltip:"Store parent-child relationships and unlink"
 		button btnPasteHierarchy "Paste" pos:[215,51] width:80 height:20 tooltip:"Restore parent-child relationships"
 
@@ -352,7 +351,7 @@ struct ObjectManipulationTools
 		   ========================================= */
 		groupBox grpOptions "Paste Options" pos:[308,32] width:128 height:125
 
-		checkBox chkHierarchy "Hierarchy" pos:[320,54] checked:false tooltip:"Temporarily unlink/relink during paste"
+		checkBox chkHierarchy "WdxHierarchy" pos:[320,54] checked:false tooltip:"Temporarily unlink/relink during paste"
 		checkBox chkMirror  "Mirror"     pos:[320,77] checked:false tooltip:"Enable position mirroring on paste"
 		checkBox chkMirrorX "X"          pos:[336,97] enabled:false tooltip:"Mirror along X axis"
 		checkBox chkMirrorY "Y"          pos:[336,115] enabled:false tooltip:"Mirror along Y axis"
@@ -401,7 +400,7 @@ struct ObjectManipulationTools
 		-- A) Copy / Paste HIERARCHY
 		on btnCopyHierarchy pressed do
 		(
-			undo "Copy Hierarchy (Unlink)" on
+			undo "Copy WdxHierarchy (Unlink)" on
 			(
 				if selection.count > 0 then
 				(
@@ -412,19 +411,19 @@ struct ObjectManipulationTools
 						append self.g_hierarchyData #(obj, oldParent)
 						obj.parent = undefined
 					)
-					lblStatus.text = "Hierarchy: copied " + (selection.count as string) + " objects"
-					format "Copy Hierarchy: Processed % objects.\n" selection.count
+					lblStatus.text = "WdxHierarchy: copied " + (selection.count as string) + " objects"
+					format "Copy WdxHierarchy: Processed % objects.\n" selection.count
 				)
 				else
 				(
-					messageBox (::L.t "omt_please_select_at_least_one_obj_msg") title:(::L.t "omt_error_ptitle")
+					messageBox (::WdxL.t "omt_please_select_at_least_one_obj_msg") title:(::WdxL.t "omt_error_ptitle")
 				)
 			)
 		)
 
 		on btnPasteHierarchy pressed do
 		(
-			undo "Paste Hierarchy (Relink)" on
+			undo "Paste WdxHierarchy (Relink)" on
 			(
 				if self.g_hierarchyData.count > 0 then
 				(
@@ -437,12 +436,12 @@ struct ObjectManipulationTools
 							myObj.parent = oldPar
 						)
 					)
-					lblStatus.text = "Hierarchy: restored " + (self.g_hierarchyData.count as string) + " entries"
-					format "Paste Hierarchy: Processed % entries.\n" self.g_hierarchyData.count
+					lblStatus.text = "WdxHierarchy: restored " + (self.g_hierarchyData.count as string) + " entries"
+					format "Paste WdxHierarchy: Processed % entries.\n" self.g_hierarchyData.count
 				)
 				else
 				(
-					messageBox (::L.t "omt_no_hierarchy_data_available_msg") title:(::L.t "omt_note_ptitle")
+					messageBox (::WdxL.t "omt_no_hierarchy_data_available_msg") title:(::WdxL.t "omt_note_ptitle")
 				)
 			)
 		)
@@ -458,7 +457,7 @@ struct ObjectManipulationTools
 			)
 			else
 			(
-				messageBox (::L.t "omt_please_select_at_least_one_obj_msg_2") title:(::L.t "omt_error_ptitle_2")
+				messageBox (::WdxL.t "omt_please_select_at_least_one_obj_msg_2") title:(::WdxL.t "omt_error_ptitle_2")
 			)
 		)
 
@@ -489,7 +488,7 @@ struct ObjectManipulationTools
 				)
 				else
 				(
-					messageBox (::L.t "omt_please_select_at_least_one_obj_msg_3") title:(::L.t "omt_error_ptitle_3")
+					messageBox (::WdxL.t "omt_please_select_at_least_one_obj_msg_3") title:(::WdxL.t "omt_error_ptitle_3")
 				)
 			)
 		)
@@ -515,7 +514,7 @@ struct ObjectManipulationTools
 			)
 			else
 			(
-				messageBox (::L.t "omt_please_select_at_least_one_obj_msg_4") title:(::L.t "omt_error_ptitle_4")
+				messageBox (::WdxL.t "omt_please_select_at_least_one_obj_msg_4") title:(::WdxL.t "omt_error_ptitle_4")
 			)
 		)
 
@@ -562,7 +561,7 @@ struct ObjectManipulationTools
 				)
 				else
 				(
-					messageBox (::L.t "omt_no_structure_data_available_msg") title:(::L.t "omt_note_ptitle_2")
+					messageBox (::WdxL.t "omt_no_structure_data_available_msg") title:(::WdxL.t "omt_note_ptitle_2")
 				)
 			)
 		)
@@ -594,7 +593,7 @@ struct ObjectManipulationTools
 		on btnPolyCopy pressed do
 		(
 			local obj = PPT.getValidObject()
-			if obj == undefined do (messageBox (::L.t "omt_select_an_editable_polymesh_msg") title:(::L.t "omt_error_ptitle_5"); return())
+			if obj == undefined do (messageBox (::WdxL.t "omt_select_an_editable_polymesh_msg") title:(::WdxL.t "omt_error_ptitle_5"); return())
 			local ok = PPT.doCopy obj
 			if ok then
 			(
@@ -602,25 +601,25 @@ struct ObjectManipulationTools
 				btnPolyPaste.enabled = true
 				lblStatus.text = "Poly: copied " + (g_ppt_vertPositions.count as string) + " verts"
 			)
-			else (messageBox (::L.t "omt_no_subobject_selection_msg") title:(::L.t "omt_error_ptitle_6"))
+			else (messageBox (::WdxL.t "omt_no_subobject_selection_msg") title:(::WdxL.t "omt_error_ptitle_6"))
 		)
 
 		on btnPolyPaste pressed do
 		(
-			if g_ppt_vertPositions.count == 0 do (messageBox (::L.t "omt_copy_first_msg") title:(::L.t "omt_error_ptitle_7"); return())
+			if g_ppt_vertPositions.count == 0 do (messageBox (::WdxL.t "omt_copy_first_msg") title:(::WdxL.t "omt_error_ptitle_7"); return())
 			local obj = PPT.getValidObject()
-			if obj == undefined do (messageBox (::L.t "omt_select_an_editable_polymesh_msg_2") title:(::L.t "omt_error_ptitle_8"); return())
+			if obj == undefined do (messageBox (::WdxL.t "omt_select_an_editable_polymesh_msg_2") title:(::WdxL.t "omt_error_ptitle_8"); return())
 
 			local byIdx = (rdoPolyMode.state == 1)
 			if not byIdx do
 			(
 				local tgt = PPT.getSelectedVertsArray obj
-				if tgt.count == 0 do (messageBox (::L.t "omt_no_target_selection_msg") title:(::L.t "omt_error_ptitle_9"); return())
+				if tgt.count == 0 do (messageBox (::WdxL.t "omt_no_target_selection_msg") title:(::WdxL.t "omt_error_ptitle_9"); return())
 				if tgt.count != g_ppt_vertPositions.count do
 				(
 					local mn = tgt.count
 					if g_ppt_vertPositions.count < mn do (mn = g_ppt_vertPositions.count)
-					local ok = queryBox ("Mismatch: src=" + (g_ppt_vertPositions.count as string) + " tgt=" + (tgt.count as string) + "\nUse " + (mn as string) + "?") title:(::L.t "omt_mismatch_ptitle")
+					local ok = queryBox ("Mismatch: src=" + (g_ppt_vertPositions.count as string) + " tgt=" + (tgt.count as string) + "\nUse " + (mn as string) + "?") title:(::WdxL.t "omt_mismatch_ptitle")
 					if not ok do (return())
 				)
 			)
@@ -634,15 +633,15 @@ struct ObjectManipulationTools
 		   ========================================= */
 		on popOutBtn pressed do
 		(
-			if ::ObjectManipulationTools.isPoppedOut then
+			if ::WdxObjectManipulationTools.isPoppedOut then
 			(
-				::ObjectManipulationTools.isPoppedOut = false
+				::WdxObjectManipulationTools.isPoppedOut = false
 				try ( destroyDialog mainRollout ) catch()
 				
 				if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 				(
 					local rollouts = ::whiteoutdexManagerFloater.rollouts
-					local idx = ::ObjectManipulationTools.savedIndex
+					local idx = ::WdxObjectManipulationTools.savedIndex
 					if idx != undefined and idx <= rollouts.count then
 					(
 						local movedRollouts = #()
@@ -668,12 +667,11 @@ struct ObjectManipulationTools
 			(
 				local rollouts = ::whiteoutdexManagerFloater.rollouts
 				for i = 1 to rollouts.count do
-					if rollouts[i] == mainRollout then ( ::ObjectManipulationTools.savedIndex = i; exit )
+					if rollouts[i] == mainRollout then ( ::WdxObjectManipulationTools.savedIndex = i; exit )
 				removeRollout mainRollout ::whiteoutdexManagerFloater
 			)
 			
-			::ObjectManipulationTools.isPoppedOut = true
-			popOutBtn.text = ::L.t "common_dock_btn"
+			::WdxObjectManipulationTools.isPoppedOut = true
 			createDialog mainRollout width:440 height:362 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
 		)
 
@@ -682,14 +680,7 @@ struct ObjectManipulationTools
 		   ========================================= */
 		on mainRollout open do
 		(
-			self = ObjectManipulationTools
-			
-			if ::ObjectManipulationTools.isPoppedOut then
-				popOutBtn.text = ::L.t "common_dock_btn"
-			else
-				popOutBtn.text = ::L.t "common_undock_btn"
-			popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-			
+			self = WdxObjectManipulationTools
 			updatePolyInfo()
 			if g_ppt_vertPositions.count > 0 do
 			(
@@ -705,50 +696,50 @@ struct ObjectManipulationTools
 			g_ppt_timer.Start()
 			
 			-- Localization
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				mainRollout.title = ::L.t "omt_object_manipulation_tools_title"
+				mainRollout.title = ::WdxL.t "omt_object_manipulation_tools_title"
 				-- Object Tools
-				lblHierarchy.text = ::L.t "omt_hierarchy_lbl"
-				lblPosition.text = ::L.t "omt_position_lbl"
-				lblStructure.text = ::L.t "omt_structure_lx2194r_lbl"
-				btnCopyHierarchy.text = ::L.t "omt_copy_btn"
-				btnCopyHierarchy.tooltip = ::L.t "omt_store_parentchild_relationshi_tip"
-				btnPasteHierarchy.text = ::L.t "omt_paste_btn"
-				btnPasteHierarchy.tooltip = ::L.t "omt_restore_parentchild_relations_tip"
-				btnCopyPos.text = ::L.t "omt_copy_btn_2"
-				btnCopyPos.tooltip = ::L.t "omt_copy_position_of_first_selecte_tip"
-				btnPastePos.text = ::L.t "omt_paste_btn_2"
-				btnPastePos.tooltip = ::L.t "omt_paste_stored_position_to_selec_tip"
-				btnCopyStruct.text = ::L.t "omt_copy_btn_3"
-				btnCopyStruct.tooltip = ::L.t "omt_copy_positions_of_all_selected_tip"
-				btnPasteStruct.text = ::L.t "omt_paste_btn_3"
-				btnPasteStruct.tooltip = ::L.t "omt_paste_to_mirrored_lr_named_ob_tip"
+				lblHierarchy.text = ::WdxL.t "omt_hierarchy_lbl"
+				lblPosition.text = ::WdxL.t "omt_position_lbl"
+				lblStructure.text = ::WdxL.t "omt_structure_lx2194r_lbl"
+				btnCopyHierarchy.text = ::WdxL.t "omt_copy_btn"
+				btnCopyHierarchy.tooltip = ::WdxL.t "omt_store_parentchild_relationshi_tip"
+				btnPasteHierarchy.text = ::WdxL.t "omt_paste_btn"
+				btnPasteHierarchy.tooltip = ::WdxL.t "omt_restore_parentchild_relations_tip"
+				btnCopyPos.text = ::WdxL.t "omt_copy_btn_2"
+				btnCopyPos.tooltip = ::WdxL.t "omt_copy_position_of_first_selecte_tip"
+				btnPastePos.text = ::WdxL.t "omt_paste_btn_2"
+				btnPastePos.tooltip = ::WdxL.t "omt_paste_stored_position_to_selec_tip"
+				btnCopyStruct.text = ::WdxL.t "omt_copy_btn_3"
+				btnCopyStruct.tooltip = ::WdxL.t "omt_copy_positions_of_all_selected_tip"
+				btnPasteStruct.text = ::WdxL.t "omt_paste_btn_3"
+				btnPasteStruct.tooltip = ::WdxL.t "omt_paste_to_mirrored_lr_named_ob_tip"
 				-- Paste Options
-				chkHierarchy.text = ::L.t "omt_hierarchy_lbl"
-				chkHierarchy.tooltip = ::L.t "omt_temporarily_unlinkrelink_duri_tip"
-				chkMirror.tooltip = ::L.t "omt_enable_position_mirroring_on_p_tip"
-				chkMirrorX.tooltip = ::L.t "omt_mirror_along_x_axis_tip"
-				chkMirrorY.tooltip = ::L.t "omt_mirror_along_y_axis_tip"
-				chkMirrorZ.tooltip = ::L.t "omt_mirror_along_z_axis_tip"
+				chkHierarchy.text = ::WdxL.t "omt_hierarchy_lbl"
+				chkHierarchy.tooltip = ::WdxL.t "omt_temporarily_unlinkrelink_duri_tip"
+				chkMirror.tooltip = ::WdxL.t "omt_enable_position_mirroring_on_p_tip"
+				chkMirrorX.tooltip = ::WdxL.t "omt_mirror_along_x_axis_tip"
+				chkMirrorY.tooltip = ::WdxL.t "omt_mirror_along_y_axis_tip"
+				chkMirrorZ.tooltip = ::WdxL.t "omt_mirror_along_z_axis_tip"
 				-- Poly Tools
-				btnPolyCopy.text = ::L.t "omt_copy_btn_4"
-				btnPolyCopy.tooltip = ::L.t "omt_copy_vertex_positions_from_sub_tip"
-				btnPolyPaste.text = ::L.t "omt_paste_btn_4"
-				btnPolyPaste.tooltip = ::L.t "omt_paste_vertex_positions_tip"
-				lblPolyBuf.text = ::L.t "omt_buffer_empty_lbl"
+				btnPolyCopy.text = ::WdxL.t "omt_copy_btn_4"
+				btnPolyCopy.tooltip = ::WdxL.t "omt_copy_vertex_positions_from_sub_tip"
+				btnPolyPaste.text = ::WdxL.t "omt_paste_btn_4"
+				btnPolyPaste.tooltip = ::WdxL.t "omt_paste_vertex_positions_tip"
+				lblPolyBuf.text = ::WdxL.t "omt_buffer_empty_lbl"
 				-- Poly Options
-				chkPolyMirX.tooltip = ::L.t "omt_mirror_vertex_x_on_paste_tip"
-				chkPolyMirY.tooltip = ::L.t "omt_mirror_vertex_y_on_paste_tip"
-				chkPolyMirZ.tooltip = ::L.t "omt_mirror_vertex_z_on_paste_tip"
+				chkPolyMirX.tooltip = ::WdxL.t "omt_mirror_vertex_x_on_paste_tip"
+				chkPolyMirY.tooltip = ::WdxL.t "omt_mirror_vertex_y_on_paste_tip"
+				chkPolyMirZ.tooltip = ::WdxL.t "omt_mirror_vertex_z_on_paste_tip"
 			)
 		)
 
 		on mainRollout close do
 		(
-			if ::ObjectManipulationTools.isPoppedOut then
+			if ::WdxObjectManipulationTools.isPoppedOut then
 			(
-				::ObjectManipulationTools.isPoppedOut = false
+				::WdxObjectManipulationTools.isPoppedOut = false
 				local tmr = dotNetObject "System.Windows.Forms.Timer"
 				tmr.Interval = 1
 				dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -758,8 +749,8 @@ struct ObjectManipulationTools
 					(
 						if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 						(
-							local rl = ::ObjectManipulationTools.mainRollout
-							local idx = ::ObjectManipulationTools.savedIndex
+							local rl = ::WdxObjectManipulationTools.mainRollout
+							local idx = ::WdxObjectManipulationTools.savedIndex
 							local rollouts = ::whiteoutdexManagerFloater.rollouts
 							if idx != undefined and idx <= rollouts.count then
 							(
@@ -786,4 +777,4 @@ struct ObjectManipulationTools
 	(
 	)
 )
-global ObjectManipulationTools = ObjectManipulationTools()
+global WdxObjectManipulationTools = WdxObjectManipulationTools()

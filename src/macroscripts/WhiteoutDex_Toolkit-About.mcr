@@ -189,7 +189,7 @@ internalCategory:"WhiteoutDex Toolkit"
 		html += "  <div class='card-title'>License</div>\n"
 		html += "  <div class='license-text'>"
 		html += "MIT License\n\n"
-		html += "Copyright (c) 2026, Fernando Sahmkow &amp; Benjamin Schiefer\n\n"
+		html += "Copyright (c) 2026, Fernando Sahmkow &amp; DennisH\n\n"
 		html += "Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\n"
 		html += "The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\n"
 		html += "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."
@@ -215,7 +215,7 @@ internalCategory:"WhiteoutDex Toolkit"
 		html += "    <div class='credits-label'>Lead Developers</div>\n"
 		html += "    <div class='credits-names'>\n"
 		html += "      <span class='lead'>Fernando Sahmkow</span> <span style='color:#666;'>(BlinkBoy)</span><br>\n"
-		html += "      <span class='lead'>Benjamin Schiefer</span> <span style='color:#666;'>(BenSen)</span>\n"
+		html += "      <span class='lead'>DennisH</span>\n"
 		html += "    </div>\n"
 		html += "  </div>\n"
 
@@ -286,6 +286,85 @@ internalCategory:"WhiteoutDex Toolkit"
 		return html
 	)
 
+	-- ============================================================================
+	-- FALLBACK ABOUT DIALOG (if WebBrowser is unavailable, e.g. future .NET versions)
+	-- ============================================================================
+	fn showFallbackAbout form =
+	(
+		local ndxVer = getWhiteoutDexVersion()
+		local dc = dotNetClass "System.Drawing.Color"
+		local ca = dotNetClass "System.Drawing.ContentAlignment"
+
+		local panel = dotNetObject "System.Windows.Forms.Panel"
+		panel.Dock = (dotNetClass "System.Windows.Forms.DockStyle").Fill
+		panel.AutoScroll = true
+		panel.BackColor = dc.FromArgb 43 43 43
+
+		local yPos = 20
+
+		-- Helper: create a label
+		fn makeLabel text x y w h fontSize fontColor =
+		(
+			local lbl = dotNetObject "System.Windows.Forms.Label"
+			lbl.Text = text
+			lbl.Location = dotNetObject "System.Drawing.Point" x y
+			lbl.Size = dotNetObject "System.Drawing.Size" w h
+			lbl.ForeColor = fontColor
+			lbl.Font = dotNetObject "System.Drawing.Font" "Segoe UI" fontSize
+			lbl.TextAlign = (dotNetClass "System.Drawing.ContentAlignment").TopCenter
+			lbl
+		)
+
+		-- Helper: create a link button
+		fn makeLinkBtn text x y w h url =
+		(
+			local btn = dotNetObject "System.Windows.Forms.Button"
+			btn.Text = text
+			btn.Location = dotNetObject "System.Drawing.Point" x y
+			btn.Size = dotNetObject "System.Drawing.Size" w h
+			local flatStyle = (dotNetClass "System.Windows.Forms.FlatStyle").Flat
+			btn.FlatStyle = flatStyle
+			btn.FlatAppearance.BorderSize = 0
+			btn.BackColor = (dotNetClass "System.Drawing.Color").FromArgb 54 54 54
+			btn.ForeColor = (dotNetClass "System.Drawing.Color").FromArgb 0 153 221
+			btn.Font = dotNetObject "System.Drawing.Font" "Segoe UI" 10.0
+			btn.Cursor = (dotNetClass "System.Windows.Forms.Cursors").Hand
+			btn.Tag = url
+			dotNet.addEventHandler btn "Click" (fn _click s e = (shellLaunch (s.Tag) ""))
+			btn
+		)
+
+		local white = dc.FromArgb 255 255 255
+		local grey  = dc.FromArgb 160 160 160
+		local blue  = dc.FromArgb 0 153 221
+
+		panel.Controls.Add (makeLabel "WHITEOUTDEX" 0 yPos 480 36 20.0 white)
+		yPos += 40
+		panel.Controls.Add (makeLabel ("Version " + ndxVer) 0 yPos 480 24 12.0 blue)
+		yPos += 30
+		panel.Controls.Add (makeLabel "A comprehensive Warcraft III modeling toolkit\nfor Autodesk 3ds Max." 0 yPos 480 48 10.0 grey)
+		yPos += 60
+
+		panel.Controls.Add (makeLinkBtn "Download from Hive Workshop" 40 yPos 400 32 "https://www.hiveworkshop.com/threads/whiteoutdex-3-2.354942/page-2")
+		yPos += 40
+		panel.Controls.Add (makeLinkBtn "View on GitHub" 40 yPos 400 32 "https://github.com/DennisHerrm/WhiteoutDex")
+		yPos += 40
+		panel.Controls.Add (makeLinkBtn "YouTube Channel" 40 yPos 400 32 "https://www.youtube.com/@Wc3Tutorials")
+		yPos += 40
+		panel.Controls.Add (makeLinkBtn "Join Discord" 40 yPos 400 32 "https://discord.gg/9xDRYYrPV3")
+		yPos += 50
+
+		panel.Controls.Add (makeLabel "MIT License — (c) 2026 DennisH & Fernando Sahmkow" 0 yPos 480 20 8.0 (dc.FromArgb 100 100 100))
+		yPos += 24
+		panel.Controls.Add (makeLabel "Made with love by the WhiteoutDex Team" 0 yPos 480 20 9.0 (dc.FromArgb 80 80 80))
+
+		form.Controls.Add panel
+	)
+
+	-- ============================================================================
+	-- EXECUTE
+	-- ============================================================================
+
 	on execute do
 	(
 		if whiteoutdex_aboutForm != undefined then
@@ -294,7 +373,7 @@ internalCategory:"WhiteoutDex Toolkit"
 		local form = dotNetObject "System.Windows.Forms.Form"
 		-- Localization
 		local aboutTitle = "WhiteoutDex - About"
-		if ::L != undefined then aboutTitle = ::L.t "about_about_macbtn"
+		if ::WdxL != undefined then aboutTitle = ::WdxL.t "about_about_macbtn"
 		form.Text = aboutTitle
 		form.Width = 500
 		form.Height = 1100
@@ -304,54 +383,68 @@ internalCategory:"WhiteoutDex Toolkit"
 		form.ShowInTaskbar = false
 		form.TopMost = true
 
-		local wb = dotNetObject "System.Windows.Forms.WebBrowser"
-		wb.Dock = (dotNetClass "System.Windows.Forms.DockStyle").Fill
-		wb.ScrollBarsEnabled = true
-		wb.IsWebBrowserContextMenuEnabled = false
-		wb.AllowNavigation = true
-		wb.ScriptErrorsSuppressed = true
+		local useWebBrowser = true
 
-		wb.DocumentText = buildHTML()
-
-		dotNet.addEventHandler wb "Navigating" \
+		-- Try WebBrowser (works on Max 2016-2025, may fail on Max 2026+ with .NET 8)
+		try
 		(
-			fn onNavigating sender args =
-			(
-				local url = args.Url.ToString()
+			local wb = dotNetObject "System.Windows.Forms.WebBrowser"
+			wb.Dock = (dotNetClass "System.Windows.Forms.DockStyle").Fill
+			wb.ScrollBarsEnabled = true
+			wb.IsWebBrowserContextMenuEnabled = false
+			wb.AllowNavigation = true
+			wb.ScriptErrorsSuppressed = true
 
-				if (findString url "action:youtube") != undefined then
+			wb.DocumentText = buildHTML()
+
+			dotNet.addEventHandler wb "Navigating" \
+			(
+				fn onNavigating sender args =
 				(
-					args.Cancel = true
-					shellLaunch "https://www.youtube.com/@Wc3Tutorials" ""
-				)
-				else if (findString url "action:hive") != undefined then
-				(
-					args.Cancel = true
-					shellLaunch "https://www.hiveworkshop.com/threads/whiteoutdex-3-2.354942/page-2" ""
-				)
-				else if (findString url "action:discord") != undefined then
-				(
-					args.Cancel = true
-					shellLaunch "https://discord.gg/9xDRYYrPV3" ""
-				)
-				else if (findString url "action:github") != undefined then
-				(
-					args.Cancel = true
-					shellLaunch "https://github.com/DennisHerrm/WhiteoutDex" ""
-				)
-				else if (findString url "action:whiteoutlib") != undefined then
-				(
-					args.Cancel = true
-					shellLaunch "https://github.com/FernandoS27/WhiteoutLib/blob/master/LICENSE-AI.md" ""
-				)
-				else if (findString url "about:blank") == undefined then
-				(
-					args.Cancel = true
+					local url = args.Url.ToString()
+
+					if (findString url "action:youtube") != undefined then
+					(
+						args.Cancel = true
+						shellLaunch "https://www.youtube.com/@Wc3Tutorials" ""
+					)
+					else if (findString url "action:hive") != undefined then
+					(
+						args.Cancel = true
+						shellLaunch "https://www.hiveworkshop.com/threads/whiteoutdex-3-2.354942/page-2" ""
+					)
+					else if (findString url "action:discord") != undefined then
+					(
+						args.Cancel = true
+						shellLaunch "https://discord.gg/9xDRYYrPV3" ""
+					)
+					else if (findString url "action:github") != undefined then
+					(
+						args.Cancel = true
+						shellLaunch "https://github.com/DennisHerrm/WhiteoutDex" ""
+					)
+					else if (findString url "action:whiteoutlib") != undefined then
+					(
+						args.Cancel = true
+						shellLaunch "https://github.com/FernandoS27/WhiteoutLib/blob/master/LICENSE-AI.md" ""
+					)
+					else if (findString url "about:blank") == undefined then
+					(
+						args.Cancel = true
+					)
 				)
 			)
+
+			form.Controls.Add wb
+		)
+		catch
+		(
+			-- WebBrowser failed (e.g. .NET 8 without IE support)
+			format "WhiteoutDex About: WebBrowser unavailable, using fallback UI\n"
+			useWebBrowser = false
+			showFallbackAbout form
 		)
 
-		form.Controls.Add wb
 		whiteoutdex_aboutForm = form
 		form.Show()
 	)

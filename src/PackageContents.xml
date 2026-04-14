@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage
+    SchemaVersion="1.0"
+    AutodeskProduct="3ds Max"
+    ProductType="Application"
+    Name="WhiteoutDex"
+    AppVersion="3.3.0"
+    Description="Warcraft III MDX/MDL Modeling Toolkit for 3ds Max"
+    Author="DennisH &amp; Fernando Sahmkow"
+    UpgradeCode="{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+>
+    <CompanyDetails
+        Name="WhiteoutDex Team"
+        Url="https://github.com/DennisHerrm/WhiteoutDex"
+        Email=""
+    />
+
+    <!-- Pre-Startup Scripts -->
+    <Components Description="pre-start-up scripts parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2018" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./pre_startup_scripts/WhiteoutDexGlobals.ms" />
+        <ComponentEntry ModuleName="./pre_startup_scripts/WhiteoutDexLocalization.ms" />
+        <ComponentEntry ModuleName="./pre_startup_scripts/WhiteoutDexNativeHelper.ms" />
+        <ComponentEntry ModuleName="./pre_startup_scripts/WhiteoutDexUtility.ms" />
+    </Components>
+
+    <!-- Menu System: Max 2025+ (GUID-based callback, must load pre-startup) -->
+    <Components Description="pre-start-up scripts parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2025" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./pre_startup_scripts/WhiteoutDexMenuCallback.ms" />
+    </Components>
+
+    <!-- Scripted Plugins -->
+    <Components Description="pre-start-up scripts parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2018" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./scripted_plugins/Wc3Material.ms" />
+        <ComponentEntry ModuleName="./scripted_plugins/Wc3Bitmap.ms" />
+        <ComponentEntry ModuleName="./scripted_plugins/Wc3AttachPoint.ms" />
+        <ComponentEntry ModuleName="./scripted_plugins/Wc3Light.ms" />
+        <ComponentEntry ModuleName="./scripted_plugins/Wc3RefEvent.ms" />
+        <ComponentEntry ModuleName="./scripted_plugins/Wc3CollisionShapes.ms" />
+        <ComponentEntry ModuleName="./scripted_plugins/Wc3VertexColor.ms" />
+        <ComponentEntry ModuleName="./scripted_plugins/Popcorn.ms" />
+        <ComponentEntry ModuleName="./scripted_plugins/FaceFX.ms" />
+    </Components>
+
+    <!-- Macroscripts -->
+    <Components Description="macroscripts parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2018" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./macroscripts/WhiteoutDex_Toolkit-Importer.mcr" />
+        <ComponentEntry ModuleName="./macroscripts/WhiteoutDex_Toolkit-Exporter.mcr" />
+        <ComponentEntry ModuleName="./macroscripts/WhiteoutDex_Toolkit-Settings.mcr" />
+        <ComponentEntry ModuleName="./macroscripts/WhiteoutDex_Toolkit-About.mcr" />
+        <ComponentEntry ModuleName="./macroscripts/WhiteoutDex_Toolkit-Tools.mcr" />
+    </Components>
+
+    <!-- Post-Startup Scripts -->
+    <Components Description="post-start-up scripts parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2018" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./post_startup_scripts/AnimTools.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/GlobalSequenceManager.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/GridAndDummyCreator.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/NodeManager.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/ObjectManipulationTools.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/ObjectSettings.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/SequenceManager.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/SkinChanger.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/TeamColorManager.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/VisibilityKeyer.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/Wc3AttachPointCallback.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/Wc3RefEventCallback.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/WhiteoutDexAutoUpdater.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/WhiteoutDexSidebar.ms" />
+    </Components>
+
+    <!-- Menu System: Max 2016-2024 (legacy menuMan, must load post-startup) -->
+    <Components Description="post-start-up scripts parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2018" SeriesMax="2024" />
+        <ComponentEntry ModuleName="./post_startup_scripts/WhiteoutDexMenuInstaller.ms" />
+    </Components>
+
+    <!-- Native Plugins Max 2016 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2016" SeriesMax="2016" />
+        <ComponentEntry ModuleName="./native plugins/Max2016/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2016/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2016/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2016/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2016/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2016/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2016/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+    <!-- Native Plugins Max 2017 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2017" SeriesMax="2017" />
+        <ComponentEntry ModuleName="./native plugins/Max2017/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2017/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2017/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2017/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2017/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2017/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2017/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+    <!-- Native Plugins Max 2018 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2018" SeriesMax="2018" />
+        <ComponentEntry ModuleName="./native plugins/Max2018/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2018/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2018/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2018/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2018/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2018/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2018/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+    <!-- Native Plugins Max 2019 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2019" SeriesMax="2019" />
+        <ComponentEntry ModuleName="./native plugins/Max2019/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2019/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2019/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2019/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2019/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2019/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2019/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+    <!-- Native Plugins Max 2020 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2020" SeriesMax="2020" />
+        <ComponentEntry ModuleName="./native plugins/Max2020/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2020/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2020/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2020/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2020/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2020/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2020/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+    <!-- Native Plugins Max 2021 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2021" SeriesMax="2021" />
+        <ComponentEntry ModuleName="./native plugins/Max2021/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2021/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2021/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2021/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2021/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2021/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2021/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+    <!-- Native Plugins Max 2022 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2022" SeriesMax="2022" />
+        <ComponentEntry ModuleName="./native plugins/Max2022/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2022/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2022/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2022/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2022/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2022/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2022/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+    <!-- Native Plugins Max 2023 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2023" SeriesMax="2023" />
+        <ComponentEntry ModuleName="./native plugins/Max2023/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2023/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2023/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2023/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2023/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2023/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2023/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+    <!-- Native Plugins Max 2024 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2024" SeriesMax="2024" />
+        <ComponentEntry ModuleName="./native plugins/Max2024/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2024/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2024/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2024/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2024/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2024/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2024/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+    <!-- Native Plugins Max 2025 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2025" SeriesMax="2025" />
+        <ComponentEntry ModuleName="./native plugins/Max2025/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2025/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2025/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2025/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2025/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2025/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2025/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+    <!-- Native Plugins Max 2026 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2026" SeriesMax="2026" />
+        <ComponentEntry ModuleName="./native plugins/Max2026/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2026/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2026/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2026/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2026/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2026/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2026/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+    <!-- Native Plugins Max 2027 -->
+    <Components Description="plugins parts">
+        <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2027" SeriesMax="2027" />
+        <ComponentEntry ModuleName="./native plugins/Max2027/blp.bmi" />
+        <ComponentEntry ModuleName="./native plugins/Max2027/MDLXImporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2027/MDLXExporter.dle" />
+        <ComponentEntry ModuleName="./native plugins/Max2027/Wc3Particles1.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2027/Wc3Particles2.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2027/Wc3Ribbon.dlo" />
+        <ComponentEntry ModuleName="./native plugins/Max2027/WhiteoutDexExtractor.dlx" />
+    </Components>
+
+</ApplicationPackage>

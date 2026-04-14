@@ -1,8 +1,8 @@
 
-plugin simpleManipulator BlizzPopcorn
-name:"Popcorn"
-classID:#(0x6a17b48c, 0x291672fe)
-category:"Warcraft 3 Systems"
+plugin simpleManipulator Wdx_Wc3Popcorn
+name:"Wc3 Popcorn"
+classID:#(0x7A1B2C09, 0x3D4E5F09)
+category:"Warcraft III Plugins"
 (
 	------------------------------------- Variable Registration -------------------------------------
 	local Icon_Path		  = (GetDir #userIcons + "\\WhiteoutDexIcon\\")
@@ -58,7 +58,7 @@ parameters main rollout:params2
 	-----------------------------------Import Popcorn configuration parameters-----------------------------------
 	fn ImportPopcorn =
 	(
-		local input_file = getOpenFileName caption:(::L.t "popcorn_select_popcorn_fx_data_file_cap") types:"Config File (*.ini)|*.ini|" historyCategory:"PopcornImportHistory"
+		local input_file = getOpenFileName caption:(::WdxL.t "popcorn_select_popcorn_fx_data_file_cap") types:"Config File (*.ini)|*.ini|" historyCategory:"PopcornImportHistory"
 		if (input_file == undefined) then (return undefined)
 		local obj = selection[1]
 		----------------------------------------------------------------------------------------------------------------------
@@ -113,7 +113,7 @@ parameters main rollout:params2
 	-----------------------------------Export Popcorn configuration parameters-----------------------------------
 	fn ExportPopcorn =
 	(
-		local output_file = getSaveFileName caption:(::L.t "popcorn_save_popcorn_fx_data_file_cap") types:"Config File (*.ini)|*.ini|" historyCategory:"PopcornExportHistory"
+		local output_file = getSaveFileName caption:(::WdxL.t "popcorn_save_popcorn_fx_data_file_cap") types:"Config File (*.ini)|*.ini|" historyCategory:"PopcornExportHistory"
 		if (output_file == undefined) then (return undefined)
 		local obj = selection[1]
 		----------------------------------------------------------------------------------------------------------------------
@@ -154,9 +154,9 @@ parameters main rollout:params2
 		)
 		on General open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				General.title = ::L.t "popcorn_general_functions_title"
+				General.title = ::WdxL.t "popcorn_general_functions_title"
 			)
 		)
 	)
@@ -169,11 +169,11 @@ parameters main rollout:params2
 		On btnExport pressed do ExportPopcorn()
 		on paramsE open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				paramsE.title = ::L.t "popcorn_import_export_configuration_title"
-				btnImport.text = ::L.t "popcorn_import_btn"
-				btnExport.text = ::L.t "popcorn_export_btn"
+				paramsE.title = ::WdxL.t "popcorn_import_export_configuration_title"
+				btnImport.text = ::WdxL.t "popcorn_import_btn"
+				btnExport.text = ::WdxL.t "popcorn_export_btn"
 			)
 		)
 	)
@@ -187,7 +187,7 @@ parameters main rollout:params2
 
 		on btnBrowse pressed do
 		(
-			local f = getOpenFileName caption:(::L.t "popcorn_select_popcorn_fx_file_cap") types:"Popcorn FX (*.pkfx)|*.pkfx|PKB File (*.pkb)|*.pkb|All Files|*.*|" historyCategory:"PopcornFXFile"
+			local f = getOpenFileName caption:(::WdxL.t "popcorn_select_popcorn_fx_file_cap") types:"Popcorn FX (*.pkfx)|*.pkfx|PKB File (*.pkb)|*.pkb|All Files|*.*|" historyCategory:"PopcornFXFile"
 			if f != undefined then popcornPath.text = f
 		)
 		on btnInfo pressed do
@@ -196,12 +196,12 @@ parameters main rollout:params2
 		)
 		on params1 open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				params1.title = ::L.t "popcorn_popcorn_fx_file_title"
-				l1.text = ::L.t "popcorn__popcorn_fx_path_lbl"
-				btnBrowse.text = ::L.t "popcorn_browse_popcorn_fx_file_btn"
-				btnInfo.text = ::L.t "popcorn_popcorn_fx_explanation_btn"
+				params1.title = ::WdxL.t "popcorn_popcorn_fx_file_title"
+				l1.text = ::WdxL.t "popcorn__popcorn_fx_path_lbl"
+				btnBrowse.text = ::WdxL.t "popcorn_browse_popcorn_fx_file_btn"
+				btnInfo.text = ::WdxL.t "popcorn_popcorn_fx_explanation_btn"
 			)
 		)
 	)
@@ -226,19 +226,19 @@ parameters main rollout:params2
 		on flagPortrait  changed state do rawFlags = ""
 		on params2 open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				params2.title = ::L.t "popcorn_event_flags_title"
-				l2.text = ::L.t "popcorn_always_on_lbl"
-				flagAlways.tooltip = ::L.t "popcorn_effect_is_always_active_tip"
-				l3.text = ::L.t "popcorn_birth_lbl"
-				flagBirth.tooltip = ::L.t "popcorn_effect_plays_on_unit_birth_tip"
-				l4.text = ::L.t "popcorn_death_lbl"
-				flagDeath.tooltip = ::L.t "popcorn_effect_plays_on_unit_death_tip"
-				l5.text = ::L.t "popcorn_dissipate_lbl"
-				flagDissipate.tooltip = ::L.t "popcorn_effect_plays_on_unit_dissipate_tip"
-				l6.text = ::L.t "popcorn_portrait_lbl"
-				flagPortrait.tooltip = ::L.t "popcorn_effect_plays_in_portrait_view_tip"
+				params2.title = ::WdxL.t "popcorn_event_flags_title"
+				l2.text = ::WdxL.t "popcorn_always_on_lbl"
+				flagAlways.tooltip = ::WdxL.t "popcorn_effect_is_always_active_tip"
+				l3.text = ::WdxL.t "popcorn_birth_lbl"
+				flagBirth.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_birth_tip"
+				l4.text = ::WdxL.t "popcorn_death_lbl"
+				flagDeath.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_death_tip"
+				l5.text = ::WdxL.t "popcorn_dissipate_lbl"
+				flagDissipate.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_dissipate_tip"
+				l6.text = ::WdxL.t "popcorn_portrait_lbl"
+				flagPortrait.tooltip = ::WdxL.t "popcorn_effect_plays_in_portrait_view_tip"
 			)
 		)
 	)
@@ -257,18 +257,18 @@ parameters main rollout:params2
 		dropdownList replaceableId "" items:#("Not Used", "Team Color", "Team Glow") selection:1 width:138 pos:[12,119]
 		on params3 open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				params3.title = ::L.t "popcorn_emission_settings_title"
-				l7.text = ::L.t "popcorn_alpha_lbl"
-				alpha.tooltip = ::L.t "popcorn_particle_alpha_opacity_tip"
-				l8.text = ::L.t "popcorn_emission_rate_lbl"
-				emissionRate.tooltip = ::L.t "popcorn_particles_emitted_per_second_tip"
-				l9.text = ::L.t "popcorn_life_span_lbl"
-				lifeSpan.tooltip = ::L.t "popcorn_particle_lifetime_in_seconds_tip"
-				l10.text = ::L.t "popcorn_speed_lbl"
-				speed.tooltip = ::L.t "popcorn_particle_emission_speed_tip"
-				l11.text = ::L.t "popcorn__replaceable_texture_lbl"
+				params3.title = ::WdxL.t "popcorn_emission_settings_title"
+				l7.text = ::WdxL.t "popcorn_alpha_lbl"
+				alpha.tooltip = ::WdxL.t "popcorn_particle_alpha_opacity_tip"
+				l8.text = ::WdxL.t "popcorn_emission_rate_lbl"
+				emissionRate.tooltip = ::WdxL.t "popcorn_particles_emitted_per_second_tip"
+				l9.text = ::WdxL.t "popcorn_life_span_lbl"
+				lifeSpan.tooltip = ::WdxL.t "popcorn_particle_lifetime_in_seconds_tip"
+				l10.text = ::WdxL.t "popcorn_speed_lbl"
+				speed.tooltip = ::WdxL.t "popcorn_particle_emission_speed_tip"
+				l11.text = ::WdxL.t "popcorn__replaceable_texture_lbl"
 			)
 		)
 	)
@@ -312,15 +312,15 @@ parameters main rollout:params2
 		)
 		on params4 open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				params4.title = ::L.t "popcorn_color_settings_title"
-				l12.text = ::L.t "popcorn__base_color_lbl"
-				btn_baseColor.tooltip = ::L.t "popcorn_change_color_tip"
-				l13.text = ::L.t "popcorn_color_multiplier_lbl"
-				l14.text = ::L.t "popcorn__team_color_lbl"
-				btn_teamColor.tooltip = ::L.t "popcorn_change_team_color_tip"
-				l15.text = ::L.t "popcorn_team_color_alpha_lbl"
+				params4.title = ::WdxL.t "popcorn_color_settings_title"
+				l12.text = ::WdxL.t "popcorn__base_color_lbl"
+				btn_baseColor.tooltip = ::WdxL.t "popcorn_change_color_tip"
+				l13.text = ::WdxL.t "popcorn_color_multiplier_lbl"
+				l14.text = ::WdxL.t "popcorn__team_color_lbl"
+				btn_teamColor.tooltip = ::WdxL.t "popcorn_change_team_color_tip"
+				l15.text = ::WdxL.t "popcorn_team_color_alpha_lbl"
 			)
 		)
 	)

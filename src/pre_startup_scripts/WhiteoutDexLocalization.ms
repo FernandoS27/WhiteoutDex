@@ -7,10 +7,10 @@
 	
 	HOW IT WORKS:
 	  - Each language has its own data section with #("key", "translated text")
-	  - The code uses ::L.t "key" to get the text in the active language
+	  - The code uses ::WdxL.t "key" to get the text in the active language
 	  - If the translated text is "" (empty), it falls back to English
 	  - On startup, the system auto-detects the language from 3ds Max locale
-	  - The user can manually switch via Settings menu or ::L.setLanguage "de"
+	  - The user can manually switch via Settings menu or ::WdxL.setLanguage "de"
 	  - The choice is saved in WhiteoutDex_Settings.ini
 	
 	HOW TO TRANSLATE:
@@ -27,23 +27,92 @@
 	HOW TO ADD A NEW STRING:
 	  1. Add #("mymodule_my_label", "My Label") to enData
 	  2. Add #("mymodule_my_label", "翻译") to zhData (and other languages)
-	  3. Use in code: ::L.t "mymodule_my_label"
+	  3. Use in code: ::WdxL.t "mymodule_my_label"
 	
 	Load Order: After WhiteoutDexGlobals.ms, before all UI scripts.
 */
+
+-- ============================================================================
+-- MAX 2016 COMPATIBILITY LAYER
+-- Dictionary #string was introduced in Max 2017.1. For Max 2016 (base),
+-- we provide a polyfill struct with the same interface.
+-- ============================================================================
+
+global _wdxHasNativeDict = true
+try (Dictionary #string) catch (_wdxHasNativeDict = false)
+
+struct _WdxDictPolyfill (public _k = #(), public _v = #(), public count = 0)
+
+fn _wdxNewDict =
+(
+	if ::_wdxHasNativeDict then
+		(execute "Dictionary #string")
+	else
+		(_WdxDictPolyfill())
+)
+
+fn _wdxDictSet dict key val =
+(
+	if ::_wdxHasNativeDict then
+	(
+		dict[key] = val
+	)
+	else
+	(
+		local idx = findItem dict._k key
+		if idx == 0 then
+		(
+			append dict._k key
+			append dict._v val
+			dict.count = dict._k.count
+		)
+		else
+			dict._v[idx] = val
+	)
+	val
+)
+
+fn _wdxDictGet dict key =
+(
+	if ::_wdxHasNativeDict then
+		dict[key]
+	else
+	(
+		local idx = findItem dict._k key
+		if idx == 0 then undefined else dict._v[idx]
+	)
+)
+
+fn _wdxDictHas dict key =
+(
+	if ::_wdxHasNativeDict then
+		hasDictValue dict key
+	else
+		(findItem dict._k key) != 0
+)
+
+fn _wdxDictCount dict =
+(
+	if ::_wdxHasNativeDict then
+		dict.count
+	else
+		dict._k.count
+)
+
+-- ============================================================================
 
 struct WhiteoutDexLocalizationStruct
 (
 	public currentLanguage = "en",
 	public supportedLanguages = #("en", "zh", "de", "ru", "ja", "ko"),
 	
-	-- Internal storage
-	private enDict = Dictionary #string,
-	private zhDict = Dictionary #string,
-	private deDict = Dictionary #string,
-	private ruDict = Dictionary #string,
-	private jaDict = Dictionary #string,
-	private koDict = Dictionary #string,
+	-- Internal storage (uses polyfill on Max 2016, native Dictionary on 2017.1+)
+	private enDict = _wdxNewDict(),
+	private zhDict = _wdxNewDict(),
+	private deDict = _wdxNewDict(),
+	private ruDict = _wdxNewDict(),
+	private jaDict = _wdxNewDict(),
+	private koDict = _wdxNewDict(),
 	private iniPath = "",
 	
 	-- ====================================================================
@@ -64,15 +133,15 @@ struct WhiteoutDexLocalizationStruct
 		)
 		if dict != undefined then
 		(
-			if hasDictValue dict key then
+			if _wdxDictHas dict key then
 			(
-				local val = dict[key]
+				local val = _wdxDictGet dict key
 				if val != "" then return val
 			)
 		)
 		-- Fallback to English
-		if hasDictValue this.enDict key then
-			return this.enDict[key]
+		if _wdxDictHas this.enDict key then
+			return (_wdxDictGet this.enDict key)
 		-- Last resort: return key name (helps spot missing entries)
 		key
 	),
@@ -607,7 +676,7 @@ struct WhiteoutDexLocalizationStruct
 			#("omt_paste_btn_3", "Paste"),
 			#("omt_copy_btn_4", "Copy"),
 			#("omt_paste_btn_4", "Paste"),
-			#("omt_hierarchy_lbl", "Hierarchy"),
+			#("omt_hierarchy_lbl", "WdxHierarchy"),
 			#("omt_position_lbl", "Position"),
 			#("omt_structure_lx2194r_lbl", "Structure (L↔R)"),
 			#("omt_buffer_empty_lbl", "Buffer: empty"),
@@ -2122,7 +2191,53 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== SETTINGS: AUTO-UPDATE =====
 			#("set_update_grp", "Auto-Update"),
 			#("set_update_auto_chk", "Check for updates on startup"),
-			#("set_update_check_btn", "Check Now")
+			#("set_update_check_btn", "Check Now"),
+			-- ===== KEYFRAME OPTIMIZER =====
+			#("kfo_title", "Keyframe Optimizer"),
+			#("kfo_params_title", "Optimization Parameters"),
+			#("kfo_methods_title", "Optimization Methods"),
+			#("kfo_threshold_lbl", "Threshold:"),
+			#("kfo_step_lbl", "Step:"),
+			#("kfo_threshold_tip", "Curve simplification amount.\nHigher = more keys removed."),
+			#("kfo_step_tip", "Sampling precision (frames between samples).\nRecommend below 0.49."),
+			#("kfo_debug_chk", "Debug"),
+			#("kfo_debug_tip", "Print detailed debug info to MAXScript Listener.\nDisable for faster execution."),
+			#("kfo_sort_time", "Sort: Time first"),
+			#("kfo_sort_name", "Sort: Name first"),
+			#("kfo_keytypes_grp", "Keyframe types to process"),
+			#("kfo_position", "Position"),
+			#("kfo_rotation", "Rotation"),
+			#("kfo_scale", "Scale"),
+			#("kfo_opt_selected_btn", "Optimize selected animation(s)"),
+			#("kfo_opt_all_btn", "Optimize all animations"),
+			#("kfo_delete_outside_btn", "Delete keys outside anim ranges"),
+			#("kfo_progress_lbl", "Progress:"),
+			#("kfo_done_lbl", "Done!"),
+			#("kfo_msg_delete_done", "Delete completed!"),
+			#("kfo_msg_opt_done", "Optimization completed!"),
+			#("kfo_msg_no_selection", "Please select objects first!"),
+			#("kfo_msg_no_anim_seq", "No animation sequences in this scene!"),
+			#("kfo_msg_no_anim_chosen", "No animation selected!"),
+			-- ===== CELL SHADE CREATOR =====
+			#("csh_title", "Wc3 Cell Shade Creator"),
+			#("csh_color_sec", "Color"),
+			#("csh_shape_sec", "Shape"),
+			#("csh_material_sec", "Material"),
+			#("csh_normals_sec", "Normals"),
+			#("csh_thickness_lbl", "Thickness ........"),
+			#("csh_flip_btn", "Flip"),
+			#("csh_no_flip_btn", "Don't Flip"),
+			#("csh_filter_none", "None"),
+			#("csh_filter_blend", "Blend (Transparent)"),
+			#("csh_filter_additive", "Additive"),
+			#("csh_filter_additive_alpha", "Additive Alpha"),
+			#("csh_create_btn", "Create Cell Shade"),
+			#("csh_tip_color_pick", "Click to pick outline color"),
+			#("csh_tip_flip", "Flip normals (backface outline)"),
+			#("csh_tip_no_flip", "Keep original normals"),
+			#("csh_tip_create", "Create outline for selected meshes"),
+			#("csh_msg_no_selection", "Please select the model first!"),
+			#("csh_msg_no_valid_mesh", "No valid mesh objects!\n(Editable Poly/Mesh required)")
 		)
 
 		-- ================================================================
@@ -4116,7 +4231,54 @@ struct WhiteoutDexLocalizationStruct
 			#("upd_save_work_msg", "请在继续之前保存您的工作。"),
 			#("set_update_grp", "自动更新"),
 			#("set_update_auto_chk", "启动时检查更新"),
-			#("set_update_check_btn", "立即检查")
+			#("set_update_check_btn", "立即检查"),
+
+			-- ===== KEYFRAME OPTIMIZER =====
+			#("kfo_title", "关键帧优化器"),
+			#("kfo_params_title", "优化参数"),
+			#("kfo_methods_title", "优化方法"),
+			#("kfo_threshold_lbl", "阈值:"),
+			#("kfo_step_lbl", "步长:"),
+			#("kfo_threshold_tip", "曲线简化量。\n值越高删除的关键帧越多。"),
+			#("kfo_step_tip", "采样精度（帧之间的间隔）。\n建议低于0.49。"),
+			#("kfo_debug_chk", "调试"),
+			#("kfo_debug_tip", "在MAXScript监听器中打印详细调试信息。\n禁用可加快执行速度。"),
+			#("kfo_sort_time", "排序: 时间优先"),
+			#("kfo_sort_name", "排序: 名称优先"),
+			#("kfo_keytypes_grp", "要处理的关键帧类型"),
+			#("kfo_position", "位移"),
+			#("kfo_rotation", "旋转"),
+			#("kfo_scale", "缩放"),
+			#("kfo_opt_selected_btn", "优化选中的动画"),
+			#("kfo_opt_all_btn", "优化所有动画"),
+			#("kfo_delete_outside_btn", "删除动画范围外的关键帧"),
+			#("kfo_progress_lbl", "进度:"),
+			#("kfo_done_lbl", "完成!"),
+			#("kfo_msg_delete_done", "删除完成!"),
+			#("kfo_msg_opt_done", "优化完成!"),
+			#("kfo_msg_no_selection", "请先选择对象!"),
+			#("kfo_msg_no_anim_seq", "场景中没有动画序列!"),
+			#("kfo_msg_no_anim_chosen", "未选择动画!"),
+			-- ===== CELL SHADE CREATOR =====
+			#("csh_title", "Wc3 赛璐珞着色器"),
+			#("csh_color_sec", "颜色"),
+			#("csh_shape_sec", "形状"),
+			#("csh_material_sec", "材质"),
+			#("csh_normals_sec", "法线"),
+			#("csh_thickness_lbl", "厚度 ................"),
+			#("csh_flip_btn", "翻转"),
+			#("csh_no_flip_btn", "不翻转"),
+			#("csh_filter_none", "无"),
+			#("csh_filter_blend", "混合 (透明)"),
+			#("csh_filter_additive", "叠加"),
+			#("csh_filter_additive_alpha", "叠加透明"),
+			#("csh_create_btn", "创建赛璐珞着色"),
+			#("csh_tip_color_pick", "点击选择描边颜色"),
+			#("csh_tip_flip", "翻转法线（背面描边）"),
+			#("csh_tip_no_flip", "保持原始法线"),
+			#("csh_tip_create", "为选中的网格创建描边"),
+			#("csh_msg_no_selection", "请先选择模型!"),
+			#("csh_msg_no_valid_mesh", "没有有效的网格对象!\n(需要可编辑多边形/网格)")
 		)
 
 		-- ================================================================
@@ -6110,7 +6272,54 @@ struct WhiteoutDexLocalizationStruct
 			#("upd_save_work_msg", "Bitte speichere vorher deine Arbeit."),
 			#("set_update_grp", "Auto-Update"),
 			#("set_update_auto_chk", "Beim Start auf Updates pruefen"),
-			#("set_update_check_btn", "Jetzt pruefen")
+			#("set_update_check_btn", "Jetzt pruefen"),
+
+			-- ===== KEYFRAME OPTIMIZER =====
+			#("kfo_title", "Keyframe Optimierer"),
+			#("kfo_params_title", "Optimierungsparameter"),
+			#("kfo_methods_title", "Optimierungsmethoden"),
+			#("kfo_threshold_lbl", "Schwellwert:"),
+			#("kfo_step_lbl", "Schritt:"),
+			#("kfo_threshold_tip", "Staerke der Kurvenvereinfachung.\nHoeher = mehr Keyframes werden entfernt."),
+			#("kfo_step_tip", "Abtastpraezision (Frames zwischen Samples).\nEmpfohlen unter 0.49."),
+			#("kfo_debug_chk", "Debug"),
+			#("kfo_debug_tip", "Detaillierte Debug-Infos im MAXScript Listener ausgeben.\nDeaktivieren fuer schnellere Ausfuehrung."),
+			#("kfo_sort_time", "Sortierung: Zeit zuerst"),
+			#("kfo_sort_name", "Sortierung: Name zuerst"),
+			#("kfo_keytypes_grp", "Zu verarbeitende Keyframe-Typen"),
+			#("kfo_position", "Position"),
+			#("kfo_rotation", "Rotation"),
+			#("kfo_scale", "Skalierung"),
+			#("kfo_opt_selected_btn", "Ausgewaehlte Animation(en) optimieren"),
+			#("kfo_opt_all_btn", "Alle Animationen optimieren"),
+			#("kfo_delete_outside_btn", "Keys ausserhalb der Animationsbereiche loeschen"),
+			#("kfo_progress_lbl", "Fortschritt:"),
+			#("kfo_done_lbl", "Fertig!"),
+			#("kfo_msg_delete_done", "Loeschen abgeschlossen!"),
+			#("kfo_msg_opt_done", "Optimierung abgeschlossen!"),
+			#("kfo_msg_no_selection", "Bitte zuerst Objekte auswaehlen!"),
+			#("kfo_msg_no_anim_seq", "Keine Animationssequenzen in dieser Szene!"),
+			#("kfo_msg_no_anim_chosen", "Keine Animation ausgewaehlt!"),
+			-- ===== CELL SHADE CREATOR =====
+			#("csh_title", "Wc3 Cell Shade Ersteller"),
+			#("csh_color_sec", "Farbe"),
+			#("csh_shape_sec", "Form"),
+			#("csh_material_sec", "Material"),
+			#("csh_normals_sec", "Normalen"),
+			#("csh_thickness_lbl", "Dicke ................"),
+			#("csh_flip_btn", "Umkehren"),
+			#("csh_no_flip_btn", "Nicht umkehren"),
+			#("csh_filter_none", "Keine"),
+			#("csh_filter_blend", "Mischung (Transparent)"),
+			#("csh_filter_additive", "Additiv"),
+			#("csh_filter_additive_alpha", "Additiv Alpha"),
+			#("csh_create_btn", "Cell Shade erstellen"),
+			#("csh_tip_color_pick", "Klicken um Umrissfarbe zu waehlen"),
+			#("csh_tip_flip", "Normalen umkehren (Rueckseiten-Umriss)"),
+			#("csh_tip_no_flip", "Originale Normalen beibehalten"),
+			#("csh_tip_create", "Umriss fuer ausgewaehlte Meshes erstellen"),
+			#("csh_msg_no_selection", "Bitte zuerst das Modell auswaehlen!"),
+			#("csh_msg_no_valid_mesh", "Keine gueltigen Mesh-Objekte!\n(Editable Poly/Mesh erforderlich)")
 		)
 
 		-- ================================================================
@@ -8104,7 +8313,54 @@ struct WhiteoutDexLocalizationStruct
 			#("upd_save_work_msg", "Пожалуйста, сохраните вашу работу."),
 			#("set_update_grp", "Автообновление"),
 			#("set_update_auto_chk", "Проверять обновления при запуске"),
-			#("set_update_check_btn", "Проверить сейчас")
+			#("set_update_check_btn", "Проверить сейчас"),
+
+			-- ===== KEYFRAME OPTIMIZER =====
+			#("kfo_title", "Оптимизатор ключей"),
+			#("kfo_params_title", "Параметры оптимизации"),
+			#("kfo_methods_title", "Методы оптимизации"),
+			#("kfo_threshold_lbl", "Порог:"),
+			#("kfo_step_lbl", "Шаг:"),
+			#("kfo_threshold_tip", "Степень упрощения кривой.\nЧем выше — тем больше ключей удаляется."),
+			#("kfo_step_tip", "Точность сэмплирования (кадры между сэмплами).\nРекомендуется ниже 0.49."),
+			#("kfo_debug_chk", "Отладка"),
+			#("kfo_debug_tip", "Выводить отладочную информацию в MAXScript Listener.\nОтключите для ускорения."),
+			#("kfo_sort_time", "Сортировка: по времени"),
+			#("kfo_sort_name", "Сортировка: по имени"),
+			#("kfo_keytypes_grp", "Типы ключей для обработки"),
+			#("kfo_position", "Позиция"),
+			#("kfo_rotation", "Вращение"),
+			#("kfo_scale", "Масштаб"),
+			#("kfo_opt_selected_btn", "Оптимизировать выбранные анимации"),
+			#("kfo_opt_all_btn", "Оптимизировать все анимации"),
+			#("kfo_delete_outside_btn", "Удалить ключи вне диапазонов анимаций"),
+			#("kfo_progress_lbl", "Прогресс:"),
+			#("kfo_done_lbl", "Готово!"),
+			#("kfo_msg_delete_done", "Удаление завершено!"),
+			#("kfo_msg_opt_done", "Оптимизация завершена!"),
+			#("kfo_msg_no_selection", "Сначала выберите объекты!"),
+			#("kfo_msg_no_anim_seq", "В сцене нет анимационных последовательностей!"),
+			#("kfo_msg_no_anim_chosen", "Анимация не выбрана!"),
+			-- ===== CELL SHADE CREATOR =====
+			#("csh_title", "Wc3 Генератор контуров"),
+			#("csh_color_sec", "Цвет"),
+			#("csh_shape_sec", "Форма"),
+			#("csh_material_sec", "Материал"),
+			#("csh_normals_sec", "Нормали"),
+			#("csh_thickness_lbl", "Толщина .........."),
+			#("csh_flip_btn", "Перевернуть"),
+			#("csh_no_flip_btn", "Не переворачивать"),
+			#("csh_filter_none", "Нет"),
+			#("csh_filter_blend", "Смешение (Прозрачный)"),
+			#("csh_filter_additive", "Аддитивный"),
+			#("csh_filter_additive_alpha", "Аддитивный Альфа"),
+			#("csh_create_btn", "Создать контур"),
+			#("csh_tip_color_pick", "Нажмите для выбора цвета контура"),
+			#("csh_tip_flip", "Перевернуть нормали (контур по задней стороне)"),
+			#("csh_tip_no_flip", "Сохранить оригинальные нормали"),
+			#("csh_tip_create", "Создать контур для выбранных мешей"),
+			#("csh_msg_no_selection", "Сначала выберите модель!"),
+			#("csh_msg_no_valid_mesh", "Нет подходящих мешей!\n(Требуется Editable Poly/Mesh)")
 		)
 
 		-- ================================================================
@@ -10098,7 +10354,54 @@ struct WhiteoutDexLocalizationStruct
 			#("upd_save_work_msg", "作業を保存してから続行してください。"),
 			#("set_update_grp", "自動アップデート"),
 			#("set_update_auto_chk", "起動時にアップデートを確認"),
-			#("set_update_check_btn", "今すぐ確認")
+			#("set_update_check_btn", "今すぐ確認"),
+
+			-- ===== KEYFRAME OPTIMIZER =====
+			#("kfo_title", "キーフレーム最適化"),
+			#("kfo_params_title", "最適化パラメータ"),
+			#("kfo_methods_title", "最適化方法"),
+			#("kfo_threshold_lbl", "しきい値:"),
+			#("kfo_step_lbl", "ステップ:"),
+			#("kfo_threshold_tip", "カーブ簡略化の度合い。\n高いほどキーが多く削除されます。"),
+			#("kfo_step_tip", "サンプリング精度（サンプル間のフレーム数）。\n0.49以下を推奨。"),
+			#("kfo_debug_chk", "デバッグ"),
+			#("kfo_debug_tip", "MAXScriptリスナーに詳細なデバッグ情報を出力。\n無効にすると実行が高速化されます。"),
+			#("kfo_sort_time", "ソート: 時間順"),
+			#("kfo_sort_name", "ソート: 名前順"),
+			#("kfo_keytypes_grp", "処理するキーフレームの種類"),
+			#("kfo_position", "位置"),
+			#("kfo_rotation", "回転"),
+			#("kfo_scale", "スケール"),
+			#("kfo_opt_selected_btn", "選択したアニメーションを最適化"),
+			#("kfo_opt_all_btn", "すべてのアニメーションを最適化"),
+			#("kfo_delete_outside_btn", "アニメーション範囲外のキーを削除"),
+			#("kfo_progress_lbl", "進捗:"),
+			#("kfo_done_lbl", "完了!"),
+			#("kfo_msg_delete_done", "削除完了!"),
+			#("kfo_msg_opt_done", "最適化完了!"),
+			#("kfo_msg_no_selection", "先にオブジェクトを選択してください!"),
+			#("kfo_msg_no_anim_seq", "シーンにアニメーションシーケンスがありません!"),
+			#("kfo_msg_no_anim_chosen", "アニメーションが選択されていません!"),
+			-- ===== CELL SHADE CREATOR =====
+			#("csh_title", "Wc3 セルシェード作成"),
+			#("csh_color_sec", "カラー"),
+			#("csh_shape_sec", "シェイプ"),
+			#("csh_material_sec", "マテリアル"),
+			#("csh_normals_sec", "法線"),
+			#("csh_thickness_lbl", "厚さ ................"),
+			#("csh_flip_btn", "反転"),
+			#("csh_no_flip_btn", "反転しない"),
+			#("csh_filter_none", "なし"),
+			#("csh_filter_blend", "ブレンド (透明)"),
+			#("csh_filter_additive", "加算"),
+			#("csh_filter_additive_alpha", "加算アルファ"),
+			#("csh_create_btn", "セルシェード作成"),
+			#("csh_tip_color_pick", "クリックしてアウトラインの色を選択"),
+			#("csh_tip_flip", "法線を反転（背面アウトライン）"),
+			#("csh_tip_no_flip", "元の法線を維持"),
+			#("csh_tip_create", "選択したメッシュにアウトラインを作成"),
+			#("csh_msg_no_selection", "先にモデルを選択してください!"),
+			#("csh_msg_no_valid_mesh", "有効なメッシュオブジェクトがありません!\n(編集可能ポリ/メッシュが必要)")
 		)
 
 		-- ================================================================
@@ -12092,18 +12395,65 @@ struct WhiteoutDexLocalizationStruct
 			#("upd_save_work_msg", "계속하기 전에 작업을 저장해 주세요."),
 			#("set_update_grp", "자동 업데이트"),
 			#("set_update_auto_chk", "시작 시 업데이트 확인"),
-			#("set_update_check_btn", "지금 확인")
+			#("set_update_check_btn", "지금 확인"),
+
+			-- ===== KEYFRAME OPTIMIZER =====
+			#("kfo_title", "키프레임 최적화"),
+			#("kfo_params_title", "최적화 매개변수"),
+			#("kfo_methods_title", "최적화 방법"),
+			#("kfo_threshold_lbl", "임계값:"),
+			#("kfo_step_lbl", "스텝:"),
+			#("kfo_threshold_tip", "커브 단순화 정도.\n높을수록 더 많은 키가 제거됩니다."),
+			#("kfo_step_tip", "샘플링 정밀도 (샘플 간 프레임 수).\n0.49 이하 권장."),
+			#("kfo_debug_chk", "디버그"),
+			#("kfo_debug_tip", "MAXScript 리스너에 상세 디버그 정보를 출력합니다.\n비활성화하면 실행 속도가 빨라집니다."),
+			#("kfo_sort_time", "정렬: 시간순"),
+			#("kfo_sort_name", "정렬: 이름순"),
+			#("kfo_keytypes_grp", "처리할 키프레임 유형"),
+			#("kfo_position", "위치"),
+			#("kfo_rotation", "회전"),
+			#("kfo_scale", "스케일"),
+			#("kfo_opt_selected_btn", "선택한 애니메이션 최적화"),
+			#("kfo_opt_all_btn", "모든 애니메이션 최적화"),
+			#("kfo_delete_outside_btn", "애니메이션 범위 밖의 키 삭제"),
+			#("kfo_progress_lbl", "진행:"),
+			#("kfo_done_lbl", "완료!"),
+			#("kfo_msg_delete_done", "삭제 완료!"),
+			#("kfo_msg_opt_done", "최적화 완료!"),
+			#("kfo_msg_no_selection", "먼저 오브젝트를 선택하세요!"),
+			#("kfo_msg_no_anim_seq", "씬에 애니메이션 시퀀스가 없습니다!"),
+			#("kfo_msg_no_anim_chosen", "애니메이션이 선택되지 않았습니다!"),
+			-- ===== CELL SHADE CREATOR =====
+			#("csh_title", "Wc3 셀 셰이드 생성기"),
+			#("csh_color_sec", "색상"),
+			#("csh_shape_sec", "형태"),
+			#("csh_material_sec", "재질"),
+			#("csh_normals_sec", "노멀"),
+			#("csh_thickness_lbl", "두께 ................"),
+			#("csh_flip_btn", "뒤집기"),
+			#("csh_no_flip_btn", "뒤집지 않기"),
+			#("csh_filter_none", "없음"),
+			#("csh_filter_blend", "블렌드 (투명)"),
+			#("csh_filter_additive", "애디티브"),
+			#("csh_filter_additive_alpha", "애디티브 알파"),
+			#("csh_create_btn", "셀 셰이드 생성"),
+			#("csh_tip_color_pick", "클릭하여 외곽선 색상 선택"),
+			#("csh_tip_flip", "노멀 뒤집기 (뒷면 외곽선)"),
+			#("csh_tip_no_flip", "원래 노멀 유지"),
+			#("csh_tip_create", "선택한 메시에 외곽선 생성"),
+			#("csh_msg_no_selection", "먼저 모델을 선택하세요!"),
+			#("csh_msg_no_valid_mesh", "유효한 메시 오브젝트가 없습니다!\n(편집 가능한 폴리/메시 필요)")
 		)
 
 		-- ================================================================
 		-- Load all dictionaries
 		-- ================================================================
-		for entry in enData do (this.enDict[entry[1]] = entry[2])
-		for entry in zhData do (this.zhDict[entry[1]] = entry[2])
-		for entry in deData do (this.deDict[entry[1]] = entry[2])
-		for entry in ruData do (this.ruDict[entry[1]] = entry[2])
-		for entry in jaData do (this.jaDict[entry[1]] = entry[2])
-		for entry in koData do (this.koDict[entry[1]] = entry[2])
+		for entry in enData do (_wdxDictSet this.enDict entry[1] entry[2])
+		for entry in zhData do (_wdxDictSet this.zhDict entry[1] entry[2])
+		for entry in deData do (_wdxDictSet this.deDict entry[1] entry[2])
+		for entry in ruData do (_wdxDictSet this.ruDict entry[1] entry[2])
+		for entry in jaData do (_wdxDictSet this.jaDict entry[1] entry[2])
+		for entry in koData do (_wdxDictSet this.koDict entry[1] entry[2])
 	),
 	
 	-- ====================================================================
@@ -12130,7 +12480,7 @@ struct WhiteoutDexLocalizationStruct
 			this.currentLanguage = this.detectMaxLanguage()
 		)
 		
-		format "WhiteoutDex L10n: initialized with '%' (% keys)\n" this.currentLanguage this.enDict.count
+		format "WhiteoutDex L10n: initialized with '%' (% keys)\n" this.currentLanguage (_wdxDictCount this.enDict)
 	),
 	
 	on create do
@@ -12140,4 +12490,4 @@ struct WhiteoutDexLocalizationStruct
 )
 
 -- Create global instance
-global L = WhiteoutDexLocalizationStruct()
+global WdxL = WhiteoutDexLocalizationStruct()

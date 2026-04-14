@@ -5,12 +5,16 @@ title WhiteoutDex - Unified Native Plugin Build
 set "PROJECT_DIR=%~dp0"
 set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
 set "OUTPUT_DIR=%PROJECT_DIR%\output"
-set "WHITEOUTDEX_DIR=%APPDATA%\Autodesk\ApplicationPlugins\WhiteoutDex\native plugins"
+set "APPDATA_DIR=%APPDATA%\Autodesk\ApplicationPlugins\WhiteoutDex"
+set "NATIVE_DIR=%APPDATA_DIR%\native plugins"
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
+if not exist "%APPDATA_DIR%" mkdir "%APPDATA_DIR%"
+if not exist "%NATIVE_DIR%" mkdir "%NATIVE_DIR%"
 
 echo ============================================================
 echo  WhiteoutDex - Unified Native Plugin Build
-echo  Project: %PROJECT_DIR%
+echo  Project:  %PROJECT_DIR%
+echo  AppData:  %APPDATA_DIR%
 echo ============================================================
 echo.
 
@@ -81,6 +85,9 @@ echo === Common libraries built successfully ===
 popd
 echo.
 
+REM ============================================================
+REM  Build per-version SDK plugins (Max 2016-2027)
+REM ============================================================
 set BUILT=0
 set FAILED=0
 set SKIPPED=0
@@ -126,10 +133,11 @@ for %%V in (2016 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 2027) do (
                     set /a BUILT+=1
                 )
 
-                REM Copy whatever was built, even if some targets failed
+                REM Create output and AppData folders
                 if not exist "%OUTPUT_DIR%\Max%%V" mkdir "%OUTPUT_DIR%\Max%%V"
-                if not exist "%WHITEOUTDEX_DIR%\Max%%V" mkdir "%WHITEOUTDEX_DIR%\Max%%V"
+                if not exist "%NATIVE_DIR%\Max%%V" mkdir "%NATIVE_DIR%\Max%%V"
 
+                REM Copy all native plugins to both output and AppData
                 for %%F in (
                     "plugins\Release\blp.bmi"
                     "plugins\Release\MDLXExporter.dle"
@@ -141,8 +149,8 @@ for %%V in (2016 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 2027) do (
                 ) do (
                     if exist "%%~F" (
                         copy /Y "%%~F" "%OUTPUT_DIR%\Max%%V\" >nul
-                        copy /Y "%%~F" "%WHITEOUTDEX_DIR%\Max%%V\" >nul
-                        echo [%%V]   %%~nxF
+                        copy /Y "%%~F" "%NATIVE_DIR%\Max%%V\" >nul
+                        echo [%%V]   %%~nxF  --^> output + AppData
                     )
                 )
                 popd
@@ -167,7 +175,7 @@ REM ============================================================
 if not defined MSBUILD (
     echo.
     echo WARNING: MSBuild not found - skipping managed wrappers.
-    goto :done
+    goto :deploy_scripts
 )
 
 echo.
@@ -191,10 +199,11 @@ if errorlevel 1 (
 ) else (
     echo [fw48] OK
     for %%V in (2016 2017 2018 2019 2020 2021 2022 2023 2024 2025) do (
-        if not exist "%WHITEOUTDEX_DIR%\Max%%V" mkdir "%WHITEOUTDEX_DIR%\Max%%V"
+        if not exist "%NATIVE_DIR%\Max%%V" mkdir "%NATIVE_DIR%\Max%%V"
         if not exist "%OUTPUT_DIR%\Max%%V" mkdir "%OUTPUT_DIR%\Max%%V"
-        copy /Y "%PROJECT_DIR%\WhiteoutDexNative\output\Max2016-2025\WhiteoutDexNative.dll" "%WHITEOUTDEX_DIR%\Max%%V\WhiteoutDexNative.dll" >nul 2>nul
+        copy /Y "%PROJECT_DIR%\WhiteoutDexNative\output\Max2016-2025\WhiteoutDexNative.dll" "%NATIVE_DIR%\Max%%V\WhiteoutDexNative.dll" >nul 2>nul
         copy /Y "%PROJECT_DIR%\WhiteoutDexNative\output\Max2016-2025\WhiteoutDexNative.dll" "%OUTPUT_DIR%\Max%%V\WhiteoutDexNative.dll" >nul 2>nul
+        echo [%%V]   WhiteoutDexNative.dll (fw48)  --^> output + AppData
     )
 )
 
@@ -218,10 +227,69 @@ if errorlevel 1 (
 ) else (
     echo [net8] OK
     for %%V in (2026 2027) do (
-        if not exist "%WHITEOUTDEX_DIR%\Max%%V" mkdir "%WHITEOUTDEX_DIR%\Max%%V"
+        if not exist "%NATIVE_DIR%\Max%%V" mkdir "%NATIVE_DIR%\Max%%V"
         if not exist "%OUTPUT_DIR%\Max%%V" mkdir "%OUTPUT_DIR%\Max%%V"
-        copy /Y "%PROJECT_DIR%\WhiteoutDexNative\output\Max2026-2027\WhiteoutDexNative.dll" "%WHITEOUTDEX_DIR%\Max%%V\WhiteoutDexNative.dll" >nul 2>nul
+        copy /Y "%PROJECT_DIR%\WhiteoutDexNative\output\Max2026-2027\WhiteoutDexNative.dll" "%NATIVE_DIR%\Max%%V\WhiteoutDexNative.dll" >nul 2>nul
         copy /Y "%PROJECT_DIR%\WhiteoutDexNative\output\Max2026-2027\WhiteoutDexNative.dll" "%OUTPUT_DIR%\Max%%V\WhiteoutDexNative.dll" >nul 2>nul
+        echo [%%V]   WhiteoutDexNative.dll (net8)  --^> output + AppData
+    )
+)
+
+REM ============================================================
+REM  Deploy Scripts + PackageContents.xml to AppData
+REM  Scripts are shared across all Max versions.
+REM ============================================================
+:deploy_scripts
+echo.
+echo ============================================================
+echo  Deploying scripts and PackageContents.xml to AppData...
+echo ============================================================
+
+set "SRC_SCRIPTS=%PROJECT_DIR%\..\src"
+
+REM PackageContents.xml
+if exist "%SRC_SCRIPTS%\..\PackageContents.xml" (
+    copy /Y "%SRC_SCRIPTS%\..\PackageContents.xml" "%APPDATA_DIR%\PackageContents.xml" >nul
+    echo   PackageContents.xml
+)
+
+REM Macroscripts
+set "DST_MACRO=%APPDATA_DIR%\scripts\macroscripts"
+if not exist "%DST_MACRO%" mkdir "%DST_MACRO%"
+if exist "%SRC_SCRIPTS%\macroscripts" (
+    for %%F in ("%SRC_SCRIPTS%\macroscripts\*.mcr") do (
+        copy /Y "%%F" "%DST_MACRO%\" >nul
+        echo   macroscripts\%%~nxF
+    )
+)
+
+REM Pre-Startup Scripts
+set "DST_PRE=%APPDATA_DIR%\scripts\pre_startup_scripts"
+if not exist "%DST_PRE%" mkdir "%DST_PRE%"
+if exist "%SRC_SCRIPTS%\pre_startup_scripts" (
+    for %%F in ("%SRC_SCRIPTS%\pre_startup_scripts\*.ms") do (
+        copy /Y "%%F" "%DST_PRE%\" >nul
+        echo   pre_startup_scripts\%%~nxF
+    )
+)
+
+REM Post-Startup Scripts
+set "DST_POST=%APPDATA_DIR%\scripts\post_startup_scripts"
+if not exist "%DST_POST%" mkdir "%DST_POST%"
+if exist "%SRC_SCRIPTS%\post_startup_scripts" (
+    for %%F in ("%SRC_SCRIPTS%\post_startup_scripts\*.ms") do (
+        copy /Y "%%F" "%DST_POST%\" >nul
+        echo   post_startup_scripts\%%~nxF
+    )
+)
+
+REM Scripted Plugins
+set "DST_PLUG=%APPDATA_DIR%\scripts\scripted_plugins"
+if not exist "%DST_PLUG%" mkdir "%DST_PLUG%"
+if exist "%SRC_SCRIPTS%\scripted_plugins" (
+    for %%F in ("%SRC_SCRIPTS%\scripted_plugins\*.ms") do (
+        copy /Y "%%F" "%DST_PLUG%\" >nul
+        echo   scripted_plugins\%%~nxF
     )
 )
 
@@ -236,6 +304,24 @@ if exist "%OUTPUT_DIR%" (
     for /d %%D in ("%OUTPUT_DIR%\Max*") do (
         echo   %%~nxD\
         for %%F in ("%%D\*") do echo     %%~nxF
+    )
+)
+echo.
+echo AppData directory: %APPDATA_DIR%
+echo   native plugins\
+if exist "%NATIVE_DIR%" (
+    for /d %%D in ("%NATIVE_DIR%\Max*") do (
+        set "FILECOUNT=0"
+        for %%F in ("%%D\*") do set /a FILECOUNT+=1
+        echo     %%~nxD\  (!FILECOUNT! files^)
+    )
+)
+echo   scripts\
+if exist "%APPDATA_DIR%\scripts" (
+    for /d %%D in ("%APPDATA_DIR%\scripts\*") do (
+        set "FILECOUNT=0"
+        for %%F in ("%%D\*") do set /a FILECOUNT+=1
+        echo     %%~nxD\  (!FILECOUNT! files^)
     )
 )
 echo.

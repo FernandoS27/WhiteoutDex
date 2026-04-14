@@ -11,7 +11,7 @@
 --   UV Animation (TXAN) + Controller Type + U/V/W spinners
 -------------------------------------------------------------------------------
 
-plugin material Wc3Material
+plugin material Wdx_Wc3Material
 name:"Wc3Material"
 classID:#(0x4b8e20a3, 0x1f6c3d57)
 extends:Standard replaceUI:true version:11

@@ -6,14 +6,14 @@
     Works in 3ds Max 2016-2027.
     
     Icons: 24x24 PNG files in whiteoutdex_icons folder.
-    Naming: ndx_sb_import.png, ndx_sb_export.png, etc.
+    Naming: wdx_sb_import.png, wdx_sb_export.png, etc.
 */
 
 -- Clean up previous instance
 try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
 try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
 
-rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:530
+rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
 (
     local iniFile = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\WhiteoutDex_Settings.ini"
     local iconPath = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\whiteoutdex_icons\\"
@@ -42,81 +42,32 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:530
         ) catch ()
     )
     
-    -- ── Helper: Open a tool as standalone dialog (same as Undock) ──
-    fn openToolStandalone toolStruct rolloutRef toolWidth toolHeight =
-    (
-        if rolloutRef.isDisplayed and toolStruct.isPoppedOut then return()
-        
-        if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
-        (
-            local rollouts = ::whiteoutdexManagerFloater.rollouts
-            for i = 1 to rollouts.count do
-            (
-                if rollouts[i] == rolloutRef then
-                (
-                    try (toolStruct.savedIndex = i) catch()
-                    removeRollout rolloutRef ::whiteoutdexManagerFloater
-                    exit
-                )
-            )
-        )
-        
-        toolStruct.isPoppedOut = true
-        createDialog rolloutRef width:toolWidth height:toolHeight \
-            style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
-    )
-    
-    -- ── Helper: Open AnimTools rollout standalone ──
-    fn openAnimToolRollout rolloutRef poppedOutProp savedIndexProp toolWidth toolHeight =
-    (
-        local atools = ::AnimTools
-        if atools == undefined then return()
-        
-        if rolloutRef.isDisplayed and (getProperty atools poppedOutProp) then return()
-        
-        if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
-        (
-            local rollouts = ::whiteoutdexManagerFloater.rollouts
-            for i = 1 to rollouts.count do
-            (
-                if rollouts[i] == rolloutRef then
-                (
-                    setProperty atools savedIndexProp i
-                    removeRollout rolloutRef ::whiteoutdexManagerFloater
-                    exit
-                )
-            )
-        )
-        
-        setProperty atools poppedOutProp true
-        createDialog rolloutRef width:toolWidth height:toolHeight \
-            style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
-    )
-    
     -- ── Tool Buttons (dotnet PictureBox for icon support) ──
     dotNetControl btn_import      "System.Windows.Forms.Button" pos:[xOfs, yStart + 0*step] width:btnW height:btnSize
     dotNetControl btn_export      "System.Windows.Forms.Button" pos:[xOfs, yStart + 1*step] width:btnW height:btnSize
     
     dotNetControl lbl_sep1 "System.Windows.Forms.Panel" pos:[5, yStart + 2*step] width:28 height:1
     
-    dotNetControl btn_manager     "System.Windows.Forms.Button" pos:[xOfs, yStart + 2*step+4] width:btnW height:btnSize
-    dotNetControl btn_seqmgr      "System.Windows.Forms.Button" pos:[xOfs, yStart + 3*step+4] width:btnW height:btnSize
-    dotNetControl btn_viskey      "System.Windows.Forms.Button" pos:[xOfs, yStart + 4*step+4] width:btnW height:btnSize
-    dotNetControl btn_animgeneral "System.Windows.Forms.Button" pos:[xOfs, yStart + 5*step+4] width:btnW height:btnSize
-    dotNetControl btn_animctrl    "System.Windows.Forms.Button" pos:[xOfs, yStart + 6*step+4] width:btnW height:btnSize
-    dotNetControl btn_animskin    "System.Windows.Forms.Button" pos:[xOfs, yStart + 7*step+4] width:btnW height:btnSize
-    dotNetControl btn_animscaler  "System.Windows.Forms.Button" pos:[xOfs, yStart + 8*step+4] width:btnW height:btnSize
-    dotNetControl btn_skinchg     "System.Windows.Forms.Button" pos:[xOfs, yStart + 9*step+4] width:btnW height:btnSize
-    dotNetControl btn_griddummy   "System.Windows.Forms.Button" pos:[xOfs, yStart + 10*step+4] width:btnW height:btnSize
-    dotNetControl btn_objtools    "System.Windows.Forms.Button" pos:[xOfs, yStart + 11*step+4] width:btnW height:btnSize
-    dotNetControl btn_nodemgr     "System.Windows.Forms.Button" pos:[xOfs, yStart + 12*step+4] width:btnW height:btnSize
-    dotNetControl btn_teamcolor   "System.Windows.Forms.Button" pos:[xOfs, yStart + 13*step+4] width:btnW height:btnSize
-    dotNetControl btn_objsettings "System.Windows.Forms.Button" pos:[xOfs, yStart + 14*step+4] width:btnW height:btnSize
+    dotNetControl btn_seqmgr      "System.Windows.Forms.Button" pos:[xOfs, yStart + 2*step+4] width:btnW height:btnSize
+    dotNetControl btn_viskey      "System.Windows.Forms.Button" pos:[xOfs, yStart + 3*step+4] width:btnW height:btnSize
+    dotNetControl btn_animgeneral "System.Windows.Forms.Button" pos:[xOfs, yStart + 4*step+4] width:btnW height:btnSize
+    dotNetControl btn_animctrl    "System.Windows.Forms.Button" pos:[xOfs, yStart + 5*step+4] width:btnW height:btnSize
+    dotNetControl btn_animskin    "System.Windows.Forms.Button" pos:[xOfs, yStart + 6*step+4] width:btnW height:btnSize
+    dotNetControl btn_animscaler  "System.Windows.Forms.Button" pos:[xOfs, yStart + 7*step+4] width:btnW height:btnSize
+    dotNetControl btn_skinchg     "System.Windows.Forms.Button" pos:[xOfs, yStart + 8*step+4] width:btnW height:btnSize
+    dotNetControl btn_griddummy   "System.Windows.Forms.Button" pos:[xOfs, yStart + 9*step+4] width:btnW height:btnSize
+    dotNetControl btn_objtools    "System.Windows.Forms.Button" pos:[xOfs, yStart + 10*step+4] width:btnW height:btnSize
+    dotNetControl btn_nodemgr     "System.Windows.Forms.Button" pos:[xOfs, yStart + 11*step+4] width:btnW height:btnSize
+    dotNetControl btn_teamcolor   "System.Windows.Forms.Button" pos:[xOfs, yStart + 12*step+4] width:btnW height:btnSize
+    dotNetControl btn_kfoptimizer "System.Windows.Forms.Button" pos:[xOfs, yStart + 13*step+4] width:btnW height:btnSize
+    dotNetControl btn_cellshade   "System.Windows.Forms.Button" pos:[xOfs, yStart + 14*step+4] width:btnW height:btnSize
+    dotNetControl btn_objsettings "System.Windows.Forms.Button" pos:[xOfs, yStart + 15*step+4] width:btnW height:btnSize
+    dotNetControl btn_renderer    "System.Windows.Forms.Button" pos:[xOfs, yStart + 16*step+4] width:btnW height:btnSize
     
-    dotNetControl lbl_sep2 "System.Windows.Forms.Panel" pos:[5, yStart + 15*step+4] width:28 height:1
+    dotNetControl lbl_sep2 "System.Windows.Forms.Panel" pos:[5, yStart + 17*step+4] width:28 height:1
     
-    dotNetControl btn_settings    "System.Windows.Forms.Button" pos:[xOfs, yStart + 15*step+8] width:btnW height:btnSize
-    dotNetControl btn_about       "System.Windows.Forms.Button" pos:[xOfs, yStart + 16*step+8] width:btnW height:btnSize
+    dotNetControl btn_settings    "System.Windows.Forms.Button" pos:[xOfs, yStart + 17*step+8] width:btnW height:btnSize
+    dotNetControl btn_about       "System.Windows.Forms.Button" pos:[xOfs, yStart + 18*step+8] width:btnW height:btnSize
     
     -- ── Setup button appearance ──
     fn setupButton btn iconFileName fallbackText tooltipText =
@@ -153,45 +104,23 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:530
     -- ── Button Click Handlers ──
     on btn_import Click do      macros.run "WhiteoutDex Toolkit" "WhiteoutDex_Importer"
     on btn_export Click do      macros.run "WhiteoutDex Toolkit" "WhiteoutDex_Exporter"
-    on btn_manager Click do     macros.run "WhiteoutDex Toolkit" "WhiteoutDex_Manager"
+    on btn_seqmgr Click do      macros.run "WhiteoutDex Toolkit" "WhiteoutDex_SequenceManager"
+    on btn_viskey Click do      macros.run "WhiteoutDex Toolkit" "WhiteoutDex_VisibilityKeyer"
+    on btn_animgeneral Click do macros.run "WhiteoutDex Toolkit" "WhiteoutDex_AnimGeneral"
+    on btn_animctrl Click do    macros.run "WhiteoutDex Toolkit" "WhiteoutDex_AnimControllers"
+    on btn_animskin Click do    macros.run "WhiteoutDex Toolkit" "WhiteoutDex_AnimSkin"
+    on btn_animscaler Click do  macros.run "WhiteoutDex Toolkit" "WhiteoutDex_AnimScaler"
+    on btn_skinchg Click do     macros.run "WhiteoutDex Toolkit" "WhiteoutDex_SkinChanger"
+    on btn_griddummy Click do   macros.run "WhiteoutDex Toolkit" "WhiteoutDex_GridDummy"
+    on btn_objtools Click do    macros.run "WhiteoutDex Toolkit" "WhiteoutDex_ObjectTools"
+    on btn_nodemgr Click do     macros.run "WhiteoutDex Toolkit" "WhiteoutDex_NodeManager"
+    on btn_teamcolor Click do   macros.run "WhiteoutDex Toolkit" "WhiteoutDex_TeamColor"
+    on btn_kfoptimizer Click do macros.run "WhiteoutDex Toolkit" "WhiteoutDex_KeyframeOptimizer"
+    on btn_cellshade Click do   macros.run "WhiteoutDex Toolkit" "WhiteoutDex_CellShadeCreator"
+    on btn_objsettings Click do macros.run "WhiteoutDex Toolkit" "WhiteoutDex_ObjectSettings"
+    on btn_renderer Click do    macros.run "WhiteoutDex Toolkit" "WhiteoutDex_Renderer"
     on btn_settings Click do    macros.run "WhiteoutDex Toolkit" "WhiteoutDex_Settings"
     on btn_about Click do       macros.run "WhiteoutDex Toolkit" "WhiteoutDex_About"
-    
-    on btn_seqmgr Click do
-        try (openToolStandalone ::SequenceManager ::SequenceManager.mainRollout 444 402) catch()
-    
-    on btn_viskey Click do
-        try (openToolStandalone ::VisibilityKeyer ::VisibilityKeyer.mainRollout 440 242) catch()
-    
-    on btn_animgeneral Click do
-        try (openAnimToolRollout ::AnimTools.generalRoll #isGeneralPoppedOut #savedGeneralIndex 440 202) catch()
-    
-    on btn_animctrl Click do
-        try (openAnimToolRollout ::AnimTools.controllersRoll #isControllersPoppedOut #savedControllersIndex 440 177) catch()
-    
-    on btn_animskin Click do
-        try (openAnimToolRollout ::AnimTools.skinRoll #isSkinPoppedOut #savedSkinIndex 440 92) catch()
-    
-    on btn_animscaler Click do
-        try (openAnimToolRollout ::AnimTools.scalerRoll #isScalerPoppedOut #savedScalerIndex 440 172) catch()
-    
-    on btn_skinchg Click do
-        try (openToolStandalone ::SkinChanger ::SkinChanger.mainRollout 440 180) catch()
-    
-    on btn_griddummy Click do
-        try (openToolStandalone ::GridAndDummyCreator ::GridAndDummyCreator.mainRollout 440 142) catch()
-    
-    on btn_objtools Click do
-        try (openToolStandalone ::ObjectManipulationTools ::ObjectManipulationTools.mainRollout 440 362) catch()
-    
-    on btn_nodemgr Click do
-        try (openToolStandalone ::NodeManager ::NodeManager.mainRollout 420 365) catch()
-    
-    on btn_teamcolor Click do
-        try (openToolStandalone ::TeamColorManager ::TeamColorManager.mainRollout 440 82) catch()
-    
-    on btn_objsettings Click do
-        try (openToolStandalone ::ObjectSettings ::ObjectSettings.mainRollout 440 232) catch()
     
     -- ── Rollout Open: Setup icons + dock ──
     on WhiteoutDexSidebarRollout open do
@@ -200,23 +129,25 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:530
         lbl_sep1.BackColor = lbl_sep1.BackColor.FromArgb 80 80 80
         lbl_sep2.BackColor = lbl_sep2.BackColor.FromArgb 80 80 80
         -- Setup all buttons with icons
-        setupButton btn_import      "ndx_sb_import.png"      "IMP" "Import MDX/MDL"
-        setupButton btn_export      "ndx_sb_export.png"      "EXP" "Export MDX/MDL"
-        setupButton btn_manager     "ndx_sb_manager.png"     "MGR" "WhiteoutDex Manager"
-        setupButton btn_seqmgr      "ndx_sb_sequence.png"    "SEQ" "Sequence Manager"
-        setupButton btn_viskey      "ndx_sb_visibility.png"  "VIS" "Visibility Keyer"
-        setupButton btn_animgeneral "ndx_sb_animgeneral.png" "GEN" "Anim: General Tools"
-        setupButton btn_animctrl    "ndx_sb_animctrl.png"    "CTR" "Anim: Controllers"
-        setupButton btn_animskin    "ndx_sb_animskin.png"    "SKI" "Anim: Skinning"
-        setupButton btn_animscaler  "ndx_sb_animscaler.png"  "SCL" "Anim: Model Scaler"
-        setupButton btn_skinchg     "ndx_sb_skinchanger.png" "SKN" "Skin Changer"
-        setupButton btn_griddummy   "ndx_sb_griddummy.png"   "GRD" "Grid & Dummy Creator"
-        setupButton btn_objtools    "ndx_sb_objtools.png"    "OBJ" "Object Tools"
-        setupButton btn_nodemgr     "ndx_sb_nodemanager.png" "NOD" "Node Manager"
-        setupButton btn_teamcolor   "ndx_sb_teamcolor.png"   "TC"  "Team Color Manager"
-        setupButton btn_objsettings "ndx_sb_objsettings.png" "SET" "Object Settings"
-        setupButton btn_settings    "ndx_sb_settings.png"    "CFG" "WhiteoutDex Settings"
-        setupButton btn_about       "ndx_sb_about.png"       "(?)" "About WhiteoutDex"
+        setupButton btn_import      "wdx_sb_import.png"      "IMP" "Import MDX/MDL"
+        setupButton btn_export      "wdx_sb_export.png"      "EXP" "Export MDX/MDL"
+        setupButton btn_seqmgr      "wdx_sb_sequence.png"    "SEQ" "Sequence Manager"
+        setupButton btn_viskey      "wdx_sb_visibility.png"  "VIS" "Visibility Keyer"
+        setupButton btn_animgeneral "wdx_sb_animgeneral.png" "GEN" "Anim: General Tools"
+        setupButton btn_animctrl    "wdx_sb_animctrl.png"    "CTR" "Anim: Controllers"
+        setupButton btn_animskin    "wdx_sb_animskin.png"    "SKI" "Anim: Skinning"
+        setupButton btn_animscaler  "wdx_sb_animscaler.png"  "SCL" "Anim: Model Scaler"
+        setupButton btn_skinchg     "wdx_sb_skinchanger.png" "SKN" "Skin Changer"
+        setupButton btn_griddummy   "wdx_sb_griddummy.png"   "GRD" "Grid & Dummy Creator"
+        setupButton btn_objtools    "wdx_sb_objtools.png"    "OBJ" "Object Tools"
+        setupButton btn_nodemgr     "wdx_sb_nodemanager.png" "NOD" "Node Manager"
+        setupButton btn_teamcolor   "wdx_sb_teamcolor.png"    "TC"  "Team Color Manager"
+        setupButton btn_kfoptimizer "wdx_sb_kfoptimizer.png"  "KFO" "Keyframe Optimizer"
+        setupButton btn_cellshade   "wdx_sb_cellshade.png"    "CSH" "Cell Shade Creator"
+        setupButton btn_objsettings "wdx_sb_objsettings.png"  "SET" "Object Settings"
+        setupButton btn_renderer   "wdx_sb_renderer.png"   "RND" "Wc3 Renderer"
+        setupButton btn_settings    "wdx_sb_settings.png"    "CFG" "WhiteoutDex Settings"
+        setupButton btn_about       "wdx_sb_about.png"       "(?)" "About WhiteoutDex"
         
         -- Dock
         local dockState = getINISetting iniFile "Sidebar" "DockState"
@@ -258,7 +189,7 @@ struct WhiteoutDexSidebarStruct
     (
         try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
         try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
-        createDialog ::WhiteoutDexSidebarRollout width:38 height:530 \
+        createDialog ::WhiteoutDexSidebarRollout width:38 height:590 \
             style:#(#style_titlebar, #style_border, #style_sysmenu)
         this.isOpen = true
     ),
@@ -282,5 +213,5 @@ WhiteoutDexSidebar = WhiteoutDexSidebarStruct()
 (
     local iniFile = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\WhiteoutDex_Settings.ini"
     local enabled = getINISetting iniFile "Sidebar" "Enabled"
-    if enabled == "1" then WhiteoutDexSidebar.show()
+    if enabled != "0" then WhiteoutDexSidebar.show()
 )

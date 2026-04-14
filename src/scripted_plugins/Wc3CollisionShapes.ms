@@ -1,7 +1,7 @@
-plugin Helper Wc3CollisionSphere
-name:"CollisionSphere" 
-classID:#(0xb945647, 0x61c1bb70)
-category:"Warcraft 3 Systems" 
+plugin Helper Wdx_Wc3CollisionSphere
+name:"Wc3 CollisionSphere" 
+classID:#(0x7A1B2C02, 0x3D4E5F02)
+category:"Warcraft III Plugins" 
 extends:dummy 
 (
 	local lastRadius, meshObj
@@ -36,8 +36,8 @@ extends:dummy
                 btn_adsorption.text = "Parent: " + Temp_adsorption.text
             else
                 btn_adsorption.text = "Select Object (Adsorb)"
-            if ::L != undefined then
-                General.title = ::L.t "col_general_features_title"
+            if ::WdxL != undefined then
+                General.title = ::WdxL.t "col_general_features_title"
         )
     )
 	rollout params1 "Collision Sphere Parameters"
@@ -46,10 +46,10 @@ extends:dummy
 		Spinner amount								pos:[94,8]	align:#left		fieldwidth:45	range:[0, 1e9, 30]
 		on params1 open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				params1.title = ::L.t "col_collision_sphere_parameters_title"
-				amount_Str.text = ::L.t "col_radius_lbl"
+				params1.title = ::WdxL.t "col_collision_sphere_parameters_title"
+				amount_Str.text = ::WdxL.t "col_radius_lbl"
 			)
 		)
 	)
@@ -92,10 +92,10 @@ extends:dummy
 	)
 )
 
-plugin Helper Wc3CollisionBox
-name:"CollisionBox" 
-classID:#(0x51e76dc0, 0x471f81a5)
-category:"Warcraft 3 Systems" 
+plugin Helper Wdx_CollisionBox
+name:"Wc3 CollisionBox" 
+classID:#(0x7A1B2C03, 0x3D4E5F03)
+category:"Warcraft III Plugins" 
 extends:dummy 
 (
 	local lastLength, lastHeight, lastWidth, meshObj
@@ -132,8 +132,8 @@ extends:dummy
                 btn_adsorption.text = "Parent: " + Temp_adsorption.text
             else
                 btn_adsorption.text = "Select Object (Adsorb)"
-            if ::L != undefined then
-                General.title = ::L.t "col_general_features_title_2"
+            if ::WdxL != undefined then
+                General.title = ::WdxL.t "col_general_features_title_2"
         )
     )
 	rollout params1 "Collision Box Parameters"
@@ -146,12 +146,12 @@ extends:dummy
 		Spinner amount3 								pos:[94,50]		align:#left		fieldwidth:45	range:[0, 1e9, 30]
 		on params1 open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				params1.title = ::L.t "col_collision_box_parameters_title"
-				amount1_Str.text = ::L.t "col_length_lbl"
-				amount2_Str.text = ::L.t "col_width_lbl"
-				amount3_Str.text = ::L.t "col_height_lbl"
+				params1.title = ::WdxL.t "col_collision_box_parameters_title"
+				amount1_Str.text = ::WdxL.t "col_length_lbl"
+				amount2_Str.text = ::WdxL.t "col_width_lbl"
+				amount3_Str.text = ::WdxL.t "col_height_lbl"
 			)
 		)
 	)

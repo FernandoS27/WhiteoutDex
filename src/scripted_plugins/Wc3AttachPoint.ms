@@ -3,10 +3,10 @@ Global attachmentList = #("Head", "Overhead", "Origin", "Foot", "Chest", "Hand",
 Global attachmentAdd1List = #("None", "Right", "Left", "Mount Left", "Mount Right")
 Global attachmentAdd2List = #("None", "RallyPoint", "EatTree", "Gold", "Mount", "Mount Rear", "Rear", "Smart", "Alternate", "First", "Second", "Third", "Fourth", "Fifth", "Sixth")
 
-plugin simpleManipulator Wc3_AttachPoint
-name:"AttachPoint" 
-classID:#(0x1136ac20, 0x6f9cfeb7)
-category:"Warcraft 3 Systems" 
+plugin simpleManipulator Wdx_Wc3AttachPoint
+name:"Wc3 AttachPoint" 
+classID:#(0x7A1B2C01, 0x3D4E5F01)
+category:"Warcraft III Plugins" 
 (
     -------------------------------------------------------------------------------------------------------
     parameters pblock rollout:General
@@ -41,8 +41,8 @@ category:"Warcraft 3 Systems"
 		)
 		on General open do
 		(
-			if ::L != undefined then
-				General.title = ::L.t "attach_general_functions_title"
+			if ::WdxL != undefined then
+				General.title = ::WdxL.t "attach_general_functions_title"
 		)
 	)
 	rollout modelMapParams "Model Map Parameters"
@@ -112,13 +112,13 @@ category:"Warcraft 3 Systems"
 		(
 			try
 			(
-				-- Use NeoDex archive browser if available
+				-- Use WhiteoutDex archive browser if available
 				local result = undefined
 				try
 				(
-					::NeoDexTexBrowserTarget = #(this, "attachment_model")
-					::NeoDexTexBrowserInitCategory = 0
-					::NeoDexTexBrowser.show()
+					::WhiteoutDexTexBrowserTarget = #(this, "attachment_model")
+					::WhiteoutDexTexBrowserInitCategory = 0
+					::WhiteoutDexTexBrowser.show()
 				) catch ( messageBox "Archive Browser not available." )
 			) catch ()
 		)
@@ -131,11 +131,11 @@ category:"Warcraft 3 Systems"
 			local browserAvailable = false
 			try
 			(
-				if ::NeoDexMPQ != undefined and ::NeoDexMPQ.getDirectory() != "" and ::NeoDexMPQ.validateDirectory() then
+				if ::WhiteoutDexMPQ != undefined and ::WhiteoutDexMPQ.getDirectory() != "" and ::WhiteoutDexMPQ.validateDirectory() then
 					browserAvailable = true
 				if not browserAvailable then
 				(
-					local cascIni = getDir #plugcfg + "\\NeoDex_Settings.ini"
+					local cascIni = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
 					local cascDir = getINISetting cascIni "CASC" "W3Path"
 					if cascDir != "" and doesFileExist (cascDir + "\\.build.info") then
 						browserAvailable = true
@@ -180,17 +180,17 @@ category:"Warcraft 3 Systems"
 		)
 		on params open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				params.title = ::L.t "attach_attachment_parameters_title"
-				first_Str.text = ::L.t "attach_type_lbl"
-				add1_Str.text = ::L.t "attach_direction_lbl"
-				add2_Str.text = ::L.t "attach_additional_lbl"
-				B1.text = ::L.t "attach_use_external_model_lbl"
-				B2.text = ::L.t "attach_visibility_lbl"
-				btnInfo.text = ::L.t "attach_use_tips_btn"
-				B3.text = ::L.t "attach_id_lbl"
-				B4.text = ::L.t "attach_use_attachment_id_lbl"
+				params.title = ::WdxL.t "attach_attachment_parameters_title"
+				first_Str.text = ::WdxL.t "attach_type_lbl"
+				add1_Str.text = ::WdxL.t "attach_direction_lbl"
+				add2_Str.text = ::WdxL.t "attach_additional_lbl"
+				B1.text = ::WdxL.t "attach_use_external_model_lbl"
+				B2.text = ::WdxL.t "attach_visibility_lbl"
+				btnInfo.text = ::WdxL.t "attach_use_tips_btn"
+				B3.text = ::WdxL.t "attach_id_lbl"
+				B4.text = ::WdxL.t "attach_use_attachment_id_lbl"
 			)
 		)
 	)

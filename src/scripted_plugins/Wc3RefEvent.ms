@@ -1,8 +1,8 @@
-plugin simpleManipulator Wc3_Event
-    name: "Event Object"
-    classID:#(0x189dc89e, 0x2e9f652d)
-    --classID:#(0x956e6a9b, 0x87f39a9e) For versions 2020 and below
-    category:"Warcraft 3 Systems"
+plugin simpleManipulator Wdx_Wc3Event
+    name: "Wc3 Event Object"
+    classID:#(0x7A1B2C05, 0x3D4E5F05)
+    --classID:#(0x7A1B2C06, 0x3D4E5F06) For versions 2020 and below
+    category:"Warcraft III Plugins"
 (
     local listOfKeys        = #()
     local selectedKey
@@ -33,8 +33,8 @@ plugin simpleManipulator Wc3_Event
         )
         on General open do
         (
-            if ::L != undefined then
-                General.title = ::L.t "event_general_functions_title"
+            if ::WdxL != undefined then
+                General.title = ::WdxL.t "event_general_functions_title"
         )
     )
     rollout params "Event Object"
@@ -62,13 +62,13 @@ plugin simpleManipulator Wc3_Event
         )
 
         -- Builds a localized "CODE - Description" string
-        -- Checks ::L for evt_CODE translation, falls back to English
+        -- Checks ::WdxL for evt_CODE translation, falls back to English
         fn localizedEntry code englishDesc =
         (
-            if ::L != undefined then
+            if ::WdxL != undefined then
             (
                 local key = "evt_" + code
-                local translated = try(::L.t key) catch(undefined)
+                local translated = try(::WdxL.t key) catch(undefined)
                 if translated != undefined and translated != "" and translated != key then
                     return code + " - " + translated
             )
@@ -898,16 +898,16 @@ plugin simpleManipulator Wc3_Event
             ) catch()
 
             -- Localization
-            if ::L != undefined then
+            if ::WdxL != undefined then
             (
-                params.title = ::L.t "event_event_object_title"
-                lbl1.text = ::L.t "event_move_the_animation_slider_to_i_lbl"
-                btnAddNote.text = ::L.t "event_add_btn"
-                btnRemNote.text = ::L.t "event_remove_btn"
-                btnRemAllNote.text = ::L.t "event_clear_all_btn"
-                l1.text = ::L.t "event__type_lbl"
-                l2.text = ::L.t "event__data_lbl"
-                btnConfirmRename.text = ::L.t "event_confirm_btn"
+                params.title = ::WdxL.t "event_event_object_title"
+                lbl1.text = ::WdxL.t "event_move_the_animation_slider_to_i_lbl"
+                btnAddNote.text = ::WdxL.t "event_add_btn"
+                btnRemNote.text = ::WdxL.t "event_remove_btn"
+                btnRemAllNote.text = ::WdxL.t "event_clear_all_btn"
+                l1.text = ::WdxL.t "event__type_lbl"
+                l2.text = ::WdxL.t "event__data_lbl"
+                btnConfirmRename.text = ::WdxL.t "event_confirm_btn"
             )
         )
         ----------------------Key list item selection changed parameter--------------------

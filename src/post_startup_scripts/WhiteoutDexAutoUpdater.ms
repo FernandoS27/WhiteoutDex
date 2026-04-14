@@ -2,13 +2,20 @@
  * WhiteoutDex Auto-Updater
  * -------------------
  * Checks on 3ds Max startup if a new version of WhiteoutDex is available on GitHub.
- * All UI strings use ::L.t for localization.
+ * All UI strings use ::WdxL.t for localization.
+ *
+ * Compatibility: 3ds Max 2016 - 2027
+ *   Max 2016-2025: System.Net.WebClient
+ *   Max 2026+:     System.Net.Http.HttpClient (.NET 8)
  */
 
 (
     local _githubUser   = "DennisHerrm"
     local _githubRepo   = "WhiteoutDex"
     local _checkInterval = 86400
+
+    -- True if running on Max 2026+ (.NET 8 where WebClient is obsolete)
+    local _useHttpClient = ((maxVersion())[1] >= 28000)
 
     fn _ndxGetInstallPath = (
         local p = undefined
@@ -61,19 +68,81 @@
     )
 
     fn _ndxSetLastCheckTime = (
-        -- nicht mehr noetig
         OK
     )
+
+    -- ========================================
+    -- HTTP Download helpers (dual WebClient / HttpClient)
+    -- ========================================
+
+    -- Download a string from a URL
+    fn _ndxDownloadString url = (
+        if _useHttpClient then
+        (
+            -- .NET 8: use HttpClient
+            local httpClient = dotNetObject "System.Net.Http.HttpClient"
+            try (
+                httpClient.DefaultRequestHeaders.Add "User-Agent" "WhiteoutDex-Updater"
+                httpClient.DefaultRequestHeaders.Add "Accept" "application/vnd.github.v3+json"
+                local task = httpClient.GetStringAsync url
+                task.Wait()
+                local result = task.Result
+                httpClient.Dispose()
+                result
+            ) catch (
+                try (httpClient.Dispose()) catch ()
+                throw
+            )
+        )
+        else
+        (
+            -- .NET Framework: use WebClient
+            local wc = dotNetObject "System.Net.WebClient"
+            wc.Headers.Add "User-Agent" "WhiteoutDex-Updater"
+            wc.Headers.Add "Accept" "application/vnd.github.v3+json"
+            local result = wc.DownloadString url
+            wc.Dispose()
+            result
+        )
+    )
+
+    -- Download a file from a URL
+    fn _ndxDownloadFile url destPath = (
+        if _useHttpClient then
+        (
+            -- .NET 8: use HttpClient
+            local httpClient = dotNetObject "System.Net.Http.HttpClient"
+            try (
+                httpClient.DefaultRequestHeaders.Add "User-Agent" "WhiteoutDex-Updater"
+                local task = httpClient.GetByteArrayAsync url
+                task.Wait()
+                local bytes = task.Result
+                (dotNetClass "System.IO.File").WriteAllBytes destPath bytes
+                httpClient.Dispose()
+            ) catch (
+                try (httpClient.Dispose()) catch ()
+                throw
+            )
+        )
+        else
+        (
+            -- .NET Framework: use WebClient
+            local wc = dotNetObject "System.Net.WebClient"
+            wc.Headers.Add "User-Agent" "WhiteoutDex-Updater"
+            wc.DownloadFile url destPath
+            wc.Dispose()
+        )
+    )
+
+    -- ========================================
+    -- GitHub API query
+    -- ========================================
 
     fn _ndxCheckGitHub = (
         local result = #(undefined, undefined)
         try (
             local url = "https://api.github.com/repos/" + _githubUser + "/" + _githubRepo + "/releases/latest"
-            local wc = dotNetObject "System.Net.WebClient"
-            wc.Headers.Add "User-Agent" "WhiteoutDex-Updater"
-            wc.Headers.Add "Accept" "application/vnd.github.v3+json"
-            local resp = wc.DownloadString url
-            wc.Dispose()
+            local resp = _ndxDownloadString url
             local rx = dotNetClass "System.Text.RegularExpressions.Regex"
             local tm = rx.Match resp "\"tag_name\"\\s*:\\s*\"([^\"]+)\""
             if tm.Success then (
@@ -94,16 +163,13 @@
         local dlFile = tmpDir + "WhiteoutDex_Setup_v" + ver + ".exe"
         local batFile = tmpDir + "WhiteoutDex_AutoInstall.bat"
         try (
-            progressStart (::L.t "upd_downloading")
-            local wc = dotNetObject "System.Net.WebClient"
-            wc.Headers.Add "User-Agent" "WhiteoutDex-Updater"
-            wc.DownloadFile dlUrl dlFile
-            wc.Dispose()
+            progressStart (::WdxL.t "upd_downloading")
+            _ndxDownloadFile dlUrl dlFile
             progressEnd()
             if doesFileExist dlFile then (
-                -- User fragen ob Max jetzt geschlossen werden soll
-                if queryBox ((::L.t "upd_close_max_msg") + "\n\n" + (::L.t "upd_save_work_msg")) title:(::L.t "upd_title") then (
-                    -- Batch-Script: wartet bis Max zu ist, installiert silent
+                -- Ask user if Max should be closed
+                if queryBox ((::WdxL.t "upd_close_max_msg") + "\n\n" + (::WdxL.t "upd_save_work_msg")) title:(::WdxL.t "upd_title") then (
+                    -- Batch script: waits until Max is closed, then installs silently
                     local bat = "@echo off\n"
                     bat += ":WAIT\n"
                     bat += "tasklist /FI \"IMAGENAME eq 3dsmax.exe\" 2>NUL | find /I \"3dsmax.exe\" >NUL\n"
@@ -119,18 +185,18 @@
                     format "%" bat to:f
                     close f
 
-                    -- Batch-Script versteckt starten
+                    -- Start batch script hidden
                     local psi = dotNetObject "System.Diagnostics.ProcessStartInfo"
                     psi.FileName = batFile
                     psi.WindowStyle = (dotNetClass "System.Diagnostics.ProcessWindowStyle").Hidden
                     psi.CreateNoWindow = true
                     (dotNetClass "System.Diagnostics.Process").Start psi
 
-                    -- Max ordentlich schliessen (User bekommt Speichern-Dialog falls noetig)
+                    -- Close Max gracefully (user gets save dialog if needed)
                     quitMax #prompt
                 )
             ) else (
-                messageBox (::L.t "upd_download_failed") title:(::L.t "upd_title") beep:false
+                messageBox (::WdxL.t "upd_download_failed") title:(::WdxL.t "upd_title") beep:false
             )
         ) catch (
             progressEnd()
@@ -164,17 +230,17 @@
             if (_ndxCompareVersions localVer remoteVer) > 0 then (
                 format "[WhiteoutDex Updater] New version available: % -> %\n" localVer remoteVer
 
-                local msg = (::L.t "upd_new_version_msg") + "\n\n"
-                msg += (::L.t "upd_installed") + "  v" + localVer + "\n"
-                msg += (::L.t "upd_available") + "   v" + remoteVer + "\n\n"
-                msg += (::L.t "upd_changelog_at") + "\ngithub.com/" + _githubUser + "/" + _githubRepo + "/releases\n\n"
-                msg += (::L.t "upd_install_now")
+                local msg = (::WdxL.t "upd_new_version_msg") + "\n\n"
+                msg += (::WdxL.t "upd_installed") + "  v" + localVer + "\n"
+                msg += (::WdxL.t "upd_available") + "   v" + remoteVer + "\n\n"
+                msg += (::WdxL.t "upd_changelog_at") + "\ngithub.com/" + _githubUser + "/" + _githubRepo + "/releases\n\n"
+                msg += (::WdxL.t "upd_install_now")
 
                 if dlUrl != undefined then (
-                    if queryBox msg title:(::L.t "upd_title_available") then
+                    if queryBox msg title:(::WdxL.t "upd_title_available") then
                         _ndxDownloadAndInstall dlUrl remoteVer
                 ) else (
-                    if queryBox msg title:(::L.t "upd_title_available") then
+                    if queryBox msg title:(::WdxL.t "upd_title_available") then
                         ShellLaunch ("https://github.com/" + _githubUser + "/" + _githubRepo + "/releases/latest") ""
                 )
             ) else (
