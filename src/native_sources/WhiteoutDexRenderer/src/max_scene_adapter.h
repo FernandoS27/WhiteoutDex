@@ -179,9 +179,6 @@ private:
     static Modifier* FindSkinModifier(INode* node);
     static Modifier* FindModifierByClassID(INode* node, Class_ID cid);
     MaterialLayerInfo ExtractWc3MaterialLayer(Mtl* mtl);
-    static int MapMaterialFilterMode(int wc3fm);
-    static int MapParticleFilterMode(int bpfm);
-    static int MapRibbonFilterMode(int rbfm);
     std::wstring GetMaxFilePath();
 
     // Loaded texture pixel data (kept for GetTextures())

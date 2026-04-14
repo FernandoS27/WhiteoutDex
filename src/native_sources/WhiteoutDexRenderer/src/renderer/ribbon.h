@@ -84,8 +84,12 @@ public:
 
     void Simulate(float dt);
 
-    int BuildStrips(std::vector<Vertex>& outVerts,
-                    std::vector<int>& outEmitterIds) const;
+    struct StripResult {
+        std::vector<Vertex> vertices;
+        std::vector<int> emitterIds;
+    };
+
+    StripResult BuildStrips() const;
 
     const RibbonEmitterConfig* GetConfig(int id) const;
     int GetTotalSegmentCount() const;

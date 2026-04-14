@@ -4,6 +4,7 @@
 // ============================================================================
 
 #include "renderer.h"
+#include "constants.h"
 #include "shaders.h"
 #include "resource.h"
 #include "team_glow_data.h"
@@ -580,114 +581,133 @@ void Renderer::LoadModel(const std::vector<MeshData>& meshes,
 }
 
 // ============================================================================
-// Apply Pre-computed Frame State
+// ApplyFrameState helpers
 // ============================================================================
 
-void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int timeMs) {
-    std::lock_guard<std::mutex> lock(dataMutex_);
-    auto* mi = getModel(handle);
-    if (!mi) return;
+void Renderer::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state) {
+    if (state.boneWorldMatrices.empty()) return;
 
-    // Bone matrices → skinning system (with billboard adjustment)
-    if (!state.boneWorldMatrices.empty()) {
-        int bc = (int)state.boneWorldMatrices.size();
-        XMFLOAT3 camPos = camera_.GetSource();
-        XMVECTOR camP = XMLoadFloat3(&camPos);
-        XMVECTOR worldUp = XMVectorSet(0, 0, 1, 0);
+    int bc = (int)state.boneWorldMatrices.size();
+    XMFLOAT3 camPos = camera_.GetSource();
+    XMVECTOR camP = XMLoadFloat3(&camPos);
+    XMVECTOR worldUp = XMVectorSet(0, 0, 1, 0);
 
-        std::vector<float> worldFlat(bc * 16);
-        for (int i = 0; i < bc; i++) {
-            XMMATRIX boneM = state.boneWorldMatrices[i];
+    std::vector<float> worldFlat(bc * 16);
+    for (int i = 0; i < bc; i++) {
+        XMMATRIX boneM = state.boneWorldMatrices[i];
 
-            uint32_t bbFlags = (i < (int)mi->billboardFlags.size()) ? mi->billboardFlags[i] : 0;
-            if (bbFlags != 0) {
-                // For a billboarded bone we want vertices to rotate around the
-                // bone's animated pivot world-position toward the camera. The
-                // delta matrix's translation column is NOT the pivot (it's
-                // pivot − R·pivot + t_local), so we instead:
-                //   1) transform the rest pivot through the delta to get the
-                //      animated world pivot position P_w
-                //   2) build boneM = T(-P_rest) · R_cam · T(P_w)
-                // which gives (v − P_rest) · R_cam + P_w — i.e. rotate vertex
-                // around its rest pivot toward the camera, then place at the
-                // animated world pivot. This ignores animated scale for
-                // billboards, which matches typical Wc3 usage.
-                XMFLOAT3 pivF = (i < (int)mi->nodePivots.size())
-                                  ? mi->nodePivots[i] : XMFLOAT3{0, 0, 0};
-                XMVECTOR pivRest = XMLoadFloat3(&pivF);
-                pivRest = XMVectorSetW(pivRest, 1.0f);
-                XMVECTOR pivWorld = XMVector3Transform(pivRest, boneM);
+        uint32_t bbFlags = (i < (int)mi.billboardFlags.size()) ? mi.billboardFlags[i] : 0;
+        if (bbFlags != 0) {
+            // For a billboarded bone we want vertices to rotate around the
+            // bone's animated pivot world-position toward the camera. The
+            // delta matrix's translation column is NOT the pivot (it's
+            // pivot − R·pivot + t_local), so we instead:
+            //   1) transform the rest pivot through the delta to get the
+            //      animated world pivot position P_w
+            //   2) build boneM = T(-P_rest) · R_cam · T(P_w)
+            // which gives (v − P_rest) · R_cam + P_w — i.e. rotate vertex
+            // around its rest pivot toward the camera, then place at the
+            // animated world pivot. This ignores animated scale for
+            // billboards, which matches typical Wc3 usage.
+            XMFLOAT3 pivF = (i < (int)mi.nodePivots.size())
+                              ? mi.nodePivots[i] : XMFLOAT3{0, 0, 0};
+            XMVECTOR pivRest = XMLoadFloat3(&pivF);
+            pivRest = XMVectorSetW(pivRest, 1.0f);
+            XMVECTOR pivWorld = XMVector3Transform(pivRest, boneM);
 
-                XMVECTOR toCamera = XMVectorSubtract(camP, pivWorld);
-                float dist = XMVectorGetX(XMVector3Length(toCamera));
-                if (dist > 0.001f) {
-                    XMMATRIX bbRot = XMMatrixIdentity();
-                    bool haveRot = false;
+            XMVECTOR toCamera = XMVectorSubtract(camP, pivWorld);
+            float dist = XMVectorGetX(XMVector3Length(toCamera));
+            if (dist > kBillboardDistThreshold) {
+                XMMATRIX bbRot = XMMatrixIdentity();
+                bool haveRot = false;
 
-                    if (bbFlags & BONE_BILLBOARD_FULL) {
-                        // fwd points FROM camera TO bone so the front face faces the viewer
-                        XMVECTOR fwd = XMVector3Normalize(XMVectorNegate(toCamera));
-                        XMVECTOR right = XMVector3Cross(fwd, worldUp);
-                        float rightLen = XMVectorGetX(XMVector3Length(right));
-                        if (rightLen < 0.001f)
-                            right = XMVectorSet(1, 0, 0, 0);
-                        right = XMVector3Normalize(right);
-                        XMVECTOR up = XMVector3Normalize(XMVector3Cross(right, fwd));
-                        bbRot = XMMATRIX(right, fwd, up, XMVectorSet(0,0,0,1));
-                        haveRot = true;
-                    } else if (bbFlags & BONE_BILLBOARD_LOCK_Z) {
-                        XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
-                        float yaw = atan2f(tc.y, tc.x);
-                        bbRot = XMMatrixRotationZ(yaw);
-                        haveRot = true;
-                    } else if (bbFlags & BONE_BILLBOARD_LOCK_Y) {
-                        XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
-                        float angle = atan2f(tc.z, tc.x);
-                        bbRot = XMMatrixRotationY(angle);
-                        haveRot = true;
-                    } else if (bbFlags & BONE_BILLBOARD_LOCK_X) {
-                        XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
-                        float angle = atan2f(tc.z, tc.y);
-                        bbRot = XMMatrixRotationX(angle);
-                        haveRot = true;
-                    }
+                if (bbFlags & BONE_BILLBOARD_FULL) {
+                    // fwd points FROM camera TO bone so the front face faces the viewer
+                    XMVECTOR fwd = XMVector3Normalize(XMVectorNegate(toCamera));
+                    XMVECTOR right = XMVector3Cross(fwd, worldUp);
+                    float rightLen = XMVectorGetX(XMVector3Length(right));
+                    if (rightLen < kBillboardDistThreshold)
+                        right = XMVectorSet(1, 0, 0, 0);
+                    right = XMVector3Normalize(right);
+                    XMVECTOR up = XMVector3Normalize(XMVector3Cross(right, fwd));
+                    bbRot = XMMATRIX(right, fwd, up, XMVectorSet(0,0,0,1));
+                    haveRot = true;
+                } else if (bbFlags & BONE_BILLBOARD_LOCK_Z) {
+                    XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
+                    float yaw = atan2f(tc.y, tc.x);
+                    bbRot = XMMatrixRotationZ(yaw);
+                    haveRot = true;
+                } else if (bbFlags & BONE_BILLBOARD_LOCK_Y) {
+                    XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
+                    float angle = atan2f(tc.z, tc.x);
+                    bbRot = XMMatrixRotationY(angle);
+                    haveRot = true;
+                } else if (bbFlags & BONE_BILLBOARD_LOCK_X) {
+                    XMFLOAT3 tc; XMStoreFloat3(&tc, toCamera);
+                    float angle = atan2f(tc.z, tc.y);
+                    bbRot = XMMatrixRotationX(angle);
+                    haveRot = true;
+                }
 
-                    if (haveRot) {
-                        XMMATRIX T_negRest = XMMatrixTranslation(-pivF.x, -pivF.y, -pivF.z);
-                        XMFLOAT3 pwf; XMStoreFloat3(&pwf, pivWorld);
-                        XMMATRIX T_world   = XMMatrixTranslation(pwf.x, pwf.y, pwf.z);
-                        boneM = T_negRest * bbRot * T_world;
-                    }
+                if (haveRot) {
+                    XMMATRIX T_negRest = XMMatrixTranslation(-pivF.x, -pivF.y, -pivF.z);
+                    XMFLOAT3 pwf; XMStoreFloat3(&pwf, pivWorld);
+                    XMMATRIX T_world   = XMMatrixTranslation(pwf.x, pwf.y, pwf.z);
+                    boneM = T_negRest * bbRot * T_world;
                 }
             }
-
-            XMFLOAT4X4 f44;
-            XMStoreFloat4x4(&f44, boneM);
-            float* dst = &worldFlat[i * 16];
-            dst[0]  = f44._11; dst[1]  = f44._12; dst[2]  = f44._13; dst[3]  = f44._14;
-            dst[4]  = f44._21; dst[5]  = f44._22; dst[6]  = f44._23; dst[7]  = f44._24;
-            dst[8]  = f44._31; dst[9]  = f44._32; dst[10] = f44._33; dst[11] = f44._34;
-            dst[12] = f44._41; dst[13] = f44._42; dst[14] = f44._43; dst[15] = f44._44;
         }
-        mi->skinning.UpdateNodeMatrices(bc, worldFlat.data());
+
+        XMFLOAT4X4 f44;
+        XMStoreFloat4x4(&f44, boneM);
+        float* dst = &worldFlat[i * 16];
+        dst[0]  = f44._11; dst[1]  = f44._12; dst[2]  = f44._13; dst[3]  = f44._14;
+        dst[4]  = f44._21; dst[5]  = f44._22; dst[6]  = f44._23; dst[7]  = f44._24;
+        dst[8]  = f44._31; dst[9]  = f44._32; dst[10] = f44._33; dst[11] = f44._34;
+        dst[12] = f44._41; dst[13] = f44._42; dst[14] = f44._43; dst[15] = f44._44;
+    }
+    mi.skinning.UpdateNodeMatrices(bc, worldFlat.data());
+}
+
+void Renderer::ApplyGeosetStates(ModelInstance& mi, const FrameState& state) {
+    for (int i = 0; i < (int)state.geosetTransforms.size() && i < (int)mi.gpuGeosets.size(); i++)
+        mi.gpuGeosets[i].worldMatrix = state.geosetTransforms[i];
+
+    for (int i = 0; i < (int)state.geosetAlphas.size() && i < (int)mi.gpuGeosets.size(); i++)
+        mi.gpuGeosets[i].geosetAlpha = state.geosetAlphas[i];
+
+    for (int i = 0; i < (int)state.geosetColors.size() && i < (int)mi.gpuGeosets.size(); i++)
+        mi.gpuGeosets[i].geosetColor = state.geosetColors[i];
+}
+
+void Renderer::ApplyLayerStates(ModelInstance& mi, const FrameState& state) {
+    // Texture animations (per-layer) — clear stale entries from previous frame
+    mi.matTexAnim.clear();
+    for (auto& ta : state.texAnims) {
+        int key = ta.materialId * 1000 + ta.layerIndex;
+        mi.matTexAnim[key] = {ta.uOff, ta.vOff, ta.uTile, ta.vTile, ta.rotation};
     }
 
-    // Geoset world transforms (used for unskinned meshes; skinned ones ignore this)
-    for (int i = 0; i < (int)state.geosetTransforms.size() && i < (int)mi->gpuGeosets.size(); i++) {
-        mi->gpuGeosets[i].worldMatrix = state.geosetTransforms[i];
+    // Per-layer alpha animation (KMTA tracks)
+    for (auto& la : state.layerAlphas) {
+        if (la.materialId >= 0 && la.materialId < (int)mi.gpuMaterials.size()) {
+            auto& layers = mi.gpuMaterials[la.materialId].cpu.layers;
+            if (la.layerIndex >= 0 && la.layerIndex < (int)layers.size())
+                layers[la.layerIndex].alpha = la.alpha;
+        }
     }
 
-    // Geoset visibility
-    for (int i = 0; i < (int)state.geosetAlphas.size() && i < (int)mi->gpuGeosets.size(); i++) {
-        mi->gpuGeosets[i].geosetAlpha = state.geosetAlphas[i];
+    // Per-layer texture ID animation (KMTF tracks)
+    for (auto& lt : state.layerTextureIds) {
+        if (lt.materialId >= 0 && lt.materialId < (int)mi.gpuMaterials.size()) {
+            auto& layers = mi.gpuMaterials[lt.materialId].cpu.layers;
+            if (lt.layerIndex >= 0 && lt.layerIndex < (int)layers.size())
+                layers[lt.layerIndex].textureId = lt.textureId;
+        }
     }
+}
 
-    // Geoset colors
-    for (int i = 0; i < (int)state.geosetColors.size() && i < (int)mi->gpuGeosets.size(); i++) {
-        mi->gpuGeosets[i].geosetColor = state.geosetColors[i];
-    }
-
-    // Particle emitter states
+void Renderer::ApplyParticleFrameStates(ModelInstance& mi, const FrameState& state) {
     for (auto& ps : state.particleStates) {
         ParticleEmitterState st;
         st.transform    = ps.transform;
@@ -699,10 +719,11 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
         st.width        = ps.width;
         st.length       = ps.length;
         st.visibility   = ps.visibility;
-        mi->particles.UpdateEmitterState(ps.emitterId, st);
+        mi.particles.UpdateEmitterState(ps.emitterId, st);
     }
+}
 
-    // Ribbon emitter states
+void Renderer::ApplyRibbonFrameStates(ModelInstance& mi, const FrameState& state) {
     for (auto& rs : state.ribbonStates) {
         RibbonEmitterState st;
         st.transform   = rs.transform;
@@ -712,42 +733,11 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
         st.color       = rs.color;
         st.visibility  = rs.visibility;
         st.slot        = rs.slot;
-        mi->ribbons.UpdateEmitterState(rs.emitterId, st);
+        mi.ribbons.UpdateEmitterState(rs.emitterId, st);
     }
+}
 
-    // Collision transforms
-    for (int i = 0; i < (int)state.collisionTransforms.size() && i < (int)mi->collisionShapes.size(); i++) {
-        mi->collisionShapes[i].transform = state.collisionTransforms[i];
-    }
-
-    // Texture animations (per-layer) — clear stale entries from previous frame
-    mi->matTexAnim.clear();
-    for (auto& ta : state.texAnims) {
-        int key = ta.materialId * 1000 + ta.layerIndex;
-        mi->matTexAnim[key] = {ta.uOff, ta.vOff, ta.uTile, ta.vTile, ta.rotation};
-    }
-
-    // Per-layer alpha animation (KMTA tracks)
-    for (auto& la : state.layerAlphas) {
-        if (la.materialId >= 0 && la.materialId < (int)mi->gpuMaterials.size()) {
-            auto& layers = mi->gpuMaterials[la.materialId].cpu.layers;
-            if (la.layerIndex >= 0 && la.layerIndex < (int)layers.size()) {
-                layers[la.layerIndex].alpha = la.alpha;
-            }
-        }
-    }
-
-    // Per-layer texture ID animation (KMTF tracks)
-    for (auto& lt : state.layerTextureIds) {
-        if (lt.materialId >= 0 && lt.materialId < (int)mi->gpuMaterials.size()) {
-            auto& layers = mi->gpuMaterials[lt.materialId].cpu.layers;
-            if (lt.layerIndex >= 0 && lt.layerIndex < (int)layers.size()) {
-                layers[lt.layerIndex].textureId = lt.textureId;
-            }
-        }
-    }
-
-    // PE1 (model particle emitter) states
+void Renderer::ApplyPE1FrameStates(ModelInstance& mi, const FrameState& state) {
     for (auto& ps : state.pe1States) {
         PE1EmitterState st;
         st.transform    = ps.transform;
@@ -757,13 +747,14 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
         st.longitude    = ps.longitude;
         st.gravity      = ps.gravity;
         st.visibility   = ps.visibility;
-        mi->pe1.UpdateEmitterState(ps.emitterId, st);
+        mi.pe1.UpdateEmitterState(ps.emitterId, st);
     }
+}
 
-    // Update attachment child model transforms + visibility
+void Renderer::ApplyAttachmentStates(ModelInstance& mi, const FrameState& state, int timeMs) {
     for (auto& as : state.attachmentStates) {
-        if (as.attachmentIndex < 0 || as.attachmentIndex >= (int)mi->attachmentSlots.size()) continue;
-        auto& slot = mi->attachmentSlots[as.attachmentIndex];
+        if (as.attachmentIndex < 0 || as.attachmentIndex >= (int)mi.attachmentSlots.size()) continue;
+        auto& slot = mi.attachmentSlots[as.attachmentIndex];
         if (slot.childModelHandle == 0) continue;
         auto* child = getModel(slot.childModelHandle);
         if (!child) continue;
@@ -774,7 +765,6 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
         // When becoming visible: pick a new random animation and restart from frame 0
         if (visible && !slot.wasVisible) {
             child->pe1BirthTimeMs = timeMs;
-            // Pick a random sequence each time visibility turns on
             if (child->pe1Adapter) {
                 auto seqs = child->pe1Adapter->GetSequences();
                 if (!seqs.empty())
@@ -790,8 +780,30 @@ void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int tim
         // renderer multiplies them by parentVisibility at draw time.
         child->parentVisibility = visible ? as.visibility : 0.0f;
     }
+}
 
-    // Advance simulation clock — only from non-child models
+// ============================================================================
+// Apply Pre-computed Frame State
+// ============================================================================
+
+void Renderer::ApplyFrameState(uint32_t handle, const FrameState& state, int timeMs) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    auto* mi = getModel(handle);
+    if (!mi) return;
+
+    ApplyBoneMatrices(*mi, state);
+    ApplyGeosetStates(*mi, state);
+    ApplyLayerStates(*mi, state);
+    ApplyParticleFrameStates(*mi, state);
+    ApplyRibbonFrameStates(*mi, state);
+    ApplyPE1FrameStates(*mi, state);
+
+    // Collision transforms (simple 1:1 copy)
+    for (int i = 0; i < (int)state.collisionTransforms.size() && i < (int)mi->collisionShapes.size(); i++)
+        mi->collisionShapes[i].transform = state.collisionTransforms[i];
+
+    ApplyAttachmentStates(*mi, state, timeMs);
+
     if (!mi->isPE1Child)
         currentTimeMs_ = timeMs;
 }
@@ -897,8 +909,159 @@ void Renderer::ProcessSequences() {
 // Staged → GPU Resource Upload (render thread only)
 // ============================================================================
 
+void Renderer::UploadStagedTextures(ModelInstance& mi) {
+    for (auto& [id, st] : mi.stagedTextures) {
+        if (st.width <= 0 || st.height <= 0) continue;
+
+        if (mi.gpuTextures.count(id)) mi.gpuTextures[id].Release();
+
+        GPUTexture gt;
+        D3D11_TEXTURE2D_DESC td = {};
+        td.Width  = st.width;
+        td.Height = st.height;
+        td.MipLevels = 1;
+        td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_IMMUTABLE;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+        D3D11_SUBRESOURCE_DATA srd = {};
+        srd.pSysMem = st.pixels.data();
+        srd.SysMemPitch = st.width * 4;
+
+        if (SUCCEEDED(device_->CreateTexture2D(&td, &srd, &gt.tex))) {
+            device_->CreateShaderResourceView(gt.tex, nullptr, &gt.srv);
+        }
+        gt.wrapFlags = st.wrapFlags;
+        mi.gpuTextures[id] = gt;
+    }
+    mi.stagedTextures.clear();
+}
+
+void Renderer::UploadStagedGeosets(ModelInstance& mi) {
+    for (auto& [id, sg] : mi.stagedGeosets) {
+        GPUGeoset gg;
+        gg.geosetId    = id;
+        gg.materialId  = sg.materialId;
+        gg.indexCount   = (int)sg.indices.size();
+        gg.vertexCount  = (int)sg.vertices.size();
+        gg.baseVertices = sg.vertices;  // keep CPU copy for particle/ribbon reads
+        gg.hasSkinning  = true; // all MDX geosets are skinned (v1200 weights or v800 vertex groups)
+
+        // Copy priorityPlane from material for render sorting
+        if (sg.materialId >= 0 && sg.materialId < (int)mi.gpuMaterials.size())
+            gg.priorityPlane = mi.gpuMaterials[sg.materialId].cpu.priorityPlane;
+
+        // ---- GPU compute skinning buffers ----
+        UINT vbBytes = (UINT)(sizeof(Vertex) * sg.vertices.size());
+
+        // 1. Base vertex buffer (immutable SRV)
+        D3D11_BUFFER_DESC bd = {};
+        bd.ByteWidth           = vbBytes;
+        bd.Usage               = D3D11_USAGE_IMMUTABLE;
+        bd.BindFlags           = D3D11_BIND_SHADER_RESOURCE;
+        bd.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        bd.StructureByteStride = sizeof(Vertex);
+        D3D11_SUBRESOURCE_DATA srd = {};
+        srd.pSysMem = sg.vertices.data();
+        device_->CreateBuffer(&bd, &srd, &gg.baseVertBuf);
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvd = {};
+        srvd.Format              = DXGI_FORMAT_UNKNOWN;
+        srvd.ViewDimension       = D3D11_SRV_DIMENSION_BUFFER;
+        srvd.Buffer.NumElements  = gg.vertexCount;
+        device_->CreateShaderResourceView(gg.baseVertBuf, &srvd, &gg.baseVertSRV);
+
+        // 2. Weight buffer (immutable SRV) — pack VertexInfluence into uint4 + float4
+        struct GPUWeight { uint32_t boneIdx[4]; float weight[4]; };
+        static_assert(sizeof(GPUWeight) == 32, "GPUWeight must be 32 bytes");
+        std::vector<GPUWeight> gpuWeights(gg.vertexCount);
+        const GeosetSkinInfo* skinInfo = mi.skinning.GetGeosetWeights(id);
+        if (skinInfo && (int)skinInfo->vertices.size() == gg.vertexCount) {
+            for (int v = 0; v < gg.vertexCount; v++) {
+                const auto& inf = skinInfo->vertices[v];
+                for (int j = 0; j < 4; j++) {
+                    gpuWeights[v].boneIdx[j] = (uint32_t)inf.boneIdx[j];
+                    gpuWeights[v].weight[j]  = inf.weight[j];
+                }
+            }
+        }
+
+        bd.ByteWidth           = (UINT)(sizeof(GPUWeight) * gg.vertexCount);
+        bd.StructureByteStride = sizeof(GPUWeight);
+        srd.pSysMem = gpuWeights.data();
+        device_->CreateBuffer(&bd, &srd, &gg.weightBuf);
+
+        srvd.Buffer.NumElements = gg.vertexCount;
+        device_->CreateShaderResourceView(gg.weightBuf, &srvd, &gg.weightSRV);
+
+        // 3. Skinned output buffer (compute UAV — structured, no VB bind)
+        bd.ByteWidth           = vbBytes;
+        bd.Usage               = D3D11_USAGE_DEFAULT;
+        bd.BindFlags           = D3D11_BIND_UNORDERED_ACCESS;
+        bd.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        bd.StructureByteStride = sizeof(Vertex);
+        bd.CPUAccessFlags      = 0;
+        device_->CreateBuffer(&bd, nullptr, &gg.skinnedBuf);
+
+        D3D11_UNORDERED_ACCESS_VIEW_DESC uavd = {};
+        uavd.Format             = DXGI_FORMAT_UNKNOWN;
+        uavd.ViewDimension      = D3D11_UAV_DIMENSION_BUFFER;
+        uavd.Buffer.NumElements = gg.vertexCount;
+        device_->CreateUnorderedAccessView(gg.skinnedBuf, &uavd, &gg.skinnedUAV);
+
+        // 4. Vertex buffer for drawing (plain DEFAULT buffer — CopyResource target)
+        D3D11_BUFFER_DESC vbDesc = {};
+        vbDesc.ByteWidth = vbBytes;
+        vbDesc.Usage     = D3D11_USAGE_DEFAULT;
+        vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        srd.pSysMem = sg.vertices.data(); // initial data = bind pose
+        device_->CreateBuffer(&vbDesc, &srd, &gg.vb);
+
+        // Index buffer (immutable, same for both paths)
+        {
+            D3D11_BUFFER_DESC bd = {};
+            bd.ByteWidth      = (UINT)(sizeof(uint32_t) * sg.indices.size());
+            bd.Usage          = D3D11_USAGE_IMMUTABLE;
+            bd.BindFlags      = D3D11_BIND_INDEX_BUFFER;
+            bd.CPUAccessFlags = 0;
+            D3D11_SUBRESOURCE_DATA srd = {};
+            srd.pSysMem = sg.indices.data();
+            device_->CreateBuffer(&bd, &srd, &gg.ib);
+        }
+
+        mi.gpuGeosets.push_back(gg);
+    }
+    mi.stagedGeosets.clear();
+}
+
+void Renderer::CreateNodePalette(ModelInstance& mi) {
+    for (auto& geo : mi.gpuGeosets)
+        geo.hasSkinning = true;
+
+    int nodeCount = mi.skinning.NodeCount();
+    if (nodeCount > 0 && !mi.nodePaletteBuf) {
+        D3D11_BUFFER_DESC bd = {};
+        bd.ByteWidth           = (UINT)(sizeof(XMMATRIX) * nodeCount);
+        bd.Usage               = D3D11_USAGE_DYNAMIC;
+        bd.BindFlags           = D3D11_BIND_SHADER_RESOURCE;
+        bd.CPUAccessFlags      = D3D11_CPU_ACCESS_WRITE;
+        bd.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        bd.StructureByteStride = sizeof(XMMATRIX); // 64 bytes = float4x4
+        device_->CreateBuffer(&bd, nullptr, &mi.nodePaletteBuf);
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvd = {};
+        srvd.Format              = DXGI_FORMAT_UNKNOWN;
+        srvd.ViewDimension       = D3D11_SRV_DIMENSION_BUFFER;
+        srvd.Buffer.NumElements  = nodeCount;
+        device_->CreateShaderResourceView(mi.nodePaletteBuf, &srvd, &mi.nodePaletteSRV);
+    }
+}
+
 void Renderer::ProcessStagedData() {
     std::lock_guard<std::mutex> lock(dataMutex_);
+
     // Remove models marked for clear
     for (auto it = models_.begin(); it != models_.end(); ) {
         if (it->second->stagedClear) {
@@ -908,173 +1071,30 @@ void Renderer::ProcessStagedData() {
             ++it;
         }
     }
+
     for (auto& [h, miPtr] : models_) {
         auto* mi = miPtr.get();
         if (!mi->stagedDirty && !mi->skinDirty) continue;
 
-    if (mi->stagedDirty) {
-        // Upload textures (individual Texture2D)
-        for (auto& [id, st] : mi->stagedTextures) {
-            if (st.width <= 0 || st.height <= 0) continue;
+        if (mi->stagedDirty) {
+            UploadStagedTextures(*mi);
 
-            if (mi->gpuTextures.count(id)) mi->gpuTextures[id].Release();
-
-            GPUTexture gt;
-            D3D11_TEXTURE2D_DESC td = {};
-            td.Width  = st.width;
-            td.Height = st.height;
-            td.MipLevels = 1;
-            td.ArraySize = 1;
-            td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-            td.SampleDesc.Count = 1;
-            td.Usage = D3D11_USAGE_IMMUTABLE;
-            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-            D3D11_SUBRESOURCE_DATA srd = {};
-            srd.pSysMem = st.pixels.data();
-            srd.SysMemPitch = st.width * 4;
-
-            if (SUCCEEDED(device_->CreateTexture2D(&td, &srd, &gt.tex))) {
-                device_->CreateShaderResourceView(gt.tex, nullptr, &gt.srv);
+            // Copy materials (CPU data for render logic)
+            for (auto& [id, sm] : mi->stagedMaterials) {
+                if ((int)mi->gpuMaterials.size() <= id) mi->gpuMaterials.resize(id + 1);
+                mi->gpuMaterials[id].cpu = sm;
             }
-            gt.wrapFlags = st.wrapFlags;
-            mi->gpuTextures[id] = gt;
+            mi->stagedMaterials.clear();
+
+            UploadStagedGeosets(*mi);
+            mi->stagedDirty = false;
         }
-        mi->stagedTextures.clear();
 
-        // Copy materials (CPU data for render logic)
-        for (auto& [id, sm] : mi->stagedMaterials) {
-            if ((int)mi->gpuMaterials.size() <= id) mi->gpuMaterials.resize(id + 1);
-            mi->gpuMaterials[id].cpu = sm;
+        if (mi->skinDirty) {
+            CreateNodePalette(*mi);
+            mi->skinDirty = false;
         }
-        mi->stagedMaterials.clear();
-
-        // Upload geosets
-        for (auto& [id, sg] : mi->stagedGeosets) {
-            GPUGeoset gg;
-            gg.geosetId    = id;
-            gg.materialId  = sg.materialId;
-            gg.indexCount   = (int)sg.indices.size();
-            gg.vertexCount  = (int)sg.vertices.size();
-            gg.baseVertices = sg.vertices;  // keep CPU copy for particle/ribbon reads
-            gg.hasSkinning  = true; // all MDX geosets are skinned (v1200 weights or v800 vertex groups)
-
-            // Copy priorityPlane from material for render sorting
-            if (sg.materialId >= 0 && sg.materialId < (int)mi->gpuMaterials.size())
-                gg.priorityPlane = mi->gpuMaterials[sg.materialId].cpu.priorityPlane;
-
-            // ---- GPU compute skinning buffers ----
-            UINT vbBytes = (UINT)(sizeof(Vertex) * sg.vertices.size());
-
-            // 1. Base vertex buffer (immutable SRV)
-            D3D11_BUFFER_DESC bd = {};
-            bd.ByteWidth           = vbBytes;
-            bd.Usage               = D3D11_USAGE_IMMUTABLE;
-            bd.BindFlags           = D3D11_BIND_SHADER_RESOURCE;
-            bd.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-            bd.StructureByteStride = sizeof(Vertex);
-            D3D11_SUBRESOURCE_DATA srd = {};
-            srd.pSysMem = sg.vertices.data();
-            device_->CreateBuffer(&bd, &srd, &gg.baseVertBuf);
-
-            D3D11_SHADER_RESOURCE_VIEW_DESC srvd = {};
-            srvd.Format              = DXGI_FORMAT_UNKNOWN;
-            srvd.ViewDimension       = D3D11_SRV_DIMENSION_BUFFER;
-            srvd.Buffer.NumElements  = gg.vertexCount;
-            device_->CreateShaderResourceView(gg.baseVertBuf, &srvd, &gg.baseVertSRV);
-
-            // 2. Weight buffer (immutable SRV) — pack VertexInfluence into uint4 + float4
-            struct GPUWeight { uint32_t boneIdx[4]; float weight[4]; };
-            static_assert(sizeof(GPUWeight) == 32, "GPUWeight must be 32 bytes");
-            std::vector<GPUWeight> gpuWeights(gg.vertexCount);
-            const GeosetSkinInfo* skinInfo = mi->skinning.GetGeosetWeights(id);
-            if (skinInfo && (int)skinInfo->vertices.size() == gg.vertexCount) {
-                for (int v = 0; v < gg.vertexCount; v++) {
-                    const auto& inf = skinInfo->vertices[v];
-                    for (int j = 0; j < 4; j++) {
-                        gpuWeights[v].boneIdx[j] = (uint32_t)inf.boneIdx[j];
-                        gpuWeights[v].weight[j]  = inf.weight[j];
-                    }
-                }
-            }
-
-            bd.ByteWidth           = (UINT)(sizeof(GPUWeight) * gg.vertexCount);
-            bd.StructureByteStride = sizeof(GPUWeight);
-            srd.pSysMem = gpuWeights.data();
-            device_->CreateBuffer(&bd, &srd, &gg.weightBuf);
-
-            srvd.Buffer.NumElements = gg.vertexCount;
-            device_->CreateShaderResourceView(gg.weightBuf, &srvd, &gg.weightSRV);
-
-            // 3. Skinned output buffer (compute UAV — structured, no VB bind)
-            bd.ByteWidth           = vbBytes;
-            bd.Usage               = D3D11_USAGE_DEFAULT;
-            bd.BindFlags           = D3D11_BIND_UNORDERED_ACCESS;
-            bd.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-            bd.StructureByteStride = sizeof(Vertex);
-            bd.CPUAccessFlags      = 0;
-            device_->CreateBuffer(&bd, nullptr, &gg.skinnedBuf);
-
-            D3D11_UNORDERED_ACCESS_VIEW_DESC uavd = {};
-            uavd.Format             = DXGI_FORMAT_UNKNOWN;
-            uavd.ViewDimension      = D3D11_UAV_DIMENSION_BUFFER;
-            uavd.Buffer.NumElements = gg.vertexCount;
-            device_->CreateUnorderedAccessView(gg.skinnedBuf, &uavd, &gg.skinnedUAV);
-
-            // 4. Vertex buffer for drawing (plain DEFAULT buffer — CopyResource target)
-            D3D11_BUFFER_DESC vbDesc = {};
-            vbDesc.ByteWidth = vbBytes;
-            vbDesc.Usage     = D3D11_USAGE_DEFAULT;
-            vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-            srd.pSysMem = sg.vertices.data(); // initial data = bind pose
-            device_->CreateBuffer(&vbDesc, &srd, &gg.vb);
-
-            // Index buffer (immutable, same for both paths)
-            {
-                D3D11_BUFFER_DESC bd = {};
-                bd.ByteWidth      = (UINT)(sizeof(uint32_t) * sg.indices.size());
-                bd.Usage          = D3D11_USAGE_IMMUTABLE;
-                bd.BindFlags      = D3D11_BIND_INDEX_BUFFER;
-                bd.CPUAccessFlags = 0;
-                D3D11_SUBRESOURCE_DATA srd = {};
-                srd.pSysMem = sg.indices.data();
-                device_->CreateBuffer(&bd, &srd, &gg.ib);
-            }
-
-            mi->gpuGeosets.push_back(gg);
-        }
-        mi->stagedGeosets.clear();
-        mi->stagedDirty = false;
     }
-
-    // Phase 4: Update skinning flags + create node palette buffer
-    if (mi->skinDirty) {
-        for (auto& geo : mi->gpuGeosets)
-            geo.hasSkinning = true;
-
-        // Create node palette buffer (DYNAMIC StructuredBuffer<float4x4>)
-        int nodeCount = mi->skinning.NodeCount();
-        if (nodeCount > 0 && !mi->nodePaletteBuf) {
-
-            D3D11_BUFFER_DESC bd = {};
-            bd.ByteWidth           = (UINT)(sizeof(XMMATRIX) * nodeCount);
-            bd.Usage               = D3D11_USAGE_DYNAMIC;
-            bd.BindFlags           = D3D11_BIND_SHADER_RESOURCE;
-            bd.CPUAccessFlags      = D3D11_CPU_ACCESS_WRITE;
-            bd.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-            bd.StructureByteStride = sizeof(XMMATRIX); // 64 bytes = float4x4
-            device_->CreateBuffer(&bd, nullptr, &mi->nodePaletteBuf);
-
-            D3D11_SHADER_RESOURCE_VIEW_DESC srvd = {};
-            srvd.Format              = DXGI_FORMAT_UNKNOWN;
-            srvd.ViewDimension       = D3D11_SRV_DIMENSION_BUFFER;
-            srvd.Buffer.NumElements  = nodeCount;
-            device_->CreateShaderResourceView(mi->nodePaletteBuf, &srvd, &mi->nodePaletteSRV);
-        }
-
-        mi->skinDirty = false;
-    }
-    } // end for each model
 }
 
 void Renderer::ReleaseModelGPU() {
@@ -1172,13 +1192,11 @@ void Renderer::UpdateParticles(float dt) {
 void Renderer::RenderParticles() {
     for (auto& [_mh, _mi] : models_) {
     auto* mi = _mi.get();
-    std::vector<Vertex> verts;
-    std::vector<int> emitterIds;
-    std::vector<int> vertCounts;
 
     // Snapshot all data under one lock
     float pitch, yaw;
     XMMATRIX viewMat;
+    ParticleSystem::BillboardResult bbResult;
     std::vector<ParticleEmitterConfig> configs;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
@@ -1187,15 +1205,18 @@ void Renderer::RenderParticles() {
         pitch   = camera_.GetPitch();
         yaw     = camera_.GetYaw();
         viewMat = camera_.GetViewMatrix();
-        mi->particles.BuildBillboards(pitch, yaw, verts, emitterIds, vertCounts);
+        bbResult = mi->particles.BuildBillboards(pitch, yaw);
 
-        for (int eid : emitterIds) {
+        for (int eid : bbResult.emitterIds) {
             auto* c = mi->particles.GetConfig(eid);
             configs.push_back(c ? *c : ParticleEmitterConfig{});
         }
     }
     // Lock released — safe to call DX11
 
+    auto& verts = bbResult.vertices;
+    auto& emitterIds = bbResult.emitterIds;
+    auto& vertCounts = bbResult.vertCounts;
     if (verts.empty()) continue;
 
     int vertCount = (int)verts.size();
@@ -1259,10 +1280,10 @@ void Renderer::RenderParticles() {
             cb->view       = XMMatrixTranspose(viewMat);
             cb->projection = XMMatrixTranspose(proj);
 
-            XMVECTOR ld = XMVector3Normalize(XMVectorSet(0.0f, -0.3f, -0.8f, 0.0f));
+            XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kDefaultLightDir));
             XMStoreFloat4(&cb->lightDir, ld);
-            cb->lightColor   = {0.85f,0.85f,0.80f,1};
-            cb->ambientColor = {0.35f,0.35f,0.40f,alphaRef};
+            cb->lightColor   = kParticleLightColor;
+            cb->ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
             cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
         cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
             cb->materialFlags = {cfg.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
@@ -1271,11 +1292,11 @@ void Renderer::RenderParticles() {
 
         // Bind texture
         ID3D11ShaderResourceView* srv = defaultTexSRV_;
-        uint32_t wrapFlags = 0x3;
+        uint32_t wrapFlags = kWrapFlagsMask;
         if (cfg.textureId >= 0 && mi->gpuTextures.count(cfg.textureId)) {
             auto& gt = mi->gpuTextures[cfg.textureId];
             srv = gt.srv;
-            wrapFlags = gt.wrapFlags & 0x3;
+            wrapFlags = gt.wrapFlags & kWrapFlagsMask;
         }
         if (!srv) srv = defaultTexSRV_;
         context_->PSSetShaderResources(0, 1, &srv);
@@ -1303,9 +1324,8 @@ void Renderer::UpdateRibbons(float dt) {
 void Renderer::RenderRibbons() {
     for (auto& [_mh, _mi] : models_) {
     auto* mi = _mi.get();
-    std::vector<Vertex> verts;
-    std::vector<int> emitterIds;
     XMMATRIX viewMat;
+    RibbonSystem::StripResult stripResult;
     std::vector<RibbonEmitterConfig> configs;
 
     {
@@ -1313,13 +1333,15 @@ void Renderer::RenderRibbons() {
         if (!mi->ribbons.HasEmitters()) continue;
         if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
         viewMat = camera_.GetViewMatrix();
-        mi->ribbons.BuildStrips(verts, emitterIds);
-        for (int eid : emitterIds) {
+        stripResult = mi->ribbons.BuildStrips();
+        for (int eid : stripResult.emitterIds) {
             auto* c = mi->ribbons.GetConfig(eid);
             configs.push_back(c ? *c : RibbonEmitterConfig{});
         }
     }
 
+    auto& verts = stripResult.vertices;
+    auto& emitterIds = stripResult.emitterIds;
     if (verts.empty()) continue;
     int vertCount = (int)verts.size();
 
@@ -1379,10 +1401,10 @@ void Renderer::RenderRibbons() {
             XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 1.0f, 10000.0f);
             cb->view       = XMMatrixTranspose(viewMat);
             cb->projection = XMMatrixTranspose(proj);
-            XMVECTOR ld = XMVector3Normalize(XMVectorSet(0.0f, -0.3f, -0.8f, 0.0f));
+            XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kDefaultLightDir));
             XMStoreFloat4(&cb->lightDir, ld);
-            cb->lightColor   = {0.85f,0.85f,0.80f,1};
-            cb->ambientColor = {0.35f,0.35f,0.40f,alphaRef};
+            cb->lightColor   = kParticleLightColor;
+            cb->ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
             cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
         cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
             cb->materialFlags = {cfg.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
@@ -1391,11 +1413,11 @@ void Renderer::RenderRibbons() {
 
         // Bind texture
         ID3D11ShaderResourceView* srv = defaultTexSRV_;
-        uint32_t wrapFlags = 0x3;
+        uint32_t wrapFlags = kWrapFlagsMask;
         if (cfg.textureId >= 0 && mi->gpuTextures.count(cfg.textureId)) {
             auto& gt = mi->gpuTextures[cfg.textureId];
             srv = gt.srv;
-            wrapFlags = gt.wrapFlags & 0x3;
+            wrapFlags = gt.wrapFlags & kWrapFlagsMask;
         }
         if (!srv) srv = defaultTexSRV_;
         context_->PSSetShaderResources(0, 1, &srv);
@@ -1509,8 +1531,8 @@ void Renderer::RenderCollisions() {
             cb->view = XMMatrixTranspose(viewMat);
             cb->projection = XMMatrixTranspose(XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 1.0f, 10000.0f));
             cb->lightDir = {0,0,0,0};
-            cb->lightColor = {1,1,1,1};
-            cb->ambientColor = {1,1,1,0};
+            cb->lightColor = kCollisionLightColor;
+            cb->ambientColor = kCollisionAmbientColor;
             cb->extraParams = {1,1,1,1};
         cb->texAnimParams = {0,0,1,1};
             cb->materialFlags = {0,0,0,0};
@@ -1942,10 +1964,34 @@ bool Renderer::InitD3D() {
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
+    // Enumerate adapters and prefer the discrete GPU (most dedicated VRAM)
+    IDXGIFactory1* factory = nullptr;
+    IDXGIAdapter1* bestAdapter = nullptr;
+    SIZE_T bestVRAM = 0;
+    if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory))) {
+        IDXGIAdapter1* adapter = nullptr;
+        for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
+            DXGI_ADAPTER_DESC1 desc;
+            adapter->GetDesc1(&desc);
+            // Skip software/remote adapters
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) { adapter->Release(); continue; }
+            if (desc.DedicatedVideoMemory > bestVRAM) {
+                if (bestAdapter) bestAdapter->Release();
+                bestAdapter = adapter;
+                bestVRAM = desc.DedicatedVideoMemory;
+            } else {
+                adapter->Release();
+            }
+        }
+    }
+
+    // When using an explicit adapter, DriverType must be D3D_DRIVER_TYPE_UNKNOWN
     HRESULT hr = D3D11CreateDeviceAndSwapChain(
-        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
-        levels, 1, D3D11_SDK_VERSION,
+        bestAdapter, bestAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+        nullptr, flags, levels, 1, D3D11_SDK_VERSION,
         &scd, &swapChain_, &device_, &featureLevel, &context_);
+    if (bestAdapter) bestAdapter->Release();
+    if (factory) factory->Release();
     if (FAILED(hr)) return false;
     if (!ResizeBuffers(width_, height_)) return false;
 
@@ -2301,10 +2347,10 @@ void Renderer::RenderFrame() {
         cb->world      = XMMatrixTranspose(XMMatrixIdentity());
         cb->view       = XMMatrixTranspose(view);
         cb->projection = XMMatrixTranspose(proj);
-        XMVECTOR ld = XMVector3Normalize(XMVectorSet(0.0f, -0.3f, -0.8f, 0.0f));
+        XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kDefaultLightDir));
         XMStoreFloat4(&cb->lightDir, ld);
-        cb->lightColor   = {0.50f, 0.50f, 0.48f, 1.0f};
-        cb->ambientColor = {0.60f, 0.60f, 0.65f, 0.0f};  // .a=0 no alpha test
+        cb->lightColor   = kGeosetLightColor;
+        cb->ambientColor = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, 0.0f};  // .a=0 no alpha test
         cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
         cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};     // .x=geosetAlpha (1=visible)
         cb->materialFlags = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -2459,10 +2505,10 @@ void Renderer::RenderGeosets() {
                 cb->view       = XMMatrixTranspose(view2);
                 cb->projection = XMMatrixTranspose(proj2);
 
-                XMVECTOR ld = XMVector3Normalize(XMVectorSet(0.0f, -0.3f, -0.8f, 0.0f));
+                XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kDefaultLightDir));
                 XMStoreFloat4(&cb->lightDir, ld);
-                cb->lightColor    = {0.50f, 0.50f, 0.48f, 1.0f};
-                cb->ambientColor  = {0.60f, 0.60f, 0.65f, alphaRef};
+                cb->lightColor    = kGeosetLightColor;
+                cb->ambientColor  = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, alphaRef};
                 cb->extraParams   = {combinedAlpha, geoColor.x, geoColor.y, geoColor.z};
                 cb->texAnimParams = {uOff, vOff, uTile, vTile};
                 cb->materialFlags = {
@@ -2474,11 +2520,11 @@ void Renderer::RenderGeosets() {
             }
 
             ID3D11ShaderResourceView* srv = defaultTexSRV_;
-            uint32_t wrapFlags = 0x3; // default: wrap both
+            uint32_t wrapFlags = kWrapFlagsMask; // default: wrap both
             if (layerTexId >= 0 && mi->gpuTextures.count(layerTexId)) {
                 auto& gt = mi->gpuTextures[layerTexId];
                 srv = gt.srv;
-                wrapFlags = gt.wrapFlags & 0x3;
+                wrapFlags = gt.wrapFlags & kWrapFlagsMask;
             }
             if (!srv) srv = defaultTexSRV_;
             context_->PSSetShaderResources(0, 1, &srv);
@@ -2716,10 +2762,10 @@ void Renderer::RenderViewCube() {
         cb->world      = XMMatrixTranspose(XMMatrixIdentity());
         cb->view       = XMMatrixTranspose(vcView);
         cb->projection = XMMatrixTranspose(vcProj);
-        XMVECTOR ld = XMVector3Normalize(XMVectorSet(0.5f, 0.3f, -0.8f, 0.0f));
+        XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kViewCubeLightDir));
         XMStoreFloat4(&cb->lightDir, ld);
-        cb->lightColor   = {1.0f, 1.0f, 1.0f, 1.0f};
-        cb->ambientColor = {0.5f, 0.5f, 0.5f, 1.0f};
+        cb->lightColor   = kViewCubeLightColor;
+        cb->ambientColor = kViewCubeAmbientColor;
         cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
         cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
         cb->materialFlags = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -2759,7 +2805,7 @@ void Renderer::RenderViewCube() {
     // --- Home button icon (above cube, only on hover) ---
     if (vcHovered_) {
         D3D11_VIEWPORT homeVp = {};
-        homeVp.TopLeftX = vp.TopLeftX + (float)s * 0.35f;
+        homeVp.TopLeftX = vp.TopLeftX + (float)s * kViewCubeHomeOffset;
         homeVp.TopLeftY = vp.TopLeftY - 24.0f;
         homeVp.Width = (float)s * 0.3f;
         homeVp.Height = 20.0f;
@@ -2828,10 +2874,10 @@ void Renderer::RenderViewCube() {
         cb->world      = XMMatrixTranspose(XMMatrixIdentity());
         cb->view       = XMMatrixTranspose(view);
         cb->projection = XMMatrixTranspose(proj);
-        XMVECTOR ld = XMVector3Normalize(XMVectorSet(0.0f, -0.3f, -0.8f, 0.0f));
+        XMVECTOR ld = XMVector3Normalize(XMLoadFloat4(&kDefaultLightDir));
         XMStoreFloat4(&cb->lightDir, ld);
-        cb->lightColor   = {0.50f, 0.50f, 0.48f, 1.0f};
-        cb->ambientColor = {0.60f, 0.60f, 0.65f, 0.0f};  // .a=0 no alpha test
+        cb->lightColor   = kGeosetLightColor;
+        cb->ambientColor = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, 0.0f};  // .a=0 no alpha test
         cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
         cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
         cb->materialFlags = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -2904,13 +2950,12 @@ int Renderer::HitTestViewCube(int mx, int my) {
 }
 
 void Renderer::SnapCameraToFace(int faceIndex) {
-    const float PI = 3.14159265f;
-    const float HALF_PI = PI / 2.0f;
+    constexpr float HALF_PI = XM_PIDIV2;
     // Face order: Front(+Y), Back(-Y), Left(-X), Right(+X), Top(+Z), Bottom(-Z)
     switch (faceIndex) {
         case 0: camera_.SetYaw(HALF_PI);   camera_.SetPitch(0.0f); break;  // Front
         case 1: camera_.SetYaw(-HALF_PI);  camera_.SetPitch(0.0f); break;  // Back
-        case 2: camera_.SetYaw(PI);        camera_.SetPitch(0.0f); break;  // Left
+        case 2: camera_.SetYaw(XM_PI);      camera_.SetPitch(0.0f); break;  // Left
         case 3: camera_.SetYaw(0.0f);      camera_.SetPitch(0.0f); break;  // Right
         case 4: camera_.SetYaw(HALF_PI);   camera_.SetPitch(1.55f); break; // Top
         case 5: camera_.SetYaw(HALF_PI);   camera_.SetPitch(-1.55f); break;// Bottom

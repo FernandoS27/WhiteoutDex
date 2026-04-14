@@ -115,6 +115,9 @@ private:
 
     // GPU resource management
     void ProcessStagedData();
+    void UploadStagedTextures(ModelInstance& mi);
+    void UploadStagedGeosets(ModelInstance& mi);
+    void CreateNodePalette(ModelInstance& mi);
     void ReleaseModelGPU();
 
     // Phase 4: Animation update
@@ -137,6 +140,15 @@ private:
 
     // Collision shape wireframes
     void RenderCollisions();
+
+    // ApplyFrameState helpers
+    void ApplyBoneMatrices(ModelInstance& mi, const FrameState& state);
+    void ApplyGeosetStates(ModelInstance& mi, const FrameState& state);
+    void ApplyLayerStates(ModelInstance& mi, const FrameState& state);
+    void ApplyParticleFrameStates(ModelInstance& mi, const FrameState& state);
+    void ApplyRibbonFrameStates(ModelInstance& mi, const FrameState& state);
+    void ApplyPE1FrameStates(ModelInstance& mi, const FrameState& state);
+    void ApplyAttachmentStates(ModelInstance& mi, const FrameState& state, int timeMs);
 
     // Team color + camera presets
     void UpdateTeamColorTextures();

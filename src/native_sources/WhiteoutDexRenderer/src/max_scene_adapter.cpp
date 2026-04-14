@@ -41,39 +41,6 @@ void MaxSceneAdapter::PackMatrix(const Matrix3& tm, float* dst) {
 // FilterMode Mapping
 // ============================================================================
 
-int MaxSceneAdapter::MapMaterialFilterMode(int wc3fm) {
-    // Wc3Material.ms dropdown (1-based): 1=None, 2=Transparent, 3=Blend,
-    //   4=Additive, 5=AddAlpha, 6=Modulate, 7=Modulate2x
-    // Renderer FilterMode (0-based): 0=None .. 6=Modulate2x
-    int fm = wc3fm - 1;
-    if (fm < 0) fm = 0;
-    if (fm > 6) fm = 6;
-    return fm;
-}
-
-int MaxSceneAdapter::MapParticleFilterMode(int bpfm) {
-    // Wc3Particles2 PB_BLEND: 0=Blend,1=Add,2=Modulate,3=Mod2X,4=AlphaKey
-    // Renderer FilterMode:    0=None,1=Transparent,2=Blend,3=Additive,
-    //                         4=AddAlpha,5=Modulate,6=Modulate2x
-    switch (bpfm) {
-        case 0: return 2;  // Blend
-        case 1: return 3;  // Add → Additive
-        case 2: return 5;  // Modulate
-        case 3: return 6;  // Mod2X → Modulate2x
-        case 4: return 4;  // AlphaKey → AddAlpha
-        default: return 2; // fallback Blend
-    }
-}
-
-int MaxSceneAdapter::MapRibbonFilterMode(int rbfm) {
-    // Matches Wc3Material-style 1-based dropdown → 0-based renderer enum
-    switch (rbfm) {
-        case 1: return 0; case 2: return 1; case 3: return 2;
-        case 4: return 3; case 5: return 4; case 6: return 5;
-        case 7: return 6; default: return 2;
-    }
-}
-
 // ============================================================================
 // IParamBlock2 helpers (unchanged from extract.cpp)
 // ============================================================================
@@ -400,7 +367,7 @@ void MaxSceneAdapter::CollectScene() {
     auto snapMtl = [&](Mtl* mtl, int key) {
         MaterialSnapshot snap;
         int wc3fm = 1; PB2Int(mtl, L"filterMode", 0, wc3fm);
-        snap.filterMode = MapMaterialFilterMode(wc3fm);
+        snap.filterMode = MapFilterMode(wc3fm - 1);
         BOOL flag = FALSE; int flags = 0;
         if (PB2Bool(mtl, L"twoSided", 0, flag) && flag)      flags |= 1;
         if (PB2Bool(mtl, L"unshaded", 0, flag) && flag)      flags |= 2;
@@ -510,7 +477,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     MaterialLayerInfo layer;
 
     int wc3fm = 1; PB2Int(mtl, L"filterMode", 0, wc3fm);
-    layer.filterMode = MapMaterialFilterMode(wc3fm);
+    layer.filterMode = MapFilterMode(wc3fm - 1);
     float opacity = 100; PB2Float(mtl, L"opacity", 0, opacity);
     layer.alpha = std::min(opacity / 100.0f, 1.0f);
 
@@ -1172,7 +1139,7 @@ std::vector<ParticleEmitterConfig> MaxSceneAdapter::GetParticleConfigs() {
 
         // Wc3Particles2 PB2 param names (from Particles.h enum)
         int blendMode = 0; PB2Int(obj, L"BlendMode", 0, blendMode);
-        cfg.filterMode = MapParticleFilterMode(blendMode);
+        cfg.filterMode = MapPE2BlendMode(blendMode);
 
         if(PB2Int(obj, L"TextureRows", 0, iv)) cfg.rows = iv;
         if(PB2Int(obj, L"TextureCols", 0, iv)) cfg.cols = iv;
@@ -1251,9 +1218,9 @@ std::vector<RibbonEmitterConfig> MaxSceneAdapter::GetRibbonConfigs() {
         Mtl* mtl = ri.node->GetMtl();
         if (mtl && mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
             int wc3fm = 0; PB2Int(mtl, L"filterMode", 0, wc3fm);
-            cfg.filterMode = MapMaterialFilterMode(wc3fm);
+            cfg.filterMode = MapFilterMode(wc3fm - 1);
         } else {
-            cfg.filterMode = MapRibbonFilterMode(4); // fallback: old default
+            cfg.filterMode = MapFilterMode(3); // fallback: Additive (old default)
         }
 
         // Wc3Ribbon PB2 param names
@@ -1449,7 +1416,7 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
         PB2Float(obj,L"EmissionRate",t,fv); ps.emissionRate=fv;
         PB2Float(obj,L"Speed",t,fv);        ps.speed=fv;
         PB2Float(obj,L"Variation",t,fv);    ps.variation=fv;
-        PB2Float(obj,L"ConeAngle",t,fv);    ps.coneAngle=fv * (3.14159265f / 180.0f); // deg→rad
+        PB2Float(obj,L"ConeAngle",t,fv);    ps.coneAngle=fv * (XM_PI / 180.0f); // deg→rad
         PB2Float(obj,L"Gravity",t,fv);      ps.gravity=fv;
         PB2Float(obj,L"Width",t,fv);        ps.width=fv;
         PB2Float(obj,L"Height",t,fv);       ps.length=fv;
@@ -1502,7 +1469,7 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
     }
 
     // PE1 emitter states
-    constexpr float kDegToRad = 3.14159265f / 180.0f;
+    constexpr float kDegToRad = XM_PI / 180.0f;
     for (auto& pi : pe1Emitters_) {
         Object* obj = GetBaseObject(pi.node); if (!obj) continue;
         FrameState::PE1FrameState ps;
@@ -1628,7 +1595,7 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
     auto snapshotMtl = [&](Mtl* mtl) -> MaterialSnapshot {
         MaterialSnapshot snap;
         int wc3fm = 1; PB2Int(mtl, L"filterMode", 0, wc3fm);
-        snap.filterMode = MapMaterialFilterMode(wc3fm);
+        snap.filterMode = MapFilterMode(wc3fm - 1);
 
         BOOL flag = FALSE; int flags = 0;
         if (PB2Bool(mtl, L"twoSided", 0, flag) && flag)      flags |= 1;

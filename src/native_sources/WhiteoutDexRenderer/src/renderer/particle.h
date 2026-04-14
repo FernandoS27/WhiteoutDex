@@ -108,10 +108,13 @@ public:
 
     void Simulate(float dt);
 
-    int BuildBillboards(float cameraPitch, float cameraYaw,
-                        std::vector<Vertex>& outVerts,
-                        std::vector<int>& outEmitterIds,
-                        std::vector<int>& outVertCounts) const;
+    struct BillboardResult {
+        std::vector<Vertex> vertices;
+        std::vector<int> emitterIds;
+        std::vector<int> vertCounts;
+    };
+
+    BillboardResult BuildBillboards(float cameraPitch, float cameraYaw) const;
 
     const ParticleEmitterConfig* GetConfig(int id) const;
     int GetTotalParticleCount() const;

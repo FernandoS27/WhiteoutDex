@@ -70,7 +70,6 @@ private:
 
     // Helpers
     int MapPE2FilterMode(whiteout::u32 mdxMode) const;
-    int MapLayerFilterMode(whiteout::mdx::Layer::FilterMode fm) const;
     int MapShadingFlags(whiteout::mdx::Layer::ShadingFlag sf) const;
 
     TextureData LoadTextureFile(const std::string& path, int textureId,

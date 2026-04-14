@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include "particle.h"
+#include "sim_util.h"
 
 namespace WhiteoutDex {
 
@@ -35,8 +36,7 @@ int  ParticleSystem::EmitterCount() const { return (int)emitters_.size(); }
 // ============================================================================
 
 void ParticleSystem::Simulate(float dt) {
-    if (dt < 0) dt = 0;        // dt==0 = frozen (parent paused)
-    if (dt > 0.5f) dt = 0.5f;  // engine clamps to [0, 0.5]
+    dt = ClampDeltaTime(dt);
 
     for (auto& [id, em] : emitters_) {
         // Remove dead particles
@@ -58,7 +58,7 @@ void ParticleSystem::Simulate(float dt) {
             }
         }
         // Normal emission (non-squirt emitters only)
-        else if (em.state.visibility > 0.01f && em.state.emissionRate > 0) {
+        else if (IsEmitterVisible(em.state.visibility) && em.state.emissionRate > 0) {
             em.accumEmission += em.state.emissionRate * dt;
             int numEmitted = 0;
             while (em.accumEmission >= 1.0f) {
@@ -84,14 +84,9 @@ void ParticleSystem::Simulate(float dt) {
 // Billboard Generation
 // ============================================================================
 
-int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
-                                     std::vector<Vertex>& outVerts,
-                                     std::vector<int>& outEmitterIds,
-                                     std::vector<int>& outVertCounts) const
+ParticleSystem::BillboardResult ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw) const
 {
-    outVerts.clear();
-    outEmitterIds.clear();
-    outVertCounts.clear();
+    BillboardResult result;
 
     // Camera right/up vectors (Z-up, right-handed)
     float cosP = cosf(cameraPitch), sinP = sinf(cameraPitch);
@@ -110,14 +105,14 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
     };
 
     for (auto& [id, em] : emitters_) {
-        if (em.state.visibility < 0.01f) continue;
+        if (!IsEmitterVisible(em.state.visibility)) continue;
         if (em.particles.empty()) continue;
 
         bool isHead = (em.config.particleType == 1 || em.config.particleType == 3);
         bool isTail = (em.config.particleType == 2 || em.config.particleType == 3);
         if (!isHead && !isTail) continue;
 
-        int startIdx = (int)outVerts.size();
+        int startIdx = (int)result.vertices.size();
 
         // Collect particle data + optional camera-space Z for sorting
         struct ParticleRef {
@@ -207,13 +202,13 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
                     }
                 }
 
-                outVerts.push_back({corners[0], normal, vertColor, {u0, v1}});
-                outVerts.push_back({corners[1], normal, vertColor, {u1, v1}});
-                outVerts.push_back({corners[2], normal, vertColor, {u1, v0}});
+                result.vertices.push_back({corners[0], normal, vertColor, {u0, v1}});
+                result.vertices.push_back({corners[1], normal, vertColor, {u1, v1}});
+                result.vertices.push_back({corners[2], normal, vertColor, {u1, v0}});
 
-                outVerts.push_back({corners[0], normal, vertColor, {u0, v1}});
-                outVerts.push_back({corners[2], normal, vertColor, {u1, v0}});
-                outVerts.push_back({corners[3], normal, vertColor, {u0, v0}});
+                result.vertices.push_back({corners[0], normal, vertColor, {u0, v1}});
+                result.vertices.push_back({corners[2], normal, vertColor, {u1, v0}});
+                result.vertices.push_back({corners[3], normal, vertColor, {u0, v0}});
             }
 
             // --- TAIL QUAD ---
@@ -229,7 +224,7 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
                 }
                 float vx = worldVel.x, vy = worldVel.y, vz = worldVel.z;
                 float vLen = sqrtf(vx*vx + vy*vy + vz*vz);
-                if (vLen < 1e-6f) continue; // skip zero-velocity tails
+                if (vLen < kVectorEpsilon) continue; // skip zero-velocity tails
 
                 float inv = 1.0f / vLen;
                 XMFLOAT3 tailDir = {vx * inv, vy * inv, vz * inv};
@@ -256,7 +251,7 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
                 };
                 float tcx = camSrc.x - tailMid.x, tcy = camSrc.y - tailMid.y, tcz = camSrc.z - tailMid.z;
                 float tcLen = sqrtf(tcx*tcx + tcy*tcy + tcz*tcz);
-                if (tcLen > 1e-6f) { float ti = 1.0f/tcLen; tcx *= ti; tcy *= ti; tcz *= ti; }
+                if (tcLen > kVectorEpsilon) { float ti = 1.0f/tcLen; tcx *= ti; tcy *= ti; tcz *= ti; }
 
                 // cross(tailDir, toCam)
                 float rx = tailDir.y * tcz - tailDir.z * tcy;
@@ -264,7 +259,7 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
                 float rz = tailDir.x * tcy - tailDir.y * tcx;
                 float rLen = sqrtf(rx*rx + ry*ry + rz*rz);
                 XMFLOAT3 tailRight;
-                if (rLen > 1e-6f) {
+                if (rLen > kVectorEpsilon) {
                     float ri = 1.0f / rLen;
                     tailRight = {rx * ri, ry * ri, rz * ri};
                 } else {
@@ -275,7 +270,7 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
                     ry = tailDir.z * altUp.x - tailDir.x * altUp.z;
                     rz = tailDir.x * altUp.y - tailDir.y * altUp.x;
                     rLen = sqrtf(rx*rx + ry*ry + rz*rz);
-                    float ri = (rLen > 1e-6f) ? 1.0f / rLen : 1.0f;
+                    float ri = (rLen > kVectorEpsilon) ? 1.0f / rLen : 1.0f;
                     tailRight = {rx * ri, ry * ri, rz * ri};
                 }
 
@@ -294,24 +289,24 @@ int ParticleSystem::BuildBillboards(float cameraPitch, float cameraYaw,
                               worldPos.y - tailRight.y * halfScale,
                               worldPos.z - tailRight.z * halfScale};
 
-                outVerts.push_back({corners[0], normal, vertColor, {u0, v0}});
-                outVerts.push_back({corners[1], normal, vertColor, {u1, v0}});
-                outVerts.push_back({corners[2], normal, vertColor, {u1, v1}});
+                result.vertices.push_back({corners[0], normal, vertColor, {u0, v0}});
+                result.vertices.push_back({corners[1], normal, vertColor, {u1, v0}});
+                result.vertices.push_back({corners[2], normal, vertColor, {u1, v1}});
 
-                outVerts.push_back({corners[0], normal, vertColor, {u0, v0}});
-                outVerts.push_back({corners[2], normal, vertColor, {u1, v1}});
-                outVerts.push_back({corners[3], normal, vertColor, {u0, v1}});
+                result.vertices.push_back({corners[0], normal, vertColor, {u0, v0}});
+                result.vertices.push_back({corners[2], normal, vertColor, {u1, v1}});
+                result.vertices.push_back({corners[3], normal, vertColor, {u0, v1}});
             }
         }
 
-        int emitterVertCount = (int)outVerts.size() - startIdx;
+        int emitterVertCount = (int)result.vertices.size() - startIdx;
         if (emitterVertCount > 0) {
-            outEmitterIds.push_back(id);
-            outVertCounts.push_back(emitterVertCount);
+            result.emitterIds.push_back(id);
+            result.vertCounts.push_back(emitterVertCount);
         }
     }
 
-    return (int)outVerts.size();
+    return result;
 }
 
 // ============================================================================
@@ -338,7 +333,7 @@ void ParticleSystem::SpawnParticle(ParticleEmitter& em, float dt) {
     auto& cfg = em.config;
     auto& st = em.state;
 
-    constexpr float kPi = 3.14159265f;
+    constexpr float kPi = XM_PI;
 
     // Spawn position: random within width x length rectangle in XY plane
     float hw = st.width * 0.5f;

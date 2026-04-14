@@ -55,6 +55,24 @@ enum FilterMode {
     FILTER_MODULATE_2X = 6,
 };
 
+/// Map a raw integer (0-6) to a FilterMode value, clamped to valid range.
+/// Works for MDX Layer::FilterMode, Wc3Material (after subtracting 1), and ribbons.
+inline int MapFilterMode(int raw) {
+    if (raw < 0) return FILTER_NONE;
+    if (raw > 6) return FILTER_MODULATE_2X;
+    return raw;
+}
+
+/// Map a Wc3Particles2 blend mode (0-4) to the renderer FilterMode.
+inline int MapPE2BlendMode(int blendMode) {
+    // 0=Blend, 1=Add, 2=Modulate, 3=Mod2X, 4=AlphaKey
+    static constexpr int table[] = {
+        FILTER_BLEND, FILTER_ADDITIVE, FILTER_MODULATE, FILTER_MODULATE_2X, FILTER_ADD_ALPHA
+    };
+    if (blendMode >= 0 && blendMode < 5) return table[blendMode];
+    return FILTER_BLEND; // fallback
+}
+
 // Material flags (bitfield)
 enum MaterialFlags {
     MAT_TWO_SIDED    = 1,

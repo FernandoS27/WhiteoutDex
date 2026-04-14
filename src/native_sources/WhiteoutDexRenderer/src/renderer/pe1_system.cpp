@@ -4,6 +4,7 @@
 // ============================================================================
 
 #include "pe1_system.h"
+#include "sim_util.h"
 #include <cmath>
 #include <algorithm>
 
@@ -44,8 +45,7 @@ const PE1EmitterConfig* PE1System::GetConfig(int emitterId) const {
 
 PE1SimResult PE1System::Simulate(float dt, uint32_t& nextHandle) {
     PE1SimResult result;
-    if (dt < 0) dt = 0;        // dt==0 = frozen (parent paused)
-    if (dt > 0.5f) dt = 0.5f;
+    dt = ClampDeltaTime(dt);
 
     for (auto& [id, em] : emitters_) {
         // Remove dead particles
@@ -59,7 +59,7 @@ PE1SimResult PE1System::Simulate(float dt, uint32_t& nextHandle) {
         }
 
         // Emission
-        if (em.state.visibility > 0.01f && em.state.emissionRate > 0) {
+        if (IsEmitterVisible(em.state.visibility) && em.state.emissionRate > 0) {
             em.accumEmission += em.state.emissionRate * dt;
             while (em.accumEmission >= 1.0f) {
                 SpawnParticle(em, dt, nextHandle, result);

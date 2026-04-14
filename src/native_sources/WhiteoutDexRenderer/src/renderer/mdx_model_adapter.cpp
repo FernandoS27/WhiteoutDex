@@ -356,13 +356,6 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
 // GetMaterials — Map Layer FilterMode + ShadingFlags to renderer types
 // ============================================================================
 
-int MdxModelAdapter::MapLayerFilterMode(Layer::FilterMode fm) const {
-    // Layer::FilterMode maps 1:1 to renderer FilterMode for values 0-6
-    int v = (int)fm;
-    if (v >= 0 && v <= 6) return v;
-    return FILTER_NONE;
-}
-
 int MdxModelAdapter::MapShadingFlags(Layer::ShadingFlag sf) const {
     int flags = 0;
     u32 s = (u32)sf;
@@ -390,7 +383,7 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
         for (int li = 0; li < (int)mat.layers.size(); ++li) {
             const auto& layer = mat.layers[li];
             MaterialLayerData ld;
-            ld.filterMode = MapLayerFilterMode(layer.filterMode);
+            ld.filterMode = MapFilterMode((int)layer.filterMode);
             ld.alpha      = layer.alpha;
             ld.flags      = MapShadingFlags(layer.shadingFlags);
 
@@ -665,7 +658,7 @@ std::vector<RibbonEmitterConfig> MdxModelAdapter::GetRibbonConfigs() {
                 cfg.textureId = (int)layer.textureId;
             }
 
-            cfg.filterMode = MapLayerFilterMode(layer.filterMode);
+            cfg.filterMode = MapFilterMode((int)layer.filterMode);
 
             u32 sf = (u32)layer.shadingFlags;
             cfg.unshaded = (sf & (u32)Layer::ShadingFlag::Unshaded) != 0;

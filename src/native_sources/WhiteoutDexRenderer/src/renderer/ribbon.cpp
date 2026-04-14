@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "ribbon.h"
+#include "sim_util.h"
 
 namespace WhiteoutDex {
 
@@ -66,12 +67,11 @@ bool RibbonSystem::HasEmitters() const { return !emitters_.empty(); }
 // ============================================================================
 
 void RibbonSystem::Simulate(float dt) {
-    if (dt < 0)    dt = 0;
-    if (dt > 0.5f) dt = 0.5f;
+    dt = ClampDeltaTime(dt);
 
     for (auto& [id, em] : emitters_) {
         float lifeSpan = em.config.life;
-        if (lifeSpan < 0.25f) lifeSpan = 0.25f;
+        if (lifeSpan < kRibbonMinLifespan) lifeSpan = kRibbonMinLifespan;
 
         // dt exceeds lifespan → all edges are dead, reset and continue with dt=0
         if (dt >= lifeSpan) {
@@ -95,7 +95,7 @@ void RibbonSystem::Simulate(float dt) {
         // Emit new edges + head. Gated on dt>0 so a paused parent doesn't
         // accumulate duplicate tip segments at a frozen position every frame.
         bool emittedHead = false;
-        if (dt > 0 && em.state.visibility > 0.01f &&
+        if (dt > 0 && IsEmitterVisible(em.state.visibility) &&
             em.config.emission > 0 && em.posSet)
         {
             float edgesPerSec = em.config.emission;
@@ -104,7 +104,7 @@ void RibbonSystem::Simulate(float dt) {
 
             if (endTime >= 1.0f) {
                 int   numNew  = (int)floorf(endTime - newEdgeTime) + 1;
-                float ooDenom = (endTime - em.startTime > 1e-6f)
+                float ooDenom = (endTime - em.startTime > kVectorEpsilon)
                                 ? 1.0f / (endTime - em.startTime) : 1.0f;
 
                 // Interpolation deltas — matches InitInterpDeltas().
@@ -201,17 +201,15 @@ void RibbonSystem::Simulate(float dt) {
 // Geometry Generation — mirrors CRibbonEmitter::Render() vertex layout
 // ============================================================================
 
-int RibbonSystem::BuildStrips(std::vector<Vertex>& outVerts,
-                              std::vector<int>& outEmitterIds) const
+RibbonSystem::StripResult RibbonSystem::BuildStrips() const
 {
-    outVerts.clear();
-    outEmitterIds.clear();
+    StripResult result;
 
     for (auto& [id, em] : emitters_) {
         if (em.state.visibility < 0.01f) continue;
         if (em.segments.size() < 2)      continue;
 
-        int  startIdx = (int)outVerts.size();
+        int  startIdx = (int)result.vertices.size();
         auto& segs    = em.segments;
         int   numSegs = (int)segs.size();
 
@@ -250,20 +248,20 @@ int RibbonSystem::BuildStrips(std::vector<Vertex>& outVerts,
             float u0 = texDU * s0.age * ooLife + texL;
             float u1 = texDU * s1.age * ooLife + texL;
 
-            outVerts.push_back({s0.top, normal, vertColor, {u0, texT}});
-            outVerts.push_back({s0.bot, normal, vertColor, {u0, texB}});
-            outVerts.push_back({s1.top, normal, vertColor, {u1, texT}});
+            result.vertices.push_back({s0.top, normal, vertColor, {u0, texT}});
+            result.vertices.push_back({s0.bot, normal, vertColor, {u0, texB}});
+            result.vertices.push_back({s1.top, normal, vertColor, {u1, texT}});
 
-            outVerts.push_back({s0.bot, normal, vertColor, {u0, texB}});
-            outVerts.push_back({s1.bot, normal, vertColor, {u1, texB}});
-            outVerts.push_back({s1.top, normal, vertColor, {u1, texT}});
+            result.vertices.push_back({s0.bot, normal, vertColor, {u0, texB}});
+            result.vertices.push_back({s1.bot, normal, vertColor, {u1, texB}});
+            result.vertices.push_back({s1.top, normal, vertColor, {u1, texT}});
         }
 
-        if ((int)outVerts.size() > startIdx)
-            outEmitterIds.push_back(id);
+        if ((int)result.vertices.size() > startIdx)
+            result.emitterIds.push_back(id);
     }
 
-    return (int)outVerts.size();
+    return result;
 }
 
 // ============================================================================
