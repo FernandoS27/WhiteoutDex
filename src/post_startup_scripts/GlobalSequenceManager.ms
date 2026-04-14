@@ -1,6 +1,6 @@
 global GlobalSequenceManager
 
-struct GlobalSequenceManager
+struct WdxGlobalSequenceManager
 (
 	globalEntries = #(),
 	isRecording = false,
@@ -177,7 +177,7 @@ struct GlobalSequenceManager
 			
 			local playback = tex.playbackrate
 			if playback == undefined or playback == 0 then playback = 1.0
-			local n = (::Utils.round (1.0 / playback)) as integer
+			local n = (::WdxUtils.round (1.0 / playback)) as integer
 			if n == 0 then n = 1
 			local duration = (n * (fileCount - 1)) as time
 			if duration <= 0f then return()
@@ -968,13 +968,13 @@ struct GlobalSequenceManager
 		
 		if selection.count == 0 then
 		(
-			messageBox (::L.t "gseq_please_select_bones_in_the_vie_msg") title:(::L.t "gseq_global_sequence_manager_ptitle")
+			messageBox (::WdxL.t "gseq_please_select_bones_in_the_vie_msg") title:(::WdxL.t "gseq_global_sequence_manager_ptitle")
 			return false
 		)
 		
 		if ctrlType == 2 then
 		(
-			messageBox (::L.t "gseq_step_controller_cannot_do_smoo_msg") title:(::L.t "gseq_global_sequence_manager_ptitle_2")
+			messageBox (::WdxL.t "gseq_step_controller_cannot_do_smoo_msg") title:(::WdxL.t "gseq_global_sequence_manager_ptitle_2")
 			return false
 		)
 		
@@ -1281,16 +1281,16 @@ struct GlobalSequenceManager
 			self.scanScene()
 			updateList()
 			updateEditFields()
-			try (::SequenceManager.scanGlobalSequences()) catch()
-			try (::SequenceManager.mainRollout.setListItems()) catch()
+			try (::WdxSequenceManager.scanGlobalSequences()) catch()
+			try (::WdxSequenceManager.mainRollout.setListItems()) catch()
 		)
 		
 		fn notifySequenceManager =
 		(
 			try
 			(
-				::SequenceManager.scanGlobalSequences()
-				::SequenceManager.mainRollout.setListItems()
+				::WdxSequenceManager.scanGlobalSequences()
+				::WdxSequenceManager.mainRollout.setListItems()
 			)
 			catch()
 		)
@@ -1347,8 +1347,8 @@ struct GlobalSequenceManager
 				(
 					updateList()
 					try (seqListView.Items.Item[selId - 1].Selected = true) catch()
-					try (::SequenceManager.scanGlobalSequences()) catch()
-					try (::SequenceManager.mainRollout.setListItems()) catch()
+					try (::WdxSequenceManager.scanGlobalSequences()) catch()
+					try (::WdxSequenceManager.mainRollout.setListItems()) catch()
 				)
 			)
 		)
@@ -1364,7 +1364,7 @@ struct GlobalSequenceManager
 			local selId = getSelectedIndex()
 			if selId < 1 then return()
 			
-			if not (queryBox ("Remove Global Sequence " + selId as string + "?") title:(::L.t "gseq_confirm_ptitle")) then return()
+			if not (queryBox ("Remove Global Sequence " + selId as string + "?") title:(::WdxL.t "gseq_confirm_ptitle")) then return()
 			
 			undo "GlobalSeqMgr Remove" on
 			(
@@ -1379,7 +1379,7 @@ struct GlobalSequenceManager
 		(
 			if selection.count == 0 then
 			(
-				messageBox (::L.t "gseq_select_objects_in_the_viewport_msg") title:(::L.t "gseq_global_sequence_manager_ptitle_3")
+				messageBox (::WdxL.t "gseq_select_objects_in_the_viewport_msg") title:(::WdxL.t "gseq_global_sequence_manager_ptitle_3")
 				return()
 			)
 			
@@ -1398,14 +1398,14 @@ struct GlobalSequenceManager
 			local selId = getSelectedIndex()
 			if selId < 1 or selId > self.globalEntries.count then
 			(
-				messageBox (::L.t "gseq_select_a_global_sequence_from_msg") title:(::L.t "gseq_global_sequence_manager_ptitle_4")
+				messageBox (::WdxL.t "gseq_select_a_global_sequence_from_msg") title:(::WdxL.t "gseq_global_sequence_manager_ptitle_4")
 				return()
 			)
 			
 			local entry = self.globalEntries[selId]
 			if entry[6] != "Bone" then
 			(
-				messageBox (::L.t "gseq_only_bone_entries_can_be_edite_msg") title:(::L.t "gseq_global_sequence_manager_ptitle_5")
+				messageBox (::WdxL.t "gseq_only_bone_entries_can_be_edite_msg") title:(::WdxL.t "gseq_global_sequence_manager_ptitle_5")
 				return()
 			)
 			
@@ -1441,7 +1441,7 @@ struct GlobalSequenceManager
 			
 			if objs.count == 0 then
 			(
-				messageBox (::L.t "gseq_could_not_find_the_objects_in_msg") title:(::L.t "gseq_global_sequence_manager_ptitle_6")
+				messageBox (::WdxL.t "gseq_could_not_find_the_objects_in_msg") title:(::WdxL.t "gseq_global_sequence_manager_ptitle_6")
 				return()
 			)
 			
@@ -1478,7 +1478,7 @@ struct GlobalSequenceManager
 					
 					if newGlobals.count == 0 then
 					(
-						messageBox (::L.t "gseq_no_new_keys_found_msg") title:(::L.t "gseq_global_sequence_manager_ptitle_7")
+						messageBox (::WdxL.t "gseq_no_new_keys_found_msg") title:(::WdxL.t "gseq_global_sequence_manager_ptitle_7")
 						recording = false
 						spinApplied = false
 						setRecordingUI false
@@ -1490,10 +1490,10 @@ struct GlobalSequenceManager
 					(
 						local warnStr = "Warning - existing keys on: "
 						for w in warnings do warnStr += w + ", "
-						messageBox warnStr title:(::L.t "gseq_warning_ptitle")
+						messageBox warnStr title:(::WdxL.t "gseq_warning_ptitle")
 					)
 					
-					messageBox (newGlobals.count as string + " controller(s) set as Global Sequence.") title:(::L.t "gseq_success_ptitle")
+					messageBox (newGlobals.count as string + " controller(s) set as Global Sequence.") title:(::WdxL.t "gseq_success_ptitle")
 				)
 				
 				refreshAll()
@@ -1522,7 +1522,7 @@ struct GlobalSequenceManager
 		(
 			if selection.count == 0 then
 			(
-				messageBox (::L.t "gseq_select_objects_in_the_viewport_msg_2") title:(::L.t "gseq_global_sequence_manager_ptitle_8")
+				messageBox (::WdxL.t "gseq_select_objects_in_the_viewport_msg_2") title:(::WdxL.t "gseq_global_sequence_manager_ptitle_8")
 				return()
 			)
 			undo "GlobalSeqMgr Spin CW" on
@@ -1551,7 +1551,7 @@ struct GlobalSequenceManager
 		(
 			if selection.count == 0 then
 			(
-				messageBox (::L.t "gseq_select_objects_in_the_viewport_msg_3") title:(::L.t "gseq_global_sequence_manager_ptitle_9")
+				messageBox (::WdxL.t "gseq_select_objects_in_the_viewport_msg_3") title:(::WdxL.t "gseq_global_sequence_manager_ptitle_9")
 				return()
 			)
 			undo "GlobalSeqMgr Spin CCW" on
@@ -1579,7 +1579,7 @@ struct GlobalSequenceManager
 		-- ===== INIT =====
 		on mainRollout open do
 		(
-			self = GlobalSequenceManager
+			self = WdxGlobalSequenceManager
 			
 			-- ListView Setup
 			local dc = dotNetClass "System.Drawing.Color"
@@ -1611,30 +1611,30 @@ struct GlobalSequenceManager
 			setRecordingUI false
 			
 			-- Undo/Redo Callback: Liste automatisch aktualisieren
-			callbacks.addScript #sceneUndo "try(GlobalSequenceManager.mainRollout.refreshAll())catch()" id:#GlobalSeqMgrUndo
-			callbacks.addScript #sceneRedo "try(GlobalSequenceManager.mainRollout.refreshAll())catch()" id:#GlobalSeqMgrRedo
+			callbacks.addScript #sceneUndo "try(WdxGlobalSequenceManager.mainRollout.refreshAll())catch()" id:#GlobalSeqMgrUndo
+			callbacks.addScript #sceneRedo "try(WdxGlobalSequenceManager.mainRollout.refreshAll())catch()" id:#GlobalSeqMgrRedo
 			
 			self.scanScene()
 			updateList()
 			updateEditFields()
 
 			-- Localization
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				mainRollout.title = ::L.t "gseq_global_sequence_manager_title"
-				endFrameLbl.text = ::L.t "gseq_end_frame_lbl"
-				refreshBtn.text = ::L.t "gseq_refresh_btn"
-				removeBtn.text = ::L.t "gseq_remove_btn"
-				beginBtn.text = ::L.t "gseq_new_btn"
-				editBtn.text = ::L.t "gseq_edit_btn"
-				spinCWBtn.text = ::L.t "gseq__cw_btn"
-				spinCCWBtn.text = ::L.t "gseq_ccw_btn"
-				finishBtn.text = ::L.t "gseq_finish_btn"
-				cancelBtn.text = ::L.t "gseq_cancel_btn"
-				durLbl.text = ::L.t "gseq_duration_lbl"
-				ctrlLbl.text = ::L.t "gseq_controller_lbl"
-				chanLbl.text = ::L.t "gseq_channels_lbl"
-				axisLbl.text = ::L.t "gseq_axis_lbl"
+				mainRollout.title = ::WdxL.t "gseq_global_sequence_manager_title"
+				endFrameLbl.text = ::WdxL.t "gseq_end_frame_lbl"
+				refreshBtn.text = ::WdxL.t "gseq_refresh_btn"
+				removeBtn.text = ::WdxL.t "gseq_remove_btn"
+				beginBtn.text = ::WdxL.t "gseq_new_btn"
+				editBtn.text = ::WdxL.t "gseq_edit_btn"
+				spinCWBtn.text = ::WdxL.t "gseq__cw_btn"
+				spinCCWBtn.text = ::WdxL.t "gseq_ccw_btn"
+				finishBtn.text = ::WdxL.t "gseq_finish_btn"
+				cancelBtn.text = ::WdxL.t "gseq_cancel_btn"
+				durLbl.text = ::WdxL.t "gseq_duration_lbl"
+				ctrlLbl.text = ::WdxL.t "gseq_controller_lbl"
+				chanLbl.text = ::WdxL.t "gseq_channels_lbl"
+				axisLbl.text = ::WdxL.t "gseq_axis_lbl"
 			)
 		)
 		
@@ -1671,4 +1671,4 @@ struct GlobalSequenceManager
 	)
 )
 
-global GlobalSequenceManager = GlobalSequenceManager()
+global WdxGlobalSequenceManager = WdxGlobalSequenceManager()

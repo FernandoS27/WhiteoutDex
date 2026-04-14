@@ -1,4 +1,4 @@
-struct VisibilityKeyer
+struct WdxVisibilityKeyer
 (
     isPoppedOut = false,
     savedIndex = undefined,
@@ -12,7 +12,6 @@ struct VisibilityKeyer
     mainRollout = rollout mainRollout "Visibility Keyer"
     (
         local self
-        button popOutBtn "Undock" pos:[379, 2] width:56 height:18 tooltip:"Undock / Dock"
 
         checkbutton visToggleBtn "Visibility ON" pos:[8,30] enabled:false highlightColor:(color 0 64 128) width:427 height:24 align:#left tooltip:"Toggle visibility on/off for selected objects"
 
@@ -111,21 +110,21 @@ struct VisibilityKeyer
             -- Da hier keine Szene-Änderungen vorgenommen werden, ist kein Undo-Block nötig.
             if selection.count != 1 then
             (
-                messageBox (::L.t "vis_please_select_exactly_one_sour_msg")
+                messageBox (::WdxL.t "vis_please_select_exactly_one_sour_msg")
                 return false
             )
             
             local src = selection[1]
             if not canConvertTo src editable_mesh then
             (
-                messageBox (::L.t "vis_please_select_a_mesh_msg")
+                messageBox (::WdxL.t "vis_please_select_a_mesh_msg")
                 return false
             )
             
             local visCon = getVisController src
             if visCon == undefined then
             (
-                messageBox (::L.t "vis_no_visibility_controller_detec_msg")
+                messageBox (::WdxL.t "vis_no_visibility_controller_detec_msg")
                 return false
             )
 			
@@ -162,11 +161,11 @@ struct VisibilityKeyer
 						-- Keys sichern bevor Controller getauscht wird
 						local savedKeys = #()
 						for key in visCon.keys do
-							append savedKeys #(key.time, key.value)
+							append savedKeys #(key.time, try(key.value) catch(1.0))
 						
 						obj.visibility = case interpDropdown.selected of
 						(
-							"None": bezier_float()
+							"None": on_off()
 							"Linear": linear_float()
 							"Bezier": bezier_float()
 							"Hermite (TCB)": tcb_float()
@@ -176,15 +175,32 @@ struct VisibilityKeyer
 						local newCon = getVisController obj
 						if newCon != undefined then
 						(
-							for kd in savedKeys do
+							if classOf newCon == on_off then
 							(
-								local newKey = addNewKey newCon kd[1]
-								newKey.value = kd[2]
-								
-								if interpDropdown.selected == "None" then
+								-- On/Off: toggle-based key restore
+								local state = true  -- starts ON
+								for kd in savedKeys do
 								(
-									newKey.inTangentType = #step
-									newKey.outTangentType = #step
+									local desired = (kd[2] >= 0.5)
+									if state != desired then
+									(
+										addNewKey newCon kd[1]
+										state = not state
+									)
+								)
+							)
+							else
+							(
+								for kd in savedKeys do
+								(
+									local newKey = addNewKey newCon kd[1]
+									newKey.value = kd[2]
+									
+									if interpDropdown.selected == "None" then
+									(
+										newKey.inTangentType = #step
+										newKey.outTangentType = #step
+									)
 								)
 							)
 						)
@@ -247,15 +263,15 @@ struct VisibilityKeyer
 		-- Pop Out / Dock
 		on popOutBtn pressed do
 		(
-			if ::VisibilityKeyer.isPoppedOut then
+			if ::WdxVisibilityKeyer.isPoppedOut then
 			(
-				::VisibilityKeyer.isPoppedOut = false
+				::WdxVisibilityKeyer.isPoppedOut = false
 				try ( destroyDialog mainRollout ) catch()
 				
 				if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 				(
 					local rollouts = ::whiteoutdexManagerFloater.rollouts
-					local idx = ::VisibilityKeyer.savedIndex
+					local idx = ::WdxVisibilityKeyer.savedIndex
 					if idx != undefined and idx <= rollouts.count then
 					(
 						local movedRollouts = #()
@@ -281,26 +297,18 @@ struct VisibilityKeyer
 			(
 				local rollouts = ::whiteoutdexManagerFloater.rollouts
 				for i = 1 to rollouts.count do
-					if rollouts[i] == mainRollout then ( ::VisibilityKeyer.savedIndex = i; exit )
+					if rollouts[i] == mainRollout then ( ::WdxVisibilityKeyer.savedIndex = i; exit )
 				removeRollout mainRollout ::whiteoutdexManagerFloater
 			)
 			
-			::VisibilityKeyer.isPoppedOut = true
-			popOutBtn.text = ::L.t "common_dock_btn"
+			::WdxVisibilityKeyer.isPoppedOut = true
 			createDialog mainRollout width:440 height:242 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
 		)
 		
 		-- Rollout Handlers
         on mainRollout open do
         (
-            self = ::VisibilityKeyer
-			
-			if ::VisibilityKeyer.isPoppedOut then
-				popOutBtn.text = ::L.t "common_dock_btn"
-			else
-				popOutBtn.text = ::L.t "common_undock_btn"
-			popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-			
+            self = ::WdxVisibilityKeyer
 			interpDropdown.items = self.visConInterTypes
 			interpDropdown.selection = self.visConInterSelection
 			
@@ -309,42 +317,42 @@ struct VisibilityKeyer
 			selectionChanged()
 
 			-- Localization
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				mainRollout.title = ::L.t "vis_visibility_keyer_title"
-				visToggleBtn.text = ::L.t "vis_visibility_on_btn"
-				visToggleBtn.tooltip = ::L.t "vis_toggle_visibility_onoff_for_s_tip"
-				visConAddBtn.text = ::L.t "vis_add_btn"
-				visConAddBtn.tooltip = ::L.t "vis_add_a_visibility_controller_to_tip"
-				visConRemoveBtn.text = ::L.t "vis_remove_btn"
-				visConRemoveBtn.tooltip = ::L.t "vis_remove_visibility_controllers_tip"
-				visConCopyBtn.text = ::L.t "vis_copy_btn"
-				visConCopyBtn.tooltip = ::L.t "vis_copy_visibility_keyframes_from_tip"
-				visConPasteBtn.text = ::L.t "vis_paste_btn"
-				visConPasteBtn.tooltip = ::L.t "vis_paste_copied_visibility_keyfra_tip"
-				interpDropdown.tooltip = ::L.t "vis_select_interpolation_type_for_tip"
-				visConChangeTypeBtn.text = ::L.t "vis_change_type_btn"
-				visConChangeTypeBtn.tooltip = ::L.t "vis_change_the_type_of_visibility_tip"
-				singleKeShowBtn.text = ::L.t "vis_set_show_key_btn"
-				singleKeShowBtn.tooltip = ::L.t "vis_create_a_visibility_key_at_cur_tip"
-				singleKeHideBtn.text = ::L.t "vis_set_hide_key_btn"
-				singleKeHideBtn.tooltip = ::L.t "vis_create_a_visibility_key_at_cur_tip_2"
-				curTimeIntShowBtn.text = ::L.t "vis_show_interval_btn"
-				curTimeIntShowBtn.tooltip = ::L.t "vis_set_the_object_to_be_visible_f_tip"
-				curTimeIntHideBtn.text = ::L.t "vis_hide_interval_btn"
-				curTimeIntHideBtn.tooltip = ::L.t "vis_set_the_object_to_be_hidden_fo_tip"
-				selSeqShowBtn.text = ::L.t "vis_show_sequences_btn"
-				selSeqShowBtn.tooltip = ::L.t "vis_make_objects_visible_during_th_tip"
-				selSeqHideBtn.text = ::L.t "vis_hide_sequences_btn"
-				selSeqHideBtn.tooltip = ::L.t "vis_make_objects_hidden_during_the_tip"
+				mainRollout.title = ::WdxL.t "vis_visibility_keyer_title"
+				visToggleBtn.text = ::WdxL.t "vis_visibility_on_btn"
+				visToggleBtn.tooltip = ::WdxL.t "vis_toggle_visibility_onoff_for_s_tip"
+				visConAddBtn.text = ::WdxL.t "vis_add_btn"
+				visConAddBtn.tooltip = ::WdxL.t "vis_add_a_visibility_controller_to_tip"
+				visConRemoveBtn.text = ::WdxL.t "vis_remove_btn"
+				visConRemoveBtn.tooltip = ::WdxL.t "vis_remove_visibility_controllers_tip"
+				visConCopyBtn.text = ::WdxL.t "vis_copy_btn"
+				visConCopyBtn.tooltip = ::WdxL.t "vis_copy_visibility_keyframes_from_tip"
+				visConPasteBtn.text = ::WdxL.t "vis_paste_btn"
+				visConPasteBtn.tooltip = ::WdxL.t "vis_paste_copied_visibility_keyfra_tip"
+				interpDropdown.tooltip = ::WdxL.t "vis_select_interpolation_type_for_tip"
+				visConChangeTypeBtn.text = ::WdxL.t "vis_change_type_btn"
+				visConChangeTypeBtn.tooltip = ::WdxL.t "vis_change_the_type_of_visibility_tip"
+				singleKeShowBtn.text = ::WdxL.t "vis_set_show_key_btn"
+				singleKeShowBtn.tooltip = ::WdxL.t "vis_create_a_visibility_key_at_cur_tip"
+				singleKeHideBtn.text = ::WdxL.t "vis_set_hide_key_btn"
+				singleKeHideBtn.tooltip = ::WdxL.t "vis_create_a_visibility_key_at_cur_tip_2"
+				curTimeIntShowBtn.text = ::WdxL.t "vis_show_interval_btn"
+				curTimeIntShowBtn.tooltip = ::WdxL.t "vis_set_the_object_to_be_visible_f_tip"
+				curTimeIntHideBtn.text = ::WdxL.t "vis_hide_interval_btn"
+				curTimeIntHideBtn.tooltip = ::WdxL.t "vis_set_the_object_to_be_hidden_fo_tip"
+				selSeqShowBtn.text = ::WdxL.t "vis_show_sequences_btn"
+				selSeqShowBtn.tooltip = ::WdxL.t "vis_make_objects_visible_during_th_tip"
+				selSeqHideBtn.text = ::WdxL.t "vis_hide_sequences_btn"
+				selSeqHideBtn.tooltip = ::WdxL.t "vis_make_objects_hidden_during_the_tip"
 			)
         )
 		
 		on mainRollout close do
         (
-			if ::VisibilityKeyer.isPoppedOut then
+			if ::WdxVisibilityKeyer.isPoppedOut then
 			(
-				::VisibilityKeyer.isPoppedOut = false
+				::WdxVisibilityKeyer.isPoppedOut = false
 				local tmr = dotNetObject "System.Windows.Forms.Timer"
 				tmr.Interval = 1
 				dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -354,8 +362,8 @@ struct VisibilityKeyer
 					(
 						if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 						(
-							local rl = ::VisibilityKeyer.mainRollout
-							local idx = ::VisibilityKeyer.savedIndex
+							local rl = ::WdxVisibilityKeyer.mainRollout
+							local idx = ::WdxVisibilityKeyer.savedIndex
 							local rollouts = ::whiteoutdexManagerFloater.rollouts
 							if idx != undefined and idx <= rollouts.count then
 							(
@@ -410,25 +418,12 @@ struct VisibilityKeyer
         (
 			obj.visibility = case this.visConInterTypes[this.visConInterSelection] of
 			(
-				"None": bezier_float()
+				"None": on_off()
 				"Linear": linear_float()
 				"Bezier": bezier_float()
 				"Hermite (TCB)": tcb_float()
 			)
             visCon = getVisController obj
-			
-			-- Bei "None" Step-Tangents als Default setzen
-			if this.visConInterTypes[this.visConInterSelection] == "None" then
-			(
-				if visCon != undefined and visCon.keys.count > 0 then
-				(
-					for key in visCon.keys do
-					(
-						key.inTangentType = #step
-						key.outTangentType = #step
-					)
-				)
-			)
         )
         return visCon
     ),
@@ -453,39 +448,87 @@ struct VisibilityKeyer
         foundKey
     ),
 
-    -- Fix 5: Prüft den tatsächlichen Controller-Typ statt den Dropdown
+    -- Checks if controller is On/Off type (toggle-based, no tangents)
+    fn isOnOffMode visCon =
+    (
+        classOf visCon == on_off
+    ),
+
+    -- Checks if controller uses step tangents (bezier_float in "None" mode)
     fn isStepMode visCon =
     (
         local conClass = classOf visCon
-        -- Step-Tangents nur bei bezier_float sinnvoll, und nur wenn Dropdown "None" ist
-        -- Prüfe ob der Controller bezier_float ist UND der User "None" gewählt hat
         conClass == bezier_float and this.visConInterTypes[this.visConInterSelection] == "None"
     ),
 
     mapped fn addVisKeyAtTime obj boolVal t =
     (
         local visCon = this.addVisCon obj
-        local zeroKey = this.getKeyAtTime visCon 0f
-        if zeroKey == undefined then
+        
+        if this.isOnOffMode visCon then
         (
-            zeroKey = addNewKey visCon 0f
-            zeroKey.value = 1
-            if this.isStepMode visCon then
+            -- On/Off controller: toggle-based
+            -- State starts ON, each key toggles. Count keys before time t to determine current state.
+            local state = true  -- default ON
+            for key in visCon.keys where key.time < t do state = not state
+            
+            -- Check if there's already a key at this exact time
+            local existingKey = this.getKeyAtTime visCon t
+            
+            if boolVal then
             (
-                zeroKey.inTangentType = #step
-                zeroKey.outTangentType = #step
+                -- Want SHOW (ON state)
+                if state then
+                (
+                    -- Already ON at this time, remove toggle key if exists
+                    if existingKey != undefined then deleteKey visCon (findItem (for k in visCon.keys collect k.time) t)
+                )
+                else
+                (
+                    -- Currently OFF, need toggle to turn ON
+                    if existingKey == undefined then addNewKey visCon t
+                )
+            )
+            else
+            (
+                -- Want HIDE (OFF state)
+                if not state then
+                (
+                    -- Already OFF, remove toggle key if exists
+                    if existingKey != undefined then deleteKey visCon (findItem (for k in visCon.keys collect k.time) t)
+                )
+                else
+                (
+                    -- Currently ON, need toggle to turn OFF
+                    if existingKey == undefined then addNewKey visCon t
+                )
             )
         )
-        local currentKey = this.getKeyAtTime visCon t
-        if currentKey == undefined then
+        else
         (
-            currentKey = addNewKey visCon t
-        )
-        currentKey.value = if boolVal then 1 else 0
-        if this.isStepMode visCon then
-        (
-            currentKey.inTangentType = #step
-            currentKey.outTangentType = #step
+            -- Bezier/Linear/TCB: value-based
+            local zeroKey = this.getKeyAtTime visCon 0f
+            if zeroKey == undefined then
+            (
+                zeroKey = addNewKey visCon 0f
+                zeroKey.value = 1
+                if this.isStepMode visCon then
+                (
+                    zeroKey.inTangentType = #step
+                    zeroKey.outTangentType = #step
+                )
+            )
+            local currentKey = this.getKeyAtTime visCon t
+            if currentKey == undefined then
+            (
+                currentKey = addNewKey visCon t
+            )
+            currentKey.value = if boolVal then 1 else 0
+            if this.isStepMode visCon then
+            (
+                currentKey.inTangentType = #step
+                currentKey.outTangentType = #step
+            )
         )
     ),
 
@@ -497,16 +540,16 @@ struct VisibilityKeyer
 
     mapped fn addVisKeysToSelectedSequences obj boolVal =
     (
-        if ::SequenceManager == undefined then
+        if ::WdxSequenceManager == undefined then
         (
             print "SequenceManager not initialized!"
             return false
         )
         
-        local selectedIds = ::SequenceManager.mainRollout.sequencesLbox.selection as array
-        qsort selectedIds ::SequenceManager.mainRollout.sortDesc
+        local selectedIds = ::WdxSequenceManager.mainRollout.sequencesLbox.selection as array
+        qsort selectedIds ::WdxSequenceManager.mainRollout.sortDesc
         
-        local globalCount = ::SequenceManager.globalSequences.count
+        local globalCount = ::WdxSequenceManager.globalSequences.count
         
         for selectedId in selectedIds do
         (
@@ -515,13 +558,13 @@ struct VisibilityKeyer
             
             -- Offset abziehen: Listbox-Index → filteredSequences-Index
             local filteredId = selectedId - globalCount
-            if filteredId < 1 or filteredId > ::SequenceManager.filteredSequences.count then continue
+            if filteredId < 1 or filteredId > ::WdxSequenceManager.filteredSequences.count then continue
             
-            local seq = ::SequenceManager.filteredSequences[filteredId]
-            local seqId = findItem ::SequenceManager.sequences seq
+            local seq = ::WdxSequenceManager.filteredSequences[filteredId]
+            local seqId = findItem ::WdxSequenceManager.sequences seq
             if seqId == 0 then continue
             
-            local i = interval ::SequenceManager.sequences[seqId].starttime ::SequenceManager.sequences[seqId].endtime
+            local i = interval ::WdxSequenceManager.sequences[seqId].starttime ::WdxSequenceManager.sequences[seqId].endtime
             this.addVisKeysAtInterval obj boolVal i
         )
     ),
@@ -530,4 +573,4 @@ struct VisibilityKeyer
     (
     )
 )
-global VisibilityKeyer = VisibilityKeyer()
+global WdxVisibilityKeyer = WdxVisibilityKeyer()

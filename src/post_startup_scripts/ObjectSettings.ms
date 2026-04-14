@@ -1,10 +1,9 @@
-struct ObjectSettings
+struct WdxObjectSettings
 (
 	isPoppedOut = false,
 	savedIndex = undefined,
 	mainRollout = rollout mainRollout "Settings" width:440 height:232
 	(
-		button popOutBtn "Undock" pos:[379, 2] width:56 height:18 tooltip:"Undock / Dock"
 		
 		-- Flags (links) - Alle Bone-Flags wie im Reforged Editor
 		GroupBox grpFlags "Flags" pos:[8,33] width:212 height:192
@@ -38,9 +37,9 @@ struct ObjectSettings
 		on bbLockZChk changed newState do
 			for s in selection do setUserProp s "BillboardedLockZ" (B2I newState)
 		on cameraChk changed newState do
-			for s in selection do setUserProp s "CameraAnchored" (::Utils.B2I newState)
+			for s in selection do setUserProp s "CameraAnchored" (::WdxUtils.B2I newState)
 		on selectChk changed newState do
-			for s in selection do setUserProp s "Unselectable" (::Utils.B2I newState)
+			for s in selection do setUserProp s "Unselectable" (::WdxUtils.B2I newState)
 		on dontInhTransChk changed newState do
 			for s in selection do
 			(
@@ -69,15 +68,15 @@ struct ObjectSettings
 		-- Pop Out / Dock
 		on popOutBtn pressed do
 		(
-			if ::ObjectSettings.isPoppedOut then
+			if ::WdxObjectSettings.isPoppedOut then
 			(
-				::ObjectSettings.isPoppedOut = false
+				::WdxObjectSettings.isPoppedOut = false
 				try ( destroyDialog mainRollout ) catch()
 				
 				if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 				(
 					local rollouts = ::whiteoutdexManagerFloater.rollouts
-					local idx = ::ObjectSettings.savedIndex
+					local idx = ::WdxObjectSettings.savedIndex
 					if idx != undefined and idx <= rollouts.count then
 					(
 						local movedRollouts = #()
@@ -103,20 +102,19 @@ struct ObjectSettings
 			(
 				local rollouts = ::whiteoutdexManagerFloater.rollouts
 				for i = 1 to rollouts.count do
-					if rollouts[i] == mainRollout then ( ::ObjectSettings.savedIndex = i; exit )
+					if rollouts[i] == mainRollout then ( ::WdxObjectSettings.savedIndex = i; exit )
 				removeRollout mainRollout ::whiteoutdexManagerFloater
 			)
 			
-			::ObjectSettings.isPoppedOut = true
-			popOutBtn.text = ::L.t "common_dock_btn"
+			::WdxObjectSettings.isPoppedOut = true
 			createDialog mainRollout width:440 height:232 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
 		)
 		
 		on mainRollout close do
 		(
-			if ::ObjectSettings.isPoppedOut then
+			if ::WdxObjectSettings.isPoppedOut then
 			(
-				::ObjectSettings.isPoppedOut = false
+				::WdxObjectSettings.isPoppedOut = false
 				local tmr = dotNetObject "System.Windows.Forms.Timer"
 				tmr.Interval = 1
 				dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -126,8 +124,8 @@ struct ObjectSettings
 					(
 						if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 						(
-							local rl = ::ObjectSettings.mainRollout
-							local idx = ::ObjectSettings.savedIndex
+							local rl = ::WdxObjectSettings.mainRollout
+							local idx = ::WdxObjectSettings.savedIndex
 							local rollouts = ::whiteoutdexManagerFloater.rollouts
 							if idx != undefined and idx <= rollouts.count then
 							(
@@ -147,43 +145,39 @@ struct ObjectSettings
 		-- Localization
 		on mainRollout open do
 		(
-			if ::ObjectSettings.isPoppedOut then
-				popOutBtn.text = ::L.t "common_dock_btn"
-			else
-				popOutBtn.text = ::L.t "common_undock_btn"
-			popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-			
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				mainRollout.title = ::L.t "obj_settings_title"
-				dontInhTransChk.text = ::L.t "obj_dont_inherit_translation_chk"
-				dontInhTransChk.tooltip = ::L.t "obj_ignore_parent_translation_tip"
-				dontInhRotChk.text = ::L.t "obj_dont_inherit_rotation_chk"
-				dontInhRotChk.tooltip = ::L.t "obj_ignore_parent_rotation_tip"
-				dontInhScaleChk.text = ::L.t "obj_dont_inherit_scaling_chk"
-				dontInhScaleChk.tooltip = ::L.t "obj_ignore_parent_scaling_tip"
-				bbFullChk.text = ::L.t "obj_billboarded_chk"
-				bbFullChk.tooltip = ::L.t "obj_object_always_faces_the_camera_tip"
-				bbLockXChk.text = ::L.t "obj_billboarded_lock_x_chk"
-				bbLockXChk.tooltip = ::L.t "obj_lock_billboard_rotation_around_tip"
-				bbLockYChk.text = ::L.t "obj_billboarded_lock_y_chk"
-				bbLockYChk.tooltip = ::L.t "obj_lock_billboard_rotation_around_tip_2"
-				bbLockZChk.text = ::L.t "obj_billboarded_lock_z_chk"
-				bbLockZChk.tooltip = ::L.t "obj_lock_billboard_rotation_around_tip_3"
-				cameraChk.text = ::L.t "obj_camera_anchored_chk"
-				cameraChk.tooltip = ::L.t "obj_makes_the_object_stay_in_place_tip"
-				skinRdo.tooltip = ::L.t "obj_normal_skinning_uses_any_skin_tip"
-				selectChk.text = ::L.t "obj_unselectable_chk"
-				selectChk.tooltip = ::L.t "obj_makes_the_object_nonselectabl_tip"
+				mainRollout.title = ::WdxL.t "obj_settings_title"
+				dontInhTransChk.text = ::WdxL.t "obj_dont_inherit_translation_chk"
+				dontInhTransChk.tooltip = ::WdxL.t "obj_ignore_parent_translation_tip"
+				dontInhRotChk.text = ::WdxL.t "obj_dont_inherit_rotation_chk"
+				dontInhRotChk.tooltip = ::WdxL.t "obj_ignore_parent_rotation_tip"
+				dontInhScaleChk.text = ::WdxL.t "obj_dont_inherit_scaling_chk"
+				dontInhScaleChk.tooltip = ::WdxL.t "obj_ignore_parent_scaling_tip"
+				bbFullChk.text = ::WdxL.t "obj_billboarded_chk"
+				bbFullChk.tooltip = ::WdxL.t "obj_object_always_faces_the_camera_tip"
+				bbLockXChk.text = ::WdxL.t "obj_billboarded_lock_x_chk"
+				bbLockXChk.tooltip = ::WdxL.t "obj_lock_billboard_rotation_around_tip"
+				bbLockYChk.text = ::WdxL.t "obj_billboarded_lock_y_chk"
+				bbLockYChk.tooltip = ::WdxL.t "obj_lock_billboard_rotation_around_tip_2"
+				bbLockZChk.text = ::WdxL.t "obj_billboarded_lock_z_chk"
+				bbLockZChk.tooltip = ::WdxL.t "obj_lock_billboard_rotation_around_tip_3"
+				cameraChk.text = ::WdxL.t "obj_camera_anchored_chk"
+				cameraChk.tooltip = ::WdxL.t "obj_makes_the_object_stay_in_place_tip"
+				skinRdo.tooltip = ::WdxL.t "obj_normal_skinning_uses_any_skin_tip"
+				selectChk.text = ::WdxL.t "obj_unselectable_chk"
+				selectChk.tooltip = ::WdxL.t "obj_makes_the_object_nonselectabl_tip"
 			)
 		)
 	),
 
+	-- Alias for NeoDex compatibility (NeoDex callbacks may reference this name)
+	fn neoDexSTLoadFNSettings = (this.whiteoutDexSTLoadFNSettings()),
 	fn whiteoutDexSTLoadFNSettings =
 	(
 		if not this.mainRollout.open then return()
 
-		fn IsMesh o = (classOf o == Editable_mesh)
+		fn WdxIsMesh o = (classOf o == Editable_mesh)
 		fn tmp a b =
 		(
 			if a == #NoDefinition then b
@@ -215,7 +209,7 @@ struct ObjectSettings
 		for s in selection do
 		(
 			-- Alte "Billboard" Property migrieren falls vorhanden
-			try ( ::Utils.getBillboardFlags s ) catch()
+			try ( ::WdxUtils.getBillboardFlags s ) catch()
 			
 			bbFull  = tmp bbFull  (tmp2 s "Billboarded")
 			bbLockX = tmp bbLockX (tmp2 s "BillboardedLockX")
@@ -224,7 +218,7 @@ struct ObjectSettings
 			skin = tmp skin (tmp2 s "Wc3Skin")
 			cam = tmp cam (tmp2 s "CameraAnchored")
 			unsel = tmp unsel (tmp2 s "Unselectable")
-			skinEnabled = skinEnabled and (IsMesh s)
+			skinEnabled = skinEnabled and (WdxIsMesh s)
 			
 			-- DontInherit aus den nativen Max Inheritance Flags lesen
 			try
@@ -291,7 +285,7 @@ struct ObjectSettings
 	(
 		this.whiteoutDexSTLoadFNSettings()
 		callbacks.removeScripts id:#WhiteoutDexObjectSettings
-		callbacks.addscript #selectionSetChanged "::ObjectSettings.whiteoutDexSTLoadFNSettings()" id:#WhiteoutDexObjectSettings
+		callbacks.addscript #selectionSetChanged "::WdxObjectSettings.whiteoutDexSTLoadFNSettings()" id:#WhiteoutDexObjectSettings
 	)
 )
-global ObjectSettings = ObjectSettings()
+global WdxObjectSettings = WdxObjectSettings()

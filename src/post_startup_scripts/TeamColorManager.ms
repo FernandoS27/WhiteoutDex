@@ -1,4 +1,4 @@
-struct TeamColorManager
+struct WdxTeamColorManager
 (
     isPoppedOut = false,
     savedIndex = undefined,
@@ -7,7 +7,6 @@ struct TeamColorManager
     mainRollout = rollout mainRollout "Team Color Manager"
     (
         local self
-        button popOutBtn "Undock" pos:[379, 2] width:56 height:18 tooltip:"Undock / Dock"
        
         -- Adding a GroupBox around the controls
         groupBox teamColorGrp "Team Color Settings" pos:[8,22] width:428 height:42
@@ -20,26 +19,26 @@ struct TeamColorManager
         on teamColorSpn changed val do
         (
             if WhiteoutDexWc3MaterialTeamColors == undefined then return false
-            colorCPck.color = WhiteoutDexWc3MaterialTeamColors[val] -- This global is declared in Wc3Material.ms
+            colorCPck.color = WhiteoutDexWc3MaterialTeamColors[val] -- This global is declared in WdxMaterialData.ms
         )
         on changeColorBtn pressed do
         (
             if WhiteoutDexUpdateTeamColor == undefined then return false
-            WhiteoutDexUpdateTeamColor (teamColorSpn.value as integer) -- This function is declared in Wc3Material.ms
+            WhiteoutDexUpdateTeamColor (teamColorSpn.value as integer) -- This function is declared in WdxMaterialData.ms
         )
        
         -- Pop Out / Dock
         on popOutBtn pressed do
         (
-            if ::TeamColorManager.isPoppedOut then
+            if ::WdxTeamColorManager.isPoppedOut then
             (
-                ::TeamColorManager.isPoppedOut = false
+                ::WdxTeamColorManager.isPoppedOut = false
                 try ( destroyDialog mainRollout ) catch()
                 
                 if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
                 (
                     local rollouts = ::whiteoutdexManagerFloater.rollouts
-                    local idx = ::TeamColorManager.savedIndex
+                    local idx = ::WdxTeamColorManager.savedIndex
                     if idx != undefined and idx <= rollouts.count then
                     (
                         local movedRollouts = #()
@@ -65,20 +64,19 @@ struct TeamColorManager
             (
                 local rollouts = ::whiteoutdexManagerFloater.rollouts
                 for i = 1 to rollouts.count do
-                    if rollouts[i] == mainRollout then ( ::TeamColorManager.savedIndex = i; exit )
+                    if rollouts[i] == mainRollout then ( ::WdxTeamColorManager.savedIndex = i; exit )
                 removeRollout mainRollout ::whiteoutdexManagerFloater
             )
             
-            ::TeamColorManager.isPoppedOut = true
-            popOutBtn.text = ::L.t "common_dock_btn"
+            ::WdxTeamColorManager.isPoppedOut = true
             createDialog mainRollout width:440 height:82 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
         )
         
         on mainRollout close do
         (
-            if ::TeamColorManager.isPoppedOut then
+            if ::WdxTeamColorManager.isPoppedOut then
             (
-                ::TeamColorManager.isPoppedOut = false
+                ::WdxTeamColorManager.isPoppedOut = false
                 local tmr = dotNetObject "System.Windows.Forms.Timer"
                 tmr.Interval = 1
                 dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -88,8 +86,8 @@ struct TeamColorManager
                     (
                         if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
                         (
-                            local rl = ::TeamColorManager.mainRollout
-                            local idx = ::TeamColorManager.savedIndex
+                            local rl = ::WdxTeamColorManager.mainRollout
+                            local idx = ::WdxTeamColorManager.savedIndex
                             local rollouts = ::whiteoutdexManagerFloater.rollouts
                             if idx != undefined and idx <= rollouts.count then
                             (
@@ -108,21 +106,14 @@ struct TeamColorManager
        
         on mainRollout open do
         (
-            self = TeamColorManager
-            
-            if ::TeamColorManager.isPoppedOut then
-                popOutBtn.text = ::L.t "common_dock_btn"
-            else
-                popOutBtn.text = ::L.t "common_undock_btn"
-            popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-            
+            self = WdxTeamColorManager
             -- Localization
-            if ::L != undefined then
+            if ::WdxL != undefined then
             (
-                mainRollout.title = ::L.t "tc_team_color_manager_title"
-                teamColorGrp.text = ::L.t "tc_team_color_settings_grp"
-                teamColorSpn.caption = ::L.t "tc_team_color_spn"
-                changeColorBtn.text = ::L.t "tc_change_color_btn"
+                mainRollout.title = ::WdxL.t "tc_team_color_manager_title"
+                teamColorGrp.text = ::WdxL.t "tc_team_color_settings_grp"
+                teamColorSpn.caption = ::WdxL.t "tc_team_color_spn"
+                changeColorBtn.text = ::WdxL.t "tc_change_color_btn"
             )
         )
     ),
@@ -131,4 +122,4 @@ struct TeamColorManager
     (
     )
 )
-global TeamColorManager = TeamColorManager()
+global WdxTeamColorManager = WdxTeamColorManager()

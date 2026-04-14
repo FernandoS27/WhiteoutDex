@@ -1,4 +1,4 @@
-struct NodeManager
+struct WdxNodeManager
 (
 	isPoppedOut = false,
 	savedIndex = undefined,
@@ -7,14 +7,14 @@ struct NodeManager
 	(
 		-- Detection functions
 		fn isGeometry o = classof o == Editable_Mesh
-		fn isAttachmentPoint o = ((classof o) as string == "Wc3_AttachPoint")
-		fn isCollisionShape o = ((classof o) as string == "Wc3CollisionBox") or ((classof o) as string == "Wc3CollisionSphere")
-		fn isEventObject o = ((classof o) as string == "Wc3_Event")
+		fn isAttachmentPoint o = ((classof o) as string == "Wdx_AttachPoint")
+		fn isCollisionShape o = ((classof o) as string == "Wdx_CollisionBox") or ((classof o) as string == "Wdx_CollisionSphere")
+		fn isEventObject o = ((classof o) as string == "Wdx_Event")
 		fn isParticle1 o = ((classof o) as string == "BlizzParticle1")
 		fn isParticle2 o = ((classof o) as string == "BlizzParticle2")
 		fn isRibbon o = ((classof o) as string == "BlizRibbon")
-		fn isPopcorn o = ((classof o) as string == "BlizzPopcorn")
-		fn isFaceFX o = ((classof o) as string == "BlizzFaceFX")
+		fn isPopcorn o = ((classof o) as string == "Wdx_Popcorn")
+		fn isFaceFX o = ((classof o) as string == "Wdx_FaceFX")
 		fn isBipedBone o = classof o == Biped_Object
 		fn isCATBone o =
 		(
@@ -35,7 +35,7 @@ struct NodeManager
 				and not (isRibbon o) \
 				and not (isPopcorn o) \
 				and not (isFaceFX o) \
-				and not (((classof o) as string) == "Wc3_Light") \
+				and not (((classof o) as string) == "Wdx_Light") \
 			then return true
 			false
 		)
@@ -44,7 +44,6 @@ struct NodeManager
 		mapped fn grayOut o b = o.xray = b
 		
 		-- Dock/Undock button at very top
-		button popOutBtn "Undock" pos:[350, 2] width:56 height:18 tooltip:"Undock / Dock"
 		
 		-- Left column: Types
 		GroupBox typesGrp "Types" pos:[8,24] width:170 height:328
@@ -99,7 +98,7 @@ struct NodeManager
 			if eventsCheck.checked then
 				join result (for o in objects where isEventObject o collect o)
 			if lightsCheck.checked then
-				join result (for o in objects where ((classof o) as string == "Wc3_Light") collect o)
+				join result (for o in objects where ((classof o) as string == "Wdx_Light") collect o)
 			if camerasCheck.checked then
 				join result (for o in objects where isCamera o collect o)
 			if particle1Check.checked then
@@ -149,16 +148,16 @@ struct NodeManager
 		-- Pop Out / Dock
 		on popOutBtn pressed do
 		(
-			if ::NodeManager.isPoppedOut then
+			if ::WdxNodeManager.isPoppedOut then
 			(
 				-- Dock back
-				::NodeManager.isPoppedOut = false
+				::WdxNodeManager.isPoppedOut = false
 				try ( destroyDialog mainRollout ) catch()
 				
 				if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 				(
 					local rollouts = ::whiteoutdexManagerFloater.rollouts
-					local idx = ::NodeManager.savedIndex
+					local idx = ::WdxNodeManager.savedIndex
 					if idx != undefined and idx <= rollouts.count then
 					(
 						local movedRollouts = #()
@@ -185,21 +184,20 @@ struct NodeManager
 			(
 				local rollouts = ::whiteoutdexManagerFloater.rollouts
 				for i = 1 to rollouts.count do
-					if rollouts[i] == mainRollout then ( ::NodeManager.savedIndex = i; exit )
+					if rollouts[i] == mainRollout then ( ::WdxNodeManager.savedIndex = i; exit )
 				removeRollout mainRollout ::whiteoutdexManagerFloater
 			)
 			
-			::NodeManager.isPoppedOut = true
-			popOutBtn.text = ::L.t "common_dock_btn"
+			::WdxNodeManager.isPoppedOut = true
 			createDialog mainRollout width:420 height:365 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
 		)
 		
 		-- Close handler: dock back into Manager
 		on mainRollout close do
 		(
-			if ::NodeManager.isPoppedOut then
+			if ::WdxNodeManager.isPoppedOut then
 			(
-				::NodeManager.isPoppedOut = false
+				::WdxNodeManager.isPoppedOut = false
 				local tmr = dotNetObject "System.Windows.Forms.Timer"
 				tmr.Interval = 1
 				dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -209,8 +207,8 @@ struct NodeManager
 					(
 						if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 						(
-							local rl = ::NodeManager.mainRollout
-							local idx = ::NodeManager.savedIndex
+							local rl = ::WdxNodeManager.mainRollout
+							local idx = ::WdxNodeManager.savedIndex
 							local rollouts = ::whiteoutdexManagerFloater.rollouts
 							if idx != undefined and idx <= rollouts.count then
 							(
@@ -230,25 +228,19 @@ struct NodeManager
 		-- Localization
 		on mainRollout open do
 		(
-			if ::NodeManager.isPoppedOut then
-				popOutBtn.text = ::L.t "common_dock_btn"
-			else
-				popOutBtn.text = ::L.t "common_undock_btn"
-			popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-			
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				mainRollout.title = ::L.t "node_node_manager_title"
-				geoCheck.text = ::L.t "node_geometry_chk"
-				bonesCheck.text = ::L.t "node_maxbones_chk"
-				lightsCheck.text = ::L.t "node_lights_chk"
-				colShapesCheck.text = ::L.t "node_collision_shapes_chk"
-				showSet.text = ::L.t "node_show_btn"
-				showUnset.text = ::L.t "node_hide_btn"
-				freezeSet.text = ::L.t "node_freeze_btn"
-				freezeUnset.text = ::L.t "node_unfreeze_btn"
-				grayOutSet.text = ::L.t "node_seethrough_btn"
-				grayOutUnset.text = ::L.t "node_view_solid_btn"
+				mainRollout.title = ::WdxL.t "node_node_manager_title"
+				geoCheck.text = ::WdxL.t "node_geometry_chk"
+				bonesCheck.text = ::WdxL.t "node_maxbones_chk"
+				lightsCheck.text = ::WdxL.t "node_lights_chk"
+				colShapesCheck.text = ::WdxL.t "node_collision_shapes_chk"
+				showSet.text = ::WdxL.t "node_show_btn"
+				showUnset.text = ::WdxL.t "node_hide_btn"
+				freezeSet.text = ::WdxL.t "node_freeze_btn"
+				freezeUnset.text = ::WdxL.t "node_unfreeze_btn"
+				grayOutSet.text = ::WdxL.t "node_seethrough_btn"
+				grayOutUnset.text = ::WdxL.t "node_view_solid_btn"
 			)
 		)
 	),
@@ -257,4 +249,4 @@ struct NodeManager
 	(
 	)
 )
-global NodeManager = NodeManager()
+global WdxNodeManager = WdxNodeManager()

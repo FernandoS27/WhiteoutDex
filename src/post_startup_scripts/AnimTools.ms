@@ -334,7 +334,7 @@ struct WhiteoutDexBoneFinder
 )
 global WhiteoutDexBoneFinder = WhiteoutDexBoneFinder()
 
-struct AnimTools
+struct WdxAnimTools
 (
     isGeneralPoppedOut = false,
     savedGeneralIndex = undefined,
@@ -349,7 +349,6 @@ struct AnimTools
     (
         local animToolsSequences
         -- UI
-        button popOutBtn "Undock" pos:[379, 2] width:56 height:18 tooltip:"Undock / Dock"
         
         groupBox animationGrpB "Animation" pos:[8, 22] width:138 height:110
         button addSEkeysbtn "Add\nstart and ending keys\nto selected objects" pos:[16,38] width:122 height:86 tooltip:"Adds keyframes to frame 0 and at the start and end of all animation sequences for selected objects"
@@ -418,7 +417,7 @@ struct AnimTools
 			local scaleFactor = modelHeight / 100.0
 			if scaleFactor < 0.01 then scaleFactor = 0.01
 			
-			local obj = Wc3_AttachPoint()
+			local obj = Wdx_AttachPoint()
 			case type of
 			(
 				#head:
@@ -529,7 +528,7 @@ struct AnimTools
             (
                 if c != undefined then
                 (
-                    local superKeys = ::Utils.getKeysOnSequences c.keys animToolsSequences
+                    local superKeys = ::WdxUtils.getKeysOnSequences c.keys animToolsSequences
                     local count = animToolsSequences.count
                     addNewKey c 0f
                     for i = 1 to count do
@@ -639,7 +638,7 @@ struct AnimTools
         (
             undo "Add Start/End Keys" on
             (
-                animToolsSequences = ::Utils.getAnimationIntervals()
+                animToolsSequences = ::WdxUtils.getAnimationIntervals()
                 createStartEndkeys selection
             )
         )
@@ -684,15 +683,15 @@ struct AnimTools
 		-- Pop Out / Dock
 		on popOutBtn pressed do
 		(
-			if ::AnimTools.isGeneralPoppedOut then
+			if ::WdxAnimTools.isGeneralPoppedOut then
 			(
-				::AnimTools.isGeneralPoppedOut = false
+				::WdxAnimTools.isGeneralPoppedOut = false
 				try ( destroyDialog generalRoll ) catch()
 				
 				if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 				(
 					local rollouts = ::whiteoutdexManagerFloater.rollouts
-					local idx = ::AnimTools.savedGeneralIndex
+					local idx = ::WdxAnimTools.savedGeneralIndex
 					if idx != undefined and idx <= rollouts.count then
 					(
 						local movedRollouts = #()
@@ -718,20 +717,19 @@ struct AnimTools
 			(
 				local rollouts = ::whiteoutdexManagerFloater.rollouts
 				for i = 1 to rollouts.count do
-					if rollouts[i] == generalRoll then ( ::AnimTools.savedGeneralIndex = i; exit )
+					if rollouts[i] == generalRoll then ( ::WdxAnimTools.savedGeneralIndex = i; exit )
 				removeRollout generalRoll ::whiteoutdexManagerFloater
 			)
 			
-			::AnimTools.isGeneralPoppedOut = true
-			popOutBtn.text = ::L.t "common_dock_btn"
+			::WdxAnimTools.isGeneralPoppedOut = true
 			createDialog generalRoll width:440 height:202 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
 		)
 		
 		on generalRoll close do
 		(
-			if ::AnimTools.isGeneralPoppedOut then
+			if ::WdxAnimTools.isGeneralPoppedOut then
 			(
-				::AnimTools.isGeneralPoppedOut = false
+				::WdxAnimTools.isGeneralPoppedOut = false
 				local tmr = dotNetObject "System.Windows.Forms.Timer"
 				tmr.Interval = 1
 				dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -741,8 +739,8 @@ struct AnimTools
 					(
 						if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 						(
-							local rl = ::AnimTools.generalRoll
-							local idx = ::AnimTools.savedGeneralIndex
+							local rl = ::WdxAnimTools.generalRoll
+							local idx = ::WdxAnimTools.savedGeneralIndex
 							local rollouts = ::whiteoutdexManagerFloater.rollouts
 							if idx != undefined and idx <= rollouts.count then
 							(
@@ -762,29 +760,23 @@ struct AnimTools
 		-- Localization
 		on generalRoll open do
 		(
-			if ::AnimTools.isGeneralPoppedOut then
-				popOutBtn.text = ::L.t "common_dock_btn"
-			else
-				popOutBtn.text = ::L.t "common_undock_btn"
-			popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-			
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				generalRoll.title = ::L.t "anim_general_tools_title"
-				addSEkeysbtn.text = ::L.t "anim_addnstart_and_ending_keysnto_selected_ob_btn"
-				addSEkeysbtn.tooltip = ::L.t "anim_adds_keyframes_to_frame_0_and_tip"
-				PosChk.text = ::L.t "anim_position_chk"
-				PosChk.tooltip = ::L.t "anim_apply_continuity_adjustment_to_tip"
-				RotChk.text = ::L.t "anim_rotation_chk"
-				RotChk.tooltip = ::L.t "anim_apply_continuity_adjustment_to_tip_2"
-				ScaChk.text = ::L.t "anim_scaling_chk"
-				ScaChk.tooltip = ::L.t "anim_apply_continuity_adjustment_to_tip_3"
-				continuityBtn.text = ::L.t "anim_set_continuity_to_zero_btn"
-				continuityBtn.tooltip = ::L.t "anim_sets_the_continuity_parameter_tip"
-				fixSquadbtn.text = ::L.t "anim_fix_nonlinearnrotation_problemsnon_selec_btn"
-				fixSquadbtn.tooltip = ::L.t "anim_nonlinear_rotation_keys_may_a_tip"
-				createAttachmentPointsBtn.text = ::L.t "anim_create_attachment_points_btn"
-				createAttachmentPointsBtn.tooltip = ::L.t "anim_automatically_create_attachmen_tip"
+				generalRoll.title = ::WdxL.t "anim_general_tools_title"
+				addSEkeysbtn.text = ::WdxL.t "anim_addnstart_and_ending_keysnto_selected_ob_btn"
+				addSEkeysbtn.tooltip = ::WdxL.t "anim_adds_keyframes_to_frame_0_and_tip"
+				PosChk.text = ::WdxL.t "anim_position_chk"
+				PosChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip"
+				RotChk.text = ::WdxL.t "anim_rotation_chk"
+				RotChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip_2"
+				ScaChk.text = ::WdxL.t "anim_scaling_chk"
+				ScaChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip_3"
+				continuityBtn.text = ::WdxL.t "anim_set_continuity_to_zero_btn"
+				continuityBtn.tooltip = ::WdxL.t "anim_sets_the_continuity_parameter_tip"
+				fixSquadbtn.text = ::WdxL.t "anim_fix_nonlinearnrotation_problemsnon_selec_btn"
+				fixSquadbtn.tooltip = ::WdxL.t "anim_nonlinear_rotation_keys_may_a_tip"
+				createAttachmentPointsBtn.text = ::WdxL.t "anim_create_attachment_points_btn"
+				createAttachmentPointsBtn.tooltip = ::WdxL.t "anim_automatically_create_attachmen_tip"
 			)
 		)
     ),
@@ -792,7 +784,6 @@ struct AnimTools
     skinRoll = rollout skinRoll "Skinning"
     (
         -- UI
-        button popOutBtn "Undock" pos:[379, 2] width:56 height:18 tooltip:"Undock / Dock"
         
         groupBox atSkinningGrpB "AT Skinning" pos:[8,22] width:426 height:48
         button saveBtn "Save and Unlink" pos:[16,38] width:198 height:22 tooltip:"Saves parent relationships of selected objects and unlinks them from their parents\n\nSometimes you already got a bunch of meshes linked to some bones and suddenly you want to edit the bones. If you don't want to mess up the meshes, you must unlink them, do whatever you need, then relink. This tool saves the parents of the selected meshes, unlinks them and restores them when you want. Use this tool before converting bones from IK to FK, for instance."
@@ -823,15 +814,15 @@ struct AnimTools
 		-- Pop Out / Dock
 		on popOutBtn pressed do
 		(
-			if ::AnimTools.isSkinPoppedOut then
+			if ::WdxAnimTools.isSkinPoppedOut then
 			(
-				::AnimTools.isSkinPoppedOut = false
+				::WdxAnimTools.isSkinPoppedOut = false
 				try ( destroyDialog skinRoll ) catch()
 				
 				if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 				(
 					local rollouts = ::whiteoutdexManagerFloater.rollouts
-					local idx = ::AnimTools.savedSkinIndex
+					local idx = ::WdxAnimTools.savedSkinIndex
 					if idx != undefined and idx <= rollouts.count then
 					(
 						local movedRollouts = #()
@@ -857,20 +848,19 @@ struct AnimTools
 			(
 				local rollouts = ::whiteoutdexManagerFloater.rollouts
 				for i = 1 to rollouts.count do
-					if rollouts[i] == skinRoll then ( ::AnimTools.savedSkinIndex = i; exit )
+					if rollouts[i] == skinRoll then ( ::WdxAnimTools.savedSkinIndex = i; exit )
 				removeRollout skinRoll ::whiteoutdexManagerFloater
 			)
 			
-			::AnimTools.isSkinPoppedOut = true
-			popOutBtn.text = ::L.t "common_dock_btn"
+			::WdxAnimTools.isSkinPoppedOut = true
 			createDialog skinRoll width:440 height:92 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
 		)
 		
 		on skinRoll close do
 		(
-			if ::AnimTools.isSkinPoppedOut then
+			if ::WdxAnimTools.isSkinPoppedOut then
 			(
-				::AnimTools.isSkinPoppedOut = false
+				::WdxAnimTools.isSkinPoppedOut = false
 				local tmr = dotNetObject "System.Windows.Forms.Timer"
 				tmr.Interval = 1
 				dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -880,8 +870,8 @@ struct AnimTools
 					(
 						if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 						(
-							local rl = ::AnimTools.skinRoll
-							local idx = ::AnimTools.savedSkinIndex
+							local rl = ::WdxAnimTools.skinRoll
+							local idx = ::WdxAnimTools.savedSkinIndex
 							local rollouts = ::whiteoutdexManagerFloater.rollouts
 							if idx != undefined and idx <= rollouts.count then
 							(
@@ -901,19 +891,13 @@ struct AnimTools
 		-- Localization
 		on skinRoll open do
 		(
-			if ::AnimTools.isSkinPoppedOut then
-				popOutBtn.text = ::L.t "common_dock_btn"
-			else
-				popOutBtn.text = ::L.t "common_undock_btn"
-			popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-			
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				skinRoll.title = ::L.t "anim_skinning_title"
-				saveBtn.text = ::L.t "anim_save_and_unlink_btn"
-				saveBtn.tooltip = ::L.t "anim_saves_parent_relationships_of_tip"
-				restoreBtn.text = ::L.t "anim_restore_parents_btn"
-				restoreBtn.tooltip = ::L.t "anim_restores_previously_saved_pare_tip"
+				skinRoll.title = ::WdxL.t "anim_skinning_title"
+				saveBtn.text = ::WdxL.t "anim_save_and_unlink_btn"
+				saveBtn.tooltip = ::WdxL.t "anim_saves_parent_relationships_of_tip"
+				restoreBtn.text = ::WdxL.t "anim_restore_parents_btn"
+				restoreBtn.tooltip = ::WdxL.t "anim_restores_previously_saved_pare_tip"
 			)
 		)
     ),
@@ -921,7 +905,6 @@ struct AnimTools
     controllersRoll = rollout controllersRoll "Controllers" 
     (
         -- UI
-        button popOutBtn "Undock" pos:[379, 2] width:56 height:18 tooltip:"Undock / Dock"
         
         groupBox controllersGrpB "Controllers" pos:[8,22] width:426 height:140
         
@@ -1008,15 +991,15 @@ struct AnimTools
 		-- Pop Out / Dock
 		on popOutBtn pressed do
 		(
-			if ::AnimTools.isControllersPoppedOut then
+			if ::WdxAnimTools.isControllersPoppedOut then
 			(
-				::AnimTools.isControllersPoppedOut = false
+				::WdxAnimTools.isControllersPoppedOut = false
 				try ( destroyDialog controllersRoll ) catch()
 				
 				if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 				(
 					local rollouts = ::whiteoutdexManagerFloater.rollouts
-					local idx = ::AnimTools.savedControllersIndex
+					local idx = ::WdxAnimTools.savedControllersIndex
 					if idx != undefined and idx <= rollouts.count then
 					(
 						local movedRollouts = #()
@@ -1042,20 +1025,19 @@ struct AnimTools
 			(
 				local rollouts = ::whiteoutdexManagerFloater.rollouts
 				for i = 1 to rollouts.count do
-					if rollouts[i] == controllersRoll then ( ::AnimTools.savedControllersIndex = i; exit )
+					if rollouts[i] == controllersRoll then ( ::WdxAnimTools.savedControllersIndex = i; exit )
 				removeRollout controllersRoll ::whiteoutdexManagerFloater
 			)
 			
-			::AnimTools.isControllersPoppedOut = true
-			popOutBtn.text = ::L.t "common_dock_btn"
+			::WdxAnimTools.isControllersPoppedOut = true
 			createDialog controllersRoll width:440 height:177 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
 		)
 		
 		on controllersRoll close do
 		(
-			if ::AnimTools.isControllersPoppedOut then
+			if ::WdxAnimTools.isControllersPoppedOut then
 			(
-				::AnimTools.isControllersPoppedOut = false
+				::WdxAnimTools.isControllersPoppedOut = false
 				local tmr = dotNetObject "System.Windows.Forms.Timer"
 				tmr.Interval = 1
 				dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -1065,8 +1047,8 @@ struct AnimTools
 					(
 						if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 						(
-							local rl = ::AnimTools.controllersRoll
-							local idx = ::AnimTools.savedControllersIndex
+							local rl = ::WdxAnimTools.controllersRoll
+							local idx = ::WdxAnimTools.savedControllersIndex
 							local rollouts = ::whiteoutdexManagerFloater.rollouts
 							if idx != undefined and idx <= rollouts.count then
 							(
@@ -1086,17 +1068,11 @@ struct AnimTools
 		-- Localization
 		on controllersRoll open do
 		(
-			if ::AnimTools.isControllersPoppedOut then
-				popOutBtn.text = ::L.t "common_dock_btn"
-			else
-				popOutBtn.text = ::L.t "common_undock_btn"
-			popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-			
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				controllersRoll.title = ::L.t "anim_controllers_title"
-				controllerBtn.text = ::L.t "anim_apply_to_selected_btn"
-				controllerBtn.tooltip = ::L.t "anim_applies_the_selected_controlle_tip"
+				controllersRoll.title = ::WdxL.t "anim_controllers_title"
+				controllerBtn.text = ::WdxL.t "anim_apply_to_selected_btn"
+				controllerBtn.tooltip = ::WdxL.t "anim_applies_the_selected_controlle_tip"
 			)
 		)
     ),
@@ -1104,7 +1080,6 @@ struct AnimTools
     scalerRoll = rollout scalerRoll "Model Scaler"
     (
         -- UI
-        button popOutBtn "Undock" pos:[379, 2] width:56 height:18 tooltip:"Undock / Dock"
         
         groupBox presetGrpB "Scale to Target Height" pos:[8,22] width:426 height:70
         dropdownlist ddPreset "" items:#(\
@@ -1169,8 +1144,8 @@ struct AnimTools
             if cn == "BoneGeometry" or cn == "Biped_Object" do return false
             if cn == "CATParent" or cn == "CATBone" or cn == "HubObject" or cn == "IKTarget" do return false
             if cn == "BlizzParticle1" or cn == "BlizzParticle2" or cn == "BlizRibbon" do return false
-            if cn == "Wc3CollisionSphere" or cn == "Wc3CollisionBox" or cn == "Wc3CollisionCylinder" do return false
-            if cn == "Wc3_Light" or cn == "BlizzPopcorn" do return false
+            if cn == "Wdx_CollisionSphere" or cn == "Wdx_CollisionBox" or cn == "Wc3CollisionCylinder" do return false
+            if cn == "Wdx_Light" or cn == "Wdx_Popcorn" do return false
             true
         )
         fn measureMeshHeight =
@@ -1208,10 +1183,10 @@ struct AnimTools
                 ( try(obj.radius *= factor)catch(); try(obj.Gravity *= factor)catch(); count += 1 )
                 if cn == "BlizRibbon" do
                 ( try(obj.Above *= factor)catch(); try(obj.Below *= factor)catch(); try(obj.gravity *= factor)catch(); count += 1 )
-                if cn == "Wc3CollisionSphere" do ( try(obj.radius *= factor)catch(); count += 1 )
-                if cn == "Wc3CollisionBox" do ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.height *= factor)catch(); count += 1 )
-                if cn == "Wc3_Light" do ( try(obj.DS_Spn *= factor)catch(); try(obj.DE_Spn *= factor)catch(); count += 1 )
-                if cn == "BlizzPopcorn" do ( try(obj.speed *= factor)catch(); count += 1 )
+                if cn == "Wdx_CollisionSphere" do ( try(obj.radius *= factor)catch(); count += 1 )
+                if cn == "Wdx_CollisionBox" do ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.height *= factor)catch(); count += 1 )
+                if cn == "Wdx_Light" do ( try(obj.DS_Spn *= factor)catch(); try(obj.DE_Spn *= factor)catch(); count += 1 )
+                if cn == "Wdx_Popcorn" do ( try(obj.speed *= factor)catch(); count += 1 )
             )
             count
         )
@@ -1272,9 +1247,9 @@ struct AnimTools
             if factor == 1.0 do ( lblStatus.text = "Factor 1.0 - no change."; return true )
             if factor <= 0.0 do ( lblStatus.text = "Invalid factor."; return false )
             local d = detectRig(); local hasBiped = d[1]; local hasCat = d[2]; local stdRoots = d[3]
-            if stdRoots.count == 0 and not hasBiped and not hasCat do ( messageBox (::L.t "anim_no_objects_in_scene_msg") title:(::L.t "anim_error_ptitle"); return false )
-            if hasBiped do ( if not (queryBox "Biped detected!\nBiped + Skin cannot be auto-scaled.\nStandard objects will still be scaled.\nContinue?" title:(::L.t "anim_biped_warning_ptitle") beep:false) do return false )
-            if hasCat do ( if not (queryBox "CAT rig detected!\nCAT + Skin cannot be auto-scaled.\nStandard objects will still be scaled.\nContinue?" title:(::L.t "anim_cat_warning_ptitle") beep:false) do return false )
+            if stdRoots.count == 0 and not hasBiped and not hasCat do ( messageBox (::WdxL.t "anim_no_objects_in_scene_msg") title:(::WdxL.t "anim_error_ptitle"); return false )
+            if hasBiped do ( if not (queryBox "Biped detected!\nBiped + Skin cannot be auto-scaled.\nStandard objects will still be scaled.\nContinue?" title:(::WdxL.t "anim_biped_warning_ptitle") beep:false) do return false )
+            if hasCat do ( if not (queryBox "CAT rig detected!\nCAT + Skin cannot be auto-scaled.\nStandard objects will still be scaled.\nContinue?" title:(::WdxL.t "anim_cat_warning_ptitle") beep:false) do return false )
             local autoKeyOn = animButtonState
             undo label:("Scale " + (factor as string) + "x") on
             (
@@ -1311,9 +1286,9 @@ struct AnimTools
         on btnPreset pressed do
         (
             local name = ddPreset.items[ddPreset.selection]; local targetH = getPresetHeight name
-            if targetH <= 0 do ( messageBox (::L.t "anim_select_a_preset_not_a_header_msg") title:(::L.t "anim_error_ptitle_2"); return false )
+            if targetH <= 0 do ( messageBox (::WdxL.t "anim_select_a_preset_not_a_header_msg") title:(::WdxL.t "anim_error_ptitle_2"); return false )
             local currentH = measureMeshHeight()
-            if currentH < 0.01 do ( messageBox (::L.t "anim_no_meshes_found_in_scene_msg") title:(::L.t "anim_error_ptitle_3"); return false )
+            if currentH < 0.01 do ( messageBox (::WdxL.t "anim_no_meshes_found_in_scene_msg") title:(::WdxL.t "anim_error_ptitle_3"); return false )
             doScale (targetH / currentH)
         )
         on btnApply pressed do ( doScale spnScale.value )
@@ -1321,15 +1296,15 @@ struct AnimTools
 		-- Pop Out / Dock
 		on popOutBtn pressed do
 		(
-			if ::AnimTools.isScalerPoppedOut then
+			if ::WdxAnimTools.isScalerPoppedOut then
 			(
-				::AnimTools.isScalerPoppedOut = false
+				::WdxAnimTools.isScalerPoppedOut = false
 				try ( destroyDialog scalerRoll ) catch()
 				
 				if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 				(
 					local rollouts = ::whiteoutdexManagerFloater.rollouts
-					local idx = ::AnimTools.savedScalerIndex
+					local idx = ::WdxAnimTools.savedScalerIndex
 					if idx != undefined and idx <= rollouts.count then
 					(
 						local movedRollouts = #()
@@ -1355,20 +1330,19 @@ struct AnimTools
 			(
 				local rollouts = ::whiteoutdexManagerFloater.rollouts
 				for i = 1 to rollouts.count do
-					if rollouts[i] == scalerRoll then ( ::AnimTools.savedScalerIndex = i; exit )
+					if rollouts[i] == scalerRoll then ( ::WdxAnimTools.savedScalerIndex = i; exit )
 				removeRollout scalerRoll ::whiteoutdexManagerFloater
 			)
 			
-			::AnimTools.isScalerPoppedOut = true
-			popOutBtn.text = ::L.t "common_dock_btn"
+			::WdxAnimTools.isScalerPoppedOut = true
 			createDialog scalerRoll width:440 height:172 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
 		)
 		
 		on scalerRoll close do
 		(
-			if ::AnimTools.isScalerPoppedOut then
+			if ::WdxAnimTools.isScalerPoppedOut then
 			(
-				::AnimTools.isScalerPoppedOut = false
+				::WdxAnimTools.isScalerPoppedOut = false
 				local tmr = dotNetObject "System.Windows.Forms.Timer"
 				tmr.Interval = 1
 				dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -1378,8 +1352,8 @@ struct AnimTools
 					(
 						if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 						(
-							local rl = ::AnimTools.scalerRoll
-							local idx = ::AnimTools.savedScalerIndex
+							local rl = ::WdxAnimTools.scalerRoll
+							local idx = ::WdxAnimTools.savedScalerIndex
 							local rollouts = ::whiteoutdexManagerFloater.rollouts
 							if idx != undefined and idx <= rollouts.count then
 							(
@@ -1399,18 +1373,12 @@ struct AnimTools
 		-- Localization
 		on scalerRoll open do
 		(
-			if ::AnimTools.isScalerPoppedOut then
-				popOutBtn.text = ::L.t "common_dock_btn"
-			else
-				popOutBtn.text = ::L.t "common_undock_btn"
-			popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-			
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				scalerRoll.title = ::L.t "anim_model_scaler_title"
-				spnScale.caption = ::L.t "anim_factor_spn"
-				btnPreset.text = ::L.t "anim_scale_btn"
-				btnApply.text = ::L.t "anim_apply_btn"
+				scalerRoll.title = ::WdxL.t "anim_model_scaler_title"
+				spnScale.caption = ::WdxL.t "anim_factor_spn"
+				btnPreset.text = ::WdxL.t "anim_scale_btn"
+				btnApply.text = ::WdxL.t "anim_apply_btn"
 			)
 		)
     ),
@@ -1419,4 +1387,4 @@ struct AnimTools
     (
     )
 )
-global AnimTools = AnimTools()
+global WdxAnimTools = WdxAnimTools()

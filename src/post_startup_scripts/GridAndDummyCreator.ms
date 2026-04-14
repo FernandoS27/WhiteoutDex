@@ -1,4 +1,4 @@
-struct GridAndDummyCreator
+struct WdxGridAndDummyCreator
 (
     isPoppedOut = false,
     savedIndex = undefined,
@@ -13,7 +13,6 @@ struct GridAndDummyCreator
     mainRollout = rollout mainRollout "Grid and Dummy Creator"
     (
         local self
-        button popOutBtn "Undock" pos:[379, 2] width:56 height:18 tooltip:"Undock / Dock"
         
         GroupBox gridGrp "Grid" pos:[8,30] width:210 height:94 tooltip:"Settings for grid creation"
         colorpicker gridCPck "Color:" pos:[16,46] width:194 height:22 align:#left tooltip:"Set the color of the created grid"
@@ -37,15 +36,15 @@ struct GridAndDummyCreator
 		-- Pop Out / Dock
 		on popOutBtn pressed do
 		(
-			if ::GridAndDummyCreator.isPoppedOut then
+			if ::WdxGridAndDummyCreator.isPoppedOut then
 			(
-				::GridAndDummyCreator.isPoppedOut = false
+				::WdxGridAndDummyCreator.isPoppedOut = false
 				try ( destroyDialog mainRollout ) catch()
 				
 				if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 				(
 					local rollouts = ::whiteoutdexManagerFloater.rollouts
-					local idx = ::GridAndDummyCreator.savedIndex
+					local idx = ::WdxGridAndDummyCreator.savedIndex
 					if idx != undefined and idx <= rollouts.count then
 					(
 						local movedRollouts = #()
@@ -71,20 +70,19 @@ struct GridAndDummyCreator
 			(
 				local rollouts = ::whiteoutdexManagerFloater.rollouts
 				for i = 1 to rollouts.count do
-					if rollouts[i] == mainRollout then ( ::GridAndDummyCreator.savedIndex = i; exit )
+					if rollouts[i] == mainRollout then ( ::WdxGridAndDummyCreator.savedIndex = i; exit )
 				removeRollout mainRollout ::whiteoutdexManagerFloater
 			)
 			
-			::GridAndDummyCreator.isPoppedOut = true
-			popOutBtn.text = ::L.t "common_dock_btn"
+			::WdxGridAndDummyCreator.isPoppedOut = true
 			createDialog mainRollout width:440 height:142 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
 		)
 		
 		on mainRollout close do
 		(
-			if ::GridAndDummyCreator.isPoppedOut then
+			if ::WdxGridAndDummyCreator.isPoppedOut then
 			(
-				::GridAndDummyCreator.isPoppedOut = false
+				::WdxGridAndDummyCreator.isPoppedOut = false
 				local tmr = dotNetObject "System.Windows.Forms.Timer"
 				tmr.Interval = 1
 				dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -94,8 +92,8 @@ struct GridAndDummyCreator
 					(
 						if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 						(
-							local rl = ::GridAndDummyCreator.mainRollout
-							local idx = ::GridAndDummyCreator.savedIndex
+							local rl = ::WdxGridAndDummyCreator.mainRollout
+							local idx = ::WdxGridAndDummyCreator.savedIndex
 							local rollouts = ::whiteoutdexManagerFloater.rollouts
 							if idx != undefined and idx <= rollouts.count then
 							(
@@ -114,35 +112,28 @@ struct GridAndDummyCreator
        
         on mainRollout open do
         (
-            self = GridAndDummyCreator
-            
-            if ::GridAndDummyCreator.isPoppedOut then
-                popOutBtn.text = ::L.t "common_dock_btn"
-            else
-                popOutBtn.text = ::L.t "common_undock_btn"
-            popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-           
+            self = WdxGridAndDummyCreator
             gridCPck.color = self.gridColor
             gridSizeSpn.value = self.gridSize
             pointsCPck.color = self.pointsColor
             pointsSizeSpn.value = self.pointsSize
 
             -- Localization
-            if ::L != undefined then
+            if ::WdxL != undefined then
             (
-                mainRollout.title = ::L.t "grid_grid_and_dummy_creator_title"
-                gridCPck.caption = ::L.t "grid_color_cpk"
-                gridCPck.tooltip = ::L.t "grid_set_the_color_of_the_created_g_tip"
-                gridSizeSpn.caption = ::L.t "grid_size_spn"
-                gridSizeSpn.tooltip = ::L.t "grid_set_the_size_of_the_grid_in_wo_tip"
-                createGridBtn.text = ::L.t "grid_create_grid_btn"
-                createGridBtn.tooltip = ::L.t "grid_create_a_new_grid_with_current_tip"
-                pointsCPck.caption = ::L.t "grid_color_cpk_2"
-                pointsCPck.tooltip = ::L.t "grid_set_the_color_of_the_created_p_tip"
-                pointsSizeSpn.caption = ::L.t "grid_size_spn_2"
-                pointsSizeSpn.tooltip = ::L.t "grid_set_the_size_of_point_objects_tip"
-                createPointsBtn.text = ::L.t "grid_create_points_btn"
-                createPointsBtn.tooltip = ::L.t "grid_create_point_objects_at_select_tip"
+                mainRollout.title = ::WdxL.t "grid_grid_and_dummy_creator_title"
+                gridCPck.caption = ::WdxL.t "grid_color_cpk"
+                gridCPck.tooltip = ::WdxL.t "grid_set_the_color_of_the_created_g_tip"
+                gridSizeSpn.caption = ::WdxL.t "grid_size_spn"
+                gridSizeSpn.tooltip = ::WdxL.t "grid_set_the_size_of_the_grid_in_wo_tip"
+                createGridBtn.text = ::WdxL.t "grid_create_grid_btn"
+                createGridBtn.tooltip = ::WdxL.t "grid_create_a_new_grid_with_current_tip"
+                pointsCPck.caption = ::WdxL.t "grid_color_cpk_2"
+                pointsCPck.tooltip = ::WdxL.t "grid_set_the_color_of_the_created_p_tip"
+                pointsSizeSpn.caption = ::WdxL.t "grid_size_spn_2"
+                pointsSizeSpn.tooltip = ::WdxL.t "grid_set_the_size_of_point_objects_tip"
+                createPointsBtn.text = ::WdxL.t "grid_create_points_btn"
+                createPointsBtn.tooltip = ::WdxL.t "grid_create_point_objects_at_select_tip"
             )
         )
     ),
@@ -257,4 +248,4 @@ struct GridAndDummyCreator
         this.toolName = "Grid and Dummy Creator"
     )
 )
-global GridAndDummyCreator = GridAndDummyCreator()
+global WdxGridAndDummyCreator = WdxGridAndDummyCreator()

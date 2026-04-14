@@ -42,7 +42,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 		
 		fn populateLanguages =
 		(
-			local langs = ::L.getAvailableLanguages()
+			local langs = ::WdxL.getAvailableLanguages()
 			local names = #()
 			local currentIdx = 1
 			for i = 1 to langs.count do
@@ -58,7 +58,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 					"ko": append names "한국어 / Korean (ko)"
 					default: append names code
 				)
-				if code == ::L.getLanguage() then currentIdx = i
+				if code == ::WdxL.getLanguage() then currentIdx = i
 			)
 			langDDL.items = names
 			langDDL.selection = currentIdx
@@ -66,13 +66,13 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 		
 		on langDDL selected idx do
 		(
-			local langs = ::L.getAvailableLanguages()
+			local langs = ::WdxL.getAvailableLanguages()
 			if idx >= 1 and idx <= langs.count then
 			(
 				local newLang = langs[idx]
-				if newLang != ::L.getLanguage() then
+				if newLang != ::WdxL.getLanguage() then
 				(
-					::L.setLanguage newLang
+					::WdxL.setLanguage newLang
 					noteLabel.text = "Please reopen dialogs to see changes."
 				)
 			)
@@ -86,9 +86,9 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				mpqPathEdt.text = dir
 				::WhiteoutDexMPQ.saveSettings dir
 				if ::WhiteoutDexMPQ.validateDirectory() then
-					mpqStatusLbl.text = ::L.t "set_mpq_status_found"
+					mpqStatusLbl.text = ::WdxL.t "set_mpq_status_found"
 				else
-					mpqStatusLbl.text = ::L.t "set_mpq_status_not_found"
+					mpqStatusLbl.text = ::WdxL.t "set_mpq_status_not_found"
 			)
 		)
 		
@@ -101,16 +101,16 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 		
 		on cascBrowseBtn pressed do
 		(
-			local dir = getSavePath caption:(::L.t "set_casc_browse_caption")
+			local dir = getSavePath caption:(::WdxL.t "set_casc_browse_caption")
 			if dir != undefined then
 			(
 				cascPathEdt.text = dir
 				local iniPath = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
 				setINISetting iniPath "CASC" "W3Path" dir
 				if doesFileExist (dir + "\\.build.info") then
-					cascStatusLbl.text = ::L.t "set_casc_status_found"
+					cascStatusLbl.text = ::WdxL.t "set_casc_status_found"
 				else
-					cascStatusLbl.text = ::L.t "set_casc_status_not_found"
+					cascStatusLbl.text = ::WdxL.t "set_casc_status_not_found"
 			)
 		)
 		
@@ -192,18 +192,18 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				if ::WhiteoutDexMPQ.getDirectory() != "" then
 				(
 					if ::WhiteoutDexMPQ.validateDirectory() then
-						mpqStatusLbl.text = ::L.t "set_mpq_status_found"
+						mpqStatusLbl.text = ::WdxL.t "set_mpq_status_found"
 					else
-						mpqStatusLbl.text = ::L.t "set_mpq_status_not_found"
+						mpqStatusLbl.text = ::WdxL.t "set_mpq_status_not_found"
 				)
 				else
 					mpqStatusLbl.text = ""
 			)
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				mpqLabel.text = ::L.t "set_mpq_directory_lbl"
-				mpqBrowseBtn.tooltip = ::L.t "set_mpq_browse_tip"
-				mpqClearBtn.text = ::L.t "set_mpq_clear_btn"
+				mpqLabel.text = ::WdxL.t "set_mpq_directory_lbl"
+				mpqBrowseBtn.tooltip = ::WdxL.t "set_mpq_browse_tip"
+				mpqClearBtn.text = ::WdxL.t "set_mpq_clear_btn"
 			)
 			-- CASC path
 			local cascIni = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
@@ -212,23 +212,23 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			(
 				cascPathEdt.text = cascDir
 				if doesFileExist (cascDir + "\\.build.info") then
-					cascStatusLbl.text = ::L.t "set_casc_status_found"
+					cascStatusLbl.text = ::WdxL.t "set_casc_status_found"
 				else
-					cascStatusLbl.text = ::L.t "set_casc_status_not_found"
+					cascStatusLbl.text = ::WdxL.t "set_casc_status_not_found"
 			)
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				cascLabel.text = ::L.t "set_casc_directory_lbl"
-				cascBrowseBtn.tooltip = ::L.t "set_casc_browse_tip"
-				cascClearBtn.text = ::L.t "set_casc_clear_btn"
+				cascLabel.text = ::WdxL.t "set_casc_directory_lbl"
+				cascBrowseBtn.tooltip = ::WdxL.t "set_casc_browse_tip"
+				cascClearBtn.text = ::WdxL.t "set_casc_clear_btn"
 			)
 			-- Sidebar localization
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				sidebarGrp.text = ::L.t "set_sidebar_grp"
-				chk_sidebarEnabled.text = ::L.t "set_sidebar_show_chk"
-				lblDockSide.text = ::L.t "set_sidebar_dock_lbl"
-				ddl_dockSide.items = #(::L.t "set_sidebar_dock_left", ::L.t "set_sidebar_dock_right")
+				sidebarGrp.text = ::WdxL.t "set_sidebar_grp"
+				chk_sidebarEnabled.text = ::WdxL.t "set_sidebar_show_chk"
+				lblDockSide.text = ::WdxL.t "set_sidebar_dock_lbl"
+				ddl_dockSide.items = #(::WdxL.t "set_sidebar_dock_left", ::WdxL.t "set_sidebar_dock_right")
 			)
 			-- Sidebar: load saved state
 			local sidebarOn = getINISetting sidebarIni "Sidebar" "Enabled"
@@ -240,11 +240,11 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			local autoUpdateOn = getINISetting sidebarIni "Updater" "AutoCheck"
 			chk_autoUpdate.checked = (autoUpdateOn != "0")
 			-- Auto-Update: localization
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				updateGrp.text = ::L.t "set_update_grp"
-				chk_autoUpdate.text = ::L.t "set_update_auto_chk"
-				btn_checkNow.text = ::L.t "set_update_check_btn"
+				updateGrp.text = ::WdxL.t "set_update_grp"
+				chk_autoUpdate.text = ::WdxL.t "set_update_auto_chk"
+				btn_checkNow.text = ::WdxL.t "set_update_check_btn"
 			)
 		)
 	)

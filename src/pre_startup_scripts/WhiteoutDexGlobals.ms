@@ -14,6 +14,25 @@
 */
 
 /* ============================================================================
+   SECTION 0: ERROR REPORTER STUB
+   Lightweight fallback if ErrorReporter.ms is not loaded.
+   Provides ::ErrorReporter.logError/logWarning/logInfo used by
+   SequenceManager, MaterialManager, and other tools.
+   ============================================================================ */
+
+if ::ErrorReporter == undefined then
+(
+    struct ErrorReporterStub
+    (
+        fn logError category source msg = (format "WhiteoutDex ERROR [%/%]: %\n" category source msg),
+        fn logWarning category source msg = (format "WhiteoutDex WARNING [%/%]: %\n" category source msg),
+        fn logInfo category source msg = (format "WhiteoutDex INFO [%/%]: %\n" category source msg)
+    )
+    global ErrorReporter = ErrorReporterStub()
+)
+
+
+/* ============================================================================
    SECTION 1: GLOBAL CONFIG VARIABLES
    ============================================================================ */
 
@@ -41,6 +60,41 @@ global WhiteoutDexHasNativeBLP = false
    HSB color adjustment, message boxes, CLI execution.
    ============================================================================ */
 
+-- ============================================================================
+-- DATA STRUCTS (used by SequenceManager, TeamColorManager etc.)
+-- ============================================================================
+struct Wc3Extent (
+	minExtent,
+	maxExtent,
+	bound
+)
+
+struct Wc3Sequence (
+	name, 
+	startTime, 
+	endTime, 
+	loop, 
+	rarity, 
+	movespeed,
+	extents,
+	ex,
+	sharedGroup
+)
+
+struct Wc3Material (
+    maxObj,
+    layers,
+    id,
+    tvertexId,
+    ex,
+    isConstantColor = false,
+    isSortPrimsNearZ = false,
+    isSortPrimsFarZ = false,
+    isFullResolution = false,
+    priorityPlane = 0
+)
+
+-- ============================================================================
 struct WhiteoutDexUtilsStruct
 (
 	-- ========================================
@@ -297,11 +351,11 @@ struct WhiteoutDexUtilsStruct
 global WhiteoutDexUtils = WhiteoutDexUtilsStruct()
 
 -- REQUIRED wrappers: called by Wc3Material.ms as plain function names
-fn SaveBase64ToImage base64String savePath = ::WhiteoutDexUtils.SaveBase64ToImage base64String savePath
-fn LoadBase64ToImage str = ::WhiteoutDexUtils.LoadBase64ToImage str
-fn format_txt filepath filetext = ::WhiteoutDexUtils.format_txt filepath filetext
-fn AdjustColor_PS clr hueDelta satDelta valDelta = ::WhiteoutDexUtils.AdjustColor_PS clr hueDelta satDelta valDelta
-fn GetMaxLanguageIsChina = ::WhiteoutDexUtils.GetMaxLanguageIsChina()
+fn WdxSaveBase64ToImage base64String savePath = ::WhiteoutDexUtils.SaveBase64ToImage base64String savePath
+fn WdxLoadBase64ToImage str = ::WhiteoutDexUtils.LoadBase64ToImage str
+fn wdx_format_txt filepath filetext = ::WhiteoutDexUtils.format_txt filepath filetext
+fn WdxAdjustColor_PS clr hueDelta satDelta valDelta = ::WhiteoutDexUtils.AdjustColor_PS clr hueDelta satDelta valDelta
+fn WdxGetMaxLanguageIsChina = ::WhiteoutDexUtils.GetMaxLanguageIsChina()
 
 
 /* ============================================================================
@@ -437,28 +491,28 @@ struct WhiteoutDexMaterialManagerStruct
 	fn registerCallbacks =
 	(
 		callbacks.removeScripts #postSystemStartup id:#WhiteoutDexMaterials
-		callbacks.addScript #postSystemStartup "::MaterialManager.generateTeamGlows()" id:#WhiteoutDexMaterials
+		callbacks.addScript #postSystemStartup "::WdxMaterialManager.generateTeamGlows()" id:#WhiteoutDexMaterials
 		
 		callbacks.removeScripts #systemPreNew id:#WhiteoutDexMaterials
 		callbacks.removeScripts #systemPreReset id:#WhiteoutDexMaterials
 		callbacks.removeScripts #filePreOpen id:#WhiteoutDexMaterials
-		callbacks.addScript #systemPreNew "::MaterialManager.resetMaterials()" id:#WhiteoutDexMaterials
-		callbacks.addScript #systemPreReset "::MaterialManager.resetMaterials()" id:#WhiteoutDexMaterials
-		callbacks.addScript #filePreOpen "::MaterialManager.resetMaterials()" id:#WhiteoutDexMaterials
+		callbacks.addScript #systemPreNew "::WdxMaterialManager.resetMaterials()" id:#WhiteoutDexMaterials
+		callbacks.addScript #systemPreReset "::WdxMaterialManager.resetMaterials()" id:#WhiteoutDexMaterials
+		callbacks.addScript #filePreOpen "::WdxMaterialManager.resetMaterials()" id:#WhiteoutDexMaterials
 	)
 )
 
-global MaterialManager = WhiteoutDexMaterialManagerStruct()
-::MaterialManager.registerCallbacks()
+global WdxMaterialManager = WhiteoutDexMaterialManagerStruct()
+::WdxMaterialManager.registerCallbacks()
 
 -- REQUIRED globals: referenced directly by Wc3Material.ms and TeamColorManager.ms
-global WhiteoutDexWc3MaterialTeamGlowTextures = ::MaterialManager.teamGlowTextures
-global WhiteoutDexWc3MaterialTeamColors = ::MaterialManager.teamColors
-global WhiteoutDexTeamColor = ::MaterialManager.activeTeamColor
-global WhiteoutDexMaterials = ::MaterialManager.materials
+global WhiteoutDexWc3MaterialTeamGlowTextures = ::WdxMaterialManager.teamGlowTextures
+global WhiteoutDexWc3MaterialTeamColors = ::WdxMaterialManager.teamColors
+global WhiteoutDexTeamColor = ::WdxMaterialManager.activeTeamColor
+global WhiteoutDexMaterials = ::WdxMaterialManager.materials
 
 -- REQUIRED wrapper: called by TeamColorManager.ms
-fn WhiteoutDexUpdateTeamColor teamColor = ::MaterialManager.updateTeamColor teamColor
+fn WhiteoutDexUpdateTeamColor teamColor = ::WdxMaterialManager.updateTeamColor teamColor
 
 
 /* ============================================================================
@@ -623,8 +677,8 @@ struct WhiteoutDexRendererStruct
 	)
 )
 
-global Wc3Renderer = WhiteoutDexRendererStruct()
--- Note: No backward-compat wrappers needed - all callers use ::Wc3Renderer directly
+global WdxRenderer = WhiteoutDexRendererStruct()
+-- Note: No backward-compat wrappers needed - all callers use ::WdxRenderer directly
 
 
 /* ============================================================================
@@ -634,7 +688,7 @@ global Wc3Renderer = WhiteoutDexRendererStruct()
    ============================================================================ */
 
 -- Define the Custom Attribute block for sequence data
-global WhiteoutDexSequenceCA = attributes "WhiteoutDexSequenceData"
+global NeoDexSequenceCA = attributes "NeoDexSequenceData"
 (
 	parameters main
     (
@@ -655,7 +709,7 @@ struct WhiteoutDexSequenceStorageStruct
     fn hasCA =
     (
         for i = 1 to custAttributes.count rootNode do
-            if (custAttributes.get rootNode i).name == "WhiteoutDexSequenceData" then return true
+            if (custAttributes.get rootNode i).name == "NeoDexSequenceData" then return true
         false
     ),
     
@@ -663,14 +717,14 @@ struct WhiteoutDexSequenceStorageStruct
     fn ensureCA =
     (
         if not (this.hasCA()) then
-            custAttributes.add rootNode ::WhiteoutDexSequenceCA
+            custAttributes.add rootNode ::NeoDexSequenceCA
     ),
     
     -- Remove existing CA block (for clean rebuild)
     fn removeCA =
     (
         for i = custAttributes.count rootNode to 1 by -1 do
-            if (custAttributes.get rootNode i).name == "WhiteoutDexSequenceData" then
+            if (custAttributes.get rootNode i).name == "NeoDexSequenceData" then
                 custAttributes.delete rootNode i
     ),
     
@@ -842,13 +896,20 @@ struct WhiteoutDexSequenceStorageStruct
     -- Called on SequenceManager open and scene load
     fn autoMigrate =
     (
-        if (this.hasCA()) and rootNode.seqNames.count > 0 then return false  -- already migrated
+        -- Already has WhiteoutDex CA with data
+        if (this.hasCA()) then
+        (
+            try (if rootNode.seqNames.count > 0 then return false) catch()
+        )
+        
+        -- Try migrating from legacy NoteTracks
         if this.hasLegacyNoteTracks() then
         (
             this.migrateFromNoteTracks removeTracks:true
             return true
         )
-        -- No data at all - just ensure CA exists
+        
+        -- No data - ensure CA exists
         this.ensureCA()
         false
     )

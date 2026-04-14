@@ -1,4 +1,4 @@
-struct SkinChanger
+struct WdxSkinChanger
 (
     isPoppedOut = false,
     savedIndex = undefined,
@@ -7,7 +7,6 @@ struct SkinChanger
     mainRollout = rollout mainRollout "Change Skin Data to WC3" 
     (
         local self -- Diese Variable wird auf die SkinChanger Struct-Definition zeigen
-        button popOutBtn "Undock" pos:[370, 2] width:56 height:18 tooltip:"Undock / Dock"
 
         -- =============================================
         -- WC3 Skin Conversion
@@ -26,7 +25,7 @@ struct SkinChanger
             else
             (
                 ::ErrorReporter.logError "SkinChanger" "init" "SkinChanger definition not found in rollout. Tool not properly initialized."
-                messageBox (::L.t "skin_cannot_call_changeskindata_sc_msg")
+                messageBox (::WdxL.t "skin_cannot_call_changeskindata_sc_msg")
             )
         )
         
@@ -53,22 +52,22 @@ struct SkinChanger
             else
             (
                 ::ErrorReporter.logError "SkinChanger" "init" "SkinChanger definition not found in rollout. Tool not properly initialized."
-                messageBox (::L.t "skin_cannot_call_removezeroweights_msg")
+                messageBox (::WdxL.t "skin_cannot_call_removezeroweights_msg")
             )
         )
         
         -- Pop Out / Dock
         on popOutBtn pressed do
         (
-            if ::SkinChanger.isPoppedOut then
+            if ::WdxSkinChanger.isPoppedOut then
             (
-                ::SkinChanger.isPoppedOut = false
+                ::WdxSkinChanger.isPoppedOut = false
                 try ( destroyDialog mainRollout ) catch()
                 
                 if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
                 (
                     local rollouts = ::whiteoutdexManagerFloater.rollouts
-                    local idx = ::SkinChanger.savedIndex
+                    local idx = ::WdxSkinChanger.savedIndex
                     if idx != undefined and idx <= rollouts.count then
                     (
                         local movedRollouts = #()
@@ -94,20 +93,19 @@ struct SkinChanger
             (
                 local rollouts = ::whiteoutdexManagerFloater.rollouts
                 for i = 1 to rollouts.count do
-                    if rollouts[i] == mainRollout then ( ::SkinChanger.savedIndex = i; exit )
+                    if rollouts[i] == mainRollout then ( ::WdxSkinChanger.savedIndex = i; exit )
                 removeRollout mainRollout ::whiteoutdexManagerFloater
             )
             
-            ::SkinChanger.isPoppedOut = true
-            popOutBtn.text = ::L.t "common_dock_btn"
+            ::WdxSkinChanger.isPoppedOut = true
             createDialog mainRollout width:440 height:180 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
         )
         
         on mainRollout close do
         (
-            if ::SkinChanger.isPoppedOut then
+            if ::WdxSkinChanger.isPoppedOut then
             (
-                ::SkinChanger.isPoppedOut = false
+                ::WdxSkinChanger.isPoppedOut = false
                 local tmr = dotNetObject "System.Windows.Forms.Timer"
                 tmr.Interval = 1
                 dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -117,8 +115,8 @@ struct SkinChanger
                     (
                         if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
                         (
-                            local rl = ::SkinChanger.mainRollout
-                            local idx = ::SkinChanger.savedIndex
+                            local rl = ::WdxSkinChanger.mainRollout
+                            local idx = ::WdxSkinChanger.savedIndex
                             local rollouts = ::whiteoutdexManagerFloater.rollouts
                             if idx != undefined and idx <= rollouts.count then
                             (
@@ -137,22 +135,15 @@ struct SkinChanger
         
         on mainRollout open do
         (
-            self = SkinChanger -- Setzt 'self' auf die SkinChanger Struct-Definition
+            self = WdxSkinChanger -- Setzt 'self' auf die SkinChanger Struct-Definition
             format "SkinChanger: Rollout opened. 'self' now refers to SkinChanger struct definition.\n"
-            
-            if ::SkinChanger.isPoppedOut then
-                popOutBtn.text = ::L.t "common_dock_btn"
-            else
-                popOutBtn.text = ::L.t "common_undock_btn"
-            popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-            
             -- Localization
-            if ::L != undefined then
+            if ::WdxL != undefined then
             (
-                mainRollout.title = ::L.t "skin_change_skin_data_to_wc3_title"
-                changeSkinBtn.text = ::L.t "skin_change_skin_data_to_wc3_btn"
-                removeZeroBtn.text = ::L.t "skin_remove_zero_weights_btn"
-                spnThreshold.tooltip = ::L.t "skin_weights_at_or_below_this_value_tip"
+                mainRollout.title = ::WdxL.t "skin_change_skin_data_to_wc3_title"
+                changeSkinBtn.text = ::WdxL.t "skin_change_skin_data_to_wc3_btn"
+                removeZeroBtn.text = ::WdxL.t "skin_remove_zero_weights_btn"
+                spnThreshold.tooltip = ::WdxL.t "skin_weights_at_or_below_this_value_tip"
             )
         )
     ), 
@@ -172,7 +163,7 @@ struct SkinChanger
 
         if selection.count == 0 then
         (
-            messageBox (::L.t "skin_please_select_one_or_more_obje_msg") title:(::L.t "skin_error_ptitle")
+            messageBox (::WdxL.t "skin_please_select_one_or_more_obje_msg") title:(::WdxL.t "skin_error_ptitle")
             theHold.Cancel()
             return false
         )
@@ -369,12 +360,12 @@ struct SkinChanger
         
         if objectsProcessed > 0 and overallSuccess then
         ( 
-            messageBox (finalMessage + "Operation completed successfully.") title:(::L.t "skin_success_ptitle")
+            messageBox (finalMessage + "Operation completed successfully.") title:(::WdxL.t "skin_success_ptitle")
             theHold.Accept(undoMessage)
         ) 
         else if objectsProcessed == 0 and selection.count > 0 then
         ( 
-             messageBox (finalMessage + "No suitable objects were processed.") title:(::L.t "skin_info_ptitle")
+             messageBox (finalMessage + "No suitable objects were processed.") title:(::WdxL.t "skin_info_ptitle")
              theHold.Cancel()
         ) 
         else 
@@ -395,7 +386,7 @@ struct SkinChanger
     (
         if selection.count == 0 then
         (
-            messageBox (::L.t "skin_no_objects_selectednplease_s_msg") title:(::L.t "skin_remove_zero_weights_ptitle")
+            messageBox (::WdxL.t "skin_no_objects_selectednplease_s_msg") title:(::WdxL.t "skin_remove_zero_weights_ptitle")
             return false
         )
         
@@ -487,7 +478,7 @@ struct SkinChanger
             msg += " (" + skippedCount as string + " skipped)"
         
         ::ErrorReporter.logInfo "SkinChanger" "RemoveZeroWeights" msg
-        messageBox msg title:(::L.t "skin_remove_zero_weights_ptitle_2")
+        messageBox msg title:(::WdxL.t "skin_remove_zero_weights_ptitle_2")
         
         return (processedCount > 0)
     ),
@@ -498,5 +489,5 @@ struct SkinChanger
     )
 )
 
-global SkinChanger = SkinChanger()
+global WdxSkinChanger = WdxSkinChanger()
 -- UI anzeigen mit: createDialog SkinChanger.mainRollout

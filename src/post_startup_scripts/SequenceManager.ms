@@ -1,4 +1,4 @@
-struct SequenceManager
+struct WdxSequenceManager
 (
     isPoppedOut = false,
     savedIndex = undefined,
@@ -62,7 +62,7 @@ struct SequenceManager
             -- Duration berechnen (identisch mit Wc3Animation.GetTextureAnimation)
             local playback = tex.playbackrate
             if playback == undefined or playback == 0 then playback = 1.0
-            local n = (::Utils.round (1.0 / playback)) as integer
+            local n = (::WdxUtils.round (1.0 / playback)) as integer
             if n == 0 then n = 1
             local duration = (n * fileCount) as time
             if duration > 0f then
@@ -153,13 +153,13 @@ struct SequenceManager
             ignoreStr += this.ignoredSequences[i]
             if i < this.ignoredSequences.count then ignoreStr += ";"
         )
-        setUserProp rootNode "WhiteoutDex_IgnoredSequences" ignoreStr
+        try ( setUserProp rootNode "WhiteoutDex_IgnoredSequences" ignoreStr ) catch()
     ),
 
     -- Ignore-Liste aus User Properties laden
     fn loadIgnoredSequences =
     (
-        local ignoreStr = getUserProp rootNode "WhiteoutDex_IgnoredSequences"
+        local ignoreStr = try ( getUserProp rootNode "WhiteoutDex_IgnoredSequences" ) catch ( undefined )
         this.ignoredSequences = #()
         if ignoreStr != undefined and ignoreStr != "" then
         (
@@ -349,56 +349,62 @@ struct SequenceManager
 	
     fn LoadSequences =
     (
-        -- Primary: Read from Custom Attributes (new system)
-        try
+        -- Primary: Read from WhiteoutDex Custom Attributes
+        if ::SequenceStorage != undefined and ::SequenceStorage.hasCA() then
         (
-            local names = rootNode.seqNames
-            if names != undefined and names.count > 0 then
+            format "** WDX LoadSeq: WhiteoutDex CA found on rootNode\n"
+            try
             (
-                local result = #()
-                for i = 1 to names.count do
+                local names = rootNode.seqNames
+                if names != undefined and names.count > 0 then
                 (
-                    local startF = rootNode.startFrames[i]
-                    local endF   = rootNode.endFrames[i]
-                    local noLoop = try (rootNode.nonLooping[i]) catch (false)
-                    local rar    = try (local r = rootNode.rarity[i]; if r == 0.0 then undefined else r as integer) catch (undefined)
-                    local mspd   = try (local m = rootNode.moveSpeed[i]; if m == 0.0 then undefined else m as integer) catch (undefined)
-                    -- Reforged v1200: Shared Group lesen
-                    local sg     = try (local v = rootNode.sharedGroup[i]; if v == "" then undefined else v) catch (undefined)
-                    local ext = undefined
-                    try
+                    format "** WDX LoadSeq: Found % sequences in CA\n" names.count
+                    local result = #()
+                    for i = 1 to names.count do
                     (
-                        local extStr = rootNode.seqExtents[i]
-                        if extStr != undefined and extStr != "" then
+                        local startF = rootNode.startFrames[i]
+                        local endF   = rootNode.endFrames[i]
+                        local noLoop = try (rootNode.nonLooping[i]) catch (false)
+                        local rar    = try (local r = rootNode.rarity[i]; if r == 0.0 then undefined else r as integer) catch (undefined)
+                        local mspd   = try (local m = rootNode.moveSpeed[i]; if m == 0.0 then undefined else m as integer) catch (undefined)
+                        local sg     = try (local v = rootNode.sharedGroup[i]; if v == "" then undefined else v) catch (undefined)
+                        local ext = undefined
+                        try
                         (
-                            local parts = filterString extStr " "
-                            if parts.count == 7 then
+                            local extStr = rootNode.seqExtents[i]
+                            if extStr != undefined and extStr != "" then
                             (
-                                ext = Wc3Extent \
-                                    minExtent:[(parts[2] as float), (parts[3] as float), (parts[4] as float)] \
-                                    maxExtent:[(parts[5] as float), (parts[6] as float), (parts[7] as float)] \
-                                    bound:(parts[1] as float)
+                                local parts = filterString extStr " "
+                                if parts.count == 7 then
+                                (
+                                    ext = Wc3Extent \
+                                        minExtent:[(parts[2] as float), (parts[3] as float), (parts[4] as float)] \
+                                        maxExtent:[(parts[5] as float), (parts[6] as float), (parts[7] as float)] \
+                                        bound:(parts[1] as float)
+                                )
                             )
-                        )
-                    ) catch ()
-                    append result (Wc3Sequence \
-                        name:(names[i]) \
-                        startTime:(startF as time) \
-                        endTime:(endF as time) \
-                        loop:noLoop \
-                        rarity:rar \
-                        movespeed:mspd \
-                        extents:ext \
-                        ex:undefined \
-                        sharedGroup:sg)
+                        ) catch ()
+                        append result (Wc3Sequence \
+                            name:(names[i]) \
+                            startTime:(startF as time) \
+                            endTime:(endF as time) \
+                            loop:noLoop \
+                            rarity:rar \
+                            movespeed:mspd \
+                            extents:ext \
+                            ex:undefined \
+                            sharedGroup:sg)
+                    )
+                    return result
                 )
-                return result
-            )
-        ) catch ()
+            ) catch (format "** WDX LoadSequences ERROR: %\n" (getCurrentException()))
+        )
+
         
         -- Fallback: Read from NoteTracks (legacy scenes)
+        format "** WDX LoadSeq: Trying NoteTracks fallback (hasNT: %)\n" (HasNoteTracks Rootnode)
         this.cleanEmptyKeysFromSequences()
-        ::Utils.ArrayMap (GetSequenceData ()) (fn tmp a = readSequenceData a[1] a[2])
+        ::WdxUtils.ArrayMap (GetSequenceData ()) (fn tmp a = readSequenceData a[1] a[2])
     ),
     
     fn playSequence i =
@@ -441,7 +447,7 @@ struct SequenceManager
                 -- Reforged v1200: Shared Group Info speichern
                 append rootNode.sharedGroup (if seq.sharedGroup != undefined then seq.sharedGroup else "")
             )
-        ) catch ()
+        ) catch (format "** WDX saveSequences ERROR: %\n" (getCurrentException()))
     ),
 	
 	fn getNewSequenceName newSequenceName =
@@ -501,11 +507,11 @@ struct SequenceManager
     fn sceneChangeCallback =
     (
         print "SequenceManager updated"
-        ::SequenceManager.sequences = ::SequenceManager.LoadSequences()
-		::SequenceManager.scanGlobalSequences()
-        ::SequenceManager.saveSequences()
-        ::SequenceManager.mainRollout.setListItems()
-        ::SequenceManager.checkSequenceOverlapping()
+        ::WdxSequenceManager.sequences = ::WdxSequenceManager.LoadSequences()
+		::WdxSequenceManager.scanGlobalSequences()
+        ::WdxSequenceManager.saveSequences()
+        ::WdxSequenceManager.mainRollout.setListItems()
+        ::WdxSequenceManager.checkSequenceOverlapping()
     ),
 	
     fn listUpdateAfterUndoRedo =
@@ -656,7 +662,6 @@ struct SequenceManager
     mainRollout = rollout mainRollout "Sequence Manager" width:444 height:402
     (
         local self
-        button popOutBtn "Undock" pos:[384, 2] width:56 height:18 tooltip:"Undock / Dock"
         
 
         -- Ersetze den kompletten newSequenceRollout mit dieser kompakteren Version:
@@ -833,7 +838,7 @@ struct SequenceManager
                 
                 on newSequenceRollout open do
                 (
-                    self = SequenceManager
+                    self = WdxSequenceManager
                     parent = mainRollout
                     
                     -- Initial Name setzen für Custom
@@ -864,24 +869,24 @@ struct SequenceManager
                     )
 
                     -- Localization
-                    if ::L != undefined then
+                    if ::WdxL != undefined then
                     (
-                        newSequenceRollout.title = ::L.t "seq_new_sequence_title"
-                        presetLbl.text = ::L.t "seq_preset_lbl"
-                        presetDDL.tooltip = ::L.t "seq_select_animation_preset_tip"
-                        nameLbl.text = ::L.t "seq_name_lbl"
-                        nameEdt.tooltip = ::L.t "seq_enter_the_name_of_the_new_sequ_tip"
-                        startFrameLbl.text = ::L.t "seq_start_frame_lbl"
-                        endFrameLbl.text = ::L.t "seq_end_frame_lbl"
-                        rarityChk.text = ::L.t "seq_rarity_chk"
-                        rarityChk.tooltip = ::L.t "seq_enabledisable_rarity_of_the_a_tip"
-                        movespeedChk.text = ::L.t "seq_move_speed_chk"
-                        movespeedChk.tooltip = ::L.t "seq_enabledisable_movement_speed_tip"
-                        nonloopingChk.text = ::L.t "seq_non_looping_chk"
-                        okBtn.text = ::L.t "seq_ok_btn"
-                        okBtn.tooltip = ::L.t "seq_create_new_sequence_and_close_tip"
-                        cancelBtn.text = ::L.t "seq_cancel_btn"
-                        cancelBtn.tooltip = ::L.t "seq_cancel_without_creating_a_sequ_tip"
+                        newSequenceRollout.title = ::WdxL.t "seq_new_sequence_title"
+                        presetLbl.text = ::WdxL.t "seq_preset_lbl"
+                        presetDDL.tooltip = ::WdxL.t "seq_select_animation_preset_tip"
+                        nameLbl.text = ::WdxL.t "seq_name_lbl"
+                        nameEdt.tooltip = ::WdxL.t "seq_enter_the_name_of_the_new_sequ_tip"
+                        startFrameLbl.text = ::WdxL.t "seq_start_frame_lbl"
+                        endFrameLbl.text = ::WdxL.t "seq_end_frame_lbl"
+                        rarityChk.text = ::WdxL.t "seq_rarity_chk"
+                        rarityChk.tooltip = ::WdxL.t "seq_enabledisable_rarity_of_the_a_tip"
+                        movespeedChk.text = ::WdxL.t "seq_move_speed_chk"
+                        movespeedChk.tooltip = ::WdxL.t "seq_enabledisable_movement_speed_tip"
+                        nonloopingChk.text = ::WdxL.t "seq_non_looping_chk"
+                        okBtn.text = ::WdxL.t "seq_ok_btn"
+                        okBtn.tooltip = ::WdxL.t "seq_create_new_sequence_and_close_tip"
+                        cancelBtn.text = ::WdxL.t "seq_cancel_btn"
+                        cancelBtn.tooltip = ::WdxL.t "seq_cancel_without_creating_a_sequ_tip"
                     )
                 )
             )
@@ -1281,7 +1286,7 @@ struct SequenceManager
 								
 								local pluginParams = case cls of
 								(
-									Wc3_Light: #("DecayStart", "DecayEnd", "AmbColor", "AmbValue", "ShadowColor", "ShadowValue")
+									Wdx_Light: #("DecayStart", "DecayEnd", "AmbColor", "AmbValue", "ShadowColor", "ShadowValue")
 									BlizzParticle1: #("radius", "longitude", "latitude", "PartEmit", "Life", "Gravity")
 									BlizRibbon: #("slots", "Above", "Below", "vertexcolor", "alpha")
 									default: #()
@@ -1312,10 +1317,10 @@ struct SequenceManager
         
         on globalsBtn pressed do
         (
-            if ::GlobalSequenceManager != undefined then
-                ::GlobalSequenceManager.showUI()
+            if ::WdxGlobalSequenceManager != undefined then
+                ::WdxGlobalSequenceManager.showUI()
             else
-                messageBox (::L.t "seq_globalsequencemanager_not_load_msg") title:(::L.t "seq_error_ptitle")
+                messageBox (::WdxL.t "seq_globalsequencemanager_not_load_msg") title:(::WdxL.t "seq_error_ptitle")
         )
 
         on sequencesLbox doubleClicked sel do
@@ -1816,7 +1821,7 @@ struct SequenceManager
                     close input_file
                     local msg = loadedSequences.count as string + " animations have been load from: " + filename
                     print msg
-                    messagebox msg title:(::L.t "seq_sequence_names_load_success_ptitle")
+                    messagebox msg title:(::WdxL.t "seq_sequence_names_load_success_ptitle")
                     
                     if loadedSequences.count > 0 then
                     (
@@ -1851,7 +1856,7 @@ struct SequenceManager
                     close output_file
                     local msg = self.sequences.count as string + " animations have been saved in: " + filename
                     print msg
-                    messagebox msg title:(::L.t "seq_sequence_names_save_success_ptitle")
+                    messagebox msg title:(::WdxL.t "seq_sequence_names_save_success_ptitle")
                 )
                 catch
                 (
@@ -1864,15 +1869,15 @@ struct SequenceManager
 		-- Pop Out / Dock
 		on popOutBtn pressed do
 		(
-			if ::SequenceManager.isPoppedOut then
+			if ::WdxSequenceManager.isPoppedOut then
 			(
-				::SequenceManager.isPoppedOut = false
+				::WdxSequenceManager.isPoppedOut = false
 				try ( destroyDialog mainRollout ) catch()
 				
 				if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 				(
 					local rollouts = ::whiteoutdexManagerFloater.rollouts
-					local idx = ::SequenceManager.savedIndex
+					local idx = ::WdxSequenceManager.savedIndex
 					if idx != undefined and idx <= rollouts.count then
 					(
 						local movedRollouts = #()
@@ -1898,25 +1903,17 @@ struct SequenceManager
 			(
 				local rollouts = ::whiteoutdexManagerFloater.rollouts
 				for i = 1 to rollouts.count do
-					if rollouts[i] == mainRollout then ( ::SequenceManager.savedIndex = i; exit )
+					if rollouts[i] == mainRollout then ( ::WdxSequenceManager.savedIndex = i; exit )
 				removeRollout mainRollout ::whiteoutdexManagerFloater
 			)
 			
-			::SequenceManager.isPoppedOut = true
-			popOutBtn.text = ::L.t "common_dock_btn"
+			::WdxSequenceManager.isPoppedOut = true
 			createDialog mainRollout width:444 height:402 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
 		)
 
         on mainRollout open do
         (
-            self = SequenceManager
-            
-			if ::SequenceManager.isPoppedOut then
-				popOutBtn.text = ::L.t "common_dock_btn"
-			else
-				popOutBtn.text = ::L.t "common_undock_btn"
-			popOutBtn.tooltip = ::L.t "common_undock_dock_tip"
-            
+            self = WdxSequenceManager
 			self.sequences = self.LoadSequences()
 			self.loadIgnoredSequences()  -- Ignore-Liste laden
 			self.scanGlobalSequences()   -- Global Sequences aus Szene scannen
@@ -1935,57 +1932,57 @@ struct SequenceManager
 			callbacks.addScript #sceneRedo listUpdateAfterUndoRedo id:#WhiteoutDex
 
 			-- Localization
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				mainRollout.title = ::L.t "seq_sequence_manager_title"
-				filterClearBtn.text = ::L.t "seq_clear_btn"
-				filterClearBtn.tooltip = ::L.t "seq_clear_the_search_field_and_sho_tip"
-				selectAllBtn.text = ::L.t "seq_all_btn"
-				selectAllBtn.tooltip = ::L.t "seq_select_all_sequences_in_the_li_tip"
-				selectNoneBtn.text = ::L.t "seq_none_btn"
-				selectNoneBtn.tooltip = ::L.t "seq_deselect_all_sequences_tip"
-				selectInvertBtn.text = ::L.t "seq_invert_btn"
-				selectInvertBtn.tooltip = ::L.t "seq_invert_the_current_selection_tip"
-				sequenceNewBtn.text = ::L.t "seq_new_btn"
-				sequenceNewBtn.tooltip = ::L.t "seq_create_a_new_animation_sequenc_tip"
-				sequenceDeleteBtn.text = ::L.t "seq_delete_selected_btn"
-				sequenceDeleteBtn.tooltip = ::L.t "seq_delete_selected_sequences_tip"
-				duplicateBtn.text = ::L.t "seq_duplicate_btn"
-				duplicateBtn.tooltip = ::L.t "seq_duplicate_selected_sequences_tip"
-				globalsBtn.text = ::L.t "seq_globals_btn"
-				globalsBtn.tooltip = ::L.t "seq_open_the_global_sequence_manag_tip"
-				nameLbl.text = ::L.t "seq_name_lbl_2"
-				nameEdt.tooltip = ::L.t "seq_edit_name_of_the_selected_sequ_tip"
-				startFrameLbl.text = ::L.t "seq_start_frame_lbl_2"
-				setStartFrameBtn.tooltip = ::L.t "seq_set_current_frame_as_start_fra_tip"
-				endFrameLbl.text = ::L.t "seq_end_frame_lbl_2"
-				setEndFrameBtn.tooltip = ::L.t "seq_set_current_frame_as_end_frame_tip"
-				rarityChk.text = ::L.t "seq_rarity_chk_2"
-				rarityChk.tooltip = ::L.t "seq_enabledisable_rarity_of_the_a_tip_2"
-				movespeedChk.text = ::L.t "seq_move_speed_chk_2"
-				movespeedChk.tooltip = ::L.t "seq_enabledisable_movement_speed_tip_2"
-				nonloopingChk.text = ::L.t "seq_non_looping_chk_2"
-				nonloopingChk.tooltip = ::L.t "seq_animation_will_not_loop_when_p_tip"
-				ignoreChk.text = ::L.t "seq_ignore_chk"
-				ignoreChk.tooltip = ::L.t "seq_if_this_checkbox_is_enabled_t_tip"
-				nudgeKeysStartLbl.text = ::L.t "seq_start_lbl"
-				nudgeKeysEndLbl.text = ::L.t "seq_end_lbl"
-				nudgeKeysStartDownBtn.tooltip = ::L.t "seq_move_the_start_frame_of_the_se_tip"
-				nudgeKeysStartUpBtn.tooltip = ::L.t "seq_move_the_start_frame_of_the_se_tip_2"
-				nudgeKeysEndDownBtn.tooltip = ::L.t "seq_move_the_end_frame_of_the_sele_tip"
-				nudgeKeysEndUpBtn.tooltip = ::L.t "seq_move_the_end_frame_of_the_sele_tip_2"
-				fileLoadBtn.text = ::L.t "seq_load_btn"
-				fileLoadBtn.tooltip = ::L.t "seq_load_sequences_from_a_file_tip"
-				fileSaveBtn.text = ::L.t "seq_save_btn"
-				fileSaveBtn.tooltip = ::L.t "seq_save_sequences_to_a_file_tip"
+				mainRollout.title = ::WdxL.t "seq_sequence_manager_title"
+				filterClearBtn.text = ::WdxL.t "seq_clear_btn"
+				filterClearBtn.tooltip = ::WdxL.t "seq_clear_the_search_field_and_sho_tip"
+				selectAllBtn.text = ::WdxL.t "seq_all_btn"
+				selectAllBtn.tooltip = ::WdxL.t "seq_select_all_sequences_in_the_li_tip"
+				selectNoneBtn.text = ::WdxL.t "seq_none_btn"
+				selectNoneBtn.tooltip = ::WdxL.t "seq_deselect_all_sequences_tip"
+				selectInvertBtn.text = ::WdxL.t "seq_invert_btn"
+				selectInvertBtn.tooltip = ::WdxL.t "seq_invert_the_current_selection_tip"
+				sequenceNewBtn.text = ::WdxL.t "seq_new_btn"
+				sequenceNewBtn.tooltip = ::WdxL.t "seq_create_a_new_animation_sequenc_tip"
+				sequenceDeleteBtn.text = ::WdxL.t "seq_delete_selected_btn"
+				sequenceDeleteBtn.tooltip = ::WdxL.t "seq_delete_selected_sequences_tip"
+				duplicateBtn.text = ::WdxL.t "seq_duplicate_btn"
+				duplicateBtn.tooltip = ::WdxL.t "seq_duplicate_selected_sequences_tip"
+				globalsBtn.text = ::WdxL.t "seq_globals_btn"
+				globalsBtn.tooltip = ::WdxL.t "seq_open_the_global_sequence_manag_tip"
+				nameLbl.text = ::WdxL.t "seq_name_lbl_2"
+				nameEdt.tooltip = ::WdxL.t "seq_edit_name_of_the_selected_sequ_tip"
+				startFrameLbl.text = ::WdxL.t "seq_start_frame_lbl_2"
+				setStartFrameBtn.tooltip = ::WdxL.t "seq_set_current_frame_as_start_fra_tip"
+				endFrameLbl.text = ::WdxL.t "seq_end_frame_lbl_2"
+				setEndFrameBtn.tooltip = ::WdxL.t "seq_set_current_frame_as_end_frame_tip"
+				rarityChk.text = ::WdxL.t "seq_rarity_chk_2"
+				rarityChk.tooltip = ::WdxL.t "seq_enabledisable_rarity_of_the_a_tip_2"
+				movespeedChk.text = ::WdxL.t "seq_move_speed_chk_2"
+				movespeedChk.tooltip = ::WdxL.t "seq_enabledisable_movement_speed_tip_2"
+				nonloopingChk.text = ::WdxL.t "seq_non_looping_chk_2"
+				nonloopingChk.tooltip = ::WdxL.t "seq_animation_will_not_loop_when_p_tip"
+				ignoreChk.text = ::WdxL.t "seq_ignore_chk"
+				ignoreChk.tooltip = ::WdxL.t "seq_if_this_checkbox_is_enabled_t_tip"
+				nudgeKeysStartLbl.text = ::WdxL.t "seq_start_lbl"
+				nudgeKeysEndLbl.text = ::WdxL.t "seq_end_lbl"
+				nudgeKeysStartDownBtn.tooltip = ::WdxL.t "seq_move_the_start_frame_of_the_se_tip"
+				nudgeKeysStartUpBtn.tooltip = ::WdxL.t "seq_move_the_start_frame_of_the_se_tip_2"
+				nudgeKeysEndDownBtn.tooltip = ::WdxL.t "seq_move_the_end_frame_of_the_sele_tip"
+				nudgeKeysEndUpBtn.tooltip = ::WdxL.t "seq_move_the_end_frame_of_the_sele_tip_2"
+				fileLoadBtn.text = ::WdxL.t "seq_load_btn"
+				fileLoadBtn.tooltip = ::WdxL.t "seq_load_sequences_from_a_file_tip"
+				fileSaveBtn.text = ::WdxL.t "seq_save_btn"
+				fileSaveBtn.tooltip = ::WdxL.t "seq_save_sequences_to_a_file_tip"
 			)
         )
         
         on mainRollout close do
         (
-			if ::SequenceManager.isPoppedOut then
+			if ::WdxSequenceManager.isPoppedOut then
 			(
-				::SequenceManager.isPoppedOut = false
+				::WdxSequenceManager.isPoppedOut = false
 				local tmr = dotNetObject "System.Windows.Forms.Timer"
 				tmr.Interval = 1
 				dotNet.addEventHandler tmr "Tick" (fn _dockTmr s e =
@@ -1995,8 +1992,8 @@ struct SequenceManager
 					(
 						if ::whiteoutdexManagerFloater != undefined and ::whiteoutdexManagerFloater.open then
 						(
-							local rl = ::SequenceManager.mainRollout
-							local idx = ::SequenceManager.savedIndex
+							local rl = ::WdxSequenceManager.mainRollout
+							local idx = ::WdxSequenceManager.savedIndex
 							local rollouts = ::whiteoutdexManagerFloater.rollouts
 							if idx != undefined and idx <= rollouts.count then
 							(
@@ -2037,4 +2034,4 @@ struct SequenceManager
         print "SequenceManager instanced."
     )
 )
-global SequenceManager = SequenceManager()
+global WdxSequenceManager = WdxSequenceManager()

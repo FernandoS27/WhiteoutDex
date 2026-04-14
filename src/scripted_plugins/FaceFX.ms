@@ -1,8 +1,8 @@
 
-plugin simpleManipulator BlizzFaceFX
-name:"FaceFX"
-classID:#(0x1f2f6643, 0x253d2ca1)
-category:"Warcraft 3 Systems"
+plugin simpleManipulator Wdx_Wc3FaceFX
+name:"Wc3 FaceFX"
+classID:#(0x7A1B2C08, 0x3D4E5F08)
+category:"Warcraft III Plugins"
 (
 	------------------------------------- Variable Registration -------------------------------------
 	local Icon_Path		  = (GetDir #userIcons + "\\WhiteoutDexIcon\\")
@@ -25,7 +25,7 @@ category:"Warcraft 3 Systems"
 	-----------------------------------Import FaceFX configuration parameters-----------------------------------
 	fn ImportFaceFX =
 	(
-		local input_file = getOpenFileName caption:(::L.t "facefx_select_facefx_data_file_cap") types:"Config File (*.ini)|*.ini|" historyCategory:"FaceFXImportHistory"
+		local input_file = getOpenFileName caption:(::WdxL.t "facefx_select_facefx_data_file_cap") types:"Config File (*.ini)|*.ini|" historyCategory:"FaceFXImportHistory"
 		if (input_file == undefined) then (return undefined)
 		local obj = selection[1]
 		----------------------------------------------------------------------------------------------------------------------
@@ -41,7 +41,7 @@ category:"Warcraft 3 Systems"
 	-----------------------------------Export FaceFX configuration parameters-----------------------------------
 	fn ExportFaceFX =
 	(
-		local output_file = getSaveFileName caption:(::L.t "facefx_save_facefx_data_file_cap") types:"Config File (*.ini)|*.ini|" historyCategory:"FaceFXExportHistory"
+		local output_file = getSaveFileName caption:(::WdxL.t "facefx_save_facefx_data_file_cap") types:"Config File (*.ini)|*.ini|" historyCategory:"FaceFXExportHistory"
 		if (output_file == undefined) then (return undefined)
 		local obj = selection[1]
 		----------------------------------------------------------------------------------------------------------------------
@@ -69,8 +69,8 @@ category:"Warcraft 3 Systems"
 		)
 		on General open do
 		(
-			if ::L != undefined then
-				General.title = ::L.t "facefx_general_functions_title"
+			if ::WdxL != undefined then
+				General.title = ::WdxL.t "facefx_general_functions_title"
 		)
 	)
 
@@ -82,11 +82,11 @@ category:"Warcraft 3 Systems"
 		On btnExport pressed do ExportFaceFX()
 		on paramsE open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				paramsE.title = ::L.t "facefx_import_export_configuration_title"
-				btnImport.text = ::L.t "facefx_import_btn"
-				btnExport.text = ::L.t "facefx_export_btn"
+				paramsE.title = ::WdxL.t "facefx_import_export_configuration_title"
+				btnImport.text = ::WdxL.t "facefx_import_btn"
+				btnExport.text = ::WdxL.t "facefx_export_btn"
 			)
 		)
 	)
@@ -102,7 +102,7 @@ category:"Warcraft 3 Systems"
 
 		on btnBrowse pressed do
 		(
-			local f = getOpenFileName caption:(::L.t "facefx_select_facefx_file_cap") types:"FaceFX Files (*.facefx_ingame)|*.facefx_ingame|All Files|*.*|" historyCategory:"FaceFXFile"
+			local f = getOpenFileName caption:(::WdxL.t "facefx_select_facefx_file_cap") types:"FaceFX Files (*.facefx_ingame)|*.facefx_ingame|All Files|*.*|" historyCategory:"FaceFXFile"
 			if f != undefined then facefxPath.text = f
 		)
 		on btnInfo pressed do
@@ -111,13 +111,13 @@ category:"Warcraft 3 Systems"
 		)
 		on params1 open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				params1.title = ::L.t "facefx_facefx_settings_title"
-				l1.text = ::L.t "facefx__facefx_target_name_lbl"
-				l2.text = ::L.t "facefx__facefx_file_path_lbl"
-				btnBrowse.text = ::L.t "facefx_browse_facefx_file_btn"
-				btnInfo.text = ::L.t "facefx_facefx_explanation_btn"
+				params1.title = ::WdxL.t "facefx_facefx_settings_title"
+				l1.text = ::WdxL.t "facefx__facefx_target_name_lbl"
+				l2.text = ::WdxL.t "facefx__facefx_file_path_lbl"
+				btnBrowse.text = ::WdxL.t "facefx_browse_facefx_file_btn"
+				btnInfo.text = ::WdxL.t "facefx_facefx_explanation_btn"
 			)
 		)
 	)

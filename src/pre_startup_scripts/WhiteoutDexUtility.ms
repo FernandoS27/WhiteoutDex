@@ -6,23 +6,23 @@
     No state variables - pure functions grouped in a struct.
     
     Usage:
-        global Utils = UtilityFunctionsStruct()
-        Utils.F2I frameValue
-        Utils.ArrayMap myArray myFunc
+        global WdxUtils = WhiteoutDexUtilityStruct()
+        WdxUtils.F2I frameValue
+        WdxUtils.ArrayMap myArray myFunc
 */
 
 -- ============================================================================
 -- HELPER STRUCTS (remain outside main struct)
 -- ============================================================================
 
-struct Hierarchy
+struct WdxHierarchy
 (
     object,
     children = #(),
     parent
 )
 
-struct DoubleV
+struct WdxDoubleV
 (
     val1,
     val2
@@ -35,7 +35,7 @@ struct DoubleV
 -- MAIN UTILITY FUNCTIONS STRUCT
 -- ============================================================================
 
-struct UtilityFunctionsStruct
+struct WhiteoutDexUtilityStruct
 (
     -- ============================================================================
     -- FRAME/TIME CONVERSION FUNCTIONS
@@ -276,12 +276,12 @@ struct UtilityFunctionsStruct
             
             if parent == undefined then
             (
-                result = Hierarchy obj #() undefined
+                result = WdxHierarchy obj #() undefined
                 append h.children result
             )
             else
             (
-                result = Hierarchy obj #() obj.parent
+                result = WdxHierarchy obj #() obj.parent
                 append parent.children result
             )
             
@@ -473,7 +473,7 @@ struct UtilityFunctionsStruct
     (
         local result = #()
         -- Read from Custom Attributes on rootNode
-        if ::SequenceStorage != undefined then ::SequenceStorage.autoMigrate()
+        if ::WdxSequenceStorage != undefined then ::WdxSequenceStorage.autoMigrate()
         
         if (try (rootNode.seqNames.count > 0) catch false) then
         (
@@ -649,23 +649,23 @@ struct UtilityFunctionsStruct
     )
 )
 
-global Utils = UtilityFunctionsStruct()
+global WdxUtils = WhiteoutDexUtilityStruct()
 
 -- ============================================================================
 -- CALLBACK DELEGATES (required for ArrayFilter/ArrayMap function-reference pattern)
 -- MaxScript cannot pass struct methods as &func references.
 -- ============================================================================
-fn IsWc3Material obj = Utils.IsWc3Material obj
-fn IsMultiLayered obj = Utils.IsMultiLayered obj
-fn IsMesh obj = Utils.IsMesh obj
-fn IsSkinned obj = Utils.IsSkinned obj
-fn IsLight obj = Utils.IsLight obj
-fn IsAttachment obj = Utils.IsAttachment obj
-fn IsEventObject obj = Utils.IsEventObject obj
-fn IsParticleEmitter obj = Utils.IsParticleEmitter obj
-fn IsParticleEmitter2 obj = Utils.IsParticleEmitter2 obj
-fn IsRibbonEmitter obj = Utils.IsRibbonEmitter obj
-fn IsCollisionShape obj = Utils.IsCollisionShape obj
-fn IsPopcornEmitter obj = Utils.IsPopcornEmitter obj
-fn IsFaceFX obj = Utils.IsFaceFX obj
-fn IsCamera obj = Utils.IsCamera obj
+fn WdxIsWc3Material obj = WdxUtils.IsWc3Material obj
+fn WdxIsMultiLayered obj = WdxUtils.IsMultiLayered obj
+fn WdxIsMesh obj = WdxUtils.IsMesh obj
+fn WdxIsSkinned obj = WdxUtils.IsSkinned obj
+fn WdxIsLight obj = WdxUtils.IsLight obj
+fn WdxIsAttachment obj = WdxUtils.IsAttachment obj
+fn WdxIsEventObject obj = WdxUtils.IsEventObject obj
+fn WdxIsParticleEmitter obj = WdxUtils.IsParticleEmitter obj
+fn WdxIsParticleEmitter2 obj = WdxUtils.IsParticleEmitter2 obj
+fn WdxIsRibbonEmitter obj = WdxUtils.IsRibbonEmitter obj
+fn WdxIsCollisionShape obj = WdxUtils.IsCollisionShape obj
+fn WdxIsPopcornEmitter obj = WdxUtils.IsPopcornEmitter obj
+fn WdxIsFaceFX obj = WdxUtils.IsFaceFX obj
+fn WdxIsCamera obj = WdxUtils.IsCamera obj

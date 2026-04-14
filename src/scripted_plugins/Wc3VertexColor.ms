@@ -1,5 +1,5 @@
-plugin modifier Wc3VertexMod
-name:"Wc3 Vertex Color" classID:#(0x234d68a2, 0x7204a141) 
+plugin modifier Wdx_Wc3VertexMod
+name:"Wc3 Vertex Color" classID:#(0x7A1B2C07, 0x3D4E5F07) 
 extends:VertexPaint replaceUI:true version:1
 (
 	parameters main rollout:params
@@ -19,12 +19,12 @@ extends:VertexPaint replaceUI:true version:1
 
 		on params open do
 		(
-			if ::L != undefined then
+			if ::WdxL != undefined then
 			(
-				params.title = ::L.t "vtx_basic_parameters_title"
-				l1.text = ::L.t "vtx_overlay_color_lbl"
-				l2.text = ::L.t "vtx_drop_shadow_lbl"
-				l3.text = ::L.t "vtx_use_color_lbl"
+				params.title = ::WdxL.t "vtx_basic_parameters_title"
+				l1.text = ::WdxL.t "vtx_overlay_color_lbl"
+				l2.text = ::WdxL.t "vtx_drop_shadow_lbl"
+				l3.text = ::WdxL.t "vtx_use_color_lbl"
 			)
 		)
 	)
