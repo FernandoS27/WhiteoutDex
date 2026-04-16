@@ -84,10 +84,38 @@ add_custom_command(
 
 add_custom_target(WhiteoutDexShaders DEPENDS "${COMPILED_SHADERS_H}")
 
+# ---- Static library: GFX Service (backend-agnostic abstraction) ----
+add_library(WhiteoutDexGfx STATIC
+    src/gfx/gfx_factory.cpp
+    src/gfx/d3d11/d3d11_device.cpp
+    src/gfx/d3d11/d3d11_command_list.cpp
+)
+
+set_target_properties(WhiteoutDexGfx PROPERTIES
+    CXX_STANDARD          20
+    CXX_STANDARD_REQUIRED ON
+)
+
+target_include_directories(WhiteoutDexGfx PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+target_link_libraries(WhiteoutDexGfx
+    PRIVATE d3d11.lib dxgi.lib
+)
+
+if(MSVC)
+    target_compile_options(WhiteoutDexGfx PRIVATE
+        /W3 /EHsc
+        /wd4100 /wd4127 /wd4244 /wd4267
+    )
+endif()
+
 # ---- Static library: standalone renderer + MDX adapter ----
 add_library(WhiteoutDexRendererLib STATIC
     src/renderer/render_service.cpp
     src/renderer/render_target.cpp
+    src/renderer/viewcube_atlas.cpp
     src/ui/render_window.cpp
     src/renderer/particle.cpp
     src/renderer/ribbon.cpp
@@ -116,8 +144,7 @@ target_include_directories(WhiteoutDexRendererLib PUBLIC
 
 target_link_libraries(WhiteoutDexRendererLib PUBLIC
     whiteout_lib
-    d3d11.lib
-    dxgi.lib
+    WhiteoutDexGfx
     user32.lib
     gdi32.lib
     comdlg32.lib

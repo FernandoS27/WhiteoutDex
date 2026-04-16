@@ -5,6 +5,7 @@
 // ============================================================================
 
 #include "renderer/render_service.h"
+#include "ui/render_window.h"
 #include "io/mdx_model_adapter.h"
 #include <whiteout/models/mdx/parser.h>
 #include <filesystem>
@@ -65,7 +66,8 @@ int main(int argc, char* argv[]) {
 
     // Open renderer (initializes the FileContentProvider which discovers WC3)
     WhiteoutDex::RenderService renderer;
-    if (!renderer.Open(1024, 768)) {
+    WhiteoutDex::RenderWindow renderWindow(renderer);
+    if (!renderWindow.Open(1024, 768)) {
         std::cerr << "Failed to open renderer window\n";
         return 1;
     }
@@ -146,7 +148,7 @@ int main(int argc, char* argv[]) {
     int currentSeq = 0;
     std::cout << "Renderer open. Close the window to exit.\n";
 
-    while (renderer.IsOpen()) {
+    while (renderWindow.IsOpen()) {
         auto now = std::chrono::steady_clock::now();
         int elapsed = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
 
@@ -178,7 +180,7 @@ int main(int argc, char* argv[]) {
         Sleep(16); // ~60 FPS
     }
 
-    renderer.Close();
+    renderWindow.Close();
     std::cout << "Done.\n";
     return 0;
 }

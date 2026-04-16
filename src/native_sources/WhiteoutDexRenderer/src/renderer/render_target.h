@@ -1,12 +1,14 @@
 // ============================================================================
-// RenderTarget — Per-target GPU resources (RTV, DSV, swap chain or texture).
+// RenderTarget — Per-target GPU resources (swap chain or off-screen pair).
 //
 // Internal type. Each target represents either a swap-chain-backed window
 // surface or an off-screen render-to-texture surface.
+// All resources are owned by the GFX device's slot-maps; RenderTarget only
+// holds opaque handles.
 // ============================================================================
 #pragma once
 
-#include "dx_types.h"
+#include "gfx/gfx.h"
 #include <cstdint>
 
 namespace WhiteoutDex {
@@ -21,20 +23,12 @@ struct DisplayFlags {
 };
 
 struct RenderTarget {
-    RenderTargetId          id       = 0;
-    IDXGISwapChain*         swapChain = nullptr;   // null for off-screen targets
-    ID3D11RenderTargetView* rtv       = nullptr;
-    ID3D11DepthStencilView* dsv       = nullptr;
-    ID3D11Texture2D*        depthBuf  = nullptr;
-    ID3D11Texture2D*        colorTex  = nullptr;   // off-screen targets only
-    int                     width     = 0;
-    int                     height    = 0;
-
-    /// Resize swap-chain target (recreates back-buffer RTV + depth DSV).
-    bool Resize(ID3D11Device* device, int w, int h);
-
-    /// Release all GPU resources held by this target.
-    void Release();
+    RenderTargetId        id     = 0;
+    gfx::SwapChainHandle  swap   = gfx::SwapChainHandle::Invalid;   // Invalid = offscreen
+    gfx::TextureHandle    color  = gfx::TextureHandle::Invalid;
+    gfx::TextureHandle    depth  = gfx::TextureHandle::Invalid;
+    int                   width  = 0;
+    int                   height = 0;
 };
 
 } // namespace WhiteoutDex

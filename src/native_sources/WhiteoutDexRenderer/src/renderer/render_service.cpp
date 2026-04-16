@@ -3,13 +3,12 @@
 // ============================================================================
 
 #include "render_service.h"
-#include "render_window.h"
 #include "constants.h"
 #include "compiled_shaders.h"
-#include "resource.h"
 #include "team_glow_data.h"
 #include "mdx_model_adapter.h"
 #include "file_content_provider.h"
+#include "viewcube_atlas.h"
 #include <whiteout/models/mdx/parser.h>
 #include <numbers>
 #include <cstring>
@@ -38,29 +37,7 @@ RenderService::RenderService() {
     activeContentProvider_ = &contentProvider_;
     StartTemplateLoader();
 }
-RenderService::~RenderService() { StopTemplateLoader(); Close(); }
-
-// ============================================================================
-// Lifecycle
-// ============================================================================
-
-bool RenderService::Open(int width, int height) {
-    if (renderWindow_ && renderWindow_->IsOpen()) return true;
-    if (renderWindow_) renderWindow_->Close();   // join any previous thread
-    width_ = width;
-    height_ = height;
-    renderWindow_ = std::make_unique<RenderWindow>(*this);
-    return renderWindow_->Open(width, height);
-}
-
-void RenderService::Close() {
-    if (renderWindow_) {
-        renderWindow_->Close();
-        renderWindow_.reset();
-    }
-}
-
-bool RenderService::IsOpen() const { return renderWindow_ && renderWindow_->IsOpen(); }
+RenderService::~RenderService() { StopTemplateLoader(); }
 
 void RenderService::SetCamera(float pitch, float yaw, float distance,
                          float tx, float ty, float tz) {
@@ -88,7 +65,7 @@ void RenderService::RemoveModel(uint32_t handle) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     auto it = models_.find(handle);
     if (it != models_.end()) {
-        it->second->ReleaseGPU();
+        it->second->ReleaseGPU(*gfx_);
         models_.erase(it);
     }
     if (focusModelHandle_ == handle) {
@@ -418,7 +395,7 @@ void RenderService::UpdatePE1(float dt) {
     for (uint32_t rh : toRemove) {
         auto it = models_.find(rh);
         if (it != models_.end()) {
-            it->second->ReleaseGPU();
+            it->second->ReleaseGPU(*gfx_);
             models_.erase(it);
             pe1InstanceCount_--;
         }
@@ -851,9 +828,10 @@ void RenderService::ApplyFrameState(const FrameState& state, int timeMs) {
 
 void RenderService::UpdateTeamColorTextures() {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    uint8_t r = GetRValue(teamColor_);
-    uint8_t g = GetGValue(teamColor_);
-    uint8_t b = GetBValue(teamColor_);
+    // teamColor_ is BGR-packed (0x00BBGGRR)
+    uint8_t r = (uint8_t)(teamColor_ & 0xFF);
+    uint8_t g = (uint8_t)((teamColor_ >> 8) & 0xFF);
+    uint8_t b = (uint8_t)((teamColor_ >> 16) & 0xFF);
     for (auto& [h, mi] : models_) {
         for (auto& [texId, replId] : mi->replaceableTexMap) {
             StagedTexture& st = mi->stagedTextures[texId];
@@ -880,19 +858,16 @@ void RenderService::UpdateTeamColorTextures() {
 // ============================================================================
 
 void RenderService::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
-    teamColor_ = RGB(r, g, b);
+    // BGR packing matches the Windows RGB() macro layout: 0x00BBGGRR.
+    teamColor_ = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
     UpdateTeamColorTextures();
-    if (renderWindow_) renderWindow_->InvalidateTeamColorSwatch();
+    teamColorDirty_.store(true);
 }
 
 void RenderService::SetCameraPresets(const std::vector<CameraPreset>& presets) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     pendingCameraPresets_ = presets;
     cameraDirty_ = true;
-}
-
-int RenderService::GetActiveCameraIndex() const {
-    return renderWindow_ ? renderWindow_->GetActiveCameraIndex() : 0;
 }
 
 std::optional<std::vector<CameraPreset>> RenderService::TakePendingCameraPresets() {
@@ -1005,26 +980,15 @@ void RenderService::UploadStagedTextures(ModelInstance& mi) {
     for (auto& [id, st] : mi.stagedTextures) {
         if (st.width <= 0 || st.height <= 0) continue;
 
-        if (mi.gpuTextures.count(id)) mi.gpuTextures[id].Release();
+        if (mi.gpuTextures.count(id)) mi.gpuTextures[id].Release(*gfx_);
 
         GPUTexture gt;
-        D3D11_TEXTURE2D_DESC td = {};
-        td.Width  = st.width;
-        td.Height = st.height;
-        td.MipLevels = 1;
-        td.ArraySize = 1;
-        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        td.SampleDesc.Count = 1;
-        td.Usage = D3D11_USAGE_IMMUTABLE;
-        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-        D3D11_SUBRESOURCE_DATA srd = {};
-        srd.pSysMem = st.pixels.data();
-        srd.SysMemPitch = st.width * 4;
-
-        if (SUCCEEDED(device_->CreateTexture2D(&td, &srd, &gt.tex))) {
-            device_->CreateShaderResourceView(gt.tex, nullptr, &gt.srv);
-        }
+        gt.tex = gfx_->CreateTexture({
+            .width  = st.width,
+            .height = st.height,
+            .format = gfx::Format::R8G8B8A8_UNORM,
+            .usage  = gfx::TextureUsage::ShaderResource,
+        }, st.pixels.data());
         gt.wrapFlags = st.wrapFlags;
         mi.gpuTextures[id] = gt;
     }
@@ -1045,27 +1009,16 @@ void RenderService::UploadStagedGeosets(ModelInstance& mi) {
         if (sg.materialId >= 0 && sg.materialId < (int)mi.gpuMaterials.size())
             gg.priorityPlane = mi.gpuMaterials[sg.materialId].cpu.priorityPlane;
 
-        // ---- GPU compute skinning buffers ----
-        UINT vbBytes = (UINT)(sizeof(Vertex) * sg.vertices.size());
+        uint32_t vbBytes = (uint32_t)(sizeof(Vertex) * sg.vertices.size());
 
-        // 1. Base vertex buffer (immutable SRV)
-        D3D11_BUFFER_DESC bd = {};
-        bd.ByteWidth           = vbBytes;
-        bd.Usage               = D3D11_USAGE_IMMUTABLE;
-        bd.BindFlags           = D3D11_BIND_SHADER_RESOURCE;
-        bd.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-        bd.StructureByteStride = sizeof(Vertex);
-        D3D11_SUBRESOURCE_DATA srd = {};
-        srd.pSysMem = sg.vertices.data();
-        device_->CreateBuffer(&bd, &srd, &gg.baseVertBuf);
+        // 1. Base vertex buffer (immutable structured SRV for compute skinning)
+        gg.baseVertBuf = gfx_->CreateBuffer({
+            .size          = vbBytes,
+            .elementStride = sizeof(Vertex),
+            .usage         = gfx::BufferUsage::ShaderResource,
+        }, sg.vertices.data());
 
-        D3D11_SHADER_RESOURCE_VIEW_DESC srvd = {};
-        srvd.Format              = DXGI_FORMAT_UNKNOWN;
-        srvd.ViewDimension       = D3D11_SRV_DIMENSION_BUFFER;
-        srvd.Buffer.NumElements  = gg.vertexCount;
-        device_->CreateShaderResourceView(gg.baseVertBuf, &srvd, &gg.baseVertSRV);
-
-        // 2. Weight buffer (immutable SRV) — pack VertexInfluence into uint4 + float4
+        // 2. Weight buffer (immutable structured SRV) — pack VertexInfluence into uint4 + float4
         struct GPUWeight { uint32_t boneIdx[4]; float weight[4]; };
         static_assert(sizeof(GPUWeight) == 32, "GPUWeight must be 32 bytes");
         std::vector<GPUWeight> gpuWeights(gg.vertexCount);
@@ -1080,48 +1033,30 @@ void RenderService::UploadStagedGeosets(ModelInstance& mi) {
             }
         }
 
-        bd.ByteWidth           = (UINT)(sizeof(GPUWeight) * gg.vertexCount);
-        bd.StructureByteStride = sizeof(GPUWeight);
-        srd.pSysMem = gpuWeights.data();
-        device_->CreateBuffer(&bd, &srd, &gg.weightBuf);
+        gg.weightBuf = gfx_->CreateBuffer({
+            .size          = (uint32_t)(sizeof(GPUWeight) * gg.vertexCount),
+            .elementStride = sizeof(GPUWeight),
+            .usage         = gfx::BufferUsage::ShaderResource,
+        }, gpuWeights.data());
 
-        srvd.Buffer.NumElements = gg.vertexCount;
-        device_->CreateShaderResourceView(gg.weightBuf, &srvd, &gg.weightSRV);
+        // 3. Skinned output buffer (structured UAV for compute output)
+        gg.skinnedBuf = gfx_->CreateBuffer({
+            .size          = vbBytes,
+            .elementStride = sizeof(Vertex),
+            .usage         = gfx::BufferUsage::UnorderedAccess,
+        });
 
-        // 3. Skinned output buffer (compute UAV — structured, no VB bind)
-        bd.ByteWidth           = vbBytes;
-        bd.Usage               = D3D11_USAGE_DEFAULT;
-        bd.BindFlags           = D3D11_BIND_UNORDERED_ACCESS;
-        bd.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-        bd.StructureByteStride = sizeof(Vertex);
-        bd.CPUAccessFlags      = 0;
-        device_->CreateBuffer(&bd, nullptr, &gg.skinnedBuf);
+        // 4. Vertex buffer for drawing (DEFAULT — CopyBuffer target from skinned output)
+        gg.vb = gfx_->CreateBuffer({
+            .size  = vbBytes,
+            .usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::GpuWritable,
+        }, sg.vertices.data());
 
-        D3D11_UNORDERED_ACCESS_VIEW_DESC uavd = {};
-        uavd.Format             = DXGI_FORMAT_UNKNOWN;
-        uavd.ViewDimension      = D3D11_UAV_DIMENSION_BUFFER;
-        uavd.Buffer.NumElements = gg.vertexCount;
-        device_->CreateUnorderedAccessView(gg.skinnedBuf, &uavd, &gg.skinnedUAV);
-
-        // 4. Vertex buffer for drawing (plain DEFAULT buffer — CopyResource target)
-        D3D11_BUFFER_DESC vbDesc = {};
-        vbDesc.ByteWidth = vbBytes;
-        vbDesc.Usage     = D3D11_USAGE_DEFAULT;
-        vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        srd.pSysMem = sg.vertices.data(); // initial data = bind pose
-        device_->CreateBuffer(&vbDesc, &srd, &gg.vb);
-
-        // Index buffer (immutable, same for both paths)
-        {
-            D3D11_BUFFER_DESC bd = {};
-            bd.ByteWidth      = (UINT)(sizeof(uint32_t) * sg.indices.size());
-            bd.Usage          = D3D11_USAGE_IMMUTABLE;
-            bd.BindFlags      = D3D11_BIND_INDEX_BUFFER;
-            bd.CPUAccessFlags = 0;
-            D3D11_SUBRESOURCE_DATA srd = {};
-            srd.pSysMem = sg.indices.data();
-            device_->CreateBuffer(&bd, &srd, &gg.ib);
-        }
+        // Index buffer (immutable)
+        gg.ib = gfx_->CreateBuffer({
+            .size  = (uint32_t)(sizeof(uint32_t) * sg.indices.size()),
+            .usage = gfx::BufferUsage::Index,
+        }, sg.indices.data());
 
         mi.gpuGeosets.push_back(gg);
     }
@@ -1133,21 +1068,12 @@ void RenderService::CreateNodePalette(ModelInstance& mi) {
         geo.hasSkinning = true;
 
     int nodeCount = mi.skinning.NodeCount();
-    if (nodeCount > 0 && !mi.nodePaletteBuf) {
-        D3D11_BUFFER_DESC bd = {};
-        bd.ByteWidth           = (UINT)(sizeof(Matrix44f) * nodeCount);
-        bd.Usage               = D3D11_USAGE_DYNAMIC;
-        bd.BindFlags           = D3D11_BIND_SHADER_RESOURCE;
-        bd.CPUAccessFlags      = D3D11_CPU_ACCESS_WRITE;
-        bd.MiscFlags           = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-        bd.StructureByteStride = sizeof(Matrix44f); // 64 bytes = float4x4
-        device_->CreateBuffer(&bd, nullptr, &mi.nodePaletteBuf);
-
-        D3D11_SHADER_RESOURCE_VIEW_DESC srvd = {};
-        srvd.Format              = DXGI_FORMAT_UNKNOWN;
-        srvd.ViewDimension       = D3D11_SRV_DIMENSION_BUFFER;
-        srvd.Buffer.NumElements  = nodeCount;
-        device_->CreateShaderResourceView(mi.nodePaletteBuf, &srvd, &mi.nodePaletteSRV);
+    if (nodeCount > 0 && mi.nodePalette == gfx::BufferHandle::Invalid) {
+        mi.nodePalette = gfx_->CreateBuffer({
+            .size          = (uint32_t)(sizeof(Matrix44f) * nodeCount),
+            .elementStride = sizeof(Matrix44f),
+            .usage         = gfx::BufferUsage::ShaderResource | gfx::BufferUsage::CpuWritable,
+        });
     }
 }
 
@@ -1157,7 +1083,7 @@ void RenderService::ProcessStagedData() {
     // Remove models marked for clear
     for (auto it = models_.begin(); it != models_.end(); ) {
         if (it->second->stagedClear) {
-            it->second->ReleaseGPU();
+            it->second->ReleaseGPU(*gfx_);
             it = models_.erase(it);
         } else {
             ++it;
@@ -1191,7 +1117,7 @@ void RenderService::ProcessStagedData() {
 
 void RenderService::ReleaseModelGPU() {
     for (auto& [h, miPtr] : models_)
-        miPtr->ReleaseGPU();
+        miPtr->ReleaseGPU(*gfx_);
 }
 
 // Build a packed Texture2DArray for a material.
@@ -1207,66 +1133,61 @@ void RenderService::UpdateAnimation() {
     // Quick check: any model needs skinning?
     bool anySkinned = false;
     for (auto& [h, miPtr] : models_) {
-        if (miPtr->skinning.HasSkeleton() && miPtr->skinning.IsReady() && miPtr->nodePaletteBuf) {
+        if (miPtr->skinning.HasSkeleton() && miPtr->skinning.IsReady()
+            && miPtr->nodePalette != gfx::BufferHandle::Invalid) {
             anySkinned = true;
             break;
         }
     }
     if (!anySkinned) return;
 
-    UINT nullCounts[1] = { (UINT)-1 };
-    context_->CSSetShader(skinComputeShader_, nullptr, 0);
+    auto* cmd = gfx_->GetImmediateContext();
+    cmd->BindPipeline(skinPSO_);
 
     for (auto& [h, miPtr] : models_) {
         auto* mi = miPtr.get();
         if (!mi->skinning.HasSkeleton() || !mi->skinning.IsReady()) continue;
         if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent — skip skinning
-        if (!mi->nodePaletteBuf) continue;
+        if (mi->nodePalette == gfx::BufferHandle::Invalid) continue;
 
         mi->skinning.ComputeOffsetMatrices();
 
         // Upload offset matrices to the node palette buffer
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        HRESULT hr = context_->Map(mi->nodePaletteBuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        if (FAILED(hr)) continue;
-        memcpy(mapped.pData, mi->skinning.OffsetMatrices(),
+        void* mapped = gfx_->MapBuffer(mi->nodePalette);
+        if (!mapped) continue;
+        memcpy(mapped, mi->skinning.OffsetMatrices(),
                sizeof(Matrix44f) * mi->skinning.NodeCount());
-        context_->Unmap(mi->nodePaletteBuf, 0);
+        gfx_->UnmapBuffer(mi->nodePalette);
 
         // Bind node palette SRV (slot 0) — shared across all geosets of this model
-        ID3D11ShaderResourceView* srvs[3] = { mi->nodePaletteSRV, nullptr, nullptr };
+        cmd->BindShaderResource(gfx::ShaderStage::Compute, 0, mi->nodePalette);
 
         for (auto& geo : mi->gpuGeosets) {
-            if (!geo.skinnedUAV) continue;
+            if (geo.skinnedBuf == gfx::BufferHandle::Invalid) continue;
 
             // Slots: t0 = BonePalette, t1 = BaseVerts, t2 = Weights
-            srvs[1] = geo.baseVertSRV;
-            srvs[2] = geo.weightSRV;
-            context_->CSSetShaderResources(0, 3, srvs);
+            cmd->BindShaderResource(gfx::ShaderStage::Compute, 1, geo.baseVertBuf);
+            cmd->BindShaderResource(gfx::ShaderStage::Compute, 2, geo.weightBuf);
 
             // UAV: u0 = OutVerts
-            ID3D11UnorderedAccessView* uavs[1] = { geo.skinnedUAV };
-            context_->CSSetUnorderedAccessViews(0, 1, uavs, nullCounts);
+            cmd->BindUnorderedAccess(0, geo.skinnedBuf);
 
             // Dispatch: one thread per vertex, ceil(vertCount / 256)
-            UINT groups = (geo.vertexCount + 255) / 256;
-            context_->Dispatch(groups, 1, 1);
+            uint32_t groups = (geo.vertexCount + 255) / 256;
+            cmd->Dispatch(groups, 1, 1);
 
-            // Unbind UAV before CopyResource (avoid resource hazard)
-            ID3D11UnorderedAccessView* unbindUAV[1] = { nullptr };
-            context_->CSSetUnorderedAccessViews(0, 1, unbindUAV, nullCounts);
+            // Unbind UAV before CopyBuffer (avoid resource hazard)
+            cmd->BindUnorderedAccess(0, gfx::BufferHandle::Invalid);
 
             // Copy structured output to plain vertex buffer for drawing
-            context_->CopyResource(geo.vb, geo.skinnedBuf);
+            cmd->CopyBuffer(geo.vb, geo.skinnedBuf);
         }
     }
 
     // Unbind compute resources to avoid hazards with vertex/pixel stages
-    ID3D11ShaderResourceView* nullSRVs[3] = {};
-    context_->CSSetShaderResources(0, 3, nullSRVs);
-    ID3D11UnorderedAccessView* nullUAVs[1] = {};
-    context_->CSSetUnorderedAccessViews(0, 1, nullUAVs, nullCounts);
-    context_->CSSetShader(nullptr, nullptr, 0);
+    cmd->BindShaderResource(gfx::ShaderStage::Compute, 0, gfx::BufferHandle::Invalid);
+    cmd->BindShaderResource(gfx::ShaderStage::Compute, 1, gfx::BufferHandle::Invalid);
+    cmd->BindShaderResource(gfx::ShaderStage::Compute, 2, gfx::BufferHandle::Invalid);
 }
 
 // ============================================================================
@@ -1282,6 +1203,8 @@ void RenderService::UpdateParticles(float dt) {
 }
 
 void RenderService::RenderParticles() {
+    auto* cmd = gfx_->GetImmediateContext();
+
     for (auto& [_mh, _mi] : models_) {
     auto* mi = _mi.get();
 
@@ -1314,57 +1237,40 @@ void RenderService::RenderParticles() {
     int vertCount = (int)verts.size();
 
     // Grow particle VB if needed
-    if (!mi->particleVB || vertCount > mi->particleVBSize) {
-        SafeRelease(mi->particleVB);
+    if (mi->particleVB == gfx::BufferHandle::Invalid || vertCount > mi->particleVBSize) {
+        gfx_->Destroy(mi->particleVB);
         int newSize = (std::max)(vertCount, 1024);
-        D3D11_BUFFER_DESC bd = {};
-        bd.ByteWidth      = (UINT)(sizeof(Vertex) * newSize);
-        bd.Usage          = D3D11_USAGE_DYNAMIC;
-        bd.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
-        bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        device_->CreateBuffer(&bd, nullptr, &mi->particleVB);
+        gfx::BufferDesc bd;
+        bd.size  = (uint32_t)(sizeof(Vertex) * newSize);
+        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+        mi->particleVB = gfx_->CreateBuffer(bd);
         mi->particleVBSize = newSize;
     }
 
     // Upload vertex data
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    if (FAILED(context_->Map(mi->particleVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-        continue;
-    memcpy(mapped.pData, verts.data(), sizeof(Vertex) * vertCount);
-    context_->Unmap(mi->particleVB, 0);
+    void* mapped = gfx_->MapBuffer(mi->particleVB);
+    if (!mapped) continue;
+    memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
+    gfx_->UnmapBuffer(mi->particleVB);
 
     // Bind particle VB
-    UINT stride = sizeof(Vertex), offset = 0;
-    context_->IASetVertexBuffers(0, 1, &mi->particleVB, &stride, &offset);
-    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cmd->BindVertexBuffer(0, mi->particleVB, sizeof(Vertex));
 
-    // Set main shader + input layout
-    context_->IASetInputLayout(inputLayout_);
-    context_->VSSetShader(vertexShader_, nullptr, 0);
-    context_->PSSetShader(pixelShader_, nullptr, 0);
-
-    // Particles are always two-sided (billboards can face either way)
-    context_->RSSetState(rsNoCull_);
-
-    // Render per-emitter with correct blend state and texture
+    // Render per-emitter with correct PSO and texture
     int drawOffset = 0;
     for (int ei = 0; ei < (int)emitterIds.size(); ei++) {
         auto& cfg = configs[ei];
         int count = vertCounts[ei];
         if (count <= 0) { continue; }
 
-        // Apply filter mode blend state (pass MAT_TWO_SIDED — particles are always two-sided)
-        ApplyFilterMode(cfg.filterMode, MAT_TWO_SIDED);
-
-        // Force depth write off for particles
-        context_->OMSetDepthStencilState(dsNoWrite_, 0);
+        // Particles: always two-sided, always noWrite depth.
+        // LookupMeshPSO with noDepthSet=true gives [filter][1=noCull][1=noWrite]
+        cmd->BindPipeline(LookupMeshPSO(cfg.filterMode, true, false, true));
 
         // Update constant buffer
         {
             float alphaRef = (cfg.filterMode == FILTER_TRANSPARENT) ? 0.75f : 0.0f;
-            D3D11_MAPPED_SUBRESOURCE cbMapped;
-            context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &cbMapped);
-            CBPerFrame* cb = (CBPerFrame*)cbMapped.pData;
+            CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
             cb->world      = Matrix44f::identity().transpose();
 
             float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
@@ -1377,25 +1283,31 @@ void RenderService::RenderParticles() {
             cb->lightColor   = kParticleLightColor;
             cb->ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
             cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
-        cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
+            cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
             cb->materialFlags = {cfg.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
-            context_->Unmap(cbPerFrame_, 0);
+            gfx_->UnmapBuffer(cbPerFrame_);
         }
+
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
 
         // Bind texture
-        ID3D11ShaderResourceView* srv = defaultTexSRV_;
         uint32_t wrapFlags = kWrapFlagsMask;
+        bool hasModelTex = false;
         if (cfg.textureId >= 0 && mi->gpuTextures.count(cfg.textureId)) {
             auto& gt = mi->gpuTextures[cfg.textureId];
-            srv = gt.srv;
-            wrapFlags = gt.wrapFlags & kWrapFlagsMask;
+            if (gt.tex != gfx::TextureHandle::Invalid) {
+                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, gt.tex);
+                wrapFlags = gt.wrapFlags & kWrapFlagsMask;
+                hasModelTex = true;
+            }
         }
-        if (!srv) srv = defaultTexSRV_;
-        context_->PSSetShaderResources(0, 1, &srv);
-        context_->PSSetSamplers(0, 1, &samplerWrap_[wrapFlags]);
+        if (!hasModelTex)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[wrapFlags]);
 
         // Draw this emitter's particles
-        context_->Draw(count, drawOffset);
+        cmd->Draw(count, drawOffset);
         drawOffset += count;
     }
     } // end for each model
@@ -1414,6 +1326,8 @@ void RenderService::UpdateRibbons(float dt) {
 }
 
 void RenderService::RenderRibbons() {
+    auto* cmd = gfx_->GetImmediateContext();
+
     for (auto& [_mh, _mi] : models_) {
     auto* mi = _mi.get();
     Matrix44f viewMat;
@@ -1438,33 +1352,24 @@ void RenderService::RenderRibbons() {
     int vertCount = (int)verts.size();
 
     // Grow ribbon VB if needed
-    if (!mi->ribbonVB || vertCount > mi->ribbonVBSize) {
-        SafeRelease(mi->ribbonVB);
+    if (mi->ribbonVB == gfx::BufferHandle::Invalid || vertCount > mi->ribbonVBSize) {
+        gfx_->Destroy(mi->ribbonVB);
         int newSize = (std::max)(vertCount, 512);
-        D3D11_BUFFER_DESC bd = {};
-        bd.ByteWidth      = (UINT)(sizeof(Vertex) * newSize);
-        bd.Usage          = D3D11_USAGE_DYNAMIC;
-        bd.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
-        bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        device_->CreateBuffer(&bd, nullptr, &mi->ribbonVB);
+        gfx::BufferDesc bd;
+        bd.size  = (uint32_t)(sizeof(Vertex) * newSize);
+        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+        mi->ribbonVB = gfx_->CreateBuffer(bd);
         mi->ribbonVBSize = newSize;
     }
 
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    if (FAILED(context_->Map(mi->ribbonVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
-        continue;
-    memcpy(mapped.pData, verts.data(), sizeof(Vertex) * vertCount);
-    context_->Unmap(mi->ribbonVB, 0);
+    // Upload vertex data
+    void* mapped = gfx_->MapBuffer(mi->ribbonVB);
+    if (!mapped) continue;
+    memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
+    gfx_->UnmapBuffer(mi->ribbonVB);
 
-    UINT stride = sizeof(Vertex), offset = 0;
-    context_->IASetVertexBuffers(0, 1, &mi->ribbonVB, &stride, &offset);
-    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context_->IASetInputLayout(inputLayout_);
-    context_->VSSetShader(vertexShader_, nullptr, 0);
-    context_->PSSetShader(pixelShader_, nullptr, 0);
-
-    // Two-sided: disable backface culling
-    context_->RSSetState(rsNoCull_);
+    // Bind ribbon VB
+    cmd->BindVertexBuffer(0, mi->ribbonVB, sizeof(Vertex));
 
     int drawOffset = 0;
     std::vector<int> vertCounts;
@@ -1479,15 +1384,12 @@ void RenderService::RenderRibbons() {
         int count = vertCounts[ei];
         if (count <= 0) { continue; }
 
-        ApplyFilterMode(cfg.filterMode, 0);
-        context_->OMSetDepthStencilState(dsNoWrite_, 0);
-        if (cfg.twoSided) context_->RSSetState(rsNoCull_);
+        // Ribbons: use cfg.twoSided, always noWrite depth
+        cmd->BindPipeline(LookupMeshPSO(cfg.filterMode, cfg.twoSided, false, true));
 
         {
             float alphaRef = (cfg.filterMode == FILTER_TRANSPARENT) ? 0.75f : 0.0f;
-            D3D11_MAPPED_SUBRESOURCE cbMapped;
-            context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &cbMapped);
-            CBPerFrame* cb = (CBPerFrame*)cbMapped.pData;
+            CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
             cb->world      = Matrix44f::identity().transpose();
             float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
             Matrix44f proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
@@ -1498,29 +1400,32 @@ void RenderService::RenderRibbons() {
             cb->lightColor   = kParticleLightColor;
             cb->ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
             cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
-        cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
+            cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
             cb->materialFlags = {cfg.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
-            context_->Unmap(cbPerFrame_, 0);
+            gfx_->UnmapBuffer(cbPerFrame_);
         }
+
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
 
         // Bind texture
-        ID3D11ShaderResourceView* srv = defaultTexSRV_;
         uint32_t wrapFlags = kWrapFlagsMask;
+        bool hasModelTex = false;
         if (cfg.textureId >= 0 && mi->gpuTextures.count(cfg.textureId)) {
             auto& gt = mi->gpuTextures[cfg.textureId];
-            srv = gt.srv;
-            wrapFlags = gt.wrapFlags & kWrapFlagsMask;
+            if (gt.tex != gfx::TextureHandle::Invalid) {
+                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, gt.tex);
+                wrapFlags = gt.wrapFlags & kWrapFlagsMask;
+                hasModelTex = true;
+            }
         }
-        if (!srv) srv = defaultTexSRV_;
-        context_->PSSetShaderResources(0, 1, &srv);
-        context_->PSSetSamplers(0, 1, &samplerWrap_[wrapFlags]);
+        if (!hasModelTex)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[wrapFlags]);
 
-        context_->Draw(count, drawOffset);
+        cmd->Draw(count, drawOffset);
         drawOffset += count;
     }
-
-    // Restore default rasterizer
-    context_->RSSetState(rsDefault_);
     } // end for each model
 }
 
@@ -1541,15 +1446,8 @@ void RenderService::RenderCollisions() {
         viewMat = camera_.GetViewMatrix();
     }
 
-    // Use line shader
-    context_->IASetInputLayout(lineInputLayout_);
-    context_->VSSetShader(lineVertexShader_, nullptr, 0);
-    context_->PSSetShader(linePixelShader_, nullptr, 0);
-    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-
-    float blend[] = {0,0,0,0};
-    context_->OMSetBlendState(bsOpaque_, blend, 0xFFFFFFFF);
-    context_->OMSetDepthStencilState(dsDefault_, 0);
+    auto* cmd = gfx_->GetImmediateContext();
+    cmd->BindPipeline(linePSO_);
 
     // Line color: green for collision shapes
     Vector4f col = {0.0f, 1.0f, 0.3f, 1.0f};
@@ -1596,26 +1494,21 @@ void RenderService::RenderCollisions() {
 
         if (lines.empty()) continue;
 
-        // Upload to a temp dynamic buffer (reuse gridVB_ pattern)
-        D3D11_BUFFER_DESC bd = {};
-        bd.ByteWidth = (UINT)(sizeof(LV) * lines.size());
-        bd.Usage = D3D11_USAGE_DYNAMIC;
-        bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        ID3D11Buffer* tempVB = nullptr;
-        device_->CreateBuffer(&bd, nullptr, &tempVB);
-        if (!tempVB) continue;
+        // Upload to a temp dynamic buffer
+        gfx::BufferDesc bd;
+        bd.size  = (uint32_t)(sizeof(LV) * lines.size());
+        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+        gfx::BufferHandle tempVB = gfx_->CreateBuffer(bd);
+        if (tempVB == gfx::BufferHandle::Invalid) continue;
 
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        context_->Map(tempVB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        memcpy(mapped.pData, lines.data(), sizeof(LV) * lines.size());
-        context_->Unmap(tempVB, 0);
+        void* mapped = gfx_->MapBuffer(tempVB);
+        if (!mapped) { gfx_->Destroy(tempVB); continue; }
+        memcpy(mapped, lines.data(), sizeof(LV) * lines.size());
+        gfx_->UnmapBuffer(tempVB);
 
         // Update CB with identity world
         {
-            D3D11_MAPPED_SUBRESOURCE cbm;
-            context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &cbm);
-            CBPerFrame* cb = (CBPerFrame*)cbm.pData;
+            CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
             cb->world = Matrix44f::identity().transpose();
             float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
             cb->view = viewMat.transpose();
@@ -1624,300 +1517,185 @@ void RenderService::RenderCollisions() {
             cb->lightColor = kCollisionLightColor;
             cb->ambientColor = kCollisionAmbientColor;
             cb->extraParams = {1,1,1,1};
-        cb->texAnimParams = {0,0,1,1};
+            cb->texAnimParams = {0,0,1,1};
             cb->materialFlags = {0,0,0,0};
-            context_->Unmap(cbPerFrame_, 0);
+            gfx_->UnmapBuffer(cbPerFrame_);
         }
 
-        UINT stride = sizeof(LV), off = 0;
-        context_->IASetVertexBuffers(0, 1, &tempVB, &stride, &off);
-        context_->Draw((UINT)lines.size(), 0);
-        SafeRelease(tempVB);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
+
+        cmd->BindVertexBuffer(0, tempVB, sizeof(LV));
+        cmd->Draw((uint32_t)lines.size(), 0);
+        gfx_->Destroy(tempVB);
     }
 }
 
 // ============================================================================
-// DirectX 11 Initialization
+// Device initialization
 // ============================================================================
 
-bool RenderService::InitDevice() {
-    D3D_FEATURE_LEVEL featureLevel;
-    D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0};
-    UINT flags = 0;
-#ifdef _DEBUG
-    flags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
+bool RenderService::InitDevice(gfx::GfxApi api) {
+    // Create GFX device (handles API-specific device + context creation internally)
+    gfx_ = gfx::CreateDevice(api);
+    if (!gfx_) return false;
 
-    // Enumerate adapters and prefer the discrete GPU (most dedicated VRAM)
-    IDXGIFactory1* factory = nullptr;
-    IDXGIAdapter1* bestAdapter = nullptr;
-    SIZE_T bestVRAM = 0;
-    if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory))) {
-        IDXGIAdapter1* adapter = nullptr;
-        for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
-            DXGI_ADAPTER_DESC1 desc;
-            adapter->GetDesc1(&desc);
-            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) { adapter->Release(); continue; }
-            if (desc.DedicatedVideoMemory > bestVRAM) {
-                if (bestAdapter) bestAdapter->Release();
-                bestAdapter = adapter;
-                bestVRAM = desc.DedicatedVideoMemory;
-            } else {
-                adapter->Release();
-            }
-        }
-    }
-
-    HRESULT hr = D3D11CreateDevice(
-        bestAdapter, bestAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
-        nullptr, flags, levels, 1, D3D11_SDK_VERSION,
-        &device_, &featureLevel, &context_);
-    if (bestAdapter) bestAdapter->Release();
-    if (factory) factory->Release();
-    if (FAILED(hr)) return false;
-
-    // Rasterizer states
+    // Samplers (via GFX)
     {
-        D3D11_RASTERIZER_DESC rd = {};
-        rd.FillMode = D3D11_FILL_SOLID;
-        rd.CullMode = D3D11_CULL_BACK;
-        rd.FrontCounterClockwise = TRUE;
-        rd.DepthClipEnable = TRUE;
-        rd.AntialiasedLineEnable = TRUE;
-        device_->CreateRasterizerState(&rd, &rsDefault_);
-        rd.CullMode = D3D11_CULL_NONE;
-        device_->CreateRasterizerState(&rd, &rsNoCull_);
-    }
+        using AM = gfx::AddressMode;
+        gfx::SamplerDesc sd;
+        samplerLinear_ = gfx_->CreateSampler(sd); // default: linear, wrap
 
-    // Depth stencil states
-    {
-        D3D11_DEPTH_STENCIL_DESC dd = {};
-        dd.DepthEnable = TRUE;
-        dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
-        dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
-        device_->CreateDepthStencilState(&dd, &dsDefault_);
-        dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
-        device_->CreateDepthStencilState(&dd, &dsNoWrite_);
-        dd.DepthEnable = FALSE;
-        device_->CreateDepthStencilState(&dd, &dsDisabled_);
-    }
-
-    // Blend states
-    {
-        D3D11_BLEND_DESC bd = {};
-        auto& rt = bd.RenderTarget[0];
-        rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-
-        rt.BlendEnable = FALSE;
-        device_->CreateBlendState(&bd, &bsOpaque_);
-
-        rt.BlendEnable = TRUE;
-        rt.SrcBlend = D3D11_BLEND_SRC_ALPHA;
-        rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
-        rt.BlendOp = D3D11_BLEND_OP_ADD;
-        rt.SrcBlendAlpha = D3D11_BLEND_ONE;
-        rt.DestBlendAlpha = D3D11_BLEND_ZERO;
-        rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
-        device_->CreateBlendState(&bd, &bsAlphaTest_);
-        device_->CreateBlendState(&bd, &bsAlphaBlend_);
-
-        rt.SrcBlend = D3D11_BLEND_SRC_ALPHA;
-        rt.DestBlend = D3D11_BLEND_ONE;
-        device_->CreateBlendState(&bd, &bsAdditive_);
-        device_->CreateBlendState(&bd, &bsAddAlpha_);
-
-        rt.SrcBlend = D3D11_BLEND_ZERO;
-        rt.DestBlend = D3D11_BLEND_SRC_COLOR;
-        device_->CreateBlendState(&bd, &bsModulate_);
-
-        rt.SrcBlend = D3D11_BLEND_DEST_COLOR;
-        rt.DestBlend = D3D11_BLEND_SRC_COLOR;
-        device_->CreateBlendState(&bd, &bsModulate2x_);
-    }
-
-    // Samplers
-    {
-        D3D11_SAMPLER_DESC sd = {};
-        sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-        sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-        sd.MaxAnisotropy = 1;
-        sd.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
-        sd.MaxLOD = D3D11_FLOAT32_MAX;
-        device_->CreateSamplerState(&sd, &samplerLinear_);
-
-        D3D11_TEXTURE_ADDRESS_MODE modes[2] = {
-            D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE_ADDRESS_WRAP
-        };
+        AM modes[2] = { AM::Clamp, AM::Wrap };
         for (int i = 0; i < 4; i++) {
-            sd.AddressU = modes[(i >> 0) & 1];
-            sd.AddressV = modes[(i >> 1) & 1];
-            sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-            device_->CreateSamplerState(&sd, &samplerWrap_[i]);
+            sd.addressU = modes[(i >> 0) & 1];
+            sd.addressV = modes[(i >> 1) & 1];
+            sd.addressW = AM::Clamp;
+            samplerWrap_[i] = gfx_->CreateSampler(sd);
         }
     }
 
-    // Constant buffers
+    // Constant buffer (via GFX)
+    cbPerFrame_ = gfx_->CreateBuffer({
+        .size  = sizeof(CBPerFrame),
+        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+    });
+
+    // 1x1 white default texture (via GFX)
     {
-        D3D11_BUFFER_DESC bd = {};
-        bd.ByteWidth = sizeof(CBPerFrame);
-        bd.Usage = D3D11_USAGE_DYNAMIC;
-        bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-        device_->CreateBuffer(&bd, nullptr, &cbPerFrame_);
+        uint32_t white = 0xFFFFFFFF;
+        defaultTex_ = gfx_->CreateTexture({
+            .width  = 1,
+            .height = 1,
+            .format = gfx::Format::R8G8B8A8_UNORM,
+            .usage  = gfx::TextureUsage::ShaderResource,
+        }, &white);
     }
 
-    // 1x1 white default texture
-    {
-        D3D11_TEXTURE2D_DESC td = {};
-        td.Width = td.Height = 1;
-        td.MipLevels = td.ArraySize = 1;
-        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        td.SampleDesc.Count = 1;
-        td.Usage = D3D11_USAGE_IMMUTABLE;
-        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        UINT32 white = 0xFFFFFFFF;
-        D3D11_SUBRESOURCE_DATA srd = {&white, 4, 0};
-        device_->CreateTexture2D(&td, &srd, &defaultTex_);
-        device_->CreateShaderResourceView(defaultTex_, nullptr, &defaultTexSRV_);
-    }
-
-    // Shaders + default geometry (grid, view cube) are part of device init
+    // Shaders + pipelines + default geometry (grid, view cube) are part of device init
     if (!CreateShaders())          { CleanupD3D(); return false; }
+    if (!CreatePipelines())        { CleanupD3D(); return false; }
     if (!CreateDefaultResources()) { CleanupD3D(); return false; }
 
     return true;
 }
 
 RenderTargetId RenderService::CreateSwapChainTarget(void* nativeWindowHandle, int w, int h) {
-    if (!device_) return 0;
-
-    IDXGIDevice* dxgiDevice = nullptr;
-    IDXGIAdapter* dxgiAdapter = nullptr;
-    IDXGIFactory* dxgiFactory = nullptr;
-    device_->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
-    if (dxgiDevice) dxgiDevice->GetAdapter(&dxgiAdapter);
-    if (dxgiAdapter) dxgiAdapter->GetParent(__uuidof(IDXGIFactory), (void**)&dxgiFactory);
-
-    if (!dxgiFactory) {
-        SafeRelease(dxgiAdapter);
-        SafeRelease(dxgiDevice);
-        return 0;
-    }
-
-    DXGI_SWAP_CHAIN_DESC scd = {};
-    scd.BufferCount = 1;
-    scd.BufferDesc.Width = w;
-    scd.BufferDesc.Height = h;
-    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    scd.BufferDesc.RefreshRate = {60, 1};
-    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd.OutputWindow = static_cast<HWND>(nativeWindowHandle);
-    scd.SampleDesc = {1, 0};
-    scd.Windowed = TRUE;
-    scd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+    if (!gfx_) return 0;
 
     RenderTarget target;
-    target.id = nextTargetId_++;
-    HRESULT hr = dxgiFactory->CreateSwapChain(device_, &scd, &target.swapChain);
-    SafeRelease(dxgiFactory);
-    SafeRelease(dxgiAdapter);
-    SafeRelease(dxgiDevice);
+    target.id   = nextTargetId_++;
+    target.swap  = gfx_->CreateSwapChain(nativeWindowHandle, w, h);
+    if (target.swap == gfx::SwapChainHandle::Invalid) return 0;
 
-    if (FAILED(hr) || !target.swapChain) return 0;
-    if (!target.Resize(device_, w, h)) {
-        target.Release();
-        return 0;
-    }
-
-    RenderTargetId id = target.id;
-    targets_[id] = std::move(target);
-    return id;
-}
-
-RenderTargetId RenderService::CreateOffscreenTarget(int w, int h) {
-    if (!device_) return 0;
-
-    RenderTarget target;
-    target.id = nextTargetId_++;
-
-    // Create the color texture
-    D3D11_TEXTURE2D_DESC td = {};
-    td.Width = w;
-    td.Height = h;
-    td.MipLevels = td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_DEFAULT;
-    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-    device_->CreateTexture2D(&td, nullptr, &target.colorTex);
-    if (!target.colorTex) return 0;
-    device_->CreateRenderTargetView(target.colorTex, nullptr, &target.rtv);
-
-    // Depth buffer
-    D3D11_TEXTURE2D_DESC dd = {};
-    dd.Width = w;
-    dd.Height = h;
-    dd.MipLevels = dd.ArraySize = 1;
-    dd.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    dd.SampleDesc = {1, 0};
-    dd.Usage = D3D11_USAGE_DEFAULT;
-    dd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-    device_->CreateTexture2D(&dd, nullptr, &target.depthBuf);
-    device_->CreateDepthStencilView(target.depthBuf, nullptr, &target.dsv);
-
+    target.color = gfx_->GetSwapChainBackBuffer(target.swap);
+    target.depth = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
     target.width = w;
     target.height = h;
 
     RenderTargetId id = target.id;
-    targets_[id] = std::move(target);
+    targets_[id] = target;
+    return id;
+}
+
+RenderTargetId RenderService::CreateOffscreenTarget(int w, int h) {
+    if (!gfx_) return 0;
+
+    RenderTarget target;
+    target.id    = nextTargetId_++;
+    target.color = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM);
+    target.depth = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
+    target.width = w;
+    target.height = h;
+
+    if (target.color == gfx::TextureHandle::Invalid) return 0;
+
+    RenderTargetId id = target.id;
+    targets_[id] = target;
     return id;
 }
 
 void RenderService::DestroyRenderTarget(RenderTargetId id) {
     auto it = targets_.find(id);
-    if (it != targets_.end()) {
-        it->second.Release();
-        targets_.erase(it);
+    if (it == targets_.end()) return;
+    auto& t = it->second;
+    if (t.swap != gfx::SwapChainHandle::Invalid) {
+        gfx_->DestroySwapChain(t.swap);
+    } else {
+        gfx_->Destroy(t.color);
     }
+    gfx_->Destroy(t.depth);
+    targets_.erase(it);
 }
 
 void RenderService::ResizeRenderTarget(RenderTargetId id, int w, int h) {
     auto it = targets_.find(id);
-    if (it != targets_.end()) {
-        it->second.Resize(device_, w, h);
+    if (it == targets_.end() || !gfx_) return;
+    auto& t = it->second;
+
+    // Destroy old depth
+    gfx_->Destroy(t.depth);
+
+    if (t.swap != gfx::SwapChainHandle::Invalid) {
+        gfx_->ResizeSwapChain(t.swap, w, h);
+        t.color = gfx_->GetSwapChainBackBuffer(t.swap);
+    } else {
+        gfx_->Destroy(t.color);
+        t.color = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM);
     }
+
+    t.depth = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
+    t.width = w;
+    t.height = h;
 }
 
 void RenderService::ResizePrimaryTarget(int w, int h) {
     auto* target = primaryTarget();
-    if (!target || !device_) return;
-    context_->OMSetRenderTargets(0, nullptr, nullptr);
-    target->Resize(device_, w, h);
+    if (!target || !gfx_) return;
+    ResizeRenderTarget(target->id, w, h);
     width_ = w;
     height_ = h;
 }
 
 void RenderService::CleanupD3D() {
-    if (context_) context_->ClearState();
-    SafeRelease(defaultTexSRV_); SafeRelease(defaultTex_);
-    SafeRelease(samplerLinear_);
-    for (auto& s : samplerWrap_) SafeRelease(s);
-    SafeRelease(bsModulate2x_); SafeRelease(bsModulate_); SafeRelease(bsAddAlpha_); SafeRelease(bsAdditive_);
-    SafeRelease(bsAlphaBlend_); SafeRelease(bsAlphaTest_); SafeRelease(bsOpaque_);
-    SafeRelease(dsDisabled_); SafeRelease(dsNoWrite_); SafeRelease(dsDefault_);
-    SafeRelease(rsNoCull_); SafeRelease(rsDefault_);
-    SafeRelease(cbPerFrame_);
-    SafeRelease(gridVB_);
-    SafeRelease(vcCubeVB_); SafeRelease(vcCubeIB_); SafeRelease(vcOutlineVB_);
-    SafeRelease(vcFaceTexSRV_); SafeRelease(vcFaceTex_);
-    SafeRelease(lineInputLayout_); SafeRelease(linePixelShader_); SafeRelease(lineVertexShader_);
-    SafeRelease(skinComputeShader_);
-    SafeRelease(inputLayout_);
-    SafeRelease(pixelShader_); SafeRelease(vertexShader_);
-    for (auto& [id, target] : targets_) target.Release();
+    // Destroy GFX resources
+    if (gfx_) {
+        // Shaders
+        gfx_->Destroy(meshVS_);  gfx_->Destroy(meshPS_);
+        gfx_->Destroy(lineVS_);  gfx_->Destroy(linePS_);
+        gfx_->Destroy(skinCS_);
+
+        // Pipelines
+        for (auto& fm : meshPSO_)
+            for (auto& cu : fm)
+                for (auto& dp : cu)
+                    gfx_->Destroy(dp);
+        gfx_->Destroy(linePSO_);
+        gfx_->Destroy(skinPSO_);
+
+        // Resources
+        gfx_->Destroy(cbPerFrame_);
+        gfx_->Destroy(samplerLinear_);
+        for (auto& s : samplerWrap_) gfx_->Destroy(s);
+        gfx_->Destroy(defaultTex_);
+
+        // Grid + ViewCube
+        gfx_->Destroy(gridVB_);
+        gfx_->Destroy(vcCubeVB_);  gfx_->Destroy(vcCubeIB_);
+        gfx_->Destroy(vcOutlineVB_); gfx_->Destroy(vcFaceTex_);
+
+        // Render targets
+        for (auto& [id, t] : targets_) {
+            if (t.swap != gfx::SwapChainHandle::Invalid)
+                gfx_->DestroySwapChain(t.swap);
+            else
+                gfx_->Destroy(t.color);
+            gfx_->Destroy(t.depth);
+        }
+    }
     targets_.clear();
     primaryTargetId_ = 0;
-    SafeRelease(context_); SafeRelease(device_);
+
+    gfx_.reset();
 }
 
 // ============================================================================
@@ -1927,35 +1705,127 @@ void RenderService::CleanupD3D() {
 bool RenderService::CreateShaders() {
     using namespace WhiteoutDex::Shaders;
 
-    // Mesh shader (VS + particle/ribbon PS)
-    {
-        device_->CreateVertexShader(kMeshVS, sizeof(kMeshVS), nullptr, &vertexShader_);
-        device_->CreatePixelShader(kMeshPS, sizeof(kMeshPS), nullptr, &pixelShader_);
-        D3D11_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0},
-            {"NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 40, D3D11_INPUT_PER_VERTEX_DATA, 0},
-        };
-        device_->CreateInputLayout(layout, 4, kMeshVS, sizeof(kMeshVS), &inputLayout_);
+    meshVS_ = gfx_->CreateShader(gfx::ShaderStage::Vertex,  kMeshVS, sizeof(kMeshVS));
+    meshPS_ = gfx_->CreateShader(gfx::ShaderStage::Pixel,   kMeshPS, sizeof(kMeshPS));
+    lineVS_ = gfx_->CreateShader(gfx::ShaderStage::Vertex,  kLineVS, sizeof(kLineVS));
+    linePS_ = gfx_->CreateShader(gfx::ShaderStage::Pixel,   kLinePS, sizeof(kLinePS));
+    skinCS_ = gfx_->CreateShader(gfx::ShaderStage::Compute, kSkinCS, sizeof(kSkinCS));
+
+    return meshVS_ != gfx::ShaderHandle::Invalid
+        && meshPS_ != gfx::ShaderHandle::Invalid
+        && lineVS_ != gfx::ShaderHandle::Invalid
+        && linePS_ != gfx::ShaderHandle::Invalid
+        && skinCS_ != gfx::ShaderHandle::Invalid;
+}
+
+// ============================================================================
+// Pipeline (PSO) Creation
+// ============================================================================
+
+// Blend desc per FilterMode (exact Magos mapping)
+static gfx::BlendDesc FilterBlend(int filterMode) {
+    using BF = gfx::BlendFactor;
+    gfx::BlendDesc b;
+    switch (filterMode) {
+    case FILTER_NONE:
+        b.enable = false;
+        break;
+    case FILTER_TRANSPARENT: case FILTER_BLEND:
+        b.enable = true;
+        b.srcColor = BF::SrcAlpha; b.dstColor = BF::InvSrcAlpha;
+        break;
+    case FILTER_ADDITIVE: case FILTER_ADD_ALPHA:
+        b.enable = true;
+        b.srcColor = BF::SrcAlpha; b.dstColor = BF::One;
+        break;
+    case FILTER_MODULATE:
+        b.enable = true;
+        b.srcColor = BF::Zero; b.dstColor = BF::SrcColor;
+        break;
+    case FILTER_MODULATE_2X:
+        b.enable = true;
+        b.srcColor = BF::DstColor; b.dstColor = BF::SrcColor;
+        break;
     }
-    // Line shader
-    {
-        device_->CreateVertexShader(kLineVS, sizeof(kLineVS), nullptr, &lineVertexShader_);
-        device_->CreatePixelShader(kLinePS, sizeof(kLinePS), nullptr, &linePixelShader_);
-        D3D11_INPUT_ELEMENT_DESC layout[] = {
-            {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D11_INPUT_PER_VERTEX_DATA, 0},
-            {"COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
-        };
-        device_->CreateInputLayout(layout, 2, kLineVS, sizeof(kLineVS), &lineInputLayout_);
+    return b;
+}
+
+// Depth desc: 0 = default (write+test), 1 = noWrite, 2 = disabled
+static gfx::DepthStencilDesc MakeDepth(int depthKey) {
+    gfx::DepthStencilDesc d;
+    d.depthCompare = gfx::CompareOp::LessEqual;
+    switch (depthKey) {
+    case 0: d.depthTest = true;  d.depthWrite = true;  break;
+    case 1: d.depthTest = true;  d.depthWrite = false; break;
+    case 2: d.depthTest = false; d.depthWrite = false; break;
     }
-    // Compute shader: GPU vertex skinning
-    {
-        device_->CreateComputeShader(kSkinCS, sizeof(kSkinCS), nullptr, &skinComputeShader_);
+    return d;
+}
+
+bool RenderService::CreatePipelines() {
+    using namespace gfx;
+
+    // Input layouts
+    InputElement meshInput[] = {
+        {"POSITION", 0, Format::R32G32B32_FLOAT,    0},
+        {"NORMAL",   0, Format::R32G32B32_FLOAT,   12},
+        {"COLOR",    0, Format::R32G32B32A32_FLOAT, 24},
+        {"TEXCOORD", 0, Format::R32G32_FLOAT,       40},
+    };
+    InputElement lineInput[] = {
+        {"POSITION", 0, Format::R32G32B32_FLOAT,    0},
+        {"COLOR",    0, Format::R32G32B32A32_FLOAT, 12},
+    };
+
+    // Build all mesh PSOs: [7 filters][2 cull][3 depth]
+    for (int f = 0; f < 7; f++) {
+        BlendDesc blend = FilterBlend(f);
+        for (int c = 0; c < 2; c++) {
+            for (int d = 0; d < 3; d++) {
+                GraphicsPipelineDesc desc;
+                desc.vs          = meshVS_;
+                desc.ps          = meshPS_;
+                desc.inputLayout = meshInput;
+                desc.topology    = PrimitiveTopology::TriangleList;
+                desc.blend       = blend;
+                desc.depthStencil = MakeDepth(d);
+                desc.rasterizer.cull     = (c == 0) ? CullMode::Back : CullMode::None;
+                desc.rasterizer.frontCCW = true;
+                meshPSO_[f][c][d] = gfx_->CreateGraphicsPipeline(desc);
+            }
+        }
     }
-    return vertexShader_ && pixelShader_ && inputLayout_
-        && lineVertexShader_ && linePixelShader_ && lineInputLayout_
-        && skinComputeShader_;
+
+    // Line PSO (grid, collision, viewcube edges): opaque + default depth + noCull + LineList
+    {
+        GraphicsPipelineDesc desc;
+        desc.vs          = lineVS_;
+        desc.ps          = linePS_;
+        desc.inputLayout = lineInput;
+        desc.topology    = PrimitiveTopology::LineList;
+        desc.blend.enable = false;
+        desc.depthStencil = MakeDepth(0);
+        desc.rasterizer.cull     = CullMode::None;
+        desc.rasterizer.frontCCW = true;
+        linePSO_ = gfx_->CreateGraphicsPipeline(desc);
+    }
+
+    // Skin compute PSO
+    skinPSO_ = gfx_->CreateComputePipeline({skinCS_});
+
+    return linePSO_ != PipelineHandle::Invalid
+        && skinPSO_ != PipelineHandle::Invalid;
+}
+
+gfx::PipelineHandle RenderService::LookupMeshPSO(int filterMode, bool twoSided,
+                                                   bool noDepthTest, bool noDepthSet) const {
+    int f = (filterMode >= 0 && filterMode < 7) ? filterMode : 0;
+    int c = twoSided ? 1 : 0;
+    int d;
+    if (noDepthTest) d = 2;
+    else if (noDepthSet) d = 1;
+    else d = (f <= 1) ? 0 : 1; // NONE/TRANSPARENT default to write, rest to noWrite
+    return meshPSO_[f][c][d];
 }
 
 // ============================================================================
@@ -1983,66 +1853,13 @@ bool RenderService::CreateDefaultResources() {
     lines.push_back({{0.0f, 0.0f, extent},  axisColorZ});
     gridVertCount_ = (int)lines.size();
 
-    D3D11_BUFFER_DESC bd = {};
-    bd.ByteWidth = (UINT)(sizeof(LineVertex) * lines.size());
-    bd.Usage = D3D11_USAGE_IMMUTABLE;
-    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    D3D11_SUBRESOURCE_DATA srd = {lines.data()};
-    device_->CreateBuffer(&bd, &srd, &gridVB_);
+    gridVB_ = gfx_->CreateBuffer({
+        .size  = sizeof(LineVertex) * lines.size(),
+        .usage = gfx::BufferUsage::Vertex,
+    }, lines.data());
 
     CreateViewCube();
     return true;
-}
-
-// ============================================================================
-// FilterMode Application (ported from Magos ModelMaterialLayer::UseMaterial)
-// ============================================================================
-
-void RenderService::ApplyFilterMode(int filterMode, int matFlags) {
-    bool twoSided    = (matFlags & MAT_TWO_SIDED) != 0;
-    bool unshaded    = (matFlags & MAT_UNSHADED) != 0;
-    bool noDepthTest = (matFlags & MAT_NO_DEPTH_TEST) != 0;
-    bool noDepthSet  = (matFlags & MAT_NO_DEPTH_SET) != 0;
-
-    // Rasterizer (cull mode)
-    context_->RSSetState(twoSided ? rsNoCull_ : rsDefault_);
-
-    // Blend + Depth per FilterMode (exact Magos mapping)
-    float blend[4] = {0, 0, 0, 0};
-    switch (filterMode) {
-    case FILTER_NONE:
-        context_->OMSetBlendState(bsOpaque_, blend, 0xFFFFFFFF);
-        context_->OMSetDepthStencilState(dsDefault_, 0);
-        break;
-    case FILTER_TRANSPARENT:
-        context_->OMSetBlendState(bsAlphaTest_, blend, 0xFFFFFFFF);
-        context_->OMSetDepthStencilState(dsDefault_, 0);
-        break;
-    case FILTER_BLEND:
-        context_->OMSetBlendState(bsAlphaBlend_, blend, 0xFFFFFFFF);
-        context_->OMSetDepthStencilState(dsNoWrite_, 0);
-        break;
-    case FILTER_ADDITIVE:
-        context_->OMSetBlendState(bsAdditive_, blend, 0xFFFFFFFF);
-        context_->OMSetDepthStencilState(dsNoWrite_, 0);
-        break;
-    case FILTER_ADD_ALPHA:
-        context_->OMSetBlendState(bsAddAlpha_, blend, 0xFFFFFFFF);
-        context_->OMSetDepthStencilState(dsNoWrite_, 0);
-        break;
-    case FILTER_MODULATE:
-        context_->OMSetBlendState(bsModulate_, blend, 0xFFFFFFFF);
-        context_->OMSetDepthStencilState(dsNoWrite_, 0);
-        break;
-    case FILTER_MODULATE_2X:
-        context_->OMSetBlendState(bsModulate2x_, blend, 0xFFFFFFFF);
-        context_->OMSetDepthStencilState(dsNoWrite_, 0);
-        break;
-    }
-
-    // Override depth if material flags say so
-    if (noDepthTest) context_->OMSetDepthStencilState(dsDisabled_, 0);
-    else if (noDepthSet) context_->OMSetDepthStencilState(dsNoWrite_, 0);
 }
 
 // ============================================================================
@@ -2053,17 +1870,12 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     auto it = targets_.find(targetId);
     if (it == targets_.end()) return;
     auto& target = it->second;
-    if (!target.rtv || !context_) return;
+    if (target.color == gfx::TextureHandle::Invalid || !gfx_) return;
 
+    auto* cmd = gfx_->GetImmediateContext();
     float clearColor[4] = {0.39f, 0.39f, 0.40f, 1.0f};  // Magos-matched gray
-    context_->ClearRenderTargetView(target.rtv, clearColor);
-    context_->ClearDepthStencilView(target.dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
-
-    D3D11_VIEWPORT vp = {};
-    vp.Width = (float)target.width; vp.Height = (float)target.height;
-    vp.MaxDepth = 1.0f;
-    context_->RSSetViewports(1, &vp);
-    context_->OMSetRenderTargets(1, &target.rtv, target.dsv);
+    cmd->BeginRenderPass(target.color, target.depth, clearColor, 1.0f, 0);
+    cmd->SetViewport({0, 0, (float)target.width, (float)target.height, 0, 1});
 
     Matrix44f view, proj;
     {
@@ -2073,11 +1885,9 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     float aspect = (target.height > 0) ? (float)target.width / (float)target.height : 1.0f;
     proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
 
-    // Update constant buffer
+    // Update constant buffer (via GFX MapBuffer)
     {
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        CBPerFrame* cb = (CBPerFrame*)mapped.pData;
+        CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
         cb->world      = Matrix44f::identity().transpose();
         cb->view       = view.transpose();
         cb->projection = proj.transpose();
@@ -2088,7 +1898,7 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
         cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
         cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};     // .x=geosetAlpha (1=visible)
         cb->materialFlags = {0.0f, 0.0f, 0.0f, 0.0f};
-        context_->Unmap(cbPerFrame_, 0);
+        gfx_->UnmapBuffer(cbPerFrame_);
     }
 
     if (showGrid_) RenderGrid();
@@ -2101,24 +1911,17 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
 
 void RenderService::Present(RenderTargetId targetId) {
     auto it = targets_.find(targetId);
-    if (it != targets_.end() && it->second.swapChain)
-        it->second.swapChain->Present(1, 0);
+    if (it != targets_.end() && it->second.swap != gfx::SwapChainHandle::Invalid)
+        gfx_->Present(it->second.swap);
 }
 
 void RenderService::RenderGrid() {
-    if (!gridVB_) return;
-    context_->IASetInputLayout(lineInputLayout_);
-    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-    UINT stride = sizeof(LineVertex), offset = 0;
-    context_->IASetVertexBuffers(0, 1, &gridVB_, &stride, &offset);
-    context_->VSSetShader(lineVertexShader_, nullptr, 0);
-    context_->PSSetShader(linePixelShader_, nullptr, 0);
-    context_->VSSetConstantBuffers(0, 1, &cbPerFrame_);
-    context_->RSSetState(rsNoCull_);
-    context_->OMSetDepthStencilState(dsDefault_, 0);
-    float blend[] = {0,0,0,0};
-    context_->OMSetBlendState(bsOpaque_, blend, 0xFFFFFFFF);
-    context_->Draw(gridVertCount_, 0);
+    if (gridVB_ == gfx::BufferHandle::Invalid) return;
+    auto* cmd = gfx_->GetImmediateContext();
+    cmd->BindPipeline(linePSO_);
+    cmd->BindVertexBuffer(0, gridVB_, sizeof(LineVertex));
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
+    cmd->Draw(gridVertCount_, 0);
 }
 
 // ============================================================================
@@ -2128,13 +1931,10 @@ void RenderService::RenderGrid() {
 void RenderService::RenderGeosets() {
     if (models_.empty()) return;
 
-    context_->IASetInputLayout(inputLayout_);
-    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context_->VSSetShader(vertexShader_, nullptr, 0);
-    context_->PSSetShader(pixelShader_, nullptr, 0);
-    context_->VSSetConstantBuffers(0, 1, &cbPerFrame_);
-    context_->PSSetConstantBuffers(0, 1, &cbPerFrame_);
-    context_->PSSetSamplers(0, 1, &samplerLinear_);
+    auto* cmd = gfx_->GetImmediateContext();
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
+    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerLinear_);
 
     // Collect geoset draw refs from all models for global sort
     struct GeosetRef {
@@ -2171,7 +1971,7 @@ void RenderService::RenderGeosets() {
     for (auto& ref : refs) {
         auto* mi = ref.mi;
         auto& geo = mi->gpuGeosets[ref.idx];
-        if (!geo.vb || !geo.ib || geo.indexCount == 0) continue;
+        if (geo.vb == gfx::BufferHandle::Invalid || geo.ib == gfx::BufferHandle::Invalid || geo.indexCount == 0) continue;
 
         int matId = geo.materialId;
         GPUMaterial* mat = nullptr;
@@ -2201,22 +2001,24 @@ void RenderService::RenderGeosets() {
             }
 
             if (!anyLayerThisPass) {
-                UINT stride = sizeof(Vertex), offset = 0;
-                context_->IASetVertexBuffers(0, 1, &geo.vb, &stride, &offset);
-                context_->IASetIndexBuffer(geo.ib, DXGI_FORMAT_R32_UINT, 0);
+                cmd->BindVertexBuffer(0, geo.vb, sizeof(Vertex));
+                cmd->BindIndexBuffer(geo.ib, gfx::Format::R32_UINT);
                 anyLayerThisPass = true;
             }
 
-            ApplyFilterMode(layerFilter, layerFlags);
+            bool twoSided    = (layerFlags & MAT_TWO_SIDED) != 0;
+            bool noDepthTest = (layerFlags & MAT_NO_DEPTH_TEST) != 0;
+            bool noDepthSet  = (layerFlags & MAT_NO_DEPTH_SET) != 0;
 
             float combinedAlpha = geoAlpha * layerAlpha;
             if (combinedAlpha < 0.004f) continue;
 
-            if (combinedAlpha < 0.99f && layerFilter <= FILTER_TRANSPARENT) {
-                float blend[] = {0,0,0,0};
-                context_->OMSetBlendState(bsAlphaBlend_, blend, 0xFFFFFFFF);
-                context_->OMSetDepthStencilState(dsNoWrite_, 0);
-            }
+            // For semi-transparent opaque/alpha-test layers, override to alpha-blend + noWrite
+            int effectiveFilter = layerFilter;
+            if (combinedAlpha < 0.99f && layerFilter <= FILTER_TRANSPARENT)
+                effectiveFilter = FILTER_BLEND;
+
+            cmd->BindPipeline(LookupMeshPSO(effectiveFilter, twoSided, noDepthTest, noDepthSet));
 
             float alphaRef = 0.0f;
             if (layerFilter == FILTER_TRANSPARENT) alphaRef = 0.75f;
@@ -2235,9 +2037,7 @@ void RenderService::RenderGeosets() {
             }
 
             {
-                D3D11_MAPPED_SUBRESOURCE mapped;
-                context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-                CBPerFrame* cb = (CBPerFrame*)mapped.pData;
+                CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
                 Matrix44f world = mi->worldTransform;
                 cb->world      = world.transpose();
                 cb->view       = view2.transpose();
@@ -2254,21 +2054,25 @@ void RenderService::RenderGeosets() {
                     (layerFlags & MAT_CONSTANT_COLOR) ? 1.0f : 0.0f,
                     texRot, 0.0f
                 };
-                context_->Unmap(cbPerFrame_, 0);
+                gfx_->UnmapBuffer(cbPerFrame_);
             }
 
-            ID3D11ShaderResourceView* srv = defaultTexSRV_;
+            // Per-model texture
             uint32_t wrapFlags = kWrapFlagsMask; // default: wrap both
+            bool hasModelTex = false;
             if (layerTexId >= 0 && mi->gpuTextures.count(layerTexId)) {
                 auto& gt = mi->gpuTextures[layerTexId];
-                srv = gt.srv;
-                wrapFlags = gt.wrapFlags & kWrapFlagsMask;
+                if (gt.tex != gfx::TextureHandle::Invalid) {
+                    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, gt.tex);
+                    wrapFlags = gt.wrapFlags & kWrapFlagsMask;
+                    hasModelTex = true;
+                }
             }
-            if (!srv) srv = defaultTexSRV_;
-            context_->PSSetShaderResources(0, 1, &srv);
-            context_->PSSetSamplers(0, 1, &samplerWrap_[wrapFlags]);
+            if (!hasModelTex)
+                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
+            cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[wrapFlags]);
 
-            context_->DrawIndexed(geo.indexCount, 0, 0);
+            cmd->DrawIndexed(geo.indexCount, 0, 0);
         }
     }
 }
@@ -2277,102 +2081,25 @@ void RenderService::RenderGeosets() {
 // ViewCube — 3D orientation cube in top-right corner with Home button
 // ============================================================================
 
-RECT RenderService::GetViewCubeRect() const {
+Rect RenderService::GetViewCubeRect() const {
     int s = kViewCubeSize;
     int margin = 10;
     int cubeTop = margin + 28;
     return { width_ - s - margin, margin, width_ - margin, cubeTop + s };
 }
 
-// Generate face label texture using GDI
-static bool CreateFaceLabelTexture(ID3D11Device* device,
-                                   ID3D11Texture2D** outTex,
-                                   ID3D11ShaderResourceView** outSRV) {
-    const int cellW = 64, cellH = 64;
-    const int texW = cellW * 6, texH = cellH; // 6 faces in a row
-    const wchar_t* labels[] = { L"FRONT", L"BACK", L"LEFT", L"RIGHT", L"TOP", L"BOT" };
-    // Face colors (muted pastels)
-    COLORREF faceColors[] = {
-        RGB(100,140,190), // Front  — blue
-        RGB(190,120,100), // Back   — red
-        RGB(100,180,120), // Left   — green
-        RGB(190,170,100), // Right  — yellow
-        RGB(160,160,180), // Top    — gray-blue
-        RGB(140,130,120), // Bottom — brown
-    };
-
-    // Create GDI bitmap
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = texW;
-    bmi.bmiHeader.biHeight = -texH; // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    void* bits = nullptr;
-    HDC hdc = CreateCompatibleDC(nullptr);
-    HBITMAP hbmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    SelectObject(hdc, hbmp);
-
-    HFONT hFont = CreateFontW(16, 0, 0, 0, FW_BOLD, 0, 0, 0,
-                               DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY,
-                               DEFAULT_PITCH, L"Segoe UI");
-    SelectObject(hdc, hFont);
-    SetBkMode(hdc, TRANSPARENT);
-
-    for (int i = 0; i < 6; i++) {
-        RECT rc = { i * cellW, 0, (i + 1) * cellW, cellH };
-        // Fill background
-        HBRUSH brush = CreateSolidBrush(faceColors[i]);
-        FillRect(hdc, &rc, brush);
-        DeleteObject(brush);
-        // Draw border
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(60, 60, 60));
-        SelectObject(hdc, pen);
-        MoveToEx(hdc, rc.left, rc.top, nullptr);
-        LineTo(hdc, rc.right-1, rc.top);
-        LineTo(hdc, rc.right-1, rc.bottom-1);
-        LineTo(hdc, rc.left, rc.bottom-1);
-        LineTo(hdc, rc.left, rc.top);
-        DeleteObject(pen);
-        // Draw text
-        SetTextColor(hdc, RGB(240, 240, 240));
-        DrawTextW(hdc, labels[i], -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
-    GdiFlush();
-
-    // Convert BGR→RGBA
-    std::vector<uint8_t> rgba(texW * texH * 4);
-    auto* src = (uint8_t*)bits;
-    for (int i = 0; i < texW * texH; i++) {
-        rgba[i*4+0] = src[i*4+2]; // R
-        rgba[i*4+1] = src[i*4+1]; // G
-        rgba[i*4+2] = src[i*4+0]; // B
-        rgba[i*4+3] = 230;        // slight transparency
-    }
-
-    DeleteObject(hFont);
-    DeleteObject(hbmp);
-    DeleteDC(hdc);
-
-    // Create DX11 texture
-    D3D11_TEXTURE2D_DESC td = {};
-    td.Width = texW; td.Height = texH;
-    td.MipLevels = td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Usage = D3D11_USAGE_IMMUTABLE;
-    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    D3D11_SUBRESOURCE_DATA srd = { rgba.data(), (UINT)(texW * 4), 0 };
-    if (FAILED(device->CreateTexture2D(&td, &srd, outTex))) return false;
-    device->CreateShaderResourceView(*outTex, nullptr, outSRV);
-    return true;
-}
-
 bool RenderService::CreateViewCube() {
-    // Generate face label texture via GDI
-    CreateFaceLabelTexture(device_, &vcFaceTex_, &vcFaceTexSRV_);
+    // Generate face label atlas procedurally (platform-neutral)
+    {
+        int tw, th;
+        auto pixels = GenerateViewCubeAtlas(tw, th);
+        vcFaceTex_ = gfx_->CreateTexture({
+            .width  = tw,
+            .height = th,
+            .format = gfx::Format::R8G8B8A8_UNORM,
+            .usage  = gfx::TextureUsage::ShaderResource,
+        }, pixels.data());
+    }
 
     // Cube geometry: 24 vertices (4 per face), 36 indices
     // Face order: Front(+Y), Back(-Y), Left(-X), Right(+X), Top(+Z), Bottom(-Z)
@@ -2413,12 +2140,10 @@ bool RenderService::CreateViewCube() {
     // Bottom (-Z)
     addFace(5, {-s,-s,-s}, {s,-s,-s}, {s,s,-s}, {-s,s,-s}, {0,0,-1});
 
-    D3D11_BUFFER_DESC bd = {};
-    bd.ByteWidth = (UINT)(sizeof(Vertex) * verts.size());
-    bd.Usage = D3D11_USAGE_IMMUTABLE;
-    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    D3D11_SUBRESOURCE_DATA srd = { verts.data() };
-    device_->CreateBuffer(&bd, &srd, &vcCubeVB_);
+    vcCubeVB_ = gfx_->CreateBuffer({
+        .size  = sizeof(Vertex) * verts.size(),
+        .usage = gfx::BufferUsage::Vertex,
+    }, verts.data());
 
     // Index buffer: 2 triangles per face
     std::vector<uint32_t> idx;
@@ -2426,10 +2151,10 @@ bool RenderService::CreateViewCube() {
         uint32_t base = f * 4;
         idx.insert(idx.end(), {base, base+1, base+2, base, base+2, base+3});
     }
-    bd.ByteWidth = (UINT)(sizeof(uint32_t) * idx.size());
-    bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
-    srd.pSysMem = idx.data();
-    device_->CreateBuffer(&bd, &srd, &vcCubeIB_);
+    vcCubeIB_ = gfx_->CreateBuffer({
+        .size  = sizeof(uint32_t) * idx.size(),
+        .usage = gfx::BufferUsage::Index,
+    }, idx.data());
 
     // Edge lines (12 edges of the cube)
     std::vector<LineVertex> edges;
@@ -2451,40 +2176,41 @@ bool RenderService::CreateViewCube() {
     edges.push_back({{ e, e,-e}, ec}); edges.push_back({{ e, e, e}, ec});
     edges.push_back({{-e, e,-e}, ec}); edges.push_back({{-e, e, e}, ec});
 
-    bd.ByteWidth = (UINT)(sizeof(LineVertex) * edges.size());
-    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    srd.pSysMem = edges.data();
-    device_->CreateBuffer(&bd, &srd, &vcOutlineVB_);
+    vcOutlineVB_ = gfx_->CreateBuffer({
+        .size  = sizeof(LineVertex) * edges.size(),
+        .usage = gfx::BufferUsage::Vertex,
+    }, edges.data());
 
     return true;
 }
 
 void RenderService::RenderViewCube() {
-    if (!vcCubeVB_ || !vcCubeIB_) return;
+    if (vcCubeVB_ == gfx::BufferHandle::Invalid ||
+        vcCubeIB_ == gfx::BufferHandle::Invalid) return;
+
+    auto* cmd = gfx_->GetImmediateContext();
 
     // Save main viewport, set ViewCube viewport (top-right corner)
     int s = kViewCubeSize;
     int margin = 10;
-    D3D11_VIEWPORT vp = {};
-    vp.TopLeftX = (float)(width_ - s - margin);
-    vp.TopLeftY = (float)(margin + 28);  // leave room for Home button above
-    vp.Width = (float)s;
-    vp.Height = (float)s;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    context_->RSSetViewports(1, &vp);
+    gfx::Viewport vp = {
+        (float)(width_ - s - margin),
+        (float)(margin + 28),  // leave room for Home button above
+        (float)s, (float)s,
+        0.0f, 1.0f
+    };
+    cmd->SetViewport(vp);
 
     // Clear depth only in this viewport area
-    // (We render on top of the scene background)
     auto* pt = primaryTarget();
     if (!pt) return;
-    context_->ClearDepthStencilView(pt->dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
+    cmd->ClearDepth(pt->depth, 1.0f, 0);
 
     // Build view matrix: same rotation as camera, but fixed distance, looking at origin
     Matrix44f vcView;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        float dist = 3.5f; // fixed distance for the cube
+        float dist = 3.5f;
         float cosP = cosf(camera_.GetPitch()), sinP = sinf(camera_.GetPitch());
         float cosY = cosf(camera_.GetYaw()),   sinY = sinf(camera_.GetYaw());
         Vector3f eye = { dist * cosP * cosY, dist * cosP * sinY, dist * sinP };
@@ -2496,9 +2222,7 @@ void RenderService::RenderViewCube() {
 
     // Update constant buffer for ViewCube
     {
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        CBPerFrame* cb = (CBPerFrame*)mapped.pData;
+        CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
         cb->world      = Matrix44f::identity().transpose();
         cb->view       = vcView.transpose();
         cb->projection = vcProj.transpose();
@@ -2509,64 +2233,53 @@ void RenderService::RenderViewCube() {
         cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
         cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
         cb->materialFlags = {0.0f, 0.0f, 0.0f, 0.0f};
-        context_->Unmap(cbPerFrame_, 0);
+        gfx_->UnmapBuffer(cbPerFrame_);
     }
 
-    // Draw cube faces (textured)
-    context_->IASetInputLayout(inputLayout_);
-    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    UINT stride = sizeof(Vertex), offset = 0;
-    context_->IASetVertexBuffers(0, 1, &vcCubeVB_, &stride, &offset);
-    context_->IASetIndexBuffer(vcCubeIB_, DXGI_FORMAT_R32_UINT, 0);
-    context_->VSSetShader(vertexShader_, nullptr, 0);
-    context_->PSSetShader(pixelShader_, nullptr, 0);
-    context_->VSSetConstantBuffers(0, 1, &cbPerFrame_);
-    context_->PSSetConstantBuffers(0, 1, &cbPerFrame_);
-    context_->PSSetSamplers(0, 1, &samplerLinear_);
-
-    ID3D11ShaderResourceView* srv = vcFaceTexSRV_ ? vcFaceTexSRV_ : defaultTexSRV_;
-    context_->PSSetShaderResources(0, 1, &srv);
-    context_->RSSetState(rsNoCull_);
-    context_->OMSetDepthStencilState(dsDefault_, 0);
-    float blend[] = {0,0,0,0};
-    context_->OMSetBlendState(bsOpaque_, blend, 0xFFFFFFFF);
-    context_->DrawIndexed(36, 0, 0);
+    // Draw cube faces (textured): opaque + noCull + default depth
+    cmd->BindPipeline(meshPSO_[FILTER_NONE][1][0]);
+    cmd->BindVertexBuffer(0, vcCubeVB_, sizeof(Vertex));
+    cmd->BindIndexBuffer(vcCubeIB_, gfx::Format::R32_UINT);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
+    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerLinear_);
+    if (vcFaceTex_ != gfx::TextureHandle::Invalid)
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, vcFaceTex_);
+    else
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
+    cmd->DrawIndexed(36, 0, 0);
 
     // Draw edges
-    context_->IASetInputLayout(lineInputLayout_);
-    context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-    stride = sizeof(LineVertex);
-    context_->IASetVertexBuffers(0, 1, &vcOutlineVB_, &stride, &offset);
-    context_->VSSetShader(lineVertexShader_, nullptr, 0);
-    context_->PSSetShader(linePixelShader_, nullptr, 0);
-    context_->VSSetConstantBuffers(0, 1, &cbPerFrame_);
-    context_->Draw(24, 0); // 12 edges × 2 verts
+    cmd->BindPipeline(linePSO_);
+    cmd->BindVertexBuffer(0, vcOutlineVB_, sizeof(LineVertex));
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
+    cmd->Draw(24, 0); // 12 edges × 2 verts
 
     // --- Home button icon (above cube, only on hover) ---
     if (vcHovered_) {
-        D3D11_VIEWPORT homeVp = {};
-        homeVp.TopLeftX = vp.TopLeftX + (float)s * kViewCubeHomeOffset;
-        homeVp.TopLeftY = vp.TopLeftY - 24.0f;
-        homeVp.Width = (float)s * 0.3f;
-        homeVp.Height = 20.0f;
-        homeVp.MaxDepth = 1.0f;
-        context_->RSSetViewports(1, &homeVp);
+        gfx::Viewport homeVp = {
+            vp.x + (float)s * kViewCubeHomeOffset,
+            vp.y - 24.0f,
+            (float)s * 0.3f, 20.0f,
+            0.0f, 1.0f
+        };
+        cmd->SetViewport(homeVp);
 
         // Orthographic view for 2D drawing
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        CBPerFrame* cb = (CBPerFrame*)mapped.pData;
-        cb->world = Matrix44f::identity().transpose();
-        cb->view = Matrix44f::identity().transpose();
-        cb->projection = Matrix44f::orthographic_rh(2.0f, 2.0f, -1.0f, 1.0f).transpose();
-        cb->lightDir = {0,0,0,0};
-        cb->lightColor = {1,1,1,1};
-        cb->ambientColor = {1,1,1,1};
-        cb->extraParams  = {1,0,0,0};
-        cb->materialFlags = {0,0,0,0};
-        context_->Unmap(cbPerFrame_, 0);
+        {
+            CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
+            cb->world = Matrix44f::identity().transpose();
+            cb->view = Matrix44f::identity().transpose();
+            cb->projection = Matrix44f::orthographic_rh(2.0f, 2.0f, -1.0f, 1.0f).transpose();
+            cb->lightDir = {0,0,0,0};
+            cb->lightColor = {1,1,1,1};
+            cb->ambientColor = {1,1,1,1};
+            cb->extraParams  = {1,0,0,0};
+            cb->materialFlags = {0,0,0,0};
+            gfx_->UnmapBuffer(cbPerFrame_);
+        }
 
-        // House icon as dynamic lines
+        // House icon as dynamic lines (temp buffer)
         Vector4f hc = {0.7f, 0.7f, 0.7f, 1.0f};
         LineVertex house[] = {
             {{-0.4f, -0.6f, 0}, hc}, {{ 0.4f, -0.6f, 0}, hc}, // bottom
@@ -2577,27 +2290,19 @@ void RenderService::RenderViewCube() {
             {{-0.5f,  0.0f, 0}, hc}, {{ 0.5f,  0.0f, 0}, hc}, // roof base
         };
 
-        D3D11_BUFFER_DESC bd = {};
-        bd.ByteWidth = sizeof(house);
-        bd.Usage = D3D11_USAGE_IMMUTABLE;
-        bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-        D3D11_SUBRESOURCE_DATA srd = { house };
-        ID3D11Buffer* homeVB = nullptr;
-        device_->CreateBuffer(&bd, &srd, &homeVB);
-        if (homeVB) {
-            UINT hStride = sizeof(LineVertex), hOff = 0;
-            context_->IASetVertexBuffers(0, 1, &homeVB, &hStride, &hOff);
-            context_->Draw(12, 0);
-            homeVB->Release();
+        gfx::BufferDesc bd;
+        bd.size  = sizeof(house);
+        bd.usage = gfx::BufferUsage::Vertex;
+        gfx::BufferHandle homeVB = gfx_->CreateBuffer(bd, house);
+        if (homeVB != gfx::BufferHandle::Invalid) {
+            cmd->BindVertexBuffer(0, homeVB, sizeof(LineVertex));
+            cmd->Draw(12, 0);
+            gfx_->Destroy(homeVB);
         }
     }
 
     // Restore main viewport
-    D3D11_VIEWPORT mainVp = {};
-    mainVp.Width = (float)width_;
-    mainVp.Height = (float)height_;
-    mainVp.MaxDepth = 1.0f;
-    context_->RSSetViewports(1, &mainVp);
+    cmd->SetViewport({0, 0, (float)width_, (float)height_, 0.0f, 1.0f});
 
     // Restore main scene constant buffer
     Matrix44f view, proj;
@@ -2608,26 +2313,24 @@ void RenderService::RenderViewCube() {
     float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
     proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
     {
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        context_->Map(cbPerFrame_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        CBPerFrame* cb = (CBPerFrame*)mapped.pData;
+        CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
         cb->world      = Matrix44f::identity().transpose();
         cb->view       = view.transpose();
         cb->projection = proj.transpose();
         Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
         cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
         cb->lightColor   = kGeosetLightColor;
-        cb->ambientColor = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, 0.0f};  // .a=0 no alpha test
+        cb->ambientColor = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, 0.0f};
         cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
         cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
         cb->materialFlags = {0.0f, 0.0f, 0.0f, 0.0f};
-        context_->Unmap(cbPerFrame_, 0);
+        gfx_->UnmapBuffer(cbPerFrame_);
     }
 }
 
 // Hit test: returns face index 0-5, 6=Home, -1=none
 int RenderService::HitTestViewCube(int mx, int my) {
-    RECT r = GetViewCubeRect();
+    Rect r = GetViewCubeRect();
 
     // Home button area (above the cube, only when hovering)
     int cubeTop = r.top + 28;

@@ -6,6 +6,7 @@
 #include <whiteout/vector_types.h>
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <mutex>
@@ -21,6 +22,11 @@ using whiteout::Matrix44f;
 using whiteout::Quaternion;
 
 namespace WhiteoutDex {
+
+// Platform-neutral rectangle (matches RECT layout for easy conversion)
+struct Rect {
+    int left, top, right, bottom;
+};
 
 // Vertex format for Phase 1 (position + normal + color + uv)
 struct Vertex {

@@ -99,6 +99,7 @@ void RenderWindow::ThreadFunc(int w, int h) {
         // Process pending camera preset / sequence updates
         ProcessCameraPresets();
         ProcessSequences();
+        if (service_.ConsumeTeamColorDirty()) InvalidateTeamColorSwatch();
 
         // Advance simulation and render
         service_.Tick(parentDt);
@@ -350,7 +351,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         int dx = cur.x - lastMouse_.x, dy = cur.y - lastMouse_.y;
         lastMouse_ = cur;
         // Track ViewCube hover
-        RECT vcr = service_.GetViewCubeRect();
+        auto vcr = service_.GetViewCubeRect();
         service_.SetViewCubeHovered(
             cur.x >= vcr.left && cur.x <= vcr.right &&
             cur.y >= vcr.top  && cur.y <= vcr.bottom);

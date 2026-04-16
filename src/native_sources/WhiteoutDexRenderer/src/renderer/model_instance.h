@@ -6,7 +6,7 @@
 // ============================================================================
 
 #include "types.h"
-#include "dx_types.h"
+#include "../gfx/gfx.h"
 #include "animation.h"
 #include "particle.h"
 #include "ribbon.h"
@@ -55,8 +55,8 @@ struct StagedGeoset {
 
 struct GPUGeoset {
     int geosetId       = -1;
-    ID3D11Buffer* vb   = nullptr;
-    ID3D11Buffer* ib   = nullptr;
+    gfx::BufferHandle vb = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle ib = gfx::BufferHandle::Invalid;
     int indexCount      = 0;
     int vertexCount     = 0;
     int materialId      = -1;
@@ -64,35 +64,39 @@ struct GPUGeoset {
     std::vector<Vertex> baseVertices;
     bool hasSkinning    = false;
 
-    // GPU compute skinning resources
-    ID3D11Buffer*             baseVertBuf  = nullptr; // SRV source (immutable copy of baseVertices)
-    ID3D11ShaderResourceView* baseVertSRV  = nullptr;
-    ID3D11Buffer*             weightBuf    = nullptr; // SRV source (packed bone indices + weights)
-    ID3D11ShaderResourceView* weightSRV    = nullptr;
-    ID3D11Buffer*             skinnedBuf   = nullptr; // UAV output (also bound as vertex buffer)
-    ID3D11UnorderedAccessView* skinnedUAV  = nullptr;
+    // GPU compute skinning resources (structured buffers with auto-SRV/UAV)
+    gfx::BufferHandle baseVertBuf  = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle weightBuf    = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle skinnedBuf   = gfx::BufferHandle::Invalid;
 
     float geosetAlpha   = 1.0f;
     Vector3f geosetColor = {1,1,1};
     Matrix44f worldMatrix = Matrix44f::identity();
     int priorityPlane   = 0;
 
-    void Release() {
-        SafeRelease(vb); SafeRelease(ib);
-        SafeRelease(baseVertBuf); SafeRelease(baseVertSRV);
-        SafeRelease(weightBuf); SafeRelease(weightSRV);
-        SafeRelease(skinnedBuf); SafeRelease(skinnedUAV);
+    void Release(gfx::IGFXDevice& gfx) {
+        gfx.Destroy(vb);  gfx.Destroy(ib);
+        gfx.Destroy(baseVertBuf);
+        gfx.Destroy(weightBuf);
+        gfx.Destroy(skinnedBuf);
+        vb = gfx::BufferHandle::Invalid;
+        ib = gfx::BufferHandle::Invalid;
+        baseVertBuf = gfx::BufferHandle::Invalid;
+        weightBuf = gfx::BufferHandle::Invalid;
+        skinnedBuf = gfx::BufferHandle::Invalid;
         indexCount = 0; vertexCount = 0;
         baseVertices.clear(); baseVertices.shrink_to_fit();
     }
 };
 
 struct GPUTexture {
-    ID3D11Texture2D*          tex = nullptr;
-    ID3D11ShaderResourceView* srv = nullptr;
+    gfx::TextureHandle tex = gfx::TextureHandle::Invalid;
     uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V)
 
-    void Release() { SafeRelease(srv); SafeRelease(tex); }
+    void Release(gfx::IGFXDevice& gfx) {
+        gfx.Destroy(tex);
+        tex = gfx::TextureHandle::Invalid;
+    }
 };
 
 struct GPUMaterial {
@@ -147,18 +151,17 @@ struct ModelInstance {
     std::vector<Vector3f> nodePivots;     // per-node rest pivots (for billboard rotation center)
 
     // GPU node palette (StructuredBuffer of offset matrices, one per model)
-    ID3D11Buffer*             nodePaletteBuf = nullptr;
-    ID3D11ShaderResourceView* nodePaletteSRV = nullptr;
+    gfx::BufferHandle nodePalette = gfx::BufferHandle::Invalid;
 
     // ---- Particle system ----
     ParticleSystem particles;
-    ID3D11Buffer*  particleVB     = nullptr;
-    int            particleVBSize = 0;
+    gfx::BufferHandle particleVB     = gfx::BufferHandle::Invalid;
+    int               particleVBSize = 0;
 
     // ---- Ribbon system ----
     RibbonSystem ribbons;
-    ID3D11Buffer*  ribbonVB     = nullptr;
-    int            ribbonVBSize = 0;
+    gfx::BufferHandle ribbonVB     = gfx::BufferHandle::Invalid;
+    int               ribbonVBSize = 0;
 
     // ---- Collision shapes ----
     std::vector<CollisionShape> collisionShapes;
@@ -196,15 +199,15 @@ struct ModelInstance {
     int pe1SequenceIdx = 0;
 
     // Release all GPU resources
-    void ReleaseGPU() {
-        for (auto& g : gpuGeosets) g.Release();
+    void ReleaseGPU(gfx::IGFXDevice& gfx) {
+        for (auto& g : gpuGeosets) g.Release(gfx);
         gpuGeosets.clear();
-        for (auto& [id, t] : gpuTextures) t.Release();
+        for (auto& [id, t] : gpuTextures) t.Release(gfx);
         gpuTextures.clear();
         gpuMaterials.clear();
-        SafeRelease(nodePaletteBuf); SafeRelease(nodePaletteSRV);
-        SafeRelease(particleVB); particleVBSize = 0;
-        SafeRelease(ribbonVB); ribbonVBSize = 0;
+        gfx.Destroy(nodePalette); nodePalette = gfx::BufferHandle::Invalid;
+        gfx.Destroy(particleVB); particleVB = gfx::BufferHandle::Invalid; particleVBSize = 0;
+        gfx.Destroy(ribbonVB); ribbonVB = gfx::BufferHandle::Invalid; ribbonVBSize = 0;
     }
 };
 
