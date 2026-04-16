@@ -117,7 +117,6 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/render_target.cpp
     src/renderer/viewcube_atlas.cpp
     src/ui/render_window.cpp
-    src/renderer/particle.cpp
     src/renderer/ribbon.cpp
     src/renderer/pe1_system.cpp
     src/renderer/particle/coord_space.cpp

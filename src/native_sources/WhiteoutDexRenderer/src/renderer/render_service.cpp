@@ -344,9 +344,12 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
             }
         mi->skinning.SetGeosetWeights(sw.geosetId, vc, bIdx.data(), wts.data());
     }
-    // PE2 particles
-    for (int i = 0; i < (int)tmpl.pe2Configs.size(); i++)
-        mi->particles.AddEmitter(i, tmpl.pe2Configs[i]);
+    // PE2 particles — registered directly with the service (no legacy path).
+    for (int i = 0; i < (int)tmpl.pe2Configs.size(); i++) {
+        auto em = std::make_unique<particle::PlaneEmitter>();
+        particle::ApplyInit(*em, particle::InitFromLegacyConfig(tmpl.pe2Configs[i]));
+        particleService_.AddPlaneEmitter(mi->handle, i, std::move(em));
+    }
     // Ribbons
     for (int i = 0; i < (int)tmpl.ribbonConfigs.size(); i++)
         mi->ribbons.AddEmitter(i, tmpl.ribbonConfigs[i]);
@@ -586,9 +589,13 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
     }
     if (!skinWeights.empty()) mi->skinDirty = true;
 
-    // Particles
+    // Particles — register with the PE2 service. The legacy ParticleEmitterConfig
+    // boundary type stays (external API), but it's translated to the service's
+    // PlaneEmitterInit on the way in. All downstream simulation/render is service.
     for (size_t i = 0; i < particleConfigs.size(); i++) {
-        mi->particles.AddEmitter((int)i, particleConfigs[i]);
+        auto em = std::make_unique<particle::PlaneEmitter>();
+        particle::ApplyInit(*em, particle::InitFromLegacyConfig(particleConfigs[i]));
+        particleService_.AddPlaneEmitter(handle, (int)i, std::move(em));
     }
 
     // Ribbons
@@ -734,40 +741,26 @@ void RenderService::ApplyLayerStates(ModelInstance& mi, const FrameState& state)
 }
 
 void RenderService::ApplyParticleFrameStates(ModelInstance& mi, const FrameState& state) {
-    for (auto& ps : state.particleStates) {
-        // Legacy path — still the primary until Phase 6 cut-over.
-        ParticleEmitterState st;
-        st.transform    = ps.transform;
-        st.emissionRate = ps.emissionRate;
-        st.speed        = ps.speed;
-        st.variation    = ps.variation;
-        st.coneAngle    = ps.coneAngle;
-        st.gravity      = ps.gravity;
-        st.width        = ps.width;
-        st.length       = ps.length;
-        st.visibility   = ps.visibility;
-        mi.particles.UpdateEmitterState(ps.emitterId, st);
+    // PE2 service is the single path. Per-frame: look up the registered
+    // PlaneEmitter and push the evaluated animation state into it. Transform
+    // is conjugated for Blizzard-space sim (not the default — see §3.8
+    // retrospective in docs/PARTICLEEMITTERS2.md).
+    for (const auto& ps : state.particleStates) {
+        auto* em = particleService_.GetEmitter(mi.handle, ps.emitterId);
+        if (!em) continue;
 
-        // New service path — mirror the state to the registered PlaneEmitter
-        // if this model has one. Transform handling depends on the emitter's
-        // declared simulation coord space:
-        //   CoordSpace::Max       — pass ps.transform directly (MDX-sourced
-        //                           emitters; matches legacy visuals).
-        //   CoordSpace::Blizzard  — conjugate via MaxToBlzTransform.
-        if (auto* em = particleService_.GetEmitter(mi.handle, ps.emitterId)) {
-            em->SetEmissionRate(ps.emissionRate);
-            em->SetVelocity(ps.speed);
-            em->SetVelocityVariation(ps.variation);
-            em->SetLatitude(ps.coneAngle);
-            em->SetAcceleration(ps.gravity);
-            em->SetWidth(ps.width);
-            em->SetHeight(ps.length);
-            em->SetVisible(ps.visibility > 0.02f);
-            if (em->GetCoordSpace() == particle::CoordSpace::Blizzard) {
-                em->SetModelToWorld(particle::MaxToBlzTransform(ps.transform));
-            } else {
-                em->SetModelToWorld(ps.transform);
-            }
+        em->SetEmissionRate(ps.emissionRate);
+        em->SetVelocity(ps.speed);
+        em->SetVelocityVariation(ps.variation);
+        em->SetLatitude(ps.coneAngle);
+        em->SetAcceleration(ps.gravity);
+        em->SetWidth(ps.width);
+        em->SetHeight(ps.length);
+        em->SetVisible(ps.visibility > 0.02f);
+        if (em->GetCoordSpace() == particle::CoordSpace::Blizzard) {
+            em->SetModelToWorld(particle::MaxToBlzTransform(ps.transform));
+        } else {
+            em->SetModelToWorld(ps.transform);
         }
     }
 }
@@ -1003,12 +996,12 @@ void RenderService::GetFrameStats(int& geosets, int& textures, int& nodes,
     geosets = textures = nodes = particles = segments = 0;
     std::lock_guard<std::mutex> lock(dataMutex_);
     for (auto& [h, mi] : models_) {
-        geosets   += (int)mi->gpuGeosets.size();
-        textures  += (int)mi->gpuTextures.size();
-        nodes     += mi->skinning.NodeCount();
-        particles += mi->particles.GetTotalParticleCount();
-        segments  += mi->ribbons.GetTotalSegmentCount();
+        geosets  += (int)mi->gpuGeosets.size();
+        textures += (int)mi->gpuTextures.size();
+        nodes    += mi->skinning.NodeCount();
+        segments += mi->ribbons.GetTotalSegmentCount();
     }
+    particles += particleService_.TotalParticleCount();
 }
 
 // ============================================================================
@@ -1234,14 +1227,9 @@ void RenderService::UpdateAnimation() {
 // ============================================================================
 
 void RenderService::UpdateParticles(float dt) {
-    std::lock_guard<std::mutex> lock(dataMutex_);
-    for (auto& [h, mi] : models_) {
-        if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
-        mi->particles.Simulate(dt);
-    }
-    // New PE2 service — runs across all registered emitters in one pass.
-    // Parent-visibility gating isn't applied here yet; visibility is set via
-    // SetVisible() in ApplyParticleFrameStates.
+    // Parent-visibility gating happens via SetVisible() in
+    // ApplyParticleFrameStates — an emitter whose parent is hidden gets
+    // ps.visibility <= 0 and never emits anything during Simulate.
     particleService_.Simulate(dt);
 }
 
@@ -1265,221 +1253,94 @@ int ServiceFilterToLegacy(particle::FilterMode fm) {
 } // namespace
 
 void RenderService::RenderParticles() {
+    // Single service-driven path. Snapshot geometry + view matrix under the
+    // data lock, upload and issue draws without the lock held.
     auto* cmd = gfx_->GetImmediateContext();
 
-    // -----------------------------------------------------------------
-    // Phase 5c: service draw path. When any PE2-service emitter is
-    // registered, the service owns all PE2 rendering — the legacy
-    // per-model ParticleSystem::BuildBillboards loop is skipped entirely
-    // for those models. Models that ONLY used the legacy path (e.g.
-    // Max-plugin adapter which doesn't feed the service yet) still get
-    // rendered via the legacy path below.
-    // -----------------------------------------------------------------
-    std::vector<Vertex> serviceVerts;
-    std::vector<particle::EmitterDrawList> serviceDrawLists;
-    Matrix44f viewMatService;
-    bool haveServiceParticles = false;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        haveServiceParticles = particleService_.EmitterCount() > 0;
-        if (haveServiceParticles) {
-            viewMatService = camera_.GetViewMatrix();
-            particleService_.BuildGeometry(viewMatService, serviceVerts, serviceDrawLists);
-        }
-    }
-
-    if (haveServiceParticles && !serviceVerts.empty()) {
-        int vertCount = (int)serviceVerts.size();
-
-        // Grow the global particle VB if needed.
-        if (particleServiceVB_ == gfx::BufferHandle::Invalid || vertCount > particleServiceVBSize_) {
-            gfx_->Destroy(particleServiceVB_);
-            int newSize = (std::max)(vertCount, 4096);
-            gfx::BufferDesc bd;
-            bd.size  = (uint32_t)(sizeof(Vertex) * newSize);
-            bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-            particleServiceVB_     = gfx_->CreateBuffer(bd);
-            particleServiceVBSize_ = newSize;
-        }
-
-        // Upload.
-        if (void* mapped = gfx_->MapBuffer(particleServiceVB_)) {
-            memcpy(mapped, serviceVerts.data(), sizeof(Vertex) * vertCount);
-            gfx_->UnmapBuffer(particleServiceVB_);
-        }
-
-        cmd->BindVertexBuffer(0, particleServiceVB_, sizeof(Vertex));
-
-        // Render each emitter's slice.
-        int drawOffset = 0;
-        for (const auto& dl : serviceDrawLists) {
-            if (dl.vertexCount <= 0) continue;
-
-            int legacyFilter = ServiceFilterToLegacy(dl.material.filterMode);
-            cmd->BindPipeline(LookupMeshPSO(legacyFilter, /*twoSided*/true,
-                                            /*noDepthTest*/false, /*noDepthSet*/true));
-
-            {
-                float alphaRef = (legacyFilter == FILTER_TRANSPARENT) ? 0.75f : 0.0f;
-                CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
-                cb->world      = Matrix44f::identity().transpose();
-                float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-                Matrix44f proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
-                cb->view       = viewMatService.transpose();
-                cb->projection = proj.transpose();
-                Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
-                cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
-                cb->lightColor   = kParticleLightColor;
-                cb->ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
-                cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
-                cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
-                cb->materialFlags = {dl.material.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
-                gfx_->UnmapBuffer(cbPerFrame_);
-            }
-            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
-            cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
-
-            // Texture lookup — uses the model's gpuTextures map since textures
-            // are still owned per-model by the ModelInstance.
-            uint32_t wrapFlags = kWrapFlagsMask;
-            bool hasModelTex = false;
-            ModelInstance* owner = nullptr;
-            {
-                std::lock_guard<std::mutex> lock(dataMutex_);
-                owner = getModel(dl.model);
-                if (owner && dl.material.textureId >= 0) {
-                    auto it = owner->gpuTextures.find(dl.material.textureId);
-                    if (it != owner->gpuTextures.end() && it->second.tex != gfx::TextureHandle::Invalid) {
-                        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, it->second.tex);
-                        wrapFlags = it->second.wrapFlags & kWrapFlagsMask;
-                        hasModelTex = true;
-                    }
-                }
-            }
-            if (!hasModelTex) {
-                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
-            }
-            cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[wrapFlags]);
-
-            cmd->Draw(dl.vertexCount, drawOffset);
-            drawOffset += dl.vertexCount;
-        }
-    }
-
-    // -----------------------------------------------------------------
-    // Legacy path — draws ParticleSystem emitters that were NOT mirrored
-    // into the service. Loops only over models where the service has no
-    // emitters registered, so we avoid double-rendering the same content.
-    // -----------------------------------------------------------------
-    for (auto& [_mh, _mi] : models_) {
-    auto* mi = _mi.get();
-
-    // Snapshot all data under one lock
-    float pitch, yaw;
+    std::vector<Vertex> verts;
+    std::vector<particle::EmitterDrawList> drawLists;
     Matrix44f viewMat;
-    ParticleSystem::BillboardResult bbResult;
-    std::vector<ParticleEmitterConfig> configs;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        if (!mi->particles.HasEmitters()) continue;
-        if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
-        // If the service owns any emitters for this model, the service
-        // already rendered them above — don't duplicate via the legacy path.
-        if (haveServiceParticles && particleService_.HasEmittersForModel(_mh)) continue;
-        pitch   = camera_.GetPitch();
-        yaw     = camera_.GetYaw();
+        if (particleService_.EmitterCount() == 0) return;
         viewMat = camera_.GetViewMatrix();
-        bbResult = mi->particles.BuildBillboards(pitch, yaw);
-
-        for (int eid : bbResult.emitterIds) {
-            auto* c = mi->particles.GetConfig(eid);
-            configs.push_back(c ? *c : ParticleEmitterConfig{});
-        }
+        particleService_.BuildGeometry(viewMat, verts, drawLists);
     }
-    // Lock released — safe to call DX11
+    if (verts.empty()) return;
 
-    auto& verts = bbResult.vertices;
-    auto& emitterIds = bbResult.emitterIds;
-    auto& vertCounts = bbResult.vertCounts;
-    if (verts.empty()) continue;
+    const int vertCount = (int)verts.size();
 
-    int vertCount = (int)verts.size();
-
-    // Grow particle VB if needed
-    if (mi->particleVB == gfx::BufferHandle::Invalid || vertCount > mi->particleVBSize) {
-        gfx_->Destroy(mi->particleVB);
-        int newSize = (std::max)(vertCount, 1024);
+    // Grow the global particle VB if needed.
+    if (particleServiceVB_ == gfx::BufferHandle::Invalid || vertCount > particleServiceVBSize_) {
+        gfx_->Destroy(particleServiceVB_);
+        int newSize = (std::max)(vertCount, 4096);
         gfx::BufferDesc bd;
         bd.size  = (uint32_t)(sizeof(Vertex) * newSize);
         bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-        mi->particleVB = gfx_->CreateBuffer(bd);
-        mi->particleVBSize = newSize;
+        particleServiceVB_     = gfx_->CreateBuffer(bd);
+        particleServiceVBSize_ = newSize;
     }
 
-    // Upload vertex data
-    void* mapped = gfx_->MapBuffer(mi->particleVB);
-    if (!mapped) continue;
-    memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
-    gfx_->UnmapBuffer(mi->particleVB);
+    // Upload.
+    if (void* mapped = gfx_->MapBuffer(particleServiceVB_)) {
+        memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
+        gfx_->UnmapBuffer(particleServiceVB_);
+    }
 
-    // Bind particle VB
-    cmd->BindVertexBuffer(0, mi->particleVB, sizeof(Vertex));
+    cmd->BindVertexBuffer(0, particleServiceVB_, sizeof(Vertex));
 
-    // Render per-emitter with correct PSO and texture
+    // Render each emitter's slice.
     int drawOffset = 0;
-    for (int ei = 0; ei < (int)emitterIds.size(); ei++) {
-        auto& cfg = configs[ei];
-        int count = vertCounts[ei];
-        if (count <= 0) { continue; }
+    for (const auto& dl : drawLists) {
+        if (dl.vertexCount <= 0) continue;
 
-        // Particles: always two-sided, always noWrite depth.
-        // LookupMeshPSO with noDepthSet=true gives [filter][1=noCull][1=noWrite]
-        cmd->BindPipeline(LookupMeshPSO(cfg.filterMode, true, false, true));
+        const int legacyFilter = ServiceFilterToLegacy(dl.material.filterMode);
+        cmd->BindPipeline(LookupMeshPSO(legacyFilter, /*twoSided*/true,
+                                        /*noDepthTest*/false, /*noDepthSet*/true));
 
-        // Update constant buffer
         {
-            float alphaRef = (cfg.filterMode == FILTER_TRANSPARENT) ? 0.75f : 0.0f;
+            const float alphaRef = (legacyFilter == FILTER_TRANSPARENT) ? 0.75f : 0.0f;
             CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
             cb->world      = Matrix44f::identity().transpose();
-
-            float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
+            const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
             Matrix44f proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
             cb->view       = viewMat.transpose();
             cb->projection = proj.transpose();
-
             Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
-            cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
-            cb->lightColor   = kParticleLightColor;
-            cb->ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
-            cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
+            cb->lightDir      = {ldN.x, ldN.y, ldN.z, 0.0f};
+            cb->lightColor    = kParticleLightColor;
+            cb->ambientColor  = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
+            cb->extraParams   = {1.0f, 1.0f, 1.0f, 1.0f};
             cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
-            cb->materialFlags = {cfg.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
+            cb->materialFlags = {dl.material.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
             gfx_->UnmapBuffer(cbPerFrame_);
         }
-
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
 
-        // Bind texture
-        uint32_t wrapFlags = kWrapFlagsMask;
-        bool hasModelTex = false;
-        if (cfg.textureId >= 0 && mi->gpuTextures.count(cfg.textureId)) {
-            auto& gt = mi->gpuTextures[cfg.textureId];
-            if (gt.tex != gfx::TextureHandle::Invalid) {
-                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, gt.tex);
-                wrapFlags = gt.wrapFlags & kWrapFlagsMask;
-                hasModelTex = true;
+        // Texture lookup — textures are per-ModelInstance.
+        uint32_t wrapFlags  = kWrapFlagsMask;
+        bool     hasModelTex = false;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex_);
+            ModelInstance* owner = getModel(dl.model);
+            if (owner && dl.material.textureId >= 0) {
+                auto it = owner->gpuTextures.find(dl.material.textureId);
+                if (it != owner->gpuTextures.end() && it->second.tex != gfx::TextureHandle::Invalid) {
+                    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, it->second.tex);
+                    wrapFlags  = it->second.wrapFlags & kWrapFlagsMask;
+                    hasModelTex = true;
+                }
             }
         }
-        if (!hasModelTex)
+        if (!hasModelTex) {
             cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
+        }
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[wrapFlags]);
 
-        // Draw this emitter's particles
-        cmd->Draw(count, drawOffset);
-        drawOffset += count;
+        cmd->Draw(dl.vertexCount, drawOffset);
+        drawOffset += dl.vertexCount;
     }
-    } // end for each model
 }
 
 // ============================================================================

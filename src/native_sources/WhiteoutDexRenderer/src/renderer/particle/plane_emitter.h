@@ -5,16 +5,18 @@
 // Extends Emitter2 with width/height spawn plane + lat/lon spread angles.
 // See CPlaneParticleEmitter.cpp in BlizzPartRE/pseudocode for the spawn math.
 //
-// IMPORTANT: when coordSpace == CoordSpace::Blizzard (the default) the caller
-// MUST pass a modelToWorld matrix that is itself in Blizzard space — i.e. the
-// MDX node TRS tracks with the Blizzard→Max swiz NOT applied. The MDX adapter
-// at [mdx_model_adapter.cpp:82] currently swizzles all node tracks to Max
-// space; Phase 4 of the plan (docs/PARTICLEEMITTERS2.md §4) adds a skip-swiz
-// path for PE2 nodes specifically. Until that lands, this emitter should be
-// driven from a caller that feeds it Blizzard-space transforms.
+// Coord-space: MDX-driven emitters default to `CoordSpace::Max` (matches what
+// the adapter's TransformMdxModelToMaxCoords already produced and the legacy
+// renderer consumed). `CoordSpace::Blizzard` remains wired for a future
+// accuracy pass; see docs/PARTICLEEMITTERS2.md §3.8 for the retrospective.
 // ============================================================================
 
 #include "particle2_emitter.h"
+
+// Forward-declare the legacy config struct that still crosses the RenderService
+// public boundary, so InitFromLegacyConfig can take it without forcing every
+// user of plane_emitter.h to include particle.h.
+namespace WhiteoutDex { struct ParticleEmitterConfig; }
 
 namespace WhiteoutDex::particle {
 
@@ -46,16 +48,24 @@ struct PlaneEmitterInit {
     int                   priorityPlane = 0;
     int                   replaceableId = 0;
     ParticleMaterialDesc  material;
-    // Simulation coord-space (Blizzard for MDX-driven emitters).
-    CoordSpace            coordSpace    = CoordSpace::Blizzard;
+    // Simulation coord-space. MDX-sourced emitters (via GetPlaneEmitterInits
+    // or InitFromLegacyConfig) set this to CoordSpace::Max.
+    CoordSpace            coordSpace    = CoordSpace::Max;
 };
 
 class PlaneEmitter;
 
 // Apply the init payload to a freshly-constructed PlaneEmitter. Declared
-// after the forward-decl so the class body below can reference `PlaneEmitter`
-// and this free function can follow it.
+// after the forward-decl so the class body below can reference `PlaneEmitter`.
 void ApplyInit(PlaneEmitter& e, const PlaneEmitterInit& init);
+
+// Translate a legacy ParticleEmitterConfig (the boundary type that callers
+// still pass to RenderService::AddModel / LoadModel) into a PlaneEmitterInit.
+// Performs the same 3-segment → 2-key folding, ParticleType unpacking and
+// LineEmitter → longitude default mapping as the MDX adapter's
+// GetPlaneEmitterInits, so both intake paths converge on identical
+// PlaneEmitter state.
+PlaneEmitterInit InitFromLegacyConfig(const ParticleEmitterConfig& cfg);
 
 class PlaneEmitter : public Emitter2 {
 public:

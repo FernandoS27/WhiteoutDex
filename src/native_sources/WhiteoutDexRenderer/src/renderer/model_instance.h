@@ -154,9 +154,8 @@ struct ModelInstance {
     gfx::BufferHandle nodePalette = gfx::BufferHandle::Invalid;
 
     // ---- Particle system ----
-    ParticleSystem particles;
-    gfx::BufferHandle particleVB     = gfx::BufferHandle::Invalid;
-    int               particleVBSize = 0;
+    // PE2 particles are owned by RenderService::particleService_, keyed on
+    // the model's handle. No per-instance state lives here any more.
 
     // ---- Ribbon system ----
     RibbonSystem ribbons;
@@ -206,7 +205,6 @@ struct ModelInstance {
         gpuTextures.clear();
         gpuMaterials.clear();
         gfx.Destroy(nodePalette); nodePalette = gfx::BufferHandle::Invalid;
-        gfx.Destroy(particleVB); particleVB = gfx::BufferHandle::Invalid; particleVBSize = 0;
         gfx.Destroy(ribbonVB); ribbonVB = gfx::BufferHandle::Invalid; ribbonVBSize = 0;
     }
 };
