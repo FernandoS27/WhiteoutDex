@@ -145,10 +145,17 @@ void RenderService::UpdateAttachments() {
 
         for (auto& slot : mi->attachmentSlots) {
             if (slot.loaded || slot.config.modelPath.empty()) continue;
-            slot.loaded = true;
 
+            // Try to get the template. For CASC/MPQ-resolved MDX files this
+            // almost always returns nullptr on the first call (template is
+            // queued for the async worker). We must NOT mark the slot loaded
+            // until the template is actually in hand — otherwise we'd skip
+            // this slot forever and never build the child, even after the
+            // worker finishes and DrainTemplateResults populates the cache.
             auto tmpl = getOrLoadTemplate(slot.config.modelPath);
             if (!tmpl) continue;
+
+            slot.loaded = true;
 
             uint32_t childH = nextModelHandle_++;
             auto child = std::make_unique<ModelInstance>();
@@ -418,6 +425,10 @@ void RenderService::UpdatePE1(float dt) {
             models_.erase(it);
             pe1InstanceCount_--;
         }
+        // Drop any emitters this child registered with the PE2 service.
+        // Otherwise they persist as ghost emitters, drawing with the default
+        // texture (since getModel(dl.model) returns null on lookup).
+        particleService_.RemoveModel(rh);
     }
 }
 
@@ -1112,11 +1123,14 @@ void RenderService::CreateNodePalette(ModelInstance& mi) {
 void RenderService::ProcessStagedData() {
     std::lock_guard<std::mutex> lock(dataMutex_);
 
-    // Remove models marked for clear
+    // Remove models marked for clear. Also drop their emitters from the PE2
+    // service so stale entries don't accumulate across reloads.
     for (auto it = models_.begin(); it != models_.end(); ) {
         if (it->second->stagedClear) {
+            const uint32_t clearedHandle = it->first;
             it->second->ReleaseGPU(*gfx_);
             it = models_.erase(it);
+            particleService_.RemoveModel(clearedHandle);
         } else {
             ++it;
         }
