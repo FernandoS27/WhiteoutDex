@@ -120,6 +120,14 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/particle.cpp
     src/renderer/ribbon.cpp
     src/renderer/pe1_system.cpp
+    src/renderer/particle/coord_space.cpp
+    src/renderer/particle/rnd_seed.cpp
+    src/renderer/particle/particle_key.cpp
+    src/renderer/particle/particle_pool.cpp
+    src/renderer/particle/particle2_emitter.cpp
+    src/renderer/particle/plane_emitter.cpp
+    src/renderer/particle/particle_geometry.cpp
+    src/renderer/particle/particle_service.cpp
     src/io/mdx_animation.cpp
     src/io/mdx_model_adapter.cpp
     src/io/team_glow_data.cpp

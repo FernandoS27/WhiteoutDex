@@ -10,6 +10,7 @@
 #include "camera.h"
 #include "animation.h"
 #include "particle.h"
+#include "particle/particle_service.h"
 #include "ribbon.h"
 #include "model_types.h"
 #include "model_instance.h"
@@ -92,6 +93,15 @@ public:
                    const std::vector<ParticleEmitterConfig>& particles,
                    const std::vector<RibbonEmitterConfig>& ribbons,
                    const std::vector<CollisionShapeData>& collisions);
+
+    // PE2 service path: register PlaneEmitter instances built from the MDX
+    // adapter's GetPlaneEmitterInits() alongside the legacy ParticleSystem.
+    // Simulation runs in Blizzard-native space. Passes each init through
+    // particle::ApplyInit, then hands ownership to the internal
+    // particle::ParticleService. Per-frame state (emissionRate, speed, width,
+    // etc.) is fed via ApplyFrameState -> ApplyParticleFrameStates.
+    void AddPlaneEmitters(uint32_t modelHandle,
+                          const std::vector<particle::PlaneEmitterInit>& inits);
 
     // Apply pre-computed per-frame state
     void ApplyFrameState(uint32_t handle, const FrameState& state, int timeMs);
@@ -228,6 +238,10 @@ private:
         }
     }
 
+    // PE2 service — centralised registry for the new particle path. Coexists
+    // with the legacy per-ModelInstance ParticleSystem until Phase 6 cut-over.
+    particle::ParticleService particleService_;
+
     // Sync
     mutable std::mutex    dataMutex_;
 
@@ -340,6 +354,11 @@ private:
     // Grid
     gfx::BufferHandle gridVB_ = gfx::BufferHandle::Invalid;
     int               gridVertCount_ = 0;
+
+    // Global particle VB — used by the PE2 service's draw path.
+    // Grows on demand; sized in Vertex units.
+    gfx::BufferHandle particleServiceVB_     = gfx::BufferHandle::Invalid;
+    int               particleServiceVBSize_ = 0;
 
     // ViewCube
     gfx::BufferHandle  vcCubeVB_     = gfx::BufferHandle::Invalid;

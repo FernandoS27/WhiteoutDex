@@ -108,6 +108,17 @@ int main(int argc, char* argv[]) {
     renderer.LoadModel(meshes, textures, materials, skeleton,
                        skinWeights, particles, ribbons, collisions);
 
+    // PE2 service path — register PlaneEmitters alongside the legacy
+    // ParticleSystem (docs/PARTICLEEMITTERS2.md §4 Phase 5). Runs in parallel
+    // until the cut-over.
+    {
+        auto planeInits = adapter.GetPlaneEmitterInits();
+        if (!planeInits.empty()) {
+            renderer.AddPlaneEmitters(renderer.GetFocusModelHandle(), planeInits);
+            std::cout << "  PE2 service: " << planeInits.size() << " emitter(s) registered\n";
+        }
+    }
+
     // PE1 (model particle emitters) — set configs + base path for child model loading
     if (!pe1Configs.empty()) {
         renderer.SetPE1BasePath(basePath.string());

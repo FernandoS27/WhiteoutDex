@@ -7,9 +7,11 @@
 #include "model_source.h"
 #include "mdx_animation.h"
 #include "file_resolver.h"
+#include "renderer/particle/plane_emitter.h"
 #include <whiteout/models/mdx/types.h>
 #include <string>
 #include <filesystem>
+#include <vector>
 
 namespace WhiteoutDex {
 
@@ -34,6 +36,9 @@ public:
     std::vector<SkinWeightData>        GetSkinWeights()     override;
     std::vector<ParticleEmitterConfig> GetParticleConfigs() override;
     std::vector<RibbonEmitterConfig>   GetRibbonConfigs()   override;
+
+    // PE2 service path (new, co-exists with GetParticleConfigs).
+    std::vector<particle::PlaneEmitterInit> GetPlaneEmitterInits() const;
     std::vector<CollisionShapeData>    GetCollisionShapes() override;
     std::vector<AttachmentConfig>      GetAttachmentConfigs() override;
     std::vector<PE1EmitterConfig>      GetPE1Configs()      override;

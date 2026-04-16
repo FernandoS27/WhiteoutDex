@@ -621,6 +621,135 @@ std::vector<ParticleEmitterConfig> MdxModelAdapter::GetParticleConfigs() {
 }
 
 // ============================================================================
+// GetPlaneEmitterInits — PE2 service path (docs/PARTICLEEMITTERS2.md Phase 4).
+//
+// Produces a PlaneEmitterInit per MDX ParticleEmitter2, folding the MDX
+// start/mid/end color+alpha+scale + mid-time + head/tail life/decay intervals
+// onto the two-key CParticleKey layout that the new service expects.
+// ============================================================================
+
+namespace {
+
+particle::FilterMode MapToServiceFilterMode(whiteout::u32 mdxMode) {
+    // MDX PE2 filterMode values match the service enum 1:1.
+    switch (mdxMode) {
+        case 0: return particle::FilterMode::Blend;
+        case 1: return particle::FilterMode::Additive;
+        case 2: return particle::FilterMode::Modulate;
+        case 3: return particle::FilterMode::Modulate2X;
+        case 4: return particle::FilterMode::AlphaKey;
+        default: return particle::FilterMode::Blend;
+    }
+}
+
+particle::ImVector MdxColorToImVector(const whiteout::Vector3f& rgb, whiteout::u8 alpha) {
+    // MDX colors are float [0,1]; ImVector is BGRA8. Conversion matches the
+    // RE loader: (int)(255.0 * v) with truncation toward zero. Alpha is already
+    // a byte in the MDX binary.
+    auto clamp8 = [](float v) -> uint8_t {
+        if (v <= 0.0f) return 0;
+        if (v >= 1.0f) return 255;
+        return static_cast<uint8_t>(v * 255.0f);
+    };
+    return { alpha, clamp8(rgb.x), clamp8(rgb.y), clamp8(rgb.z) };
+}
+
+} // namespace
+
+std::vector<particle::PlaneEmitterInit> MdxModelAdapter::GetPlaneEmitterInits() const {
+    std::vector<particle::PlaneEmitterInit> result;
+    result.reserve(model_.particleEmitters2.size());
+
+    using namespace whiteout::mdx;
+
+    for (const auto& pe : model_.particleEmitters2) {
+        particle::PlaneEmitterInit init;
+
+        init.textureRows    = pe.rows;
+        init.textureCols    = pe.columns;
+        init.lifeSpan       = pe.lifespan;
+        init.tailLength     = pe.tailLength;
+        init.angularVelocity = 0.0f;                  // not in MDX
+        init.priorityPlane  = static_cast<int>(pe.priorityPlane);
+        init.replaceableId  = static_cast<int>(pe.replaceableId);
+
+        // Particle type: MDX 0=Head, 1=Tail, 2=Both (per the spec on line 848
+        // of MDX_FILE_FORMAT_SPECIFICATION.md).
+        init.hasHead = (pe.headOrTail != 1);   // anything but "tail-only"
+        init.hasTail = (pe.headOrTail != 0);   // anything but "head-only"
+
+        // Flag bits from the node.
+        const whiteout::u32 nf = static_cast<whiteout::u32>(pe.node.flags);
+        init.modelSpace    = (nf & (whiteout::u32)Node::NodeFlag::ModelSpace)     != 0;
+        init.xyQuads       = (nf & (whiteout::u32)Node::NodeFlag::XYQuad)         != 0;
+        init.sortZ         = (nf & (whiteout::u32)Node::NodeFlag::SortPrimitives) != 0;
+        const bool lineEmitter = (nf & (whiteout::u32)Node::NodeFlag::LineEmitter) != 0;
+        init.longitude     = lineEmitter ? 0.0f : 6.2831853071795864769f;
+
+        // Material descriptor. Single texture slot 0; MDX `textureId` is the
+        // index into the model's texture table (resolved by the render service).
+        init.material.textureId     = static_cast<int>(pe.textureId);
+        init.material.filterMode    = MapToServiceFilterMode(pe.filterMode);
+        init.material.unshaded      = (nf & (whiteout::u32)Node::NodeFlag::Unshaded) != 0;
+        init.material.unfogged      = (nf & (whiteout::u32)Node::NodeFlag::Unfogged) != 0;
+        init.material.replaceableId = static_cast<int>(pe.replaceableId);
+
+        // MDX one-shot "squirt" flag: arm the NeedSquirt latch at activation.
+        init.squirtAtStart = (pe.squirt != 0);
+
+        // --- 2-key folding (docs/PARTICLEEMITTERS2.md §3.4 mapping table) ---
+        const float midTime = pe.time * pe.lifespan;
+
+        particle::ImVector startColor = MdxColorToImVector(pe.segmentColor[0], pe.segmentAlpha[0]);
+        particle::ImVector midColor   = MdxColorToImVector(pe.segmentColor[1], pe.segmentAlpha[1]);
+        particle::ImVector endColor   = MdxColorToImVector(pe.segmentColor[2], pe.segmentAlpha[2]);
+
+        // Key 0 — life phase
+        auto& k0 = init.keys[0];
+        k0.endTime        = midTime;
+        k0.startColor     = startColor;
+        k0.endColor       = midColor;
+        k0.startScale     = pe.segmentScaling[0];
+        k0.endScale       = pe.segmentScaling[1];
+        k0.headCellStart  = static_cast<int>(pe.headInterval[0]);
+        k0.headCellEnd    = static_cast<int>(pe.headInterval[1]);
+        k0.headCellRepeat = static_cast<int>(pe.headInterval[2]);
+        k0.tailCellStart  = static_cast<int>(pe.tailInterval[0]);
+        k0.tailCellEnd    = static_cast<int>(pe.tailInterval[1]);
+        k0.tailCellRepeat = static_cast<int>(pe.tailInterval[2]);
+
+        // Key 1 — decay phase
+        auto& k1 = init.keys[1];
+        k1.endTime        = pe.lifespan;
+        k1.startColor     = midColor;
+        k1.endColor       = endColor;
+        k1.startScale     = pe.segmentScaling[1];
+        k1.endScale       = pe.segmentScaling[2];
+        k1.headCellStart  = static_cast<int>(pe.headDecayInterval[0]);
+        k1.headCellEnd    = static_cast<int>(pe.headDecayInterval[1]);
+        k1.headCellRepeat = static_cast<int>(pe.headDecayInterval[2]);
+        k1.tailCellStart  = static_cast<int>(pe.tailDecayInterval[0]);
+        k1.tailCellEnd    = static_cast<int>(pe.tailDecayInterval[1]);
+        k1.tailCellRepeat = static_cast<int>(pe.tailDecayInterval[2]);
+
+        // Simulation space: we feed the MDX adapter's already-swizzled Max
+        // transform straight to the emitter and simulate there. The plan's
+        // "simulate in Blizzard native + convert at render" (§3.8) was
+        // theoretically RE-faithful but produces a 90° rotation of the spawn
+        // rectangle in the emitter's local frame relative to what the MDX
+        // art authors expect from legacy WhiteoutDex behaviour. Simulating
+        // directly in Max space preserves visual parity with the legacy
+        // ParticleSystem while still getting every other RE fix (angular
+        // velocity, keyframe interpolation, xyQuads semantics, etc.).
+        init.coordSpace = particle::CoordSpace::Max;
+
+        result.push_back(std::move(init));
+    }
+
+    return result;
+}
+
+// ============================================================================
 // GetRibbonConfigs — Ribbon references materialId, must resolve texture
 // ============================================================================
 
