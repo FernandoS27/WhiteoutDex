@@ -142,17 +142,17 @@ inline Vector3f toXM(const Vector3f& v) { return v; }
 // ============================================================================
 
 MdxModelAdapter::MdxModelAdapter(whiteout::mdx::Model model, fs::path basePath,
-                                 CoordSpace /*space*/,
                                  IContentProvider* contentProvider)
     : model_(std::move(model))
     , basePath_(std::move(basePath))
     , resolver_(basePath_)
     , contentProvider_(contentProvider) {
-    // Apply the full MDX → renderer-native coordinate transform once, on the
-    // whole model. Both standalone and Max-plugin PE1 paths load raw MDX, so
-    // both need this. The CoordSpace parameter is now ignored (kept for ABI
-    // compatibility with existing call sites).
-    TransformMdxModelToMaxCoords(model_);
+    // MDX data is authored in Blizzard space. If the renderer is configured to
+    // run in Max space (WDX_DEFAULT_COORD_SPACE=Max), swizzle the whole model
+    // once at load. For the default Blizzard build this is a no-op.
+    if constexpr (kDefaultCoordSpace == CoordSpace::Max) {
+        TransformMdxModelToMaxCoords(model_);
+    }
 
     hierarchy_.Build(model_);
 }
@@ -732,16 +732,11 @@ std::vector<particle::PlaneEmitterInit> MdxModelAdapter::GetPlaneEmitterInits() 
         k1.tailCellEnd    = static_cast<int>(pe.tailDecayInterval[1]);
         k1.tailCellRepeat = static_cast<int>(pe.tailDecayInterval[2]);
 
-        // Simulation space: we feed the MDX adapter's already-swizzled Max
-        // transform straight to the emitter and simulate there. The plan's
-        // "simulate in Blizzard native + convert at render" (§3.8) was
-        // theoretically RE-faithful but produces a 90° rotation of the spawn
-        // rectangle in the emitter's local frame relative to what the MDX
-        // art authors expect from legacy WhiteoutDex behaviour. Simulating
-        // directly in Max space preserves visual parity with the legacy
-        // ParticleSystem while still getting every other RE fix (angular
-        // velocity, keyframe interpolation, xyQuads semantics, etc.).
-        init.coordSpace = particle::CoordSpace::Max;
+        // Simulate in the renderer-native default space. The MDX adapter has
+        // already placed the per-frame TRS into that space (or left it in
+        // Blizzard when default == Blizzard), so the emitter and the transform
+        // it will receive agree by construction.
+        init.coordSpace = kDefaultCoordSpace;
 
         result.push_back(std::move(init));
     }

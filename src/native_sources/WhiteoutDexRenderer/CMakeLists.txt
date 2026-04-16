@@ -111,15 +111,20 @@ if(MSVC)
     )
 endif()
 
+# ---- Renderer-native coordinate system (compile-time knob) ----
+set(WDX_DEFAULT_COORD_SPACE "Blizzard" CACHE STRING
+    "Renderer-native coordinate system. Valid values: Blizzard, Max.")
+set_property(CACHE WDX_DEFAULT_COORD_SPACE PROPERTY STRINGS "Blizzard" "Max")
+
 # ---- Static library: standalone renderer + MDX adapter ----
 add_library(WhiteoutDexRendererLib STATIC
     src/renderer/render_service.cpp
     src/renderer/render_target.cpp
     src/renderer/viewcube_atlas.cpp
+    src/renderer/coordinate_system.cpp
     src/ui/render_window.cpp
     src/renderer/ribbon.cpp
     src/renderer/pe1_system.cpp
-    src/renderer/particle/coord_space.cpp
     src/renderer/particle/rnd_seed.cpp
     src/renderer/particle/particle_key.cpp
     src/renderer/particle/particle_pool.cpp
@@ -155,6 +160,10 @@ target_link_libraries(WhiteoutDexRendererLib PUBLIC
     user32.lib
     gdi32.lib
     comdlg32.lib
+)
+
+target_compile_definitions(WhiteoutDexRendererLib PUBLIC
+    WDX_DEFAULT_COORD_SPACE=${WDX_DEFAULT_COORD_SPACE}
 )
 
 if(TARGET whiteout_casc)

@@ -128,9 +128,10 @@ PlaneEmitterInit InitFromLegacyConfig(const ParticleEmitterConfig& cfg) {
     k1.tailCellEnd    = cfg.tailDecayEnd;
     k1.tailCellRepeat = cfg.tailDecayRepeat;
 
-    // Matches the MDX adapter — simulate directly in Max space (§3.8
-    // retrospective).
-    init.coordSpace = CoordSpace::Max;
+    // Simulate in the renderer-native default. The caller (adapter) is
+    // responsible for producing per-frame transforms in that same space, so
+    // the particle service needs no conversion on the hot path.
+    init.coordSpace = kDefaultCoordSpace;
 
     return init;
 }

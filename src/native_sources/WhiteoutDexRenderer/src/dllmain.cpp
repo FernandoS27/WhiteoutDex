@@ -230,8 +230,6 @@ Value* ndxStart_cf(Value** arg_list, int count)
     // Register PE1 emitters (model particle emitters)
     auto pe1Configs = g_adapter->GetPE1Configs();
     if (!pe1Configs.empty()) {
-        // Max scene operates in Max coordinate space — child MDX models need swizzle
-        g_renderer->SetPE1ChildCoordSpace(WhiteoutDex::CoordSpace::Max);
         // Set base path for resolving PE1 model files + textures (Max file directory)
         const MCHAR* maxFile = ip->GetCurFilePath().data();
         if (maxFile && maxFile[0]) {

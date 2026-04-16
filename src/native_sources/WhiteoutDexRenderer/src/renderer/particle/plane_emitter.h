@@ -5,10 +5,11 @@
 // Extends Emitter2 with width/height spawn plane + lat/lon spread angles.
 // See CPlaneParticleEmitter.cpp in BlizzPartRE/pseudocode for the spawn math.
 //
-// Coord-space: MDX-driven emitters default to `CoordSpace::Max` (matches what
-// the adapter's TransformMdxModelToMaxCoords already produced and the legacy
-// renderer consumed). `CoordSpace::Blizzard` remains wired for a future
-// accuracy pass; see docs/PARTICLEEMITTERS2.md §3.8 for the retrospective.
+// Coord-space: emitters simulate in the renderer-native default space
+// (WDX_DEFAULT_COORD_SPACE, see coordinate_system.h). Both MDX-sourced and
+// Max-sourced paths feed their per-frame TRS in that same space, so the
+// particle service's per-particle conversion collapses to a no-op. See
+// docs/PARTICLEEMITTERS2.md §3.8 for history.
 // ============================================================================
 
 #include "particle2_emitter.h"
@@ -48,9 +49,10 @@ struct PlaneEmitterInit {
     int                   priorityPlane = 0;
     int                   replaceableId = 0;
     ParticleMaterialDesc  material;
-    // Simulation coord-space. MDX-sourced emitters (via GetPlaneEmitterInits
-    // or InitFromLegacyConfig) set this to CoordSpace::Max.
-    CoordSpace            coordSpace    = CoordSpace::Max;
+    // Simulation coord-space. Defaults to the renderer-native space so the
+    // particle service's per-frame conversion is a no-op for asset-driven
+    // emitters. Override if an emitter is authored in a different space.
+    CoordSpace            coordSpace    = kDefaultCoordSpace;
 };
 
 class PlaneEmitter;

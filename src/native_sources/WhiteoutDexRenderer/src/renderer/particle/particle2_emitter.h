@@ -26,7 +26,7 @@
 #include "particle_material.h"
 #include "particle_pool.h"
 #include "rnd_seed.h"
-#include "coord_space.h"
+#include "../coordinate_system.h"
 #include "types.h"
 
 #include <cstdint>
@@ -173,7 +173,7 @@ protected:
 
     // Flags and material
     uint32_t flags_                      = kFlagEnabled2 | kFlagHasHead; // RE ctor default
-    CoordSpace coordSpace_               = CoordSpace::Blizzard;
+    CoordSpace coordSpace_               = kDefaultCoordSpace;
 
     // Scalars (all lifted from +0x100..+0x1C0 region of CParticleEmitter2)
     float emissionRate_                  = 0.0f;

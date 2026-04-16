@@ -19,6 +19,22 @@ using namespace WhiteoutDex;
 
 static Point3 GetVNormal(Mesh& mesh, int faceIdx, int vertIdx);
 
+// ----------------------------------------------------------------------------
+// Coord-space bridge: 3ds Max is always Max-space. Helpers below convert into
+// the renderer-native default (see renderer/coordinate_system.h). When the
+// renderer is compiled with WDX_DEFAULT_COORD_SPACE=Max these are no-ops.
+// ----------------------------------------------------------------------------
+namespace {
+
+inline Vector3f MaxPointToDefault(const Point3& p) {
+    return CoordinateSystem::ToDefault(CoordSpace::Max, Vector3f{p.x, p.y, p.z});
+}
+inline Vector3f MaxDirToDefault(const Point3& n) {
+    return CoordinateSystem::ToDefaultDir(CoordSpace::Max, Vector3f{n.x, n.y, n.z});
+}
+
+} // namespace
+
 // ============================================================================
 // Ctor / Dtor
 // ============================================================================
@@ -31,12 +47,19 @@ MaxSceneAdapter::~MaxSceneAdapter() {}
 // ============================================================================
 
 void MaxSceneAdapter::PackMatrix(const Matrix3& tm, float* dst) {
+    // 3ds Max gives us a row-major Max-space transform; pack it, then conjugate
+    // into the renderer-native space so every downstream caller (bones,
+    // attachments, emitters, cameras) receives default-space matrices.
+    Matrix44f m = Matrix44f::identity();
     for (int r = 0; r < 3; r++) {
         Point3 row = tm.GetRow(r);
-        dst[r*4+0] = row.x; dst[r*4+1] = row.y; dst[r*4+2] = row.z; dst[r*4+3] = 0.0f;
+        m.data[r][0] = row.x; m.data[r][1] = row.y; m.data[r][2] = row.z; m.data[r][3] = 0.0f;
     }
     Point3 trans = tm.GetRow(3);
-    dst[12] = trans.x; dst[13] = trans.y; dst[14] = trans.z; dst[15] = 1.0f;
+    m.data[3][0] = trans.x; m.data[3][1] = trans.y; m.data[3][2] = trans.z; m.data[3][3] = 1.0f;
+
+    m = CoordinateSystem::ToDefault(CoordSpace::Max, m);
+    std::memcpy(dst, &m.data[0][0], sizeof(float) * 16);
 }
 
 // ============================================================================
@@ -951,11 +974,11 @@ std::vector<MeshData> MaxSceneAdapter::GetMeshes() {
                 gs.faceVertMap[outIdx] = origV;
 
                 Point3 pos = mesh.verts[origV];
-                md.positions[outIdx] = {pos.x, pos.y, pos.z};
+                md.positions[outIdx] = MaxPointToDefault(pos);
 
                 Point3 n = hasSpecN ? specN->GetNormal(f,v) : GetVNormal(mesh,f,origV);
                 n = Normalize(n);
-                md.normals[outIdx] = {n.x, n.y, n.z};
+                md.normals[outIdx] = MaxDirToDefault(n);
 
                 if (hasUVs) {
                     TVFace& tvf = mesh.mapFaces(1)[f];
@@ -1705,17 +1728,22 @@ std::vector<CameraPreset> MaxSceneAdapter::GetCameraPresets() {
         if (obj && obj->SuperClassID() == CAMERA_CLASS_ID) {
             // Get camera world transform
             Matrix3 tm = node->GetNodeTM(0);
-            Point3 pos = tm.GetRow(3);
+            Point3 rawPos = tm.GetRow(3);
             // Get target: if it's a target camera, use the target node
-            Point3 tgt = pos + tm.GetRow(2) * -100.0f; // default: look along -Z
+            Point3 rawTgt = rawPos + tm.GetRow(2) * -100.0f; // default: look along -Z
             INode* targNode = node->GetTarget();
-            if (targNode) tgt = targNode->GetNodeTM(0).GetRow(3);
+            if (targNode) rawTgt = targNode->GetNodeTM(0).GetRow(3);
 
-            // Convert to orbital camera params (pitch/yaw/distance around target)
-            Point3 dir = pos - tgt;
-            float dist = Length(dir);
+            // Lift Max-space positions into renderer-native space before
+            // deriving orbital parameters, so pitch/yaw match the camera's
+            // Z-up-around-target convention regardless of WDX_DEFAULT_COORD_SPACE.
+            Vector3f pos = MaxPointToDefault(rawPos);
+            Vector3f tgt = MaxPointToDefault(rawTgt);
+
+            Vector3f dir{ pos.x - tgt.x, pos.y - tgt.y, pos.z - tgt.z };
+            float dist = std::sqrt(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
             if (dist < 0.01f) dist = 100.0f;
-            dir = Normalize(dir);
+            dir = { dir.x / dist, dir.y / dist, dir.z / dist };
             float pitch = asinf(std::clamp(dir.z, -1.0f, 1.0f));
             float yaw = atan2f(dir.y, dir.x);
 
@@ -1724,7 +1752,7 @@ std::vector<CameraPreset> MaxSceneAdapter::GetCameraPresets() {
             cp.pitch = pitch;
             cp.yaw = yaw;
             cp.distance = dist;
-            cp.target = {tgt.x, tgt.y, tgt.z};
+            cp.target = tgt;
             cp.isLive = false;
             presets.push_back(cp);
         }

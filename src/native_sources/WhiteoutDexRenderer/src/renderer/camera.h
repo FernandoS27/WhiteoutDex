@@ -5,6 +5,8 @@
 // ============================================================================
 
 #include "types.h"
+#include "coordinate_system.h"
+#include <cmath>
 
 namespace WhiteoutDex {
 
@@ -13,7 +15,22 @@ public:
     // Magos defaults from Constants.h
     // NOTE: Can't use DEFAULT_PITCH as name — wingdi.h #defines it as 0!
     static constexpr float kDefaultPitch    = 0.3f;           // ~17° slight top-down
-    static constexpr float kDefaultYaw      = -1.5707963f;   // -PI/2 — camera at -Y, sees model front
+    // Default yaw places the camera on the model's front side. Max convention
+    // puts the "front" direction at -Y (yaw = -PI/2 ⇒ camera at -Y); we derive
+    // the default-space equivalent by transforming that axis through the
+    // renderer-native coord system. All currently-supported spaces are Z-up
+    // so pitch is invariant.
+    static inline const float kDefaultYaw =
+        []{
+            Vector3f frontMax{0.0f, -1.0f, 0.0f};
+            Vector3f frontDefault =
+                CoordinateSystem::ConvertDirection(CoordSpace::Max,
+                                                   CoordinateSystem::Default(),
+                                                   frontMax);
+            // `source = target + distance * (cos(pitch)*cos(yaw), cos(pitch)*sin(yaw), ...)`
+            // so (source - target) in the XY plane points along +frontDefault.
+            return std::atan2(frontDefault.y, frontDefault.x);
+        }();
     static constexpr float kDefaultDistance = 350.0f;
     static constexpr float kMinPitch        = -1.5607963f;   // -(PI/2) + 0.01
     static constexpr float kMaxPitch        =  1.5607963f;   // (PI/2) - 0.01

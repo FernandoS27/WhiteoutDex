@@ -75,8 +75,7 @@ int main(int argc, char* argv[]) {
     // Create adapter — pass content provider for CASC/MPQ texture fallback
     auto basePath = mdxPath.parent_path();
     WhiteoutDex::MdxModelAdapter adapter(
-        std::move(model), basePath, WhiteoutDex::CoordSpace::MDX,
-        &renderer.GetContentProvider());
+        std::move(model), basePath, &renderer.GetContentProvider());
     renderer.GetContentProvider().SetBasePath(basePath);
 
     // Fetch static data
@@ -114,7 +113,6 @@ int main(int argc, char* argv[]) {
     // PE1 (model particle emitters) — set configs + base path for child model loading
     if (!pe1Configs.empty()) {
         renderer.SetPE1BasePath(basePath.string());
-        renderer.SetPE1ChildCoordSpace(WhiteoutDex::CoordSpace::MDX);
         renderer.SetPE1Configs(renderer.GetFocusModelHandle(), pe1Configs);
     }
 
@@ -122,7 +120,6 @@ int main(int argc, char* argv[]) {
     if (!attachConfigs.empty()) {
         if (pe1Configs.empty()) {
             renderer.SetPE1BasePath(basePath.string());
-            renderer.SetPE1ChildCoordSpace(WhiteoutDex::CoordSpace::MDX);
         }
         renderer.SetAttachmentConfigs(renderer.GetFocusModelHandle(), attachConfigs);
     }

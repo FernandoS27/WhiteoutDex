@@ -4,9 +4,11 @@
 // ============================================================================
 
 #include <whiteout/vector_types.h>
+#include "coordinate_system.h"
 
 namespace WhiteoutDex {
 
+using whiteout::Vector3f;
 using whiteout::Vector4f;
 
 // --- Simulation ---
@@ -34,9 +36,17 @@ constexpr Vector4f kCollisionAmbientColor = {1.0f, 1.0f, 1.0f, 0.0f};
 constexpr Vector4f kViewCubeLightColor   = {1.0f, 1.0f, 1.0f, 1.0f};
 constexpr Vector4f kViewCubeAmbientColor = {0.5f, 0.5f, 0.5f, 1.0f};
 
-// --- Shared light direction (normalized at use site) ---
-constexpr Vector4f kDefaultLightDir      = {0.0f, -0.3f, -0.8f, 0.0f};
-constexpr Vector4f kViewCubeLightDir      = {0.5f, 0.3f, -0.8f, 0.0f};
+// --- Shared light direction (authored in Max space, lifted to renderer-native
+//     at init time; normalized at use site). ---
+namespace detail {
+    inline Vector4f LiftLightDir(Vector3f maxDir) {
+        Vector3f d = CoordinateSystem::ConvertDirection(
+            CoordSpace::Max, CoordinateSystem::Default(), maxDir);
+        return { d.x, d.y, d.z, 0.0f };
+    }
+}
+inline const Vector4f kDefaultLightDir   = detail::LiftLightDir({ 0.0f, -0.3f, -0.8f });
+inline const Vector4f kViewCubeLightDir  = detail::LiftLightDir({ 0.5f,  0.3f, -0.8f });
 
 // --- Texture wrap flags ---
 constexpr uint32_t kWrapFlagsMask = 0x3;

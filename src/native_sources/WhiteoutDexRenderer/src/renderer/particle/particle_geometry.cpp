@@ -1,4 +1,5 @@
 #include "particle_geometry.h"
+#include "../coordinate_system.h"
 
 #include <algorithm>
 #include <cmath>
@@ -125,10 +126,10 @@ int BuildEmitterGeometry(const Emitter2& emitter,
 
     CameraBasis cam = BasisFromView(*in.worldToView);
 
-    // If the emitter simulates in Blizzard space we must convert particle
-    // positions / velocities back to Max space for the renderer's shaders,
-    // which expect Max-space world coords.
-    const bool blzSpace = (emitter.GetCoordSpace() == CoordSpace::Blizzard);
+    // If the emitter's simulation space differs from the renderer-native
+    // default, convert particle positions / velocities before shader submit.
+    const CoordSpace emSpace  = emitter.GetCoordSpace();
+    const bool needsConvert   = (emSpace != CoordinateSystem::Default());
 
     // Resolve world-space position + velocity for a particle.
     auto resolveWorld = [&](const Particle2& p, Vector3f& outPos, Vector3f& outVel) {
@@ -138,9 +139,9 @@ int BuildEmitterGeometry(const Emitter2& emitter,
             pos = whiteout::transform_point(pos, emitter.ModelToWorld());
             vel = whiteout::transform_normal(vel, emitter.ModelToWorld());
         }
-        if (blzSpace) {
-            pos = BlzToMax(pos);
-            vel = BlzToMax(vel);
+        if (needsConvert) {
+            pos = CoordinateSystem::ToDefault(emSpace, pos);
+            vel = CoordinateSystem::ToDefaultDir(emSpace, vel);
         }
         outPos = pos;
         outVel = vel;
@@ -254,9 +255,9 @@ int BuildEmitterGeometry(const Emitter2& emitter,
                     worldPvel     = whiteout::transform_normal(localVelXY,  emitter.ModelToWorld());
                     worldPvelPerp = whiteout::transform_normal(localPerpXY, emitter.ModelToWorld());
                 }
-                if (blzSpace) {
-                    worldPvel     = BlzToMax(worldPvel);
-                    worldPvelPerp = BlzToMax(worldPvelPerp);
+                if (needsConvert) {
+                    worldPvel     = CoordinateSystem::ToDefaultDir(emSpace, worldPvel);
+                    worldPvelPerp = CoordinateSystem::ToDefaultDir(emSpace, worldPvelPerp);
                 }
 
                 float mag2 = LengthSq(worldPvel);

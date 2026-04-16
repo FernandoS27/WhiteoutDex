@@ -21,11 +21,11 @@ class MdxModelAdapter : public IModelSource {
 public:
     // Construct from a parsed MDX model. basePath is the directory containing
     // the .mdx file, used to resolve relative texture paths.
-    // space: MDX = raw coordinates, Max = swizzle (y, -x, z) for Max integration
-    // contentProvider: optional; when set, falls back to CASC/MPQ for textures
+    // contentProvider: optional; when set, falls back to CASC/MPQ for textures.
+    // Coordinate space is controlled at compile time via WDX_DEFAULT_COORD_SPACE
+    // (see renderer/coordinate_system.h).
     explicit MdxModelAdapter(whiteout::mdx::Model model,
                              std::filesystem::path basePath = {},
-                             CoordSpace space = CoordSpace::MDX,
                              IContentProvider* contentProvider = nullptr);
 
     // ---- IModelSource static data ----

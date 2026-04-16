@@ -6,6 +6,7 @@
 // ============================================================================
 
 #include "types.h"
+#include "coordinate_system.h"
 #include "particle.h"
 #include "ribbon.h"
 #include "animation.h"
@@ -13,9 +14,6 @@
 #include <string>
 
 namespace WhiteoutDex {
-
-// Coordinate space for MDX model data
-enum class CoordSpace { MDX, Max };
 
 // Camera preset for the camera selector combo box
 struct CameraPreset {

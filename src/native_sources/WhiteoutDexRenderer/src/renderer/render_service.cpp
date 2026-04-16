@@ -104,10 +104,6 @@ void RenderService::SetAttachmentConfigs(uint32_t handle, const std::vector<Atta
     }
 }
 
-void RenderService::SetPE1ChildCoordSpace(CoordSpace space) {
-    pe1ChildCoordSpace_ = space;
-}
-
 void RenderService::SetContentProvider(std::shared_ptr<IContentProvider> provider) {
     externalContentProvider_ = std::move(provider);
     activeContentProvider_ = externalContentProvider_
@@ -220,7 +216,7 @@ std::shared_ptr<RenderService::PE1ModelTemplate> RenderService::loadTemplateSync
 
     auto tmpl = std::make_shared<PE1ModelTemplate>();
     auto adapter = std::make_shared<MdxModelAdapter>(
-        std::move(model), texBasePath, pe1ChildCoordSpace_, activeContentProvider_);
+        std::move(model), texBasePath, activeContentProvider_);
     tmpl->adapter = adapter;
     tmpl->meshes = adapter->GetMeshes();
     tmpl->textures = adapter->GetTextures();
@@ -654,7 +650,6 @@ void RenderService::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state
 
     int bc = (int)state.boneWorldMatrices.size();
     Vector3f camPos = camera_.GetSource();
-    Vector3f worldUp = {0, 0, 1};
 
     std::vector<float> worldFlat(bc * 16);
     for (int i = 0; i < bc; i++) {
@@ -669,38 +664,49 @@ void RenderService::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state
             Vector3f toCamera = camPos - pivWorld;
             float dist = toCamera.length();
             if (dist > kBillboardDistThreshold) {
-                Matrix44f bbRot = Matrix44f::identity();
+                // Billboard math is authored in Max-space conventions (local -Y
+                // = forward, MDX authoring's +X rotated through BlzToMax). Lift
+                // the camera vector into Max, run the known-good formulas, then
+                // conjugate the resulting rotation back into the renderer-
+                // native default space. When default == Max both conversions
+                // are no-ops and behavior is identical to the legacy path.
+                Vector3f toCamera_max = CoordinateSystem::ConvertDirection(
+                    CoordinateSystem::Default(), CoordSpace::Max, toCamera);
+                Vector3f worldUp_max = {0, 0, 1};  // +Z is invariant across supported spaces
+                Matrix44f bbRot_max = Matrix44f::identity();
                 bool haveRot = false;
 
                 if (bbFlags & BONE_BILLBOARD_FULL) {
-                    Vector3f fwd = Vector3f{-toCamera.x, -toCamera.y, -toCamera.z}.normalized();
-                    Vector3f right = whiteout::cross(fwd, worldUp);
+                    Vector3f fwd = Vector3f{-toCamera_max.x, -toCamera_max.y, -toCamera_max.z}.normalized();
+                    Vector3f right = whiteout::cross(fwd, worldUp_max);
                     float rightLen = right.length();
                     if (rightLen < kBillboardDistThreshold)
                         right = {1, 0, 0};
                     right = right.normalized();
                     Vector3f up = whiteout::cross(right, fwd).normalized();
-                    bbRot = {};
-                    bbRot.data[0][0] = right.x; bbRot.data[0][1] = right.y; bbRot.data[0][2] = right.z;
-                    bbRot.data[1][0] = fwd.x;   bbRot.data[1][1] = fwd.y;   bbRot.data[1][2] = fwd.z;
-                    bbRot.data[2][0] = up.x;    bbRot.data[2][1] = up.y;    bbRot.data[2][2] = up.z;
-                    bbRot.data[3][3] = 1.0f;
+                    bbRot_max = {};
+                    bbRot_max.data[0][0] = right.x; bbRot_max.data[0][1] = right.y; bbRot_max.data[0][2] = right.z;
+                    bbRot_max.data[1][0] = fwd.x;   bbRot_max.data[1][1] = fwd.y;   bbRot_max.data[1][2] = fwd.z;
+                    bbRot_max.data[2][0] = up.x;    bbRot_max.data[2][1] = up.y;    bbRot_max.data[2][2] = up.z;
+                    bbRot_max.data[3][3] = 1.0f;
                     haveRot = true;
                 } else if (bbFlags & BONE_BILLBOARD_LOCK_Z) {
-                    float yaw = atan2f(toCamera.y, toCamera.x);
-                    bbRot = Matrix44f::rotation_z(yaw);
+                    float yaw = atan2f(toCamera_max.y, toCamera_max.x);
+                    bbRot_max = Matrix44f::rotation_z(yaw);
                     haveRot = true;
                 } else if (bbFlags & BONE_BILLBOARD_LOCK_Y) {
-                    float angle = atan2f(toCamera.z, toCamera.x);
-                    bbRot = Matrix44f::rotation_y(angle);
+                    float angle = atan2f(toCamera_max.z, toCamera_max.x);
+                    bbRot_max = Matrix44f::rotation_y(angle);
                     haveRot = true;
                 } else if (bbFlags & BONE_BILLBOARD_LOCK_X) {
-                    float angle = atan2f(toCamera.z, toCamera.y);
-                    bbRot = Matrix44f::rotation_x(angle);
+                    float angle = atan2f(toCamera_max.z, toCamera_max.y);
+                    bbRot_max = Matrix44f::rotation_x(angle);
                     haveRot = true;
                 }
 
                 if (haveRot) {
+                    Matrix44f bbRot = CoordinateSystem::ConvertTransform(
+                        CoordSpace::Max, CoordinateSystem::Default(), bbRot_max);
                     Matrix44f T_negRest = Matrix44f::translation({-pivF.x, -pivF.y, -pivF.z});
                     Matrix44f T_world   = Matrix44f::translation({pivWorld.x, pivWorld.y, pivWorld.z});
                     boneM = T_negRest * bbRot * T_world;
@@ -768,11 +774,10 @@ void RenderService::ApplyParticleFrameStates(ModelInstance& mi, const FrameState
         em->SetWidth(ps.width);
         em->SetHeight(ps.length);
         em->SetVisible(ps.visibility > 0.02f);
-        if (em->GetCoordSpace() == particle::CoordSpace::Blizzard) {
-            em->SetModelToWorld(particle::MaxToBlzTransform(ps.transform));
-        } else {
-            em->SetModelToWorld(ps.transform);
-        }
+        // ps.transform arrives in the renderer-native default space. If the
+        // emitter simulates in a different space, conjugate into it.
+        em->SetModelToWorld(CoordinateSystem::ConvertTransform(
+            CoordinateSystem::Default(), em->GetCoordSpace(), ps.transform));
     }
 }
 
@@ -2176,18 +2181,32 @@ bool RenderService::CreateViewCube() {
         }
     };
 
-    // Front (+Y) — viewed from +Y: screen-right = -X, so swap X order
-    addFace(0, {s,s,-s}, {-s,s,-s}, {-s,s,s}, {s,s,s}, {0,1,0});
-    // Back (-Y) — viewed from -Y: screen-right = +X
-    addFace(1, {-s,-s,-s}, {s,-s,-s}, {s,-s,s}, {-s,-s,s}, {0,-1,0});
-    // Left (-X)
-    addFace(2, {-s,-s,-s}, {-s,s,-s}, {-s,s,s}, {-s,-s,s}, {-1,0,0});
-    // Right (+X)
-    addFace(3, {s,s,-s}, {s,-s,-s}, {s,-s,s}, {s,s,s}, {1,0,0});
-    // Top (+Z)
-    addFace(4, {-s,s,s}, {s,s,s}, {s,-s,s}, {-s,-s,s}, {0,0,1});
-    // Bottom (-Z)
-    addFace(5, {-s,-s,-s}, {s,-s,-s}, {s,s,-s}, {-s,s,-s}, {0,0,-1});
+    // Face geometry authored in Max space. Each face is translated through the
+    // coord system so "Front" always points at the model's front in whichever
+    // coord space the renderer is natively configured for.
+    struct FaceSpec {
+        Vector3f p0, p1, p2, p3, n;
+    };
+    const FaceSpec kFacesMax[6] = {
+        // Front (+Y in Max) — viewed from +Y: screen-right = -X
+        {{ s, s,-s}, {-s, s,-s}, {-s, s, s}, { s, s, s}, {0, 1, 0}},
+        // Back (-Y in Max)
+        {{-s,-s,-s}, { s,-s,-s}, { s,-s, s}, {-s,-s, s}, {0,-1, 0}},
+        // Left (-X in Max)
+        {{-s,-s,-s}, {-s, s,-s}, {-s, s, s}, {-s,-s, s}, {-1,0, 0}},
+        // Right (+X in Max)
+        {{ s, s,-s}, { s,-s,-s}, { s,-s, s}, { s, s, s}, { 1,0, 0}},
+        // Top (+Z)
+        {{-s, s, s}, { s, s, s}, { s,-s, s}, {-s,-s, s}, { 0,0, 1}},
+        // Bottom (-Z)
+        {{-s,-s,-s}, { s,-s,-s}, { s, s,-s}, {-s, s,-s}, { 0,0,-1}},
+    };
+    auto xp = [](Vector3f p) { return CoordinateSystem::ConvertPoint    (CoordSpace::Max, CoordinateSystem::Default(), p); };
+    auto xd = [](Vector3f n) { return CoordinateSystem::ConvertDirection(CoordSpace::Max, CoordinateSystem::Default(), n); };
+    for (int i = 0; i < 6; ++i) {
+        const auto& f = kFacesMax[i];
+        addFace(i, xp(f.p0), xp(f.p1), xp(f.p2), xp(f.p3), xd(f.n));
+    }
 
     vcCubeVB_ = gfx_->CreateBuffer({
         .size  = sizeof(Vertex) * verts.size(),
@@ -2447,15 +2466,30 @@ int RenderService::HitTestViewCube(int mx, int my) {
 }
 
 void RenderService::SnapCameraToFace(int faceIndex) {
-    constexpr float HALF_PI = std::numbers::pi_v<float> / 2.0f;
-    // Face order: Front(+Y), Back(-Y), Left(-X), Right(+X), Top(+Z), Bottom(-Z)
-    switch (faceIndex) {
-        case 0: camera_.SetYaw(HALF_PI);   camera_.SetPitch(0.0f); break;  // Front
-        case 1: camera_.SetYaw(-HALF_PI);  camera_.SetPitch(0.0f); break;  // Back
-        case 2: camera_.SetYaw(std::numbers::pi_v<float>);      camera_.SetPitch(0.0f); break;  // Left
-        case 3: camera_.SetYaw(0.0f);      camera_.SetPitch(0.0f); break;  // Right
-        case 4: camera_.SetYaw(HALF_PI);   camera_.SetPitch(1.55f); break; // Top
-        case 5: camera_.SetYaw(HALF_PI);   camera_.SetPitch(-1.55f); break;// Bottom
+    if (faceIndex < 0 || faceIndex > 5) return;
+    // Face order + outward normals in Max space. Index matches CreateViewCube.
+    static constexpr Vector3f kFaceNormalsMax[6] = {
+        { 0, 1, 0},   // Front
+        { 0,-1, 0},   // Back
+        {-1, 0, 0},   // Left
+        { 1, 0, 0},   // Right
+        { 0, 0, 1},   // Top
+        { 0, 0,-1},   // Bottom
+    };
+    Vector3f n = CoordinateSystem::ConvertDirection(
+        CoordSpace::Max, CoordinateSystem::Default(), kFaceNormalsMax[faceIndex]);
+    // Orbital camera places source at target + distance * (cos(p)*cos(y),
+    // cos(p)*sin(y), sin(p)). Clicking a face puts the camera on that face's
+    // outward normal, i.e. source-target direction = n.
+    constexpr float kTopBottomPitch = 1.55f;  // ~89° — avoids the pole clamp
+    if (std::abs(n.z) > 0.99f) {
+        // Top/Bottom: yaw is ambiguous at the pole; keep whatever yaw is
+        // sensible for the default front view.
+        camera_.SetYaw(Camera::kDefaultYaw);
+        camera_.SetPitch(n.z > 0 ? kTopBottomPitch : -kTopBottomPitch);
+    } else {
+        camera_.SetYaw(std::atan2(n.y, n.x));
+        camera_.SetPitch(0.0f);
     }
 }
 
