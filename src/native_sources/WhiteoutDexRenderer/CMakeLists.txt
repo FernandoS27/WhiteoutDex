@@ -89,6 +89,9 @@ add_library(WhiteoutDexGfx STATIC
     src/gfx/gfx_factory.cpp
     src/gfx/d3d11/d3d11_device.cpp
     src/gfx/d3d11/d3d11_command_list.cpp
+    src/gfx/d3d12/d3d12_device.cpp
+    src/gfx/d3d12/d3d12_command_list.cpp
+    src/gfx/d3d12/d3d12_resources.cpp
 )
 
 set_target_properties(WhiteoutDexGfx PROPERTIES
@@ -101,7 +104,7 @@ target_include_directories(WhiteoutDexGfx PUBLIC
 )
 
 target_link_libraries(WhiteoutDexGfx
-    PRIVATE d3d11.lib dxgi.lib
+    PRIVATE d3d11.lib d3d12.lib dxgi.lib
 )
 
 if(MSVC)

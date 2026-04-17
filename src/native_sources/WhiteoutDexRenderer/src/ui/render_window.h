@@ -7,6 +7,7 @@
 
 #include "model_types.h"     // CameraPreset
 #include "render_target.h"   // DisplayFlags, RenderTargetId
+#include "gfx/gfx_types.h"   // GfxApi
 #include <vector>
 #include <string>
 #include <thread>
@@ -30,7 +31,7 @@ public:
     ~RenderWindow();
 
     // Lifecycle — spawns / joins the render thread
-    bool Open(int width, int height);
+    bool Open(int width, int height, gfx::GfxApi api = gfx::GfxApi::D3D12);
     void Close();
     bool IsOpen() const;
 
@@ -65,7 +66,7 @@ private:
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     // Render thread function (owned by this window)
-    void ThreadFunc(int width, int height);
+    void ThreadFunc(int width, int height, gfx::GfxApi api);
 
     RenderService& service_;
 

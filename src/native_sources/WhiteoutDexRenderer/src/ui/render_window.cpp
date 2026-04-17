@@ -29,13 +29,13 @@ RenderWindow::~RenderWindow() { Close(); Destroy(); }
 // Lifecycle — render thread ownership
 // ============================================================================
 
-bool RenderWindow::Open(int w, int h) {
+bool RenderWindow::Open(int w, int h, gfx::GfxApi api) {
     if (running_) return true;
     // Join any previous thread that exited (e.g. user closed the window)
     if (renderThread_.joinable()) renderThread_.join();
     running_ = true;
     initialized_ = false;
-    renderThread_ = std::thread(&RenderWindow::ThreadFunc, this, w, h);
+    renderThread_ = std::thread(&RenderWindow::ThreadFunc, this, w, h, api);
     for (int i = 0; i < 500 && !initialized_ && running_; ++i) Sleep(10);
     return initialized_;
 }
@@ -54,9 +54,9 @@ bool RenderWindow::IsOpen() const { return running_ && initialized_; }
 // Render Thread Function
 // ============================================================================
 
-void RenderWindow::ThreadFunc(int w, int h) {
-    if (!Create(w, h))            { running_ = false; return; }
-    if (!service_.InitDevice())   { running_ = false; Destroy(); return; }
+void RenderWindow::ThreadFunc(int w, int h, gfx::GfxApi api) {
+    if (!Create(w, h))              { running_ = false; return; }
+    if (!service_.InitDevice(api))  { running_ = false; Destroy(); return; }
 
     targetId_ = service_.CreateSwapChainTarget(static_cast<void*>(hwndRender_), w, h);
     if (targetId_ == 0)           { running_ = false; service_.ShutdownDevice(); Destroy(); return; }

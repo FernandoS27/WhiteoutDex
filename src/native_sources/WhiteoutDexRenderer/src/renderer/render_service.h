@@ -74,7 +74,7 @@ public:
     void SetContentProvider(std::shared_ptr<IContentProvider> provider);
 
     // ---- Device & render target management ----
-    bool           InitDevice(gfx::GfxApi api = gfx::GfxApi::D3D11);  // Create gfx device + shaders + states (no window)
+    bool           InitDevice(gfx::GfxApi api = gfx::GfxApi::D3D12);  // Create gfx device + shaders + states (no window)
     RenderTargetId CreateSwapChainTarget(void* nativeWindowHandle, int width, int height);
     RenderTargetId CreateOffscreenTarget(int width, int height);
     void           DestroyRenderTarget(RenderTargetId id);
@@ -362,6 +362,7 @@ private:
     gfx::BufferHandle  vcCubeVB_     = gfx::BufferHandle::Invalid;
     gfx::BufferHandle  vcCubeIB_     = gfx::BufferHandle::Invalid;
     gfx::BufferHandle  vcOutlineVB_  = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle  vcHomeVB_     = gfx::BufferHandle::Invalid;
     gfx::TextureHandle vcFaceTex_    = gfx::TextureHandle::Invalid;
     static constexpr int kViewCubeSize = 120;
     bool               vcHovered_    = false;

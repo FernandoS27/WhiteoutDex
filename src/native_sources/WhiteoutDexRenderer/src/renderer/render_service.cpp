@@ -1731,6 +1731,7 @@ void RenderService::CleanupD3D() {
         gfx_->Destroy(gridVB_);
         gfx_->Destroy(vcCubeVB_);  gfx_->Destroy(vcCubeIB_);
         gfx_->Destroy(vcOutlineVB_); gfx_->Destroy(vcFaceTex_);
+        gfx_->Destroy(vcHomeVB_);
 
         // PE2 service VB
         gfx_->Destroy(particleServiceVB_);
@@ -2347,25 +2348,25 @@ void RenderService::RenderViewCube() {
             gfx_->UnmapBuffer(cbPerFrame_);
         }
 
-        // House icon as dynamic lines (temp buffer)
-        Vector4f hc = {0.7f, 0.7f, 0.7f, 1.0f};
-        LineVertex house[] = {
-            {{-0.4f, -0.6f, 0}, hc}, {{ 0.4f, -0.6f, 0}, hc}, // bottom
-            {{-0.4f, -0.6f, 0}, hc}, {{-0.4f,  0.0f, 0}, hc}, // left wall
-            {{ 0.4f, -0.6f, 0}, hc}, {{ 0.4f,  0.0f, 0}, hc}, // right wall
-            {{-0.5f,  0.0f, 0}, hc}, {{ 0.0f,  0.6f, 0}, hc}, // roof left
-            {{ 0.5f,  0.0f, 0}, hc}, {{ 0.0f,  0.6f, 0}, hc}, // roof right
-            {{-0.5f,  0.0f, 0}, hc}, {{ 0.5f,  0.0f, 0}, hc}, // roof base
-        };
-
-        gfx::BufferDesc bd;
-        bd.size  = sizeof(house);
-        bd.usage = gfx::BufferUsage::Vertex;
-        gfx::BufferHandle homeVB = gfx_->CreateBuffer(bd, house);
-        if (homeVB != gfx::BufferHandle::Invalid) {
-            cmd->BindVertexBuffer(0, homeVB, sizeof(LineVertex));
+        // House icon (persistent VB, created once)
+        if (vcHomeVB_ == gfx::BufferHandle::Invalid) {
+            Vector4f hc = {0.7f, 0.7f, 0.7f, 1.0f};
+            LineVertex house[] = {
+                {{-0.4f, -0.6f, 0}, hc}, {{ 0.4f, -0.6f, 0}, hc}, // bottom
+                {{-0.4f, -0.6f, 0}, hc}, {{-0.4f,  0.0f, 0}, hc}, // left wall
+                {{ 0.4f, -0.6f, 0}, hc}, {{ 0.4f,  0.0f, 0}, hc}, // right wall
+                {{-0.5f,  0.0f, 0}, hc}, {{ 0.0f,  0.6f, 0}, hc}, // roof left
+                {{ 0.5f,  0.0f, 0}, hc}, {{ 0.0f,  0.6f, 0}, hc}, // roof right
+                {{-0.5f,  0.0f, 0}, hc}, {{ 0.5f,  0.0f, 0}, hc}, // roof base
+            };
+            vcHomeVB_ = gfx_->CreateBuffer({
+                .size  = sizeof(house),
+                .usage = gfx::BufferUsage::Vertex,
+            }, house);
+        }
+        if (vcHomeVB_ != gfx::BufferHandle::Invalid) {
+            cmd->BindVertexBuffer(0, vcHomeVB_, sizeof(LineVertex));
             cmd->Draw(12, 0);
-            gfx_->Destroy(homeVB);
         }
     }
 
