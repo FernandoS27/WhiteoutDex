@@ -386,6 +386,9 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
             ld.filterMode = MapFilterMode((int)layer.filterMode);
             ld.alpha      = layer.alpha;
             ld.flags      = MapShadingFlags(layer.shadingFlags);
+            ld.textureAnimationId = ((int32_t)layer.textureAnimationId < 0
+                                     || (int32_t)layer.textureAnimationId >= (int)model_.textureAnimations.size())
+                                    ? -1 : (int)layer.textureAnimationId;
 
             // Texture resolution:
             //   Classic (v800-v1100): layer.textureId indexes the texture array.
@@ -894,10 +897,16 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
             fs.geosetAlphas[gid] = EvaluateTrackF32(ga.alphaTracks, t, s, e, ga.alpha);
         }
 
+        // MDX GeosetAnim color (KGAC) flows into CAnimGeoset::color which is
+        // a CKeyFrameTrack<C3Color>; C3Color's memory layout is {float b, g, r}
+        // (verified via tinfo at engine's tinfo_t). The MDL loader memcpy's
+        // keyframe values straight in, so the first float on disk is the blue
+        // channel. WhiteoutLib reads these as Vector3f{x,y,z} without a swap,
+        // so we swap here to produce RGB for downstream consumers.
         if (ga.colorTracks.isUsed) {
             auto [t, s, e] = effectiveTime(ga.colorTracks.globalSequenceId);
             Vector3f color = EvaluateTrackVec3(ga.colorTracks, t, s, e, ga.color);
-            fs.geosetColors[gid] = {color.x, color.y, color.z};
+            fs.geosetColors[gid] = {color.z, color.y, color.x};
         } else {
             fs.geosetColors[gid] = {ga.color.x, ga.color.y, ga.color.z};
         }
@@ -980,6 +989,15 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         return pivotT * fs.boneWorldMatrices[nodeIdx];
     };
 
+    // Previewd's PlaceObject case 5 (PE2, 0x14053392e) pre-rotates the node's
+    // world matrix by +π/2 around Z before handing it to
+    // CParticleEmitter2::Update as modelToWorld. That's the compensation that
+    // aligns the emitter's (width→+X, length→+Y) spawn plane with the MDX
+    // authoring convention where "length" extends along the node's forward
+    // direction. Without it the spawn rectangle is 90° off.
+    const Matrix44f kPE2SpawnFrameRotation = Matrix44f::rotation_z(
+        1.5707963267948966f);
+
     for (int i = 0; i < (int)model_.particleEmitters2.size(); i++) {
         const auto& pe = model_.particleEmitters2[i];
         auto& ps = fs.particleStates[i];
@@ -987,7 +1005,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
 
         int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)pe.node.objectId);
 
-        ps.transform = worldOf(nodeIdx);
+        ps.transform = kPE2SpawnFrameRotation * worldOf(nodeIdx);
 
         { auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
           ps.emissionRate = EvaluateTrackF32(pe.emissionRateTracks, t, s, e, pe.emissionRate); }
@@ -996,7 +1014,13 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         { auto [t,s,e] = effectiveTime(pe.variationTracks.globalSequenceId);
           ps.variation    = EvaluateTrackF32(pe.variationTracks, t, s, e, pe.variation); }
         { auto [t,s,e] = effectiveTime(pe.latitudeTracks.globalSequenceId);
-          ps.coneAngle    = EvaluateTrackF32(pe.latitudeTracks, t, s, e, pe.latitude); }
+          // MDX stores latitude in degrees; Previewd's
+          // SetEmitterLatitude2 (0x140530917) and ILoadParticleEmitters2
+          // (0x14049e4f3) both convert via deg * pi / 180 before calling
+          // CPlaneParticleEmitter::SetLatitude. The emitter's CreateParticle
+          // consumes it as radians (sin/cos). Match the conversion here.
+          const float degs = EvaluateTrackF32(pe.latitudeTracks, t, s, e, pe.latitude);
+          ps.coneAngle     = degs * (3.14159265358979323846f / 180.0f); }
         { auto [t,s,e] = effectiveTime(pe.gravityTracks.globalSequenceId);
           ps.gravity      = EvaluateTrackF32(pe.gravityTracks, t, s, e, pe.gravity); }
         { auto [t,s,e] = effectiveTime(pe.widthTracks.globalSequenceId);
@@ -1078,8 +1102,103 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
             Vector3f c = EvaluateTrackVec3(rb.colorTracks, t, s, e, rb.color);
             rs.color = {c.z, c.y, c.x};
         } else {
-            rs.color = {rb.color.z, rb.color.y, rb.color.x};
+            rs.color = {rb.color.x, rb.color.y, rb.color.z};
         }
+    }
+
+    // MDX scene lights. For each light, evaluate the animated color/
+    // intensity/visibility tracks at current time and resolve the light's
+    // world-space position (omni) or direction (directional) from its node
+    // transform. Mirrors Previewd's CAnimLightObj evaluation (see
+    // AnimateAllLights + CGxLightToShaderLight at 0x1403fbc00). Ambient
+    // MDX lights are rare; we carry them through with kind=Ambient and
+    // let the renderer fold them into the ShaderLight.ambient channel.
+    fs.lights.reserve(model_.lights.size());
+    for (int i = 0; i < (int)model_.lights.size(); ++i) {
+        const auto& L = model_.lights[i];
+        FrameState::LightState ls;
+        ls.kind = (L.type == Light::LightType::Omni)        ? FrameState::LightKind::Omni :
+                  (L.type == Light::LightType::Directional) ? FrameState::LightKind::Directional :
+                                                              FrameState::LightKind::Ambient;
+
+        // Visibility track (KLAV) gates the whole light. 0 = off.
+        float visibility = 1.0f;
+        if (L.visibilityTracks.isUsed) {
+            auto [t,s,e] = effectiveTime(L.visibilityTracks.globalSequenceId);
+            visibility = EvaluateTrackF32(L.visibilityTracks, t, s, e, 1.0f);
+        }
+        ls.enabled = visibility > 0.001f;
+        if (!ls.enabled) { fs.lights.push_back(ls); continue; }
+
+        // Diffuse (KLAC/KLAI) and ambient (KLBC/KLBI) color + intensity.
+        //
+        // Channel order: the MDX *binary* format stores light colors as RGB
+        // on disk. Verified against Previewd's ReadBinLight (0x140769930):
+        //     pLight->staticColor.r = GetFloat(buf);
+        //     pLight->staticColor.g = GetFloat(buf);
+        //     pLight->staticColor.b = GetFloat(buf);
+        // Third float -> .b. WhiteoutLib reads the three floats straight into
+        // Vector3f{x,y,z} in file order, so x=R, y=G, z=B with no swap needed.
+        // (The MDL *text* loader at 0x140760b40 writes &staticColor.b first,
+        // but that's a separate format; we only see the binary path.)
+        //
+        // Packing (matches CGxLightToShaderLight at 0x1403fbc00, path A):
+        //   diffuse = C4Vector(m_dirColor) * m_dirIntensity          (RGB)
+        //   ambient = C4Vector(m_ambColor) * ambLightModifier
+        //             + m_ambIntensity (broadcast scalar)
+        // In SD mode (our path) ambLightModifier is 0, so ambient collapses
+        // to {ambIntensity, ambIntensity, ambIntensity} -- ambColor is
+        // IGNORED. Matching that avoids double-contribution oversaturation.
+        // Visibility (KLAV) is an enable-gate only; the engine never scales
+        // color or intensity by it.
+        Vector3f color  = L.color;
+        float    inten  = L.intensity;
+        float    ambI   = L.ambientIntensity;
+        if (L.colorTracks.isUsed) {
+            auto [t,s,e] = effectiveTime(L.colorTracks.globalSequenceId);
+            Vector3f animatedColor = EvaluateTrackVec3(L.colorTracks, t, s, e, L.color);
+            color = {animatedColor.z, animatedColor.y, animatedColor.x}; // BGR -> RGB
+        }
+        if (L.intensityTracks.isUsed) {
+            auto [t,s,e] = effectiveTime(L.intensityTracks.globalSequenceId);
+            inten = EvaluateTrackF32(L.intensityTracks, t, s, e, L.intensity);
+        }
+        if (L.ambientIntensityTracks.isUsed) {
+            auto [t,s,e] = effectiveTime(L.ambientIntensityTracks.globalSequenceId);
+            ambI = EvaluateTrackF32(L.ambientIntensityTracks, t, s, e, L.ambientIntensity);
+        }
+        if (inten < 0.0f) inten = 0.0f;     // engine clamps intensity at 0
+        if (ambI  < 0.0f) ambI  = 0.0f;
+        ls.diffuse = { color.x * inten, color.y * inten, color.z * inten };
+        ls.ambient = { ambI, ambI, ambI };
+
+        // World transform of the light's node. The hierarchy's local matrix
+        // encodes TRS around the pivot as Translate(-pivot)*S*R*Translate(pivot+t),
+        // so transforming {0,0,0} through it collapses to zero for identity
+        // TRS -- you have to feed in the PIVOT to recover the node's animated
+        // world position. Match the `worldOf` helper used for particle/attachment
+        // nodes: premultiply a Translate(pivot) and transform {0,0,0} through.
+        const auto& nodes = hierarchy_.Nodes();
+        const int   nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)L.node.objectId);
+        Matrix44f   world = Matrix44f::identity();
+        if (nodeIdx >= 0 && nodeIdx < (int)fs.boneWorldMatrices.size()) {
+            const auto& piv = nodes[nodeIdx].pivot;
+            Matrix44f pivotT = Matrix44f::translation({piv.x, piv.y, piv.z});
+            world = pivotT * fs.boneWorldMatrices[nodeIdx];
+        }
+        // Omni: node's animated world pivot. Directional: -Z axis of the node
+        // in world space. Engine's SetLightDirection (0x14052f540) sets the
+        // local direction to (0, 0, -1) and transforms it by the world matrix
+        // (translation removed) -- that's the emission direction the shader
+        // expects as CGxLight.m_dir.
+        if (ls.kind == FrameState::LightKind::Directional) {
+            ls.worldDir = whiteout::transform_normal(Vector3f{0, 0, -1}, world);
+        } else {
+            ls.worldPos = whiteout::transform_point(Vector3f{0, 0, 0}, world);
+        }
+        ls.attenStart = L.attenuationStart;
+        ls.attenEnd   = L.attenuationEnd;
+        fs.lights.push_back(ls);
     }
 
     // Collision shape transforms
@@ -1091,10 +1210,41 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
                                      ? fs.boneWorldMatrices[nodeIdx] : Matrix44f::identity();
     }
 
-    // Texture animation evaluation
+    // Texture animation evaluation. We emit two parallel results:
+    //   * texAnimMatrices[] — one composed 2x3 UV matrix per TXAN entry.
+    //     This is what the BLS SD VS consumes; indexed by
+    //     textureAnimationId so multiple referring layers share one matrix.
+    //   * texAnims[]        — legacy per-(material, layer) TRS, kept for
+    //     the Slang mesh path until it's retired.
     for (int i = 0; i < (int)model_.textureAnimations.size(); i++) {
         const auto& ta = model_.textureAnimations[i];
-        // Find which materials reference this textureAnimation
+
+        auto [tt, ts, te] = effectiveTime(ta.translationTracks.globalSequenceId);
+        Vector3f trans = EvaluateTrackVec3(ta.translationTracks, tt, ts, te, {0, 0, 0});
+        auto [st, ss, se] = effectiveTime(ta.scalingTracks.globalSequenceId);
+        Vector3f scale = EvaluateTrackVec3(ta.scalingTracks, st, ss, se, {1, 1, 1});
+        auto [rt, rs, re] = effectiveTime(ta.rotationTracks.globalSequenceId);
+        Quaternion rot = EvaluateTrackQuat(ta.rotationTracks, rt, rs, re,
+                                           Quaternion(0, 0, 0, 1));
+
+        // BLS palette entry — Previewd composition order:
+        //   final = Translate(t) * Scale-around-(0.5,0.5)(s) * Rotate-around-(0.5,0.5)(r)
+        const float ang = 2.0f * std::atan2(rot.z, rot.w);
+        const float c = std::cos(ang), si = std::sin(ang);
+        const float a =  scale.x * c;
+        const float b = -scale.x * si;
+        const float d =  scale.y * si;
+        const float e =  scale.y * c;
+        const float cc = 0.5f - (a * 0.5f + b * 0.5f) + trans.x;
+        const float ff = 0.5f - (d * 0.5f + e * 0.5f) + trans.y;
+
+        FrameState::TexAnimMatrix tam{};
+        tam.textureAnimId = i;
+        tam.row0[0] = a; tam.row0[1] = b; tam.row0[2] = 0.0f; tam.row0[3] = cc;
+        tam.row1[0] = d; tam.row1[1] = e; tam.row1[2] = 0.0f; tam.row1[3] = ff;
+        fs.texAnimMatrices.push_back(tam);
+
+        // Legacy emission — one entry per referring layer (first only).
         for (int mi = 0; mi < (int)model_.materials.size(); mi++) {
             for (int li = 0; li < (int)model_.materials[mi].layers.size(); li++) {
                 const auto& layer = model_.materials[mi].layers[li];
@@ -1102,24 +1252,13 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
                     FrameState::TexAnimState tas;
                     tas.materialId = mi;
                     tas.layerIndex = li;
-
-                    auto [tt, ts, te] = effectiveTime(ta.translationTracks.globalSequenceId);
-                    Vector3f trans = EvaluateTrackVec3(ta.translationTracks, tt, ts, te, {0, 0, 0});
-                    auto [st, ss, se] = effectiveTime(ta.scalingTracks.globalSequenceId);
-                    Vector3f scale = EvaluateTrackVec3(ta.scalingTracks, st, ss, se, {1, 1, 1});
                     tas.uOff  = trans.x;
                     tas.vOff  = trans.y;
                     tas.uTile = scale.x;
                     tas.vTile = scale.y;
-
-                    // Evaluate rotation track (Z-axis rotation in UV space)
-                    auto [rt, rs, re] = effectiveTime(ta.rotationTracks.globalSequenceId);
-                    Quaternion rot = EvaluateTrackQuat(ta.rotationTracks, rt, rs, re,
-                                                      Quaternion(0, 0, 0, 1));
-                    // Extract Z-axis rotation angle from quaternion
-                    tas.rotation = 2.0f * std::atan2(rot.z, rot.w);
+                    tas.rotation = ang;
                     fs.texAnims.push_back(tas);
-                    break; // first matching layer per material
+                    break;
                 }
             }
         }

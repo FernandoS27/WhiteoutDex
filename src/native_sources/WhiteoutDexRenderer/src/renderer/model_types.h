@@ -103,6 +103,7 @@ struct MaterialLayerData {
     int textureId;
     float alpha;
     int flags;  // MAT_TWO_SIDED, MAT_UNSHADED, etc. (from FilterMode/MaterialFlags enums)
+    int textureAnimationId = -1;  // -1 = none; else index into model's TXAN table
 };
 
 struct MaterialData {
@@ -173,6 +174,36 @@ struct FrameState {
         float rotation; // Z-axis rotation angle in radians
     };
     std::vector<TexAnimState> texAnims;
+
+    // Evaluated MDX scene light state per frame. Max 8 lights per draw --
+    // the SD VS permute radix for numLights is 9 (0..8). The adapter fills
+    // {worldPos | worldDir, diffuseRGB, ambientRGB, type} and the renderer
+    // transforms position/direction into view space at CB upload time.
+    enum class LightKind : uint8_t { Directional = 0, Omni = 1, Ambient = 2 };
+    struct LightState {
+        LightKind kind       = LightKind::Directional;
+        Vector3f  worldPos   = {0, 0, 0};  // Omni: pivot world position
+        Vector3f  worldDir   = {0, 0, -1}; // Directional: unit direction away from source
+        Vector3f  diffuse    = {0, 0, 0};  // color * intensity, linear
+        Vector3f  ambient    = {0, 0, 0};  // ambColor * ambIntensity
+        float     attenStart = 0.0f;       // unused by SD shader but kept for parity
+        float     attenEnd   = 0.0f;
+        bool      enabled    = true;
+    };
+    std::vector<LightState> lights;
+
+    // Per-textureAnimationId evaluated 2x3 UV affine matrix, shared across
+    // every layer that references the same MDX texture animation. Indexed
+    // densely by textureAnimationId so the renderer can look it up
+    // directly from layer.textureAnimationId. Empty vector = no anims
+    // authored; missing entries default to identity at consume time.
+    struct TexAnimMatrix {
+        int   textureAnimId;
+        // 2 rows of 4 floats each; shader reads .xyw only.
+        float row0[4];
+        float row1[4];
+    };
+    std::vector<TexAnimMatrix> texAnimMatrices;
 
     // Per-layer animated alpha (KMTA tracks)
     struct LayerAlphaState {

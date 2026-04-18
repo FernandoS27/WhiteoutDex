@@ -826,7 +826,7 @@ PipelineHandle D3D12Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
         d.SemanticName         = ie.semantic;
         d.SemanticIndex        = ie.semanticIndex;
         d.Format               = ToDXGI(ie.format);
-        d.InputSlot            = 0;
+        d.InputSlot            = ie.inputSlot;
         d.AlignedByteOffset    = ie.offset;
         d.InputSlotClass       = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
         d.InstanceDataStepRate = 0;

@@ -28,6 +28,7 @@ inline void SafeRelease(T*& ptr) {
 inline DXGI_FORMAT ToDXGI(Format f) {
     switch (f) {
         case Format::R8G8B8A8_UNORM:     return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case Format::R8G8B8A8_UINT:      return DXGI_FORMAT_R8G8B8A8_UINT;
         case Format::B8G8R8A8_UNORM:     return DXGI_FORMAT_B8G8R8A8_UNORM;
         case Format::R32_FLOAT:          return DXGI_FORMAT_R32_FLOAT;
         case Format::R32G32_FLOAT:       return DXGI_FORMAT_R32G32_FLOAT;
@@ -140,6 +141,7 @@ inline UINT FormatByteSize(Format f) {
         case Format::R32G32B32_FLOAT:    return 12;
         case Format::R32G32B32A32_FLOAT: return 16;
         case Format::R8G8B8A8_UNORM:     return 4;
+        case Format::R8G8B8A8_UINT:      return 4;
         case Format::B8G8R8A8_UNORM:     return 4;
         default:                         return 0;
     }

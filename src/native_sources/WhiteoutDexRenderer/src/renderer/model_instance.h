@@ -31,10 +31,11 @@ struct StagedTexture {
 };
 
 struct StagedMaterialLayer {
-    int filterMode  = 0;
-    int textureId   = -1;
-    float alpha     = 1.0f;
-    int flags       = 0;
+    int filterMode          = 0;
+    int textureId           = -1;
+    float alpha             = 1.0f;
+    int flags               = 0;
+    int textureAnimationId  = -1;  // -1 = no tex-anim; else index into MDX TXAN table
 };
 
 struct StagedMaterial {
@@ -166,8 +167,20 @@ struct ModelInstance {
     std::vector<CollisionShape> collisionShapes;
 
     // ---- Per-layer texture animation (updated per frame) ----
-    // Key: materialId * 1000 + layerIndex
+    // Legacy Slang-path cache, keyed by materialId * 1000 + layerIndex.
     std::unordered_map<int, TexAnimData> matTexAnim;
+
+    // BLS-path palette: one 2x4 UV matrix per MDX textureAnimationId.
+    // Each row is 4 floats; shader reads .xyw. Indexed densely by id --
+    // layers look it up via their textureAnimationId. Resized by
+    // ApplyLayerStates; missing slots are left as identity.
+    struct TexAnimPaletteEntry { float row0[4]; float row1[4]; };
+    std::vector<TexAnimPaletteEntry> texAnimPalette;
+
+    // Evaluated scene lights from the last frame -- copied from FrameState.
+    // The mesh draw path picks up to 8 of these + transforms into view space
+    // at CB upload time. See docs/BLS_ShaderABI.md.
+    std::vector<FrameState::LightState> activeLights;
 
     // ---- Replaceable texture map (for team color) ----
     // textureId → replaceableId (1=TeamColor, 2=TeamGlow)

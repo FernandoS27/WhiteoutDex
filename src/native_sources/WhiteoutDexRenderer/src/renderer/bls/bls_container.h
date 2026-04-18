@@ -12,6 +12,7 @@
 #include <span>
 #include <string>
 #include <vector>
+// (reflection tool is built out-of-tree; no hard dependency)
 
 namespace WhiteoutDex::bls {
 
@@ -29,16 +30,28 @@ struct BlsHeader {
 };
 static_assert(sizeof(BlsHeader) == 20);
 
+// v1.8 per-permute header (preceding each DXBC blob). IDA's 24-byte struct is
+// for a newer BLS variant; the shipped Warcraft III Previewd files use an
+// 80-byte header where only these fields are populated.
+//   +0x14 totalSize : dxbc + 56-byte trailer
+//   +0x18 shaderType: 3 for VS, 1 for PS, etc.
+//   +0x40 numResources
+//   +0x48 codeSize  : DXBC byte count (exact)
+//   +0x4c stageFlag : shader stage/profile tag (observed 4 for SM5)
+// Everything else in the 80-byte block is zero-padded; resource masks
+// (cbMask/srvMask/uavMask/samplerMask) are not populated -- use D3DReflect
+// on the DXBC if you need them.
 struct PermuteHeader {
-    uint32_t inputSignature;
-    uint32_t cbMask;
-    uint32_t srvMask;
-    uint32_t uavMask;
-    uint16_t samplerMask;
-    uint16_t pad;
-    uint32_t codeSize;
+    uint32_t unk0[5];      // 0x00..0x13
+    uint32_t totalSize;    // 0x14
+    uint32_t shaderType;   // 0x18
+    uint32_t unk1[9];      // 0x1c..0x3f
+    uint32_t numResources; // 0x40
+    uint32_t unk2;         // 0x44
+    uint32_t codeSize;     // 0x48
+    uint32_t stageFlag;    // 0x4c
 };
-static_assert(sizeof(PermuteHeader) == 24);
+static_assert(sizeof(PermuteHeader) == 80);
 #pragma pack(pop)
 
 struct PermuteView {

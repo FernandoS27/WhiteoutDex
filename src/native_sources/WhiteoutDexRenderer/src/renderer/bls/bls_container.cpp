@@ -71,7 +71,7 @@ bool BlsContainer::Load(std::span<const uint8_t> fileBytes, std::string* error) 
 
         const uint64_t blobStart = static_cast<uint64_t>(off) + sizeof(PermuteHeader);
         const uint64_t blobEnd   = blobStart + ph.codeSize;
-        if (blobEnd > permuteDataLen || ph.codeSize < sizeof(uint32_t)) {
+        if (blobEnd > permuteDataLen || ph.codeSize < sizeof(uint32_t) * 2) {
             SetError(error, "Permute DXBC blob out of bounds");
             permutes_.clear();
             bytes_.clear();

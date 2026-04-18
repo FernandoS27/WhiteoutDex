@@ -77,12 +77,13 @@ private:
     // Toolbar controls
     HWND chkGrid_ = nullptr, chkParticles_ = nullptr;
     HWND chkRibbons_ = nullptr, chkCollisions_ = nullptr;
+    HWND chkLights_ = nullptr;
     HWND btnTeamColor_ = nullptr;
     HWND cmbCamera_ = nullptr;
     HWND lblSequence_ = nullptr;
     HWND cmbSequence_ = nullptr;
     enum { IDC_GRID=1001, IDC_PARTICLES, IDC_RIBBONS, IDC_COLLISIONS,
-           IDC_TEAMCOLOR, IDC_CAMERA, IDC_SEQUENCE };
+           IDC_LIGHTS, IDC_TEAMCOLOR, IDC_CAMERA, IDC_SEQUENCE };
 
     // Mouse state
     bool lmbDown_ = false, rmbDown_ = false, mmbDown_ = false;

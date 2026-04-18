@@ -199,6 +199,7 @@ bool RenderWindow::Create(int w, int h) {
     chkParticles_  = mkChk(L"Particles",  IDC_PARTICLES,  df.showParticles);
     chkRibbons_    = mkChk(L"Ribbons",    IDC_RIBBONS,    df.showRibbons);
     chkCollisions_ = mkChk(L"Collisions", IDC_COLLISIONS, df.showCollisions);
+    chkLights_     = mkChk(L"Lights",     IDC_LIGHTS,     df.showLights);
 
     // Separator
     x += 4;
@@ -390,12 +391,14 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             case IDC_GRID:
             case IDC_PARTICLES:
             case IDC_RIBBONS:
-            case IDC_COLLISIONS: {
+            case IDC_COLLISIONS:
+            case IDC_LIGHTS: {
                 DisplayFlags df;
                 df.showGrid       = (SendMessage(chkGrid_,       BM_GETCHECK, 0, 0) == BST_CHECKED);
                 df.showParticles  = (SendMessage(chkParticles_,  BM_GETCHECK, 0, 0) == BST_CHECKED);
                 df.showRibbons    = (SendMessage(chkRibbons_,    BM_GETCHECK, 0, 0) == BST_CHECKED);
                 df.showCollisions = (SendMessage(chkCollisions_, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                df.showLights     = (SendMessage(chkLights_,     BM_GETCHECK, 0, 0) == BST_CHECKED);
                 service_.SetDisplayFlags(df);
                 break;
             }

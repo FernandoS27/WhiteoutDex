@@ -17,6 +17,13 @@
 #include "content_provider.h"
 #include "file_content_provider.h"
 #include "render_target.h"
+
+namespace WhiteoutDex::bls {
+    class BlsShaderCache;
+    class BlsProgramCatalog;
+    class BlsPsoBuilder;
+    struct BlsProgram;
+}
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
@@ -206,6 +213,10 @@ private:
     // Collision shape wireframes
     void RenderCollisions();
 
+    // Debug light markers (one wireframe sphere per evaluated light at its
+    // final world-space position; tinted by the light's diffuse colour).
+    void RenderLightMarkers();
+
     // ApplyFrameState helpers
     void ApplyBoneMatrices(ModelInstance& mi, const FrameState& state);
     void ApplyGeosetStates(ModelInstance& mi, const FrameState& state);
@@ -255,6 +266,7 @@ private:
     bool                  showParticles_  = true;
     bool                  showRibbons_    = true;
     bool                  showCollisions_ = false;  // off by default
+    bool                  showLights_     = false;  // off by default
 
     // ---- Model instances ----
     uint32_t nextModelHandle_ = 1;
@@ -370,6 +382,25 @@ private:
     // Animation time (set from API thread via SetAnimationTime / ApplyFrameState,
     //                  read from render thread in Tick / EvaluatePE1Children)
     std::atomic<int>        animationTimeMs_{0};
+
+    // ---- BLS shader pipeline (docs/BLS_ShaderABI.md) ----
+    // Loaded lazily at InitDevice. If any .bls file is missing the program
+    // stays null and the renderer falls back to the Slang path.
+    std::unique_ptr<bls::BlsShaderCache>    blsShaderCache_;
+    std::unique_ptr<bls::BlsProgramCatalog> blsPrograms_;
+    std::unique_ptr<bls::BlsPsoBuilder>     blsPsoBuilder_;
+    const bls::BlsProgram*                  blsSdProgram_     = nullptr; // SD_HighSpec VS + SD PS
+    const bls::BlsProgram*                  blsSdOnHdProgram_ = nullptr; // SD_on_HD VS + SD_on_HD PS
+
+    // Dynamic CBs, one-each for the full SD/SD_on_HD ABI. Sized for
+    // numLights=8 worst case (720 B PS CB). Uploaded per draw.
+    gfx::BufferHandle                       blsSdVsCb_ = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle                       blsSdPsCb_ = gfx::BufferHandle::Invalid;
+
+    bool InitBlsShaders();
+    void ShutdownBlsShaders();
+    bool RenderParticlesBls();  // BLS path; returns false if program unavailable
+    bool RenderGeosetsBls();    // ditto for mesh geosets
 };
 
 } // namespace WhiteoutDex

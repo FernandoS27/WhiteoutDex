@@ -20,6 +20,7 @@ struct DisplayFlags {
     bool showParticles  = true;
     bool showRibbons    = true;
     bool showCollisions = false;
+    bool showLights     = false;
 };
 
 struct RenderTarget {

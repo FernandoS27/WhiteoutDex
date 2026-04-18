@@ -19,6 +19,7 @@ enum class GfxApi { D3D11, D3D12, Vulkan };
 enum class Format : uint16_t {
     Unknown,
     R8G8B8A8_UNORM,
+    R8G8B8A8_UINT,
     B8G8R8A8_UNORM,
     R32_FLOAT,
     R32G32_FLOAT,
@@ -112,6 +113,7 @@ struct InputElement {
     uint32_t    semanticIndex = 0;
     Format      format        = Format::Unknown;
     uint32_t    offset        = 0;
+    uint32_t    inputSlot     = 0;   // vertex-buffer slot this attribute pulls from
 };
 
 struct BlendDesc {

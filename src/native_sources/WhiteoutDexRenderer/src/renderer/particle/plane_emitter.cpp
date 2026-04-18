@@ -144,14 +144,15 @@ void PlaneEmitter::CreateParticle(Particle2& p, float elapsed) {
     p.age = elapsed * r;
 
     // Spawn position on the width×height plane.
-    // Two reals_ calls in RE order (height first, then width) — the VALUES
-    // are swapped to axes versus the legacy port: "Length" (long axis) maps
-    // to local +X, "Width" to local +Y. This matches MDX authoring where
-    // an emitter's Length extends along the model-forward direction.
-    float x = CRandom::reals_(randSeed_) * height_ * 0.5f;   // Length → local +X
-    float y = CRandom::reals_(randSeed_) * width_  * 0.5f;   // Width  → local +Y
+    // Engine order (Previewd 0x140563170): first reals_ multiplies m_height
+    // (= MDX length), second multiplies m_width (= MDX width); the resulting
+    // C4Vector is (width-term, height-term, 0, 1). So MDX width lands on
+    // local +X and MDX length lands on local +Y. Keep the two reals_ draws
+    // in this order so the PRNG sequence matches the engine bit-for-bit.
+    float heightTerm = CRandom::reals_(randSeed_) * height_ * 0.5f;   // 1st reals_
+    float widthTerm  = CRandom::reals_(randSeed_) * width_  * 0.5f;   // 2nd reals_
 
-    Vector3f localPos{ x, y, 0.0f };
+    Vector3f localPos{ widthTerm, heightTerm, 0.0f };
     if ((flags_ & kFlagUseModelSpace) != 0) {
         p.position = localPos;
     } else {

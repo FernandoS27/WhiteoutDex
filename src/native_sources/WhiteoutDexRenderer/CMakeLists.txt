@@ -140,6 +140,8 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/bls/bls_permuter.cpp
     src/renderer/bls/bls_program.cpp
     src/renderer/bls/bls_pso_builder.cpp
+    src/renderer/bls/bls_mat_params.cpp
+    src/renderer/bls/bls_frame.cpp
     src/io/mdx_animation.cpp
     src/io/mdx_model_adapter.cpp
     src/io/team_glow_data.cpp
@@ -234,6 +236,26 @@ if(MSVC)
         /permissive
         /Zc:strictStrings-
     )
+endif()
+
+# ---- Throwaway: dump a BLS permute's disassembly ----
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/bls/bls_reflect_tool.cpp")
+  add_executable(BlsReflect
+      src/renderer/bls/bls_reflect_tool.cpp
+      src/renderer/bls/bls_container.cpp
+  )
+  set_target_properties(BlsReflect PROPERTIES
+      CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
+      RUNTIME_OUTPUT_DIRECTORY         "${CMAKE_BINARY_DIR}/standalone"
+      RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/standalone"
+  )
+  target_include_directories(BlsReflect PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src"
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer")
+  target_link_libraries(BlsReflect PRIVATE d3d11.lib d3dcompiler.lib)
+  if(MSVC)
+    target_compile_options(BlsReflect PRIVATE /W3 /EHsc /wd4100 /wd4127 /wd4244 /wd4267)
+  endif()
 endif()
 
 # ---- Standalone executable: MDX viewer (no Max SDK) ----

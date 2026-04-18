@@ -18,18 +18,23 @@ public struct PerFrameData
     public float4   materialFlags;  // .x = unshaded, .y = unused, .z = texRotation
 }
 
-/// Apply texture coordinate animation: rotation around (0.5, 0.5), then tiling + offset.
+/// Apply texture coordinate animation matching Previewd's RotateTexture ->
+/// ScaleTexture -> TranslateTexture stack. Rotation and scale both pivot
+/// around (0.5, 0.5); translation is in UV units with no pivot.
 public float2 applyTextureAnimation(float2 uv, float rotation, float4 animParams)
 {
+    let center = float2(0.5, 0.5);
     if (rotation != 0.0)
     {
-        let center = float2(0.5, 0.5);
         let rel = uv - center;
         let c = cos(rotation);
         let s = sin(rotation);
         uv = float2(c * rel.x - s * rel.y, s * rel.x + c * rel.y) + center;
     }
+    // Scale around the UV center (matches Previewd's ScaleTexture).
     if (animParams.z != 0.0 || animParams.w != 0.0)
-        uv = uv * animParams.zw + animParams.xy;
+        uv = (uv - center) * animParams.zw + center;
+    // Translation is additive in UV space (not pivoted).
+    uv += animParams.xy;
     return uv;
 }
