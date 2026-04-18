@@ -135,6 +135,11 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/particle/plane_emitter.cpp
     src/renderer/particle/particle_geometry.cpp
     src/renderer/particle/particle_service.cpp
+    src/renderer/bls/bls_container.cpp
+    src/renderer/bls/bls_shader_cache.cpp
+    src/renderer/bls/bls_permuter.cpp
+    src/renderer/bls/bls_program.cpp
+    src/renderer/bls/bls_pso_builder.cpp
     src/io/mdx_animation.cpp
     src/io/mdx_model_adapter.cpp
     src/io/team_glow_data.cpp
