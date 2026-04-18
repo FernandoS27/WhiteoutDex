@@ -38,6 +38,21 @@ enum class CoordSpace {
 #endif
 inline constexpr CoordSpace kDefaultCoordSpace = CoordSpace::WDX_DEFAULT_COORD_SPACE;
 
+// ---- Per-space authoring conventions (constexpr) -----------------------
+// MDX data is authored with local +X as the model's "forward" (the axis that
+// should face the camera for an unrotated billboarded bone, and that the
+// ViewCube labels as "Front"). When the renderer's native space is not
+// Blizzard, the adapter swizzles model data so the forward axis lands
+// elsewhere in local coords.
+
+inline Vector3f ForwardAxis(CoordSpace s) {
+    // Blizzard: MDX-native → +X
+    // Max:      MDX +X swizzled via (x,y,z) → (y,-x,z) → (0,-1,0) = -Y
+    return (s == CoordSpace::Blizzard) ? Vector3f{1.0f, 0.0f, 0.0f}
+                                       : Vector3f{0.0f, -1.0f, 0.0f};
+}
+inline Vector3f DefaultForwardAxis() { return ForwardAxis(kDefaultCoordSpace); }
+
 class CoordinateSystem {
 public:
     static constexpr CoordSpace Default() { return kDefaultCoordSpace; }

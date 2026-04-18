@@ -143,10 +143,13 @@ void PlaneEmitter::CreateParticle(Particle2& p, float elapsed) {
     p.keyFrame = 0;
     p.age = elapsed * r;
 
-    // Spawn position on the width×height plane (Blizzard-space x, y).
-    // RE order: y then x (CPlaneParticleEmitter.cpp:133–134).
-    float y = CRandom::reals_(randSeed_) * height_ * 0.5f;
-    float x = CRandom::reals_(randSeed_) * width_  * 0.5f;
+    // Spawn position on the width×height plane.
+    // Two reals_ calls in RE order (height first, then width) — the VALUES
+    // are swapped to axes versus the legacy port: "Length" (long axis) maps
+    // to local +X, "Width" to local +Y. This matches MDX authoring where
+    // an emitter's Length extends along the model-forward direction.
+    float x = CRandom::reals_(randSeed_) * height_ * 0.5f;   // Length → local +X
+    float y = CRandom::reals_(randSeed_) * width_  * 0.5f;   // Width  → local +Y
 
     Vector3f localPos{ x, y, 0.0f };
     if ((flags_ & kFlagUseModelSpace) != 0) {

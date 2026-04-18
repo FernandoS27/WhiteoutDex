@@ -664,49 +664,82 @@ void RenderService::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state
             Vector3f toCamera = camPos - pivWorld;
             float dist = toCamera.length();
             if (dist > kBillboardDistThreshold) {
-                // Billboard math is authored in Max-space conventions (local -Y
-                // = forward, MDX authoring's +X rotated through BlzToMax). Lift
-                // the camera vector into Max, run the known-good formulas, then
-                // conjugate the resulting rotation back into the renderer-
-                // native default space. When default == Max both conversions
-                // are no-ops and behavior is identical to the legacy path.
-                Vector3f toCamera_max = CoordinateSystem::ConvertDirection(
-                    CoordinateSystem::Default(), CoordSpace::Max, toCamera);
-                Vector3f worldUp_max = {0, 0, 1};  // +Z is invariant across supported spaces
-                Matrix44f bbRot_max = Matrix44f::identity();
+                // Billboard math is authored directly in the renderer's native
+                // coordinate space. The "forward" axis (the model-local axis
+                // that should face the camera for an unrotated billboard) is
+                // space-dependent: Blizzard +X, Max -Y. All other work
+                // (cross products, basis assembly) happens in default-space
+                // world vectors — +Z is "up" in both supported spaces.
+                const Vector3f fwdAxis = DefaultForwardAxis();
+                Vector3f toCam = toCamera.normalized();
+                Vector3f worldUp = {0, 0, 1};
+
+                Matrix44f bbRot = Matrix44f::identity();
                 bool haveRot = false;
 
                 if (bbFlags & BONE_BILLBOARD_FULL) {
-                    Vector3f fwd = Vector3f{-toCamera_max.x, -toCamera_max.y, -toCamera_max.z}.normalized();
-                    Vector3f right = whiteout::cross(fwd, worldUp_max);
+                    // Build view-aligned basis in world space.
+                    Vector3f right = whiteout::cross(toCam, worldUp);
                     float rightLen = right.length();
-                    if (rightLen < kBillboardDistThreshold)
-                        right = {1, 0, 0};
-                    right = right.normalized();
-                    Vector3f up = whiteout::cross(right, fwd).normalized();
-                    bbRot_max = {};
-                    bbRot_max.data[0][0] = right.x; bbRot_max.data[0][1] = right.y; bbRot_max.data[0][2] = right.z;
-                    bbRot_max.data[1][0] = fwd.x;   bbRot_max.data[1][1] = fwd.y;   bbRot_max.data[1][2] = fwd.z;
-                    bbRot_max.data[2][0] = up.x;    bbRot_max.data[2][1] = up.y;    bbRot_max.data[2][2] = up.z;
-                    bbRot_max.data[3][3] = 1.0f;
+                    if (rightLen < kBillboardDistThreshold) {
+                        // Degenerate: camera directly above/below pivot.
+                        right = {0, 1, 0};
+                    } else {
+                        right = right.normalized();
+                    }
+                    Vector3f up = whiteout::cross(right, toCam).normalized();
+
+                    // Assemble rotation rows per default-space axis convention.
+                    bbRot = {};
+                    if constexpr (kDefaultCoordSpace == CoordSpace::Blizzard) {
+                        // +X=forward → toCam
+                        // +Y=left    → model's "left" = cross(fwd, up) = cross(toCam, up)
+                        // +Z=up      → up
+                        Vector3f left = whiteout::cross(toCam, up);
+                        bbRot.data[0][0] = toCam.x; bbRot.data[0][1] = toCam.y; bbRot.data[0][2] = toCam.z;
+                        bbRot.data[1][0] = left.x;  bbRot.data[1][1] = left.y;  bbRot.data[1][2] = left.z;
+                        bbRot.data[2][0] = up.x;    bbRot.data[2][1] = up.y;    bbRot.data[2][2] = up.z;
+                    } else {
+                        // Max: +X=right, +Y=back(=away), +Z=up.
+                        //   away = -toCam, world-right viewed from camera = cross(away, worldUp) = -right
+                        Vector3f away{-toCam.x, -toCam.y, -toCam.z};
+                        Vector3f rMax = whiteout::cross(away, worldUp);
+                        if (rMax.length() < kBillboardDistThreshold) rMax = {1, 0, 0};
+                        else                                         rMax = rMax.normalized();
+                        Vector3f uMax = whiteout::cross(rMax, away).normalized();
+                        bbRot.data[0][0] = rMax.x; bbRot.data[0][1] = rMax.y; bbRot.data[0][2] = rMax.z;
+                        bbRot.data[1][0] = away.x; bbRot.data[1][1] = away.y; bbRot.data[1][2] = away.z;
+                        bbRot.data[2][0] = uMax.x; bbRot.data[2][1] = uMax.y; bbRot.data[2][2] = uMax.z;
+                    }
+                    bbRot.data[3][3] = 1.0f;
                     haveRot = true;
                 } else if (bbFlags & BONE_BILLBOARD_LOCK_Z) {
-                    float yaw = atan2f(toCamera_max.y, toCamera_max.x);
-                    bbRot_max = Matrix44f::rotation_z(yaw);
+                    // Rotate around world +Z so that the local forward axis
+                    // (projected onto XY) aligns with toCamera (projected onto XY).
+                    float currentYaw = atan2f(fwdAxis.y, fwdAxis.x);
+                    float targetYaw  = atan2f(toCamera.y, toCamera.x);
+                    bbRot = Matrix44f::rotation_z(targetYaw - currentYaw);
                     haveRot = true;
                 } else if (bbFlags & BONE_BILLBOARD_LOCK_Y) {
-                    float angle = atan2f(toCamera_max.z, toCamera_max.x);
-                    bbRot_max = Matrix44f::rotation_y(angle);
+                    // Rotate around world +Y so the local forward axis projected
+                    // onto XZ aligns with toCamera projected onto XZ.
+                    // rotation_y(a) sends +X → (cos(a), 0, -sin(a)), so the
+                    // current-forward angle (CCW in XZ viewed from +Y) is
+                    // atan2(-z, x), and similarly for the target.
+                    float currentPitch = atan2f(-fwdAxis.z, fwdAxis.x);
+                    float targetPitch  = atan2f(-toCamera.z, toCamera.x);
+                    bbRot = Matrix44f::rotation_y(targetPitch - currentPitch);
                     haveRot = true;
                 } else if (bbFlags & BONE_BILLBOARD_LOCK_X) {
-                    float angle = atan2f(toCamera_max.z, toCamera_max.y);
-                    bbRot_max = Matrix44f::rotation_x(angle);
+                    // Rotate around world +X so the local forward axis projected
+                    // onto YZ aligns with toCamera projected onto YZ.
+                    float currentRoll = atan2f(fwdAxis.z, fwdAxis.y);
+                    float targetRoll  = atan2f(toCamera.z, toCamera.y);
+                    bbRot = Matrix44f::rotation_x(targetRoll - currentRoll);
                     haveRot = true;
                 }
 
                 if (haveRot) {
-                    Matrix44f bbRot = CoordinateSystem::ConvertTransform(
-                        CoordSpace::Max, CoordinateSystem::Default(), bbRot_max);
                     Matrix44f T_negRest = Matrix44f::translation({-pivF.x, -pivF.y, -pivF.z});
                     Matrix44f T_world   = Matrix44f::translation({pivWorld.x, pivWorld.y, pivWorld.z});
                     boneM = T_negRest * bbRot * T_world;
@@ -2182,31 +2215,33 @@ bool RenderService::CreateViewCube() {
         }
     };
 
-    // Face geometry authored in Max space. Each face is translated through the
-    // coord system so "Front" always points at the model's front in whichever
-    // coord space the renderer is natively configured for.
+    // Face geometry authored directly in the renderer-native default space.
+    // "Front" is the face on the +forward side of the model (Blz +X, Max -Y).
+    // Top/Bottom are always along +Z/-Z (Z-up is shared across supported spaces).
     struct FaceSpec {
         Vector3f p0, p1, p2, p3, n;
     };
-    const FaceSpec kFacesMax[6] = {
-        // Front (+Y in Max) — viewed from +Y: screen-right = -X
-        {{ s, s,-s}, {-s, s,-s}, {-s, s, s}, { s, s, s}, {0, 1, 0}},
-        // Back (-Y in Max)
-        {{-s,-s,-s}, { s,-s,-s}, { s,-s, s}, {-s,-s, s}, {0,-1, 0}},
-        // Left (-X in Max)
-        {{-s,-s,-s}, {-s, s,-s}, {-s, s, s}, {-s,-s, s}, {-1,0, 0}},
-        // Right (+X in Max)
-        {{ s, s,-s}, { s,-s,-s}, { s,-s, s}, { s, s, s}, { 1,0, 0}},
-        // Top (+Z)
-        {{-s, s, s}, { s, s, s}, { s,-s, s}, {-s,-s, s}, { 0,0, 1}},
-        // Bottom (-Z)
-        {{-s,-s,-s}, { s,-s,-s}, { s, s,-s}, {-s, s,-s}, { 0,0,-1}},
-    };
-    auto xp = [](Vector3f p) { return CoordinateSystem::ConvertPoint    (CoordSpace::Max, CoordinateSystem::Default(), p); };
-    auto xd = [](Vector3f n) { return CoordinateSystem::ConvertDirection(CoordSpace::Max, CoordinateSystem::Default(), n); };
+    FaceSpec faces[6];
+    if constexpr (kDefaultCoordSpace == CoordSpace::Blizzard) {
+        // Blizzard: +X forward, +Y left, +Z up
+        faces[0] = {{ s, s, s}, { s,-s, s}, { s,-s,-s}, { s, s,-s}, { 1, 0, 0}}; // Front (+X)
+        faces[1] = {{-s,-s, s}, {-s, s, s}, {-s, s,-s}, {-s,-s,-s}, {-1, 0, 0}}; // Back (-X)
+        faces[2] = {{ s, s, s}, {-s, s, s}, {-s, s,-s}, { s, s,-s}, { 0, 1, 0}}; // Left (+Y)
+        faces[3] = {{-s,-s, s}, { s,-s, s}, { s,-s,-s}, {-s,-s,-s}, { 0,-1, 0}}; // Right (-Y)
+        faces[4] = {{-s, s, s}, { s, s, s}, { s,-s, s}, {-s,-s, s}, { 0, 0, 1}}; // Top (+Z)
+        faces[5] = {{-s,-s,-s}, { s,-s,-s}, { s, s,-s}, {-s, s,-s}, { 0, 0,-1}}; // Bottom (-Z)
+    } else {
+        // Max: +X right, +Y back, +Z up — model forward is -Y.
+        faces[0] = {{ s,-s,-s}, {-s,-s,-s}, {-s,-s, s}, { s,-s, s}, { 0,-1, 0}}; // Front (-Y)
+        faces[1] = {{-s, s,-s}, { s, s,-s}, { s, s, s}, {-s, s, s}, { 0, 1, 0}}; // Back (+Y)
+        faces[2] = {{ s, s,-s}, { s,-s,-s}, { s,-s, s}, { s, s, s}, { 1, 0, 0}}; // Left (+X in Max — viewer-left of the facing model)
+        faces[3] = {{-s,-s,-s}, {-s, s,-s}, {-s, s, s}, {-s,-s, s}, {-1, 0, 0}}; // Right (-X)
+        faces[4] = {{-s, s, s}, { s, s, s}, { s,-s, s}, {-s,-s, s}, { 0, 0, 1}}; // Top (+Z)
+        faces[5] = {{-s,-s,-s}, { s,-s,-s}, { s, s,-s}, {-s, s,-s}, { 0, 0,-1}}; // Bottom (-Z)
+    }
     for (int i = 0; i < 6; ++i) {
-        const auto& f = kFacesMax[i];
-        addFace(i, xp(f.p0), xp(f.p1), xp(f.p2), xp(f.p3), xd(f.n));
+        const auto& f = faces[i];
+        addFace(i, f.p0, f.p1, f.p2, f.p3, f.n);
     }
 
     vcCubeVB_ = gfx_->CreateBuffer({
