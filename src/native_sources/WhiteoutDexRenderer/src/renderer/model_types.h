@@ -10,6 +10,7 @@
 #include "particle.h"
 #include "ribbon.h"
 #include "animation.h"
+#include "../gfx/gfx_types.h"
 #include <vector>
 #include <string>
 
@@ -62,10 +63,15 @@ inline int MapFilterMode(int raw) {
 }
 
 /// Map a Wc3Particles2 blend mode (0-4) to the renderer FilterMode.
+/// MDX PE2 blendMode values (per the format spec, confirmed against
+/// Previewd's ILoadParticleEmitters2 at 0x14049e71c): 0=Blend, 1=Add,
+/// 2=Modulate, 3=Modulate2X, 4=AlphaKey. Slot 4 must map to
+/// FILTER_TRANSPARENT (=AlphaKey), NOT FILTER_ADD_ALPHA — the latter is a
+/// mesh-layer filter with no PE2 counterpart, and folding AlphaKey into
+/// it would route alpha-tested particles into the additive blend path.
 inline int MapPE2BlendMode(int blendMode) {
-    // 0=Blend, 1=Add, 2=Modulate, 3=Mod2X, 4=AlphaKey
     static constexpr int table[] = {
-        FILTER_BLEND, FILTER_ADDITIVE, FILTER_MODULATE, FILTER_MODULATE_2X, FILTER_ADD_ALPHA
+        FILTER_BLEND, FILTER_ADDITIVE, FILTER_MODULATE, FILTER_MODULATE_2X, FILTER_TRANSPARENT
     };
     if (blendMode >= 0 && blendMode < 5) return table[blendMode];
     return FILTER_BLEND; // fallback
@@ -87,13 +93,28 @@ struct MeshData {
     std::vector<Vector3f> positions;
     std::vector<Vector3f> normals;
     std::vector<Vector2f> uvs;
+    // Per-vertex tangent frame. .xyz = world-space tangent direction,
+    // .w = handedness sign for bitangent reconstruction (see
+    // tangentToWorld in wc3_shaders/math/normal.slang). Empty when the
+    // source MDX geoset has no tangents authored; HD draws then fall
+    // back to the no-tangent permute which loses normal-map detail.
+    std::vector<Vector4f> tangents;
     std::vector<uint32_t>  indices;
 };
 
 struct TextureData {
     int textureId;
     int replaceableId;
-    std::vector<uint8_t> rgba;  // RGBA8 pixels
+    // Raw mip-0 bytes in the source DDS/BLP pixel layout. Normal maps
+    // (BC3N / BC5 / Blizzard's packed-high-precision R+A) MUST reach
+    // the sampler in their native encoding -- decoding to plain RGBA8
+    // on CPU drops the channel conventions hd_ps.slang::decodeNormalMap
+    // relies on (nx = 2 * sample.x * sample.w - 1) and produces wrong
+    // world normals on one half of mirrored-UV meshes. `format`
+    // records which `gfx::Format` this blob is; the upload path binds
+    // it verbatim and the GPU sampler performs the decode.
+    std::vector<uint8_t> pixels;
+    gfx::Format format = gfx::Format::R8G8B8A8_UNORM;
     int width, height;
     uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V); default = wrap both
 };
@@ -104,6 +125,32 @@ struct MaterialLayerData {
     float alpha;
     int flags;  // MAT_TWO_SIDED, MAT_UNSHADED, etc. (from FilterMode/MaterialFlags enums)
     int textureAnimationId = -1;  // -1 = none; else index into model's TXAN table
+    // MDX layer shader id (Layer::ShaderType). 0 = SD, 1 = HD, 2 = SDOnHD,
+    // 24 = Crystal; other values are non-mesh shaders that shouldn't appear on
+    // a real layer but we preserve the raw integer so the render path can
+    // route pure-HD materials through hd.bls and SD-authored ones through
+    // sd_on_hd.bls when render mode = HD.
+    int shaderId = 0;
+
+    // Reforged (v1200+) HD subtextures. The HD PS expects distinct
+    // textures at t0..t4 for albedo / normal / ORM / emissive / teamcolor.
+    // For classic (<v1100) layers only `textureId` (the legacy diffuse
+    // slot) is populated and these stay at -1; the HD draw path should
+    // then bind the same diffuse to every slot it can and default-fill
+    // the rest so the shader doesn't sample garbage.
+    int normalMapId    = -1;
+    int ormMapId       = -1;
+    int emissiveMapId  = -1;
+    int teamColorMapId = -1;
+
+    // Per-layer HD material knobs. Feed directly into the HD PS CB
+    // pixelParams / fresnelColor slots (see CGxMatParams::PixelParams
+    // RE). Defaults keep the fresnel overlay and emissive paths dormant
+    // so classic MDX layers render without spurious rim highlights.
+    float    emissiveGain    = 0.0f;
+    float    fresnelOpacity  = 0.0f;
+    float    fresnelTeamColor = 0.0f;
+    Vector3f fresnelColor    = {0.0f, 0.0f, 0.0f};
 };
 
 struct MaterialData {
@@ -220,6 +267,24 @@ struct FrameState {
         int textureId;
     };
     std::vector<LayerTextureIdState> layerTextureIds;
+
+    // Per-layer evaluated HD fresnel/emissive state. Mirrors what
+    // Previewd's RenderGeosetLayers (0x14030a210) pulls out of
+    // modelptr->m_fresnelColor / m_fresnelOpacity / m_fresnelTeamColor /
+    // m_layerEmissive each frame before stamping them into
+    // layerMaterial.m_pixelParams. Driven by the MDX layer's
+    // fresnelColorTracks / fresnelAlphaTracks / fresnelTeamColorTracks /
+    // emissiveGainTracks; a layer without animation tracks falls back to
+    // the static authored values at load time and doesn't emit a state.
+    struct LayerFresnelState {
+        int      materialId;
+        int      layerIndex;
+        Vector3f fresnelColor;
+        float    fresnelOpacity;
+        float    fresnelTeamColor;
+        float    emissiveGain;
+    };
+    std::vector<LayerFresnelState> layerFresnels;
 
     // Attachment per-frame state
     struct AttachmentFrameState {

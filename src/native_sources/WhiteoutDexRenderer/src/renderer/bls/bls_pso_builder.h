@@ -24,6 +24,26 @@ enum class VertexLayoutKind : uint8_t {
     MeshSDTc2     = 1, // PNT0T1 (pos, normal, tc0, tc1)                one VB slot
     MeshSDSkinned = 2, // MeshSD + separate bones VB slot 1
     ParticleSD    = 3, // PNCT0  (pos, normal, color, tc0)              one VB slot
+    // HD mesh layout: slot 0 holds the ParticleSD stream (pos / normal /
+    // color / tc0) matching our Vertex struct; slot 1 holds a dedicated
+    // float4 tangent stream feeding ATTR7 (.xyz = tangent, .w =
+    // handedness sign) that wc3_shaders/types/vs_io.slang declares for
+    // the HD VS. Picked only by HD draws with real tangent data.
+    MeshHDTangent = 4,
+    // HD skinned mesh layout: adds slot 2 bone weights (ATTR5,
+    // R8G8B8A8_UNORM) and bone indices (ATTR6, R8G8B8A8_UINT) so
+    // vs/hd.bls's FourBoneSkinning policy can skin position/normal/
+    // tangent in the VS. Slot 0 is the REST-pose Vertex data (not the
+    // compute-skinned gg.vb) -- the HD VS multiplies by the bone
+    // palette at vsCB3 to get animated geometry.
+    MeshHDSkinned = 5,
+    // HD skinned mesh without authored tangents. Slot 0 = PNCT0 rest
+    // pose, slot 1 = bone weights (ATTR5) + indices (ATTR6). Picked
+    // when the source MDX geoset has bones but omits the tangent
+    // frame (rare for v1200 HD; common for classic meshes routed
+    // through the HD program). The hasTangent permute is forced to 0
+    // so the compiled VS doesn't read ATTR7.
+    MeshHDSkinnedNoTangent = 6,
 };
 
 struct PsoRequest {

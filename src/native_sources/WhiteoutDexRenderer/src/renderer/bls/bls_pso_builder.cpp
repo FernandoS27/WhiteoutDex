@@ -48,12 +48,57 @@ constexpr gfx::InputElement kParticleSD[] = {
     { "ATTR", 3, gfx::Format::R32G32_FLOAT,       40, 0 },
 };
 
+// MeshHDTangent (ParticleSD geometry + tangent side-stream on slot 1).
+// ATTR7 = float4 tangent (.xyz direction, .w handedness), consumed by
+// wc3_shaders/hd_vs.slang when the hasTangent permute is picked. The
+// geometry stream on slot 0 is the same PNCT0 layout as particles so we
+// don't have to duplicate staging -- the tangent side-stream is
+// optional and only bound when the source geoset had real tangent data.
+constexpr gfx::InputElement kMeshHDTangent[] = {
+    { "ATTR", 0, gfx::Format::R32G32B32_FLOAT,    0,  0 },
+    { "ATTR", 1, gfx::Format::R32G32B32_FLOAT,    12, 0 },
+    { "ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0 },
+    { "ATTR", 3, gfx::Format::R32G32_FLOAT,       40, 0 },
+    { "ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0,  1 }, // tangent
+};
+
+// MeshHDSkinned -- MeshHDTangent + slot 2 bone weights/indices feeding
+// FourBoneSkinning in vs/hd.bls. Slot 0 MUST carry rest-pose positions/
+// normals (i.e. the pre-compute baseVertBuf data, not gg.vb which is
+// compute-skinned); the VS performs the skin-blend itself using the
+// bone palette uploaded to vsCB3.
+constexpr gfx::InputElement kMeshHDSkinned[] = {
+    { "ATTR", 0, gfx::Format::R32G32B32_FLOAT,    0,  0 },
+    { "ATTR", 1, gfx::Format::R32G32B32_FLOAT,    12, 0 },
+    { "ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0 },
+    { "ATTR", 3, gfx::Format::R32G32_FLOAT,       40, 0 },
+    { "ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0,  1 }, // tangent
+    { "ATTR", 5, gfx::Format::R8G8B8A8_UNORM,     0,  2 }, // weights
+    { "ATTR", 6, gfx::Format::R8G8B8A8_UINT,      4,  2 }, // bone indices
+};
+
+// MeshHDSkinnedNoTangent -- FourBoneSkinning without ATTR7. Bone data
+// collapses onto slot 1 (no tangent stream). Paired with the hasTangent=0
+// HD VS permute so the compiler-stripped ATTR7 matches the IA layout.
+constexpr gfx::InputElement kMeshHDSkinnedNoTangent[] = {
+    { "ATTR", 0, gfx::Format::R32G32B32_FLOAT,    0,  0 },
+    { "ATTR", 1, gfx::Format::R32G32B32_FLOAT,    12, 0 },
+    { "ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0 },
+    { "ATTR", 3, gfx::Format::R32G32_FLOAT,       40, 0 },
+    { "ATTR", 5, gfx::Format::R8G8B8A8_UNORM,     0,  1 }, // weights
+    { "ATTR", 6, gfx::Format::R8G8B8A8_UINT,      4,  1 }, // bone indices
+};
+
 std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k) {
     switch (k) {
         case VertexLayoutKind::MeshSD:        return {kMeshSD,        std::size(kMeshSD)};
         case VertexLayoutKind::MeshSDTc2:     return {kMeshSDTc2,     std::size(kMeshSDTc2)};
         case VertexLayoutKind::MeshSDSkinned: return {kMeshSDSkinned, std::size(kMeshSDSkinned)};
         case VertexLayoutKind::ParticleSD:    return {kParticleSD,    std::size(kParticleSD)};
+        case VertexLayoutKind::MeshHDTangent: return {kMeshHDTangent, std::size(kMeshHDTangent)};
+        case VertexLayoutKind::MeshHDSkinned: return {kMeshHDSkinned, std::size(kMeshHDSkinned)};
+        case VertexLayoutKind::MeshHDSkinnedNoTangent:
+            return {kMeshHDSkinnedNoTangent, std::size(kMeshHDSkinnedNoTangent)};
     }
     return {kMeshSD, std::size(kMeshSD)};
 }

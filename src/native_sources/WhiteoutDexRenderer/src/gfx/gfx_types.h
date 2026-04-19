@@ -18,18 +18,93 @@ enum class GfxApi { D3D11, D3D12, Vulkan };
 
 enum class Format : uint16_t {
     Unknown,
+
+    // ---- Uncompressed ----
+    R8_UNORM,
+    R8G8_UNORM,
     R8G8B8A8_UNORM,
+    R8G8B8A8_UNORM_SRGB,
     R8G8B8A8_UINT,
     B8G8R8A8_UNORM,
+
+    R16_UNORM,
+    R16G16_UNORM,
+    R16G16B16A16_UNORM,
+    R16G16B16A16_FLOAT,
+
+    R16_UINT,
+    R32_UINT,
+
     R32_FLOAT,
     R32G32_FLOAT,
     R32G32B32_FLOAT,
     R32G32B32A32_FLOAT,
-    R16_UINT,
-    R32_UINT,
+
+    // ---- Depth / stencil ----
     D24_UNORM_S8_UINT,
     D32_FLOAT,
+
+    // ---- Block-compressed (BCn). The UNORM / UNORM_SRGB split mirrors
+    //      DXGI -- sampler reads return linear UNORM unless the SRV is
+    //      created with the _SRGB variant, in which case the hardware
+    //      linearises the color channels (alpha stays linear). BC4 / BC5
+    //      only have UNORM forms in DXGI; BC6H is the HDR float variant.
+    BC1_UNORM,
+    BC1_UNORM_SRGB,
+    BC2_UNORM,
+    BC2_UNORM_SRGB,
+    BC3_UNORM,
+    BC3_UNORM_SRGB,
+    BC4_UNORM,
+    BC5_UNORM,
+    BC6H_UF16,
+    BC7_UNORM,
+    BC7_UNORM_SRGB,
 };
+
+// Returns true for BCn block-compressed formats (4x4 block layout, non-power-of-2 pitch).
+inline bool IsBlockCompressed(Format f) {
+    switch (f) {
+        case Format::BC1_UNORM: case Format::BC1_UNORM_SRGB:
+        case Format::BC2_UNORM: case Format::BC2_UNORM_SRGB:
+        case Format::BC3_UNORM: case Format::BC3_UNORM_SRGB:
+        case Format::BC4_UNORM:
+        case Format::BC5_UNORM:
+        case Format::BC6H_UF16:
+        case Format::BC7_UNORM: case Format::BC7_UNORM_SRGB:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Bytes per block (BCn) or bytes per pixel (uncompressed). Matches DXGI
+// bit-count tables: BC1/BC4 = 8 B/block, all other BCn = 16 B/block.
+inline uint32_t FormatBytesPerBlock(Format f) {
+    switch (f) {
+        case Format::R8_UNORM:                return 1;
+        case Format::R8G8_UNORM: case Format::R16_UNORM: case Format::R16_UINT: return 2;
+        case Format::R8G8B8A8_UNORM: case Format::R8G8B8A8_UNORM_SRGB:
+        case Format::R8G8B8A8_UINT:  case Format::B8G8R8A8_UNORM:
+        case Format::R16G16_UNORM:   case Format::R32_UINT:
+        case Format::R32_FLOAT:      case Format::D24_UNORM_S8_UINT:
+        case Format::D32_FLOAT:      return 4;
+        case Format::R16G16B16A16_UNORM: case Format::R16G16B16A16_FLOAT:
+        case Format::R32G32_FLOAT:   return 8;
+        case Format::R32G32B32_FLOAT: return 12;
+        case Format::R32G32B32A32_FLOAT: return 16;
+        case Format::BC1_UNORM: case Format::BC1_UNORM_SRGB:
+        case Format::BC4_UNORM: return 8;
+        case Format::BC2_UNORM: case Format::BC2_UNORM_SRGB:
+        case Format::BC3_UNORM: case Format::BC3_UNORM_SRGB:
+        case Format::BC5_UNORM:
+        case Format::BC6H_UF16:
+        case Format::BC7_UNORM: case Format::BC7_UNORM_SRGB:
+            return 16;
+        case Format::Unknown:
+        default: return 0;
+    }
+}
 
 enum class BufferUsage : uint32_t {
     None            = 0,
@@ -88,8 +163,15 @@ struct TextureDesc {
     int          width     = 0;
     int          height    = 0;
     int          mipLevels = 1;      // 0 = full chain
+    // Number of 2D array slices. For `isCube = true` this must be a multiple
+    // of 6 (each face is a slice). For plain 2D textures leave at 1.
+    int          arraySize = 1;
     Format       format    = Format::R8G8B8A8_UNORM;
     TextureUsage usage     = TextureUsage::ShaderResource;
+    // When true, the resource is created as a TextureCube (arraySize == 6) or
+    // TextureCubeArray (arraySize == 6 * N). The SRV dimension is chosen
+    // automatically: Texture2D / Texture2DArray / TextureCube / TextureCubeArray.
+    bool         isCube    = false;
 };
 
 struct SamplerDesc {

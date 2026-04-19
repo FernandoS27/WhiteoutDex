@@ -23,7 +23,24 @@ struct FrameInputs {
 
     float      effectTime     = 0.0f;
     int32_t    numLights      = 0;
-    int32_t    useNdf         = 0;
+    // Enable Kaplanyan/Hill specular-AA on the IBL roughness selector.
+    // The shipped HD PS at re_shaders/hd/hd_mesh_ps.hlsl line 509 picks
+    // `r4.y = cb2[20].w ? specAA_roughness : raw_roughness;` — i.e.
+    // useNdf != 0 → add screen-space normal-derivative variance to
+    // roughness before the mip-select. Without this, low-roughness
+    // surfaces sample mip 0 of the specular cube and the environment's
+    // horizon projects as a hard screen-aligned reflection seam. With
+    // it, the variance term floors the effective roughness high enough
+    // to pick a pre-filtered mip and the seam dissolves into the blur.
+    int32_t    useNdf         = 1;
+
+    // HD IBL: highest valid mip index of the "from" / "to" env cube arrays,
+    // plus the blend scalar between them. The HD PS clamps its roughness->
+    // mip lookup to [0, envMipEnd]. Leave zeros when no env probe is bound
+    // (forces mip 0 reads, which are fine with our default grey probe).
+    float      envFromMipEnd  = 0.0f;
+    float      envToMipEnd    = 0.0f;
+    float      envTransitionT = 0.0f;
 
     ShaderTexMtx texMtx0      = {{ Vector4f{1, 0, 0, 0}, Vector4f{0, 1, 0, 0} }};
     ShaderTexMtx texMtx1      = {{ Vector4f{1, 0, 0, 0}, Vector4f{0, 1, 0, 0} }};
@@ -35,9 +52,13 @@ struct FrameInputs {
 void BuildSdVsCbA(SdVsCbA& out, const FrameInputs& in, const MatParams& mat);
 void BuildSdPsCbA(SdPsCbA& out, const FrameInputs& in, const MatParams& mat);
 
-// Path B (SD_on_HD / HD / ...). VS = 288 B. PS = 336 + 48*nLights.
-void BuildSdVsCbB(SdVsCbB& out, const FrameInputs& in, const MatParams& mat);
-void BuildSdPsCbB(SdPsCbB& out, const FrameInputs& in, const MatParams& mat);
+// Path B (HD / SD_on_HD). VS = 288 B (shared). PS = 336 + 64*nLights.
+// HD and SD_on_HD share the VS CB layout but split the PS CB between a
+// lightweight HD layout (PBR fields directly addressable) and the
+// padded SD_on_HD layout that mirrors the engine's legacy CB slots.
+void BuildHdVsCb    (HdVsCb&     out, const FrameInputs& in, const MatParams& mat);
+void BuildHdPsCb    (HdPsCb&     out, const FrameInputs& in, const MatParams& mat);
+void BuildSdOnHdPsCb(SdOnHdPsCb& out, const FrameInputs& in, const MatParams& mat);
 
 // Bone palette helpers (used by skinned geosets on both paths).
 void PackBone(ShaderBone& out, const Matrix44f& m);

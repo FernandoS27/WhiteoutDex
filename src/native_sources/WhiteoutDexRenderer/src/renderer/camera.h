@@ -116,9 +116,18 @@ public:
     void SetDistance(float d)  { distance_ = std::clamp(d, kMinDistance, kMaxDistance); }
     void SetTarget(float x, float y, float z) { target_ = {x, y, z}; }
 
-    // Build view matrix (right-handed, Z-up)
+    // Build view matrix (right-handed, Z-up) — used by the legacy Slang
+    // path and UI overlays that were authored against our RH math.
     Matrix44f GetViewMatrix() const {
         return Matrix44f::look_at_rh(GetSource(), GetTarget(), GetUp());
+    }
+    // Left-handed view, matching Previewd's GxuXformCreateLookAtXXX.
+    // The shipped HD / SD_on_HD BLS shaders (and the IBL cubemap axis
+    // swizzle in ps_ibl.slang) were authored against this convention —
+    // supplying the RH view here produces a mirrored reflection sample
+    // on one half of the screen ("centreline seam").
+    Matrix44f GetViewMatrixLH() const {
+        return Matrix44f::look_at_lh(GetSource(), GetTarget(), GetUp());
     }
 
 private:

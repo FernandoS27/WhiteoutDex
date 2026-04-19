@@ -4,7 +4,9 @@
 
 #include "d3d11_device.h"
 #include "d3d11_command_list.h"
+#include <algorithm>
 #include <cstring>
+#include <vector>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -194,13 +196,21 @@ void D3D11Device::UnmapBuffer(BufferHandle h) {
 // ============================================================================
 
 TextureHandle D3D11Device::CreateTexture(const TextureDesc& desc, const void* initialPixels) {
+    const UINT arraySize = desc.isCube
+        ? static_cast<UINT>(desc.arraySize > 0 ? desc.arraySize : 6)
+        : static_cast<UINT>(desc.arraySize > 0 ? desc.arraySize : 1);
+    const UINT mipCount = desc.mipLevels == 0
+        ? 0u /* D3D11 full chain sentinel */
+        : static_cast<UINT>(desc.mipLevels);
+
     D3D11_TEXTURE2D_DESC td{};
     td.Width     = static_cast<UINT>(desc.width);
     td.Height    = static_cast<UINT>(desc.height);
-    td.MipLevels = static_cast<UINT>(desc.mipLevels);
-    td.ArraySize = 1;
+    td.MipLevels = mipCount;
+    td.ArraySize = arraySize;
     td.Format    = ToDXGI(desc.format);
     td.SampleDesc.Count = 1;
+    if (desc.isCube) td.MiscFlags |= D3D11_RESOURCE_MISC_TEXTURECUBE;
 
     if (hasFlag(desc.usage, TextureUsage::ShaderResource))
         td.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
@@ -214,13 +224,42 @@ TextureHandle D3D11Device::CreateTexture(const TextureDesc& desc, const void* in
         hasFlag(desc.usage, TextureUsage::DepthStencil))
         td.Usage = D3D11_USAGE_DEFAULT;
 
-    D3D11_SUBRESOURCE_DATA srd{};
-    srd.pSysMem     = initialPixels;
-    srd.SysMemPitch = static_cast<UINT>(desc.width * FormatByteSize(desc.format));
+    // Build subresource data for every (arraySize * mipLevels) slice when an
+    // initial-pixel blob is provided. The caller must pack slices
+    // tightly and in array-major / mip-minor order (slice 0 mip 0..N, slice
+    // 1 mip 0..N, ...); this matches the layout WhiteoutLib's cube/array
+    // loaders produce.
+    const UINT fillMips = (mipCount == 0) ? 1u : mipCount;
+    std::vector<D3D11_SUBRESOURCE_DATA> initSubres;
+    if (initialPixels) {
+        // BCn formats are block-compressed (4x4 pixel blocks); pitch is
+        // `ceil(width / 4) * bytesPerBlock`, and the "row count" for
+        // stride purposes is `ceil(height / 4)`. Uncompressed formats
+        // collapse to the usual `width * bytesPerPixel`.
+        const bool  isBcn        = IsBlockCompressed(desc.format);
+        const UINT  blockSize    = FormatBytesPerBlock(desc.format);
+        const UINT  blockEdge    = isBcn ? 4u : 1u;
+        initSubres.resize(static_cast<size_t>(arraySize) * fillMips);
+        const uint8_t* cursor = static_cast<const uint8_t*>(initialPixels);
+        for (UINT slice = 0; slice < arraySize; ++slice) {
+            for (UINT mip = 0; mip < fillMips; ++mip) {
+                UINT mipW = std::max<UINT>(1, static_cast<UINT>(desc.width)  >> mip);
+                UINT mipH = std::max<UINT>(1, static_cast<UINT>(desc.height) >> mip);
+                UINT blocksW = (mipW + blockEdge - 1) / blockEdge;
+                UINT blocksH = (mipH + blockEdge - 1) / blockEdge;
+                D3D11_SUBRESOURCE_DATA& s = initSubres[slice * fillMips + mip];
+                s.pSysMem          = cursor;
+                s.SysMemPitch      = blocksW * blockSize;
+                s.SysMemSlicePitch = 0;
+                cursor += static_cast<size_t>(s.SysMemPitch) * blocksH;
+            }
+        }
+    }
 
     TextureEntry entry{};
     entry.desc = desc;
-    HRESULT hr = device_->CreateTexture2D(&td, initialPixels ? &srd : nullptr, &entry.tex);
+    HRESULT hr = device_->CreateTexture2D(
+        &td, initialPixels ? initSubres.data() : nullptr, &entry.tex);
     if (FAILED(hr)) return TextureHandle::Invalid;
 
     if (hasFlag(desc.usage, TextureUsage::ShaderResource)) {
@@ -231,8 +270,22 @@ TextureHandle D3D11Device::CreateTexture(const TextureDesc& desc, const void* in
             srvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
         else if (desc.format == Format::D32_FLOAT)
             srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Texture2D.MipLevels = desc.mipLevels == 0 ? static_cast<UINT>(-1) : static_cast<UINT>(desc.mipLevels);
+
+        const UINT srvMips = (mipCount == 0) ? static_cast<UINT>(-1) : mipCount;
+        if (desc.isCube) {
+            // Always publish TextureCubeArray so HD shaders can bind a
+            // single-cube default probe (arraySize == 6, NumCubes == 1).
+            srvDesc.ViewDimension                    = D3D11_SRV_DIMENSION_TEXTURECUBEARRAY;
+            srvDesc.TextureCubeArray.MipLevels       = srvMips;
+            srvDesc.TextureCubeArray.NumCubes        = std::max<UINT>(1, arraySize / 6);
+        } else if (arraySize > 1) {
+            srvDesc.ViewDimension                    = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+            srvDesc.Texture2DArray.MipLevels         = srvMips;
+            srvDesc.Texture2DArray.ArraySize         = arraySize;
+        } else {
+            srvDesc.ViewDimension         = D3D11_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MipLevels   = srvMips;
+        }
         device_->CreateShaderResourceView(entry.tex, &srvDesc, &entry.srv);
     }
 

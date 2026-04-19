@@ -27,17 +27,41 @@ inline void SafeRelease(T*& ptr) {
 // ---- Format ----
 inline DXGI_FORMAT ToDXGI(Format f) {
     switch (f) {
+        // Uncompressed
+        case Format::R8_UNORM:           return DXGI_FORMAT_R8_UNORM;
+        case Format::R8G8_UNORM:         return DXGI_FORMAT_R8G8_UNORM;
         case Format::R8G8B8A8_UNORM:     return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case Format::R8G8B8A8_UNORM_SRGB: return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
         case Format::R8G8B8A8_UINT:      return DXGI_FORMAT_R8G8B8A8_UINT;
         case Format::B8G8R8A8_UNORM:     return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case Format::R16_UNORM:          return DXGI_FORMAT_R16_UNORM;
+        case Format::R16G16_UNORM:       return DXGI_FORMAT_R16G16_UNORM;
+        case Format::R16G16B16A16_UNORM: return DXGI_FORMAT_R16G16B16A16_UNORM;
+        case Format::R16G16B16A16_FLOAT: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+        case Format::R16_UINT:           return DXGI_FORMAT_R16_UINT;
+        case Format::R32_UINT:           return DXGI_FORMAT_R32_UINT;
         case Format::R32_FLOAT:          return DXGI_FORMAT_R32_FLOAT;
         case Format::R32G32_FLOAT:       return DXGI_FORMAT_R32G32_FLOAT;
         case Format::R32G32B32_FLOAT:    return DXGI_FORMAT_R32G32B32_FLOAT;
         case Format::R32G32B32A32_FLOAT: return DXGI_FORMAT_R32G32B32A32_FLOAT;
-        case Format::R16_UINT:           return DXGI_FORMAT_R16_UINT;
-        case Format::R32_UINT:           return DXGI_FORMAT_R32_UINT;
+
+        // Depth / stencil
         case Format::D24_UNORM_S8_UINT:  return DXGI_FORMAT_D24_UNORM_S8_UINT;
         case Format::D32_FLOAT:          return DXGI_FORMAT_D32_FLOAT;
+
+        // Block-compressed
+        case Format::BC1_UNORM:          return DXGI_FORMAT_BC1_UNORM;
+        case Format::BC1_UNORM_SRGB:     return DXGI_FORMAT_BC1_UNORM_SRGB;
+        case Format::BC2_UNORM:          return DXGI_FORMAT_BC2_UNORM;
+        case Format::BC2_UNORM_SRGB:     return DXGI_FORMAT_BC2_UNORM_SRGB;
+        case Format::BC3_UNORM:          return DXGI_FORMAT_BC3_UNORM;
+        case Format::BC3_UNORM_SRGB:     return DXGI_FORMAT_BC3_UNORM_SRGB;
+        case Format::BC4_UNORM:          return DXGI_FORMAT_BC4_UNORM;
+        case Format::BC5_UNORM:          return DXGI_FORMAT_BC5_UNORM;
+        case Format::BC6H_UF16:          return DXGI_FORMAT_BC6H_UF16;
+        case Format::BC7_UNORM:          return DXGI_FORMAT_BC7_UNORM;
+        case Format::BC7_UNORM_SRGB:     return DXGI_FORMAT_BC7_UNORM_SRGB;
+
         default:                         return DXGI_FORMAT_UNKNOWN;
     }
 }

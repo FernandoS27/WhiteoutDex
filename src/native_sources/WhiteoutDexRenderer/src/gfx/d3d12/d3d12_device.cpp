@@ -7,6 +7,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <vector>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -172,7 +173,18 @@ bool D3D12Device::CreateDescriptorPools() {
     if (!cbvSrvUavRing_.Init(device_, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 65536)) return false;
     if (!samplerRing_.Init  (device_, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,     2048))  return false;
 
-    if (!uploadRing_.Init(device_, 64 * 1024 * 1024)) return false;
+    // Upload ring must hold every init-time CopyBufferRegion/CopyTextureRegion
+    // source in flight until the first Present signals the fence -- there's
+    // no intermediate retire point, so the ring head has to fit the whole
+    // init upload set without wrapping. A full HD model with all its
+    // textures (albedo + normal + ORM + emissive + team-color across ~36
+    // geosets), plus the two IBL cube arrays (~32 MB each after RGBA8
+    // decode) and the per-geoset vertex/index/weight/skin/tangent/bone
+    // buffers, easily tops 100 MB. 64 MB wrapped mid-init and corrupted
+    // earlier uploads; 256 MB gives sane headroom. Only DEFAULT-heap
+    // staging lives here, so the allocation cost is paid once and freed
+    // on device shutdown.
+    if (!uploadRing_.Init(device_, 256 * 1024 * 1024)) return false;
     return true;
 }
 
@@ -237,10 +249,47 @@ bool D3D12Device::CreateRootSignatures() {
             p.ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
         }
 
+        // Static samplers for HD PS slots our dynamic sampler table (s0..s3)
+        // doesn't cover:
+        //   s4  — s_teamColor: wrap-linear. Without a binding the HD PS's
+        //         t_teamColor.Sample returns undefined values, scrambling
+        //         the multi-layer blend's team-coloured regions on every
+        //         draw that uses TMat.hasMultiLayer.
+        //   s13 — s_iblFrom (env cube from, linear-clamp)
+        //   s14 — s_iblTo   (env cube to,   linear-clamp)
+        //   s15 — s_brdfLut (split-sum LUT, linear-clamp)
+        // Using static samplers keeps the dynamic sampler descriptor table
+        // small (s0..s3 only), preventing the 2048-entry D3D12 sampler heap
+        // from wrapping mid-frame under a heavy HD draw load.
+        D3D12_STATIC_SAMPLER_DESC staticSamplers[4] = {};
+        auto MakeSampler = [](UINT shaderRegister, D3D12_TEXTURE_ADDRESS_MODE addressMode) {
+            D3D12_STATIC_SAMPLER_DESC s{};
+            s.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+            s.AddressU         = addressMode;
+            s.AddressV         = addressMode;
+            s.AddressW         = addressMode;
+            s.MipLODBias       = 0.0f;
+            s.MaxAnisotropy    = 0;
+            s.ComparisonFunc   = D3D12_COMPARISON_FUNC_NEVER;
+            s.BorderColor      = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+            s.MinLOD           = 0.0f;
+            s.MaxLOD           = D3D12_FLOAT32_MAX;
+            s.ShaderRegister   = shaderRegister;
+            s.RegisterSpace    = 0;
+            s.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            return s;
+        };
+        staticSamplers[0] = MakeSampler(4,  D3D12_TEXTURE_ADDRESS_MODE_WRAP);   // s_teamColor
+        staticSamplers[1] = MakeSampler(13, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_iblFrom
+        staticSamplers[2] = MakeSampler(14, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_iblTo
+        staticSamplers[3] = MakeSampler(15, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_brdfLut
+
         D3D12_ROOT_SIGNATURE_DESC rsd{};
-        rsd.NumParameters = static_cast<UINT>(GraphicsRP::Count);
-        rsd.pParameters   = params;
-        rsd.Flags         = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        rsd.NumParameters     = static_cast<UINT>(GraphicsRP::Count);
+        rsd.pParameters       = params;
+        rsd.NumStaticSamplers = 4;
+        rsd.pStaticSamplers   = staticSamplers;
+        rsd.Flags             = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
         ID3DBlob* blob = nullptr;
         ID3DBlob* err  = nullptr;
@@ -636,6 +685,11 @@ TextureHandle D3D12Device::CreateTexture(const TextureDesc& desc, const void* in
     const bool isRt    = hasFlag(desc.usage, TextureUsage::RenderTarget);
     const bool isSrv   = hasFlag(desc.usage, TextureUsage::ShaderResource);
 
+    const UINT16 arraySlices = desc.isCube
+        ? static_cast<UINT16>(desc.arraySize > 0 ? desc.arraySize : 6)
+        : static_cast<UINT16>(desc.arraySize > 0 ? desc.arraySize : 1);
+    const UINT16 mipCount = static_cast<UINT16>(desc.mipLevels == 0 ? 1 : desc.mipLevels);
+
     D3D12_HEAP_PROPERTIES hp{};
     hp.Type = D3D12_HEAP_TYPE_DEFAULT;
 
@@ -643,8 +697,8 @@ TextureHandle D3D12Device::CreateTexture(const TextureDesc& desc, const void* in
     rd.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     rd.Width              = static_cast<UINT64>(desc.width);
     rd.Height             = static_cast<UINT>(desc.height);
-    rd.DepthOrArraySize   = 1;
-    rd.MipLevels          = static_cast<UINT16>(desc.mipLevels == 0 ? 1 : desc.mipLevels);
+    rd.DepthOrArraySize   = arraySlices;
+    rd.MipLevels          = mipCount;
     rd.Format             = isDepth ? DepthFormatToTypeless(desc.format) : ToDXGI(desc.format);
     rd.SampleDesc.Count   = 1;
     rd.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -678,37 +732,53 @@ TextureHandle D3D12Device::CreateTexture(const TextureDesc& desc, const void* in
     if (FAILED(hr)) return TextureHandle::Invalid;
     entry.currentState = initialState;
 
-    // Initial-pixel upload for regular sampled textures.
+    // Initial-pixel upload. For mip-only 2D textures we take the fast path
+    // (one footprint, one copy). For arrays or cubes we iterate every
+    // subresource; the caller packs slices tightly in array-major /
+    // mip-minor order, matching WhiteoutLib's cube-array layout.
     if (initialPixels) {
-        UINT64 uploadSize = 0;
-        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
-        device_->GetCopyableFootprints(&rd, 0, 1, 0, &layout, nullptr, nullptr, &uploadSize);
+        const UINT subresCount = static_cast<UINT>(arraySlices) * mipCount;
+        std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> layouts(subresCount);
+        std::vector<UINT>   numRows(subresCount);
+        std::vector<UINT64> rowSizeBytes(subresCount);
+        UINT64 totalBytes = 0;
+        device_->GetCopyableFootprints(
+            &rd, 0, subresCount, 0,
+            layouts.data(), numRows.data(), rowSizeBytes.data(), &totalBytes);
 
-        auto alloc = uploadRing_.Allocate(uploadSize, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+        auto alloc = uploadRing_.Allocate(totalBytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
 
-        // Copy row-by-row into the upload ring respecting row pitch.
-        const uint32_t bpp     = FormatByteSize(desc.format);
-        const uint32_t srcPitch = static_cast<uint32_t>(desc.width) * bpp;
-        uint8_t* dst = static_cast<uint8_t*>(alloc.cpu);
         const uint8_t* src = static_cast<const uint8_t*>(initialPixels);
-        for (int y = 0; y < desc.height; ++y) {
-            std::memcpy(dst + static_cast<size_t>(y) * layout.Footprint.RowPitch,
-                        src + static_cast<size_t>(y) * srcPitch, srcPitch);
+        uint8_t*       base = static_cast<uint8_t*>(alloc.cpu);
+        for (UINT s = 0; s < subresCount; ++s) {
+            const auto& fp       = layouts[s];
+            const UINT  rows     = numRows[s];
+            const UINT64 rowSize = rowSizeBytes[s];
+            uint8_t* dst = base + fp.Offset;
+            for (UINT y = 0; y < rows; ++y) {
+                std::memcpy(dst + static_cast<size_t>(y) * fp.Footprint.RowPitch,
+                            src + static_cast<size_t>(y) * rowSize,
+                            static_cast<size_t>(rowSize));
+            }
+            src += static_cast<size_t>(rowSize) * rows;
         }
 
-        layout.Offset = alloc.offset;
+        for (UINT s = 0; s < subresCount; ++s) {
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout = layouts[s];
+            layout.Offset += alloc.offset;
 
-        D3D12_TEXTURE_COPY_LOCATION dstLoc{};
-        dstLoc.pResource        = entry.resource;
-        dstLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        dstLoc.SubresourceIndex = 0;
+            D3D12_TEXTURE_COPY_LOCATION dstLoc{};
+            dstLoc.pResource        = entry.resource;
+            dstLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            dstLoc.SubresourceIndex = s;
 
-        D3D12_TEXTURE_COPY_LOCATION srcLoc{};
-        srcLoc.pResource       = alloc.resource;
-        srcLoc.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        srcLoc.PlacedFootprint = layout;
+            D3D12_TEXTURE_COPY_LOCATION srcLoc{};
+            srcLoc.pResource       = alloc.resource;
+            srcLoc.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            srcLoc.PlacedFootprint = layout;
 
-        cmdList_->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+            cmdList_->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+        }
 
         D3D12_RESOURCE_BARRIER b{};
         b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -725,10 +795,24 @@ TextureHandle D3D12Device::CreateTexture(const TextureDesc& desc, const void* in
         D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
         sd.Format                    = isDepth ? DepthFormatToSrvFormat(desc.format)
                                                : ToDXGI(desc.format);
-        sd.ViewDimension             = D3D12_SRV_DIMENSION_TEXTURE2D;
         sd.Shader4ComponentMapping   = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        sd.Texture2D.MipLevels       = desc.mipLevels == 0 ? static_cast<UINT>(-1)
-                                                           : static_cast<UINT>(desc.mipLevels);
+        const UINT srvMips = desc.mipLevels == 0 ? static_cast<UINT>(-1)
+                                                 : static_cast<UINT>(desc.mipLevels);
+        if (desc.isCube) {
+            // HD / SD_on_HD PS bind t13/t14 as TextureCubeArray<float4>. We
+            // always publish the array view so a 6-face (single-cube)
+            // default probe binds cleanly without a dimension mismatch.
+            sd.ViewDimension                    = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+            sd.TextureCubeArray.MipLevels       = srvMips;
+            sd.TextureCubeArray.NumCubes        = std::max<UINT>(1, arraySlices / 6);
+        } else if (arraySlices > 1) {
+            sd.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+            sd.Texture2DArray.MipLevels      = srvMips;
+            sd.Texture2DArray.ArraySize      = arraySlices;
+        } else {
+            sd.ViewDimension         = D3D12_SRV_DIMENSION_TEXTURE2D;
+            sd.Texture2D.MipLevels   = srvMips;
+        }
         device_->CreateShaderResourceView(entry.resource, &sd, entry.srvCpu);
         entry.hasSrv = true;
     }

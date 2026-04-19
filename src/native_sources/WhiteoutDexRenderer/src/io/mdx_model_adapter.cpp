@@ -15,6 +15,38 @@
 
 namespace WhiteoutDex {
 
+// Translate a WhiteoutLib PixelFormat + sRGB flag into our gfx::Format.
+// Returns Format::Unknown when the source format has no matching GFX
+// variant -- callers fall back to a CPU decode + RGBA8 upload in that
+// case. Normal maps MUST stay in BC3/BC5/BC7 because hd_ps.slang's
+// decodeNormalMap hardcodes Blizzard's packed-channel convention (R for
+// the X low-precision byte, A for the X high-precision byte, G for Y);
+// any CPU decode to RGBA8 would shuffle those channels and produce
+// wrong world normals on mirrored UV islands.
+inline gfx::Format WhiteoutFormatToGfx(whiteout::textures::PixelFormat pf, bool srgb) {
+    using PF = whiteout::textures::PixelFormat;
+    switch (pf) {
+        case PF::R8:      return gfx::Format::R8_UNORM;
+        case PF::R16:     return gfx::Format::R16_UNORM;
+        case PF::R32F:    return gfx::Format::R32_FLOAT;
+        case PF::RG8:     return gfx::Format::R8G8_UNORM;
+        case PF::RG16:    return gfx::Format::R16G16_UNORM;
+        case PF::RG32F:   return gfx::Format::R32G32_FLOAT;
+        case PF::RGBA8:   return srgb ? gfx::Format::R8G8B8A8_UNORM_SRGB
+                                      : gfx::Format::R8G8B8A8_UNORM;
+        case PF::RGBA16:  return gfx::Format::R16G16B16A16_UNORM;
+        case PF::RGBA32F: return gfx::Format::R32G32B32A32_FLOAT;
+        case PF::BC1:     return srgb ? gfx::Format::BC1_UNORM_SRGB : gfx::Format::BC1_UNORM;
+        case PF::BC2:     return srgb ? gfx::Format::BC2_UNORM_SRGB : gfx::Format::BC2_UNORM;
+        case PF::BC3:     return srgb ? gfx::Format::BC3_UNORM_SRGB : gfx::Format::BC3_UNORM;
+        case PF::BC4:     return gfx::Format::BC4_UNORM;
+        case PF::BC5:     return gfx::Format::BC5_UNORM;
+        case PF::BC6H:    return gfx::Format::BC6H_UF16;
+        case PF::BC7:     return srgb ? gfx::Format::BC7_UNORM_SRGB : gfx::Format::BC7_UNORM;
+    }
+    return gfx::Format::Unknown;
+}
+
 using namespace whiteout;
 using namespace whiteout::mdx;
 namespace fs = std::filesystem;
@@ -175,6 +207,13 @@ std::vector<MeshData> MdxModelAdapter::GetMeshes() {
         mesh.positions.resize(vc);
         mesh.normals.resize(vc);
         mesh.uvs.resize(vc);
+        // Tangents: MDX v900+ geosets store per-vertex tangent frames
+        // (gs.tangents). Length matches gs.vertexPositions when the
+        // model was exported with tangent data; older / stripped MDX
+        // files leave it empty, and we leave mesh.tangents empty too so
+        // the HD path can branch on presence.
+        const bool hasTangents = (int)gs.tangents.size() == vc;
+        if (hasTangents) mesh.tangents.resize(vc);
 
         for (int v = 0; v < vc; v++) {
             mesh.positions[v] = toXM(gs.vertexPositions[v]);
@@ -184,6 +223,13 @@ std::vector<MeshData> MdxModelAdapter::GetMeshes() {
                 v < (int)gs.textureCoordinateSets[0].size()) {
                 mesh.uvs[v] = {gs.textureCoordinateSets[0][v].x,
                                gs.textureCoordinateSets[0][v].y};
+            }
+            if (hasTangents) {
+                // gs.tangents is already in our default coord space --
+                // TransformMdxModelToMaxCoords ran swizTangent on every
+                // entry at load time, so the XYZ component is correct
+                // world-space and W carries the handedness sign.
+                mesh.tangents[v] = gs.tangents[v];
             }
         }
 
@@ -209,13 +255,26 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     td.width = td.height = 0;
 
     // Parse a texture from a decoded result into td.
+    //
+    // Preserve the native pixel format end-to-end: BC3/BC5/BC7 normal
+    // maps read Blizzard's packed-precision convention (R = X low byte,
+    // A = X high byte, G = Y) that hd_ps.slang::decodeNormalMap
+    // reconstructs via `nx = 2 * sample.x * sample.w - 1`. Any CPU
+    // decode to RGBA8 rewrites those channels through the generic BC
+    // decoder and destroys the packing. We only fall back to an RGBA8
+    // re-encode when the source format has no matching gfx::Format.
     auto applyResult = [&](whiteout::textures::Texture& tex) {
-        if (tex.format() != whiteout::textures::PixelFormat::RGBA8)
+        gfx::Format gfxFmt = WhiteoutFormatToGfx(tex.format(), tex.isSrgb());
+        if (gfxFmt == gfx::Format::Unknown) {
             tex.format(whiteout::textures::PixelFormat::RGBA8);
+            gfxFmt = tex.isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB
+                                  : gfx::Format::R8G8B8A8_UNORM;
+        }
         auto pixels = tex.mipData(0);
         td.width  = (int)tex.width();
         td.height = (int)tex.height();
-        td.rgba.assign(pixels.begin(), pixels.end());
+        td.format = gfxFmt;
+        td.pixels.assign(pixels.begin(), pixels.end());
     };
 
     // Try parsing from a file path on disk.
@@ -295,12 +354,12 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     // Fallback: 4x4 magenta checkerboard
     td.width  = 4;
     td.height = 4;
-    td.rgba.resize(4 * 4 * 4);
+    td.pixels.resize(4 * 4 * 4);
     for (int j = 0; j < 16; j++) {
-        td.rgba[j * 4 + 0] = 255;
-        td.rgba[j * 4 + 1] = 0;
-        td.rgba[j * 4 + 2] = 255;
-        td.rgba[j * 4 + 3] = 255;
+        td.pixels[j * 4 + 0] = 255;
+        td.pixels[j * 4 + 1] = 0;
+        td.pixels[j * 4 + 2] = 255;
+        td.pixels[j * 4 + 3] = 255;
     }
     return td;
 }
@@ -312,16 +371,16 @@ TextureData MdxModelAdapter::GenerateTeamColorTexture(int textureId,
     td.replaceableId = replaceableId;
     if (replaceableId == 2) {
         // TeamGlow: decode embedded TGA tinted with default red
-        td.rgba = DecodeTeamGlow(255, 0, 0, td.width, td.height);
+        td.pixels = DecodeTeamGlow(255, 0, 0, td.width, td.height);
     } else {
         // TeamColor: solid 4x4 red
         td.width = 4; td.height = 4;
-        td.rgba.resize(64);
+        td.pixels.resize(64);
         for (int j = 0; j < 16; j++) {
-            td.rgba[j * 4 + 0] = 255;
-            td.rgba[j * 4 + 1] = 0;
-            td.rgba[j * 4 + 2] = 0;
-            td.rgba[j * 4 + 3] = 255;
+            td.pixels[j * 4 + 0] = 255;
+            td.pixels[j * 4 + 1] = 0;
+            td.pixels[j * 4 + 2] = 0;
+            td.pixels[j * 4 + 3] = 255;
         }
     }
     return td;
@@ -343,7 +402,7 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
             td.textureId     = i;
             td.replaceableId = (int)tex.replaceableId;
             td.width = td.height = 4;
-            td.rgba.assign(4 * 4 * 4, 255);
+            td.pixels.assign(4 * 4 * 4, 255);
         }
         // Propagate MDX texture wrap flags (0x1 = WrapWidth/U, 0x2 = WrapHeight/V)
         td.wrapFlags = static_cast<uint32_t>(tex.flags) & 0x3;
@@ -389,6 +448,22 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
             ld.textureAnimationId = ((int32_t)layer.textureAnimationId < 0
                                      || (int32_t)layer.textureAnimationId >= (int)model_.textureAnimations.size())
                                     ? -1 : (int)layer.textureAnimationId;
+            // MDX layer shader id (Layer::ShaderType). Cast through uint32_t
+            // so non-mesh / future values round-trip unchanged; the draw path
+            // treats unknown ids as SDLegacy (0), matching Previewd's MDL
+            // IReadShader fallback.
+            ld.shaderId   = static_cast<int>(static_cast<whiteout::u32>(layer.shader));
+
+            // Reforged HD material knobs. These feed the HD PS CB
+            // pixelParams/fresnelColor slots (see CGxMatParams::PixelParams
+            // RE). Classic MDX layers zero all of these; v1200+ HD layers
+            // may author non-zero fresnel rim + team-colour tint.
+            ld.emissiveGain    = layer.emissiveGain;
+            ld.fresnelOpacity  = layer.fresnelOpacity;
+            ld.fresnelTeamColor = layer.fresnelTeamColor;
+            ld.fresnelColor    = { layer.fresnelColor.x,
+                                   layer.fresnelColor.y,
+                                   layer.fresnelColor.z };
 
             // Texture resolution:
             //   Classic (v800-v1100): layer.textureId indexes the texture array.
@@ -399,11 +474,20 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
             //     only sample the diffuse map, so grab the DiffuseMap slot;
             //     if no DiffuseMap is present fall back to subTextures[0].
             if (!layer.subTextures.empty()) {
+                // Reforged multi-texture layout: each subtexture is tagged
+                // by its SlotType. Pluck out every slot the HD PS reads
+                // (DiffuseMap / NormalMap / ORMMap / EmissiveMap / TeamColor)
+                // so the renderer can bind them to t0..t4 respectively.
                 int diffuseTex = (int)layer.subTextures[0].textureId;
                 for (const auto& sub : layer.subTextures) {
-                    if (sub.slot == Layer::SlotType::DiffuseMap) {
-                        diffuseTex = (int)sub.textureId;
-                        break;
+                    const int tex = static_cast<int>(sub.textureId);
+                    switch (sub.slot) {
+                        case Layer::SlotType::DiffuseMap:  diffuseTex        = tex; break;
+                        case Layer::SlotType::NormalMap:   ld.normalMapId    = tex; break;
+                        case Layer::SlotType::ORMMap:      ld.ormMapId       = tex; break;
+                        case Layer::SlotType::EmissiveMap: ld.emissiveMapId  = tex; break;
+                        case Layer::SlotType::TeamColor:   ld.teamColorMapId = tex; break;
+                        default: break;
                     }
                 }
                 ld.textureId = diffuseTex;
@@ -926,6 +1010,62 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
             las.layerIndex = li;
             las.alpha = alpha;
             fs.layerAlphas.push_back(las);
+        }
+    }
+
+    // Layer fresnel / emissive evaluation. Mirrors Previewd's
+    // RenderGeosetLayers (0x14030a210): `layerMaterial.m_pixelParams.fresnelR/
+    // .fresnelG/.fresnelB = modelptr->m_fresnelColor[i].rgb`, fresnelA =
+    // m_fresnelOpacity[i], coneLength (= fresnelTeamColor slot) =
+    // m_fresnelTeamColor[i], m_emissiveGain = m_layerEmissive[i]. We emit
+    // one LayerFresnelState per layer with any of the four tracks active;
+    // the static authored values are used as track defaults so a layer
+    // with only some tracks animated still produces the correct values.
+    for (int mi = 0; mi < (int)model_.materials.size(); mi++) {
+        const auto& mat = model_.materials[mi];
+        for (int li = 0; li < (int)mat.layers.size(); li++) {
+            const auto& layer = mat.layers[li];
+            const bool anyAnim =
+                layer.fresnelColorTracks.isUsed    ||
+                layer.fresnelAlphaTracks.isUsed    ||
+                layer.fresnelTeamColorTracks.isUsed||
+                layer.emissiveGainTracks.isUsed;
+            if (!anyAnim) continue;
+
+            FrameState::LayerFresnelState lfs;
+            lfs.materialId = mi;
+            lfs.layerIndex = li;
+
+            if (layer.fresnelColorTracks.isUsed) {
+                auto [t, s, e] = effectiveTime(layer.fresnelColorTracks.globalSequenceId);
+                Vector3f c = EvaluateTrackVec3(layer.fresnelColorTracks, t, s, e, layer.fresnelColor);
+                lfs.fresnelColor = { c.x, c.y, c.z };
+            } else {
+                lfs.fresnelColor = { layer.fresnelColor.x, layer.fresnelColor.y, layer.fresnelColor.z };
+            }
+
+            if (layer.fresnelAlphaTracks.isUsed) {
+                auto [t, s, e] = effectiveTime(layer.fresnelAlphaTracks.globalSequenceId);
+                lfs.fresnelOpacity = EvaluateTrackF32(layer.fresnelAlphaTracks, t, s, e, layer.fresnelOpacity);
+            } else {
+                lfs.fresnelOpacity = layer.fresnelOpacity;
+            }
+
+            if (layer.fresnelTeamColorTracks.isUsed) {
+                auto [t, s, e] = effectiveTime(layer.fresnelTeamColorTracks.globalSequenceId);
+                lfs.fresnelTeamColor = EvaluateTrackF32(layer.fresnelTeamColorTracks, t, s, e, layer.fresnelTeamColor);
+            } else {
+                lfs.fresnelTeamColor = layer.fresnelTeamColor;
+            }
+
+            if (layer.emissiveGainTracks.isUsed) {
+                auto [t, s, e] = effectiveTime(layer.emissiveGainTracks.globalSequenceId);
+                lfs.emissiveGain = EvaluateTrackF32(layer.emissiveGainTracks, t, s, e, layer.emissiveGain);
+            } else {
+                lfs.emissiveGain = layer.emissiveGain;
+            }
+
+            fs.layerFresnels.push_back(lfs);
         }
     }
 

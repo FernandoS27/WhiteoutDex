@@ -1025,7 +1025,10 @@ std::vector<TextureData> MaxSceneAdapter::GetTextures() {
         TextureData td;
         td.textureId    = lt.textureId;
         td.replaceableId = lt.replaceableId;
-        td.rgba          = std::move(lt.rgba);
+        td.pixels        = std::move(lt.rgba);
+        // MaxSceneAdapter always produces RGBA8 (3ds Max bitmaps are
+        // decoded to 32-bit on import); new format field defaults match.
+        td.format        = gfx::Format::R8G8B8A8_UNORM;
         td.width         = lt.width;
         td.height        = lt.height;
         result.push_back(std::move(td));

@@ -53,36 +53,150 @@ void BuildSdPsCbA(SdPsCbA& out, const FrameInputs& in, const MatParams& mat) {
     out.fogColor  = in.fogColor;
 }
 
-// ---------- Path B (SD_on_HD / HD, reserved) -------------------------------
+// ---------- Path B (HD / SD_on_HD) -----------------------------------------
+//
+// Both HD and SD_on_HD VS consume the same CB layout (HdVsCb). PS CBs
+// diverge only in which fields are meaningful vs padding; the base size is
+// identical (336 + 64*N bytes).
 
-void BuildSdVsCbB(SdVsCbB& out, const FrameInputs& in, const MatParams& mat) {
+void BuildHdVsCb(HdVsCb& out, const FrameInputs& in, const MatParams& mat) {
+    // Upload row-major matrices directly -- the Slang HD VS uses the same
+    // mul(matrix, col_vec) convention as the SD VS (see BLS_ShaderABI.md):
+    // HLSL's default column_major interpretation of our row-major blobs
+    // yields the correct result without a CPU-side transpose.
     const Matrix44f wv  = in.world * in.view;
     const Matrix44f wvp = wv * in.projection;
 
+    // Field names match Previewd semantics (see HdVsCb in bls_cb_layout.h):
+    //   cb2[0..3]  = world         = m_prismWorldMat
+    //   cb2[4..7]  = worldView     = m_prismWorldMat * m_prismViewMat
+    //   cb2[8..11] = worldViewProj = above * m_prismProjectionMat
     out.world         = in.world;
     out.worldView     = wv;
     out.worldViewProj = wvp;
-    out.misc          = { in.effectTime, mat.popcornScale, mat.vertexPad.x, mat.vertexPad.y };
+    // misc.xyzw = {effectTime, popcornScale, clipHeight, underWater} per
+    // the Slang field order. clipHeight+underWater feed the fog-clip plane
+    // via computeFogDepth = (viewZ - clipHeight) * underWater; the HD PS
+    // discards fragments where that goes negative. With underWater=0 the
+    // product is zero regardless of clipHeight, so backfaceDiscard never
+    // fires — leave clipHeight=0 too to keep the slot visibly neutral.
+    out.misc          = { in.effectTime, mat.popcornScale, 0.0f, 0.0f };
     out.diffuseColor  = mat.diffuseColor;
     out.texMtx0       = in.texMtx0;
     out.texMtx1       = in.texMtx1;
 }
 
-void BuildSdPsCbB(SdPsCbB& out, const FrameInputs& in, const MatParams& mat) {
+void BuildHdPsCb(HdPsCb& out, const FrameInputs& in, const MatParams& mat) {
     std::memset(&out, 0, sizeof(out));
     out.alphaRef     = AlphaRefFor(mat.alpha);
     out.fogParams    = in.fogParams;
     out.fogColor     = in.fogColor;
     out.worldView    = in.world * in.view;
-    out.viewInverse  = Matrix44f::inverse(in.view);
+    // HdPsCb slot @0x70 — Slang calls it `invView` but the real shader
+    // uses it to transform `input.worldPos` (which VS outputs in MODEL /
+    // local space, not world) into world space before the .xzy*(1,1,-1)
+    // cube-sample swizzle. The slot actually wants the model's WORLD
+    // matrix — same "Slang names lie, IDA RE wins" pattern as HdVsCb
+    // slot 0. Evidence: a centred-model reflection sampled with cube.x
+    // aligned to view.x produces the +X/-X hemisphere seam down screen
+    // centre; swapping in the world matrix puts cube.x on world.x
+    // instead, which for a non-view-axis-aligned camera breaks the
+    // screen-aligned seam.
+    out.viewInverse  = in.world;
     out.projection   = in.projection;
     out.viewportRect = in.viewportRect;
     out.effectTime   = in.effectTime;
     out.emissiveGain = mat.emissiveGain;
-    out.numLights    = in.numLights;
-    out.useNdf       = in.useNdf;
 
+    // lightCount is declared `float` in cb_structs.slang::PSPerDraw but the
+    // IBL body reads it via `asuint(psCB2.lightCount)` -- see ps_ibl.slang
+    // around the `while (true) { if (lightIdx >= asuint(psCB2.lightCount))
+    // break; }` loop and the `asuint(psCB2.lightCount) > 0` first-light
+    // test. Writing the value as an IEEE-754 float would give bit pattern
+    // 0x3F800000 for 1.0, interpreted by the shader as ~1.07B iterations
+    // -> instant GPU TDR. Pack as a uint bit-reinterpret, same pattern as
+    // SdOnHdPsCb.lightCountSlot.z. Verified against CGxDevice::IStateSync
+    // in Previewd (0x1403f88da): `v46 = v51;` -- v46 is int in the
+    // lightCount slot, v51 is the incremented light counter.
+    const int nLights = std::clamp(in.numLights, 0, kMaxLights);
+    const uint32_t countBits = static_cast<uint32_t>(nLights);
+    std::memcpy(&out.lightCount, &countBits, sizeof(float));
+
+    out.useNdf       = in.useNdf ? 1.0f : 0.0f;
+    // Per-material HD pixel parameters, mirroring Previewd's IStateSync
+    // upload of p_m_material->m_pixelParams (C4Vector + pad2 + vec4Param3
+    // at CGxMatParams+0x38). Layout verified against the IDA dump of
+    // CGxMatParams::PixelParams:
+    //   pixelParams1 = {inverseSoftnessDistance, cloak, fresnelTeamColor, pad=0}
+    //   pixelParams2 = pad2                                 (always zero)
+    //   fresnelColor = {fresnelR, fresnelG, fresnelB, fresnelA}
+    // inverseSoftness is the PS alpha scale (result.w *= inverseSoftness
+    // at the end of the body) — 1.0 for visible draws. cloak / fresnel*
+    // come from the MDX layer (mat.fresnelColor etc.); default zeros
+    // leave the fresnel-overlay and cloak paths dormant.
+    out.pixelParams1 = { mat.inverseSoftness,
+                         mat.cloakAmount,
+                         mat.fresnelTeamColor,
+                         0.0f };
+    // pixelParams2 is the engine's `pad2`; memset'd to zero above.
+    out.fresnelColor = { mat.fresnelColor.x,
+                         mat.fresnelColor.y,
+                         mat.fresnelColor.z,
+                         mat.fresnelOpacity };
+    // envMapParams.xyzw = { envFromMipEnd, envToMipEnd, envTransitionT, 0 }.
+    // The IBL shader's fast-out at sampleIBL() triggers when
+    // `envFromMipEnd * envToMipEnd == 0`, so either zero disables all IBL
+    // contribution. Our default probe has 5 mips, so DefaultEnvProbeEndMip()
+    // = 4 enables the sample path and caps the roughness->mip remap.
+    out.envMapParams = { in.envFromMipEnd, in.envToMipEnd, in.envTransitionT, 0.0f };
+
+    // ShaderLight layout per cb_structs.slang::ShaderLight:
+    //   ambient.xyz,  _pad0        (= 0)
+    //   diffuse.xyz,  _pad1        (= 0)
+    //   position.xyz, type         (0 = directional, >0 = point)
+    //   _pad2                      (_pad2.x = per-light ambient weight read
+    //                               by ps_ibl.slang blizzardAmbientBlend)
+    // CGxLightToShaderLight (0x1403fbc00 in Previewd) only writes 48 B
+    // (ambient/diffuse/position), so the engine's live shaders -- which
+    // are a year behind the Slang sources in wc3_shaders -- never had
+    // this ambient-weight term in the IBL body at all. Running the
+    // current Slang shaders with _pad2 = 0 zeroes the IBL diffuse
+    // contribution and produces a nearly-black render. Set _pad2.x = 1.0
+    // so the IBL ambient mix contributes as the Slang body expects;
+    // revisit once the shipped BLS is regenerated from the new sources.
+    for (int i = 0; i < nLights; ++i) {
+        out.lights[i] = in.lights[i];
+        out.lights[i]._pad = { 1.0f, 0.0f, 0.0f, 0.0f };
+    }
+    for (int i = nLights; i < kMaxLights; ++i) out.lights[i] = {};
+}
+
+void BuildSdOnHdPsCb(SdOnHdPsCb& out, const FrameInputs& in, const MatParams& mat) {
+    std::memset(&out, 0, sizeof(out));
+    out.alphaRef  = AlphaRefFor(mat.alpha);
+    out.fogParams = in.fogParams;
+    out.fogColor  = in.fogColor;
+
+    // invViewRow0..2: rows of the transposed view->world rotation,
+    // consumed by sd_on_hd_ps.slang to orient IBL cubemap samples. We
+    // take the inverse of the view matrix and copy the upper-3x3
+    // rotation rows; translation is irrelevant for direction reflection.
+    const Matrix44f invView = Matrix44f::inverse(in.view);
+    out.invViewRow0 = { invView.data[0][0], invView.data[0][1], invView.data[0][2], invView.data[0][3] };
+    out.invViewRow1 = { invView.data[1][0], invView.data[1][1], invView.data[1][2], invView.data[1][3] };
+    out.invViewRow2 = { invView.data[2][0], invView.data[2][1], invView.data[2][2], invView.data[2][3] };
+
+    // See BuildHdPsCb re: inverseSoftness=1 rescuing the final alpha.
+    out.pixelParams1 = {1.0f, 0.0f, 0.0f, 0.0f};
+    out.envMapParams = { in.envFromMipEnd, in.envToMipEnd, in.envTransitionT, 0.0f };
+
+    // lightCountSlot.z holds the uint-reinterpret of numLights.
     const int n = std::clamp(in.numLights, 0, kMaxLights);
+    const uint32_t countBits = static_cast<uint32_t>(n);
+    float countAsFloat;
+    std::memcpy(&countAsFloat, &countBits, sizeof(float));
+    out.lightCountSlot = {0, 0, countAsFloat, 0};
+
     for (int i = 0; i < n; ++i) out.lights[i] = in.lights[i];
     for (int i = n; i < kMaxLights; ++i) out.lights[i] = {};
 }

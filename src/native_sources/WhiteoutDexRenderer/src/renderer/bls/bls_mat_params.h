@@ -46,6 +46,21 @@ struct MatParams {
     float      emissiveGain = 0.0f;
     uint32_t   spriteFlags  = 0;
 
+    // Per-material HD PS pixelParams fields. Engine layout (from
+    // CGxMatParams::PixelParams in IDA):
+    //   pixelParams1 = {inverseSoftness, cloak, fresnelTeamColor, pad=0}
+    //   pixelParams2 = pad2  (always zero in engine, kept in CB for layout)
+    //   fresnelColor = {fresnelR, fresnelG, fresnelB, fresnelA}
+    // inverseSoftness is 1.0 for normal rendering (IStateSync writes 1.0
+    // or 0.0 based on a master-enable bit); cloak is an in-game state
+    // we don't drive, so default stays at 0. The fresnel fields come
+    // from the MDX v1200 HD Layer chunk (fresnelColor/Opacity/TeamColor).
+    float      inverseSoftness = 1.0f;
+    float      cloakAmount     = 0.0f;
+    float      fresnelTeamColor = 0.0f;
+    Vector3f   fresnelColor    = {0.0f, 0.0f, 0.0f};
+    float      fresnelOpacity  = 0.0f;
+
     bool LightingEnabled() const { return (disables & kDisableLighting)   == 0; }
     bool FogEnabled()      const { return (disables & kDisableFog)        == 0; }
     bool DepthTestEnabled()const { return (disables & kDisableDepthTest)  == 0; }

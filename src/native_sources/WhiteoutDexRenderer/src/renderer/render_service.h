@@ -228,6 +228,9 @@ private:
 
     // Team color
     void UpdateTeamColorTextures();
+    // Refresh/create the RenderService-owned 1x1 team-colour swatch.
+    // Called lazily on the render thread whenever the picker changes.
+    void UpdateTeamColorSwatch();
 
     // Rendering
     void RenderGrid();
@@ -267,6 +270,10 @@ private:
     bool                  showRibbons_    = true;
     bool                  showCollisions_ = false;  // off by default
     bool                  showLights_     = false;  // off by default
+    // Global render pipeline selector. Mirrors Previewd's GxDevRenderMode():
+    // flipping to HD causes MatSelect-style canonicalisation in the mesh draw
+    // path (SD/SD_on_HD route through sd_on_hd.bls, HD/Crystal through hd.bls).
+    RenderMode            renderMode_     = RenderMode::SD;
 
     // ---- Model instances ----
     uint32_t nextModelHandle_ = 1;
@@ -359,7 +366,18 @@ private:
     gfx::BufferHandle  cbPerFrame_     = gfx::BufferHandle::Invalid;
     gfx::SamplerHandle samplerLinear_  = gfx::SamplerHandle::Invalid;
     gfx::SamplerHandle samplerWrap_[4] = {};
-    gfx::TextureHandle defaultTex_     = gfx::TextureHandle::Invalid;
+    gfx::TextureHandle defaultTex_     = gfx::TextureHandle::Invalid;  // 1x1 white (t0 albedo fallback)
+    gfx::TextureHandle defaultBlack_   = gfx::TextureHandle::Invalid;  // 1x1 RGBA(0,0,0,0) — t3 emissive / t4 teamColor fallback (zero contribution).
+    gfx::TextureHandle defaultOrm_     = gfx::TextureHandle::Invalid;  // 1x1 ORM neutral: occlusion=1, roughness=1, metalness=0, teamBlend=0. Roughness=1 matters — a 0 there turns every unauthored-ORM HD material into a perfect mirror and the IBL cubemap's horizon shows up as a sharp reflection line through the view centre (exactly the "seam" we've been chasing).
+    gfx::TextureHandle defaultNormal_  = gfx::TextureHandle::Invalid;  // 1x1 flat normal. Shader does nx = 2*r*a - 1 -> pack r=0.5, a=1.0 so decodeNormalMap yields (0,0,1).
+
+    // Dynamic team-colour swatch (1x1 RGBA8). Bound at t4 for every HD
+    // draw whose layer authors a TeamColor subtexture — the engine does
+    // the same: it ignores the MDX's referenced team-colour texture and
+    // swaps in a per-player tint. Recreated on SetTeamColor so the UI
+    // picker drives it directly without depending on replaceableId=1.
+    gfx::TextureHandle teamColorTex_   = gfx::TextureHandle::Invalid;
+    uint32_t           teamColorTexColor_ = 0xFFFFFFFFu;
 
     // Grid
     gfx::BufferHandle gridVB_ = gfx::BufferHandle::Invalid;
@@ -391,6 +409,29 @@ private:
     std::unique_ptr<bls::BlsPsoBuilder>     blsPsoBuilder_;
     const bls::BlsProgram*                  blsSdProgram_     = nullptr; // SD_HighSpec VS + SD PS
     const bls::BlsProgram*                  blsSdOnHdProgram_ = nullptr; // SD_on_HD VS + SD_on_HD PS
+    const bls::BlsProgram*                  blsHdProgram_     = nullptr; // HD VS + HD PS (full PBR)
+
+    // HD CB pool (path B). Sized for 8-light worst case like Path A; the
+    // actual upload size is dynamic via HdPsCbSize/SdOnHdPsCbSize.
+    gfx::BufferHandle                       blsHdVsCb_        = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle                       blsHdPsCb_        = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle                       blsSdOnHdPsCb_    = gfx::BufferHandle::Invalid;
+
+    // IBL resources for the HD path.
+    //   iblSplitSumLut_ : 128x128 BRDF pre-integral at t15 (CPU-generated).
+    //   iblFromProbe_   : TextureCubeArray at t13 -- "from" probe, loaded
+    //                     from the game's Day_IBL.dds when available;
+    //                     falls back to a small procedural grey cube.
+    //   iblToProbe_     : TextureCubeArray at t14 -- "to" probe, same
+    //                     loader but pointed at Night_IBL.dds. If loading
+    //                     fails we reuse iblFromProbe_ so t14 still binds.
+    //   iblProbeMipEnd_ : actual loaded mip count minus one; feeds
+    //                     envFromMipEnd / envToMipEnd so the PS's
+    //                     roughness->mip remap clamps correctly.
+    gfx::TextureHandle                      iblSplitSumLut_   = gfx::TextureHandle::Invalid;
+    gfx::TextureHandle                      iblFromProbe_     = gfx::TextureHandle::Invalid;
+    gfx::TextureHandle                      iblToProbe_       = gfx::TextureHandle::Invalid;
+    float                                   iblProbeMipEnd_   = 0.0f;
 
     // Dynamic CBs, one-each for the full SD/SD_on_HD ABI. Sized for
     // numLights=8 worst case (720 B PS CB). Uploaded per draw.
@@ -400,7 +441,8 @@ private:
     bool InitBlsShaders();
     void ShutdownBlsShaders();
     bool RenderParticlesBls();  // BLS path; returns false if program unavailable
-    bool RenderGeosetsBls();    // ditto for mesh geosets
+    bool RenderGeosetsBls();    // SD-mode mesh geosets (Path A: SD_HighSpec + SD)
+    bool RenderGeosetsHd();     // HD-mode mesh geosets (Path B: HD / SD_on_HD programs)
 };
 
 } // namespace WhiteoutDex

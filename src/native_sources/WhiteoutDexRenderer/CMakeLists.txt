@@ -142,6 +142,8 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/bls/bls_pso_builder.cpp
     src/renderer/bls/bls_mat_params.cpp
     src/renderer/bls/bls_frame.cpp
+    src/renderer/ibl/split_sum.cpp
+    src/renderer/ibl/env_probe.cpp
     src/io/mdx_animation.cpp
     src/io/mdx_model_adapter.cpp
     src/io/team_glow_data.cpp

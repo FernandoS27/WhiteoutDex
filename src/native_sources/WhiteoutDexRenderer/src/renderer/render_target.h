@@ -15,12 +15,22 @@ namespace WhiteoutDex {
 
 using RenderTargetId = uint32_t;
 
+// Render pipeline choice. Mirrors Previewd's GxDevRenderMode() + MatSelect
+// canonicalisation: in SD mode every mesh routes through the SD program;
+// in HD mode, materials whose MDX shader ID resolves to SD/SD_on_HD pick
+// the SD_on_HD program while true HD materials pick the HD program.
+enum class RenderMode : uint8_t {
+    SD = 0,
+    HD = 1,
+};
+
 struct DisplayFlags {
     bool showGrid       = true;
     bool showParticles  = true;
     bool showRibbons    = true;
     bool showCollisions = false;
     bool showLights     = false;
+    RenderMode renderMode = RenderMode::SD;
 };
 
 struct RenderTarget {

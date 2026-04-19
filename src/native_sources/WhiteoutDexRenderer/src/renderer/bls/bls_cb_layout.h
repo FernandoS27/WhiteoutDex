@@ -102,43 +102,138 @@ struct SdPsCbA {
 static_assert(sizeof(SdPsCbA) == 48);
 
 // ============================================================================
-// Path B — SD_on_HD / HD / Terrain / etc. (preserved for HD mode, not used
-// in SD-mode draws but we keep the definitions to avoid a later re-add.)
+// Path B — HD / SD_on_HD / Crystal / Terrain / Water / Foliage / etc.
+// Used when GxDevRenderMode() == HD. Both HD and SD_on_HD VS consume the
+// same VS CB layout; the PS CB layouts differ in which fields are
+// meaningful vs padding, but the base size is identical.
+//
+// Field order verified against Previewd's IStateSync path B upload block
+// starting at 0x1403f84cb (VS, root slot 2) and 0x1403f89da (PS, root slot
+// 2) -- see docs/BLS_ShaderABI.md sections 2.1 and 2.4.
 // ============================================================================
 
-struct SdVsCbB {
-    Matrix44f    world;          // 0x000
-    Matrix44f    worldView;      // 0x040
-    Matrix44f    worldViewProj;  // 0x080
-    Vector4f     misc;           // 0x0C0 {effectTime, popcornScale, clipHeight, underWater}
+// VS CB (HD + SD_on_HD) @ shader register b2. 288 B.
+// Field names match Previewd semantics verbatim (verified against
+// CGxDevice::IStateSync path B at 0x1403f82a2..0x1403f84cb). The Slang
+// source at types/cb_structs.slang preserved the original engine's
+// misleading "viewProj / world" labels; we discard those and use what
+// each slot actually holds. The shader reads the CB by OFFSET (DXBC
+// doesn't carry Slang field names), so renaming here is harmless.
+//
+// Slot map (16-byte slots):
+//   cb0[0..3]   world         — pure model-to-world
+//   cb0[4..7]   worldView     — world * view (PS worldPos is view-space)
+//   cb0[8..11]  worldViewProj
+//   cb0[12]     { effectTime, popcornScale, clipHeight, underWater }
+//   cb0[13]     diffuseColor
+//   cb0[14..15] texMtx0 rows
+//   cb0[16..17] texMtx1 rows
+struct HdVsCb {
+    Matrix44f    world;          // 0x000  m_prismWorldMat
+    Matrix44f    worldView;      // 0x040  m_prismWorldMat * m_prismViewMat
+    Matrix44f    worldViewProj;  // 0x080  above * m_prismProjectionMat
+    Vector4f     misc;           // 0x0C0  { effectTime, popcornScale, clipHeight, underWater }
     Vector4f     diffuseColor;   // 0x0D0
-    ShaderTexMtx texMtx0;        // 0x0E0
-    ShaderTexMtx texMtx1;        // 0x100
+    ShaderTexMtx texMtx0;        // 0x0E0  (row0 at 0x0E0, row1 at 0x0F0)
+    ShaderTexMtx texMtx1;        // 0x100  (row0 at 0x100, row1 at 0x110)
 };
-static_assert(sizeof(SdVsCbB) == 288);
+static_assert(sizeof(HdVsCb) == 288);
+static_assert(offsetof(HdVsCb, world)         == 0x000);
+static_assert(offsetof(HdVsCb, worldView)     == 0x040);
+static_assert(offsetof(HdVsCb, worldViewProj) == 0x080);
+static_assert(offsetof(HdVsCb, misc)          == 0x0C0);
+static_assert(offsetof(HdVsCb, diffuseColor)  == 0x0D0);
+static_assert(offsetof(HdVsCb, texMtx0)       == 0x0E0);
+static_assert(offsetof(HdVsCb, texMtx1)       == 0x100);
 
-struct SdPsCbB {
+// HD PS CB @ shader register b2. 336 B + N * sizeof(ShaderLight) = 64 B.
+// Matches Wc3Shaders/types/cb_structs.slang::PSPerDraw. lightCount/useNdf
+// are floats in Slang (the DXBC reads them via mov instructions; the bit
+// pattern is what matters, not the declared type, but we use floats so
+// CPU-side values flow unambiguously).
+struct HdPsCb {
+    float       alphaRef;              // 0x000
+    float       _pad0[3];              // 0x004
+    Vector4f    fogParams;             // 0x010  {start, end, density, 0}
+    Vector4f    fogColor;              // 0x020  sRGB->linear
+    Matrix44f   worldView;             // 0x030
+    Matrix44f   viewInverse;           // 0x070
+    Matrix44f   projection;            // 0x0B0
+    Vector4f    viewportRect;          // 0x0F0  {width, height, x, 1 - yHigh}
+    Vector4f    pixelParams1;          // 0x100  {inverseSoftness, cloakAmount, fresnelTeamColor, 0}
+    Vector4f    pixelParams2;          // 0x110  reserved
+    Vector4f    fresnelColor;          // 0x120
+    Vector4f    envMapParams;          // 0x130  {envFromMipEnd, envToMipEnd, envTransitionT, 0}
+    float       effectTime;            // 0x140
+    float       emissiveGain;          // 0x144
+    float       lightCount;            // 0x148  -- stored as float per Slang
+    float       useNdf;                // 0x14C
+    ShaderLight lights[kMaxLights];    // 0x150
+};
+static_assert(offsetof(HdPsCb, lights) == 0x150);
+static_assert(sizeof(HdPsCb) == 0x150 + 64 * kMaxLights);
+
+inline uint32_t HdPsCbSize(int numLights) {
+    return 336u + 64u * static_cast<uint32_t>(numLights);
+}
+
+// SD_on_HD PS CB @ shader register b2. Same base size (336 B) as HD PS CB
+// but most fields are padding -- only fog, alphaRef, inv-view rows,
+// envMap mip/transition, pixelParams1, lightCount, and lights[] are
+// consumed by sd_on_hd_ps.slang. invViewRow0..2 are the rows of the
+// TRANSPOSED view->world rotation (used to orient cubemap samples).
+struct SdOnHdPsCb {
     float       alphaRef;              // 0x000
     float       _pad0[3];              // 0x004
     Vector4f    fogParams;             // 0x010
     Vector4f    fogColor;              // 0x020
-    Matrix44f   worldView;             // 0x030
-    Matrix44f   viewInverse;           // 0x070
-    Matrix44f   projection;            // 0x0B0
-    Vector4f    viewportRect;          // 0x0F0
-    Vector4f    pixelParams1;          // 0x100
-    Vector4f    pixelParams2;          // 0x110
-    Vector4f    pixelParams3;          // 0x120
-    Vector4f    envMapParams;          // 0x130
-    float       effectTime;            // 0x140
-    float       emissiveGain;          // 0x144
-    int32_t     numLights;             // 0x148
-    int32_t     useNdf;                // 0x14C
+    Vector4f    _pad3;                 // 0x030
+    Vector4f    _pad4;                 // 0x040
+    Vector4f    _pad5;                 // 0x050
+    Vector4f    _pad6;                 // 0x060
+    Vector4f    invViewRow0;           // 0x070
+    Vector4f    invViewRow1;           // 0x080
+    Vector4f    invViewRow2;           // 0x090
+    Vector4f    _pad10;                // 0x0A0
+    Vector4f    _pad11;                // 0x0B0
+    Vector4f    _pad12;                // 0x0C0
+    Vector4f    _pad13;                // 0x0D0
+    Vector4f    _pad14;                // 0x0E0
+    Vector4f    _pad15;                // 0x0F0
+    Vector4f    pixelParams1;          // 0x100 {inverseSoftness, cloakAmount, 0, 0}
+    Vector4f    _pad17;                // 0x110
+    Vector4f    _pad18;                // 0x120
+    Vector4f    envMapParams;          // 0x130 {envFromMipEnd, envToMipEnd, envTransitionT, 0}
+    Vector4f    lightCountSlot;        // 0x140 lightCountSlot.z = reinterpret_cast<float>(numLights)
     ShaderLight lights[kMaxLights];    // 0x150
 };
-static_assert(offsetof(SdPsCbB, lights) == 0x150);
+static_assert(offsetof(SdOnHdPsCb, invViewRow0) == 0x070);
+static_assert(offsetof(SdOnHdPsCb, envMapParams) == 0x130);
+static_assert(offsetof(SdOnHdPsCb, lightCountSlot) == 0x140);
+static_assert(offsetof(SdOnHdPsCb, lights) == 0x150);
+static_assert(sizeof(SdOnHdPsCb) == 0x150 + 64 * kMaxLights);
 
-inline uint32_t SdPsCbBSize(int numLights) { return 336u + 64u * static_cast<uint32_t>(numLights); }
+inline uint32_t SdOnHdPsCbSize(int numLights) {
+    return 336u + 64u * static_cast<uint32_t>(numLights);
+}
+
+// VS shadow cascades CB @ shader register b1. Three view-projection
+// matrices, used by hd_vs.slang when HAS_SHADOWS=1 (and by sd_on_hd_vs).
+// Unused in the MVP (we ship shadows=0 perm), reserved for a later pass.
+struct HdShadowCascadesCb {
+    Matrix44f cascade0;   // 0x000
+    Matrix44f cascade1;   // 0x040
+    Matrix44f cascade2;   // 0x080
+};
+static_assert(sizeof(HdShadowCascadesCb) == 192);
+
+// SD_on_HD PS shadow cascade count @ register b1. Scalar float cast into
+// a float4 for alignment.
+struct SdOnHdShadowCascadeCountCb {
+    float numCascades;
+    float _pad[3];
+};
+static_assert(sizeof(SdOnHdShadowCascadeCountCb) == 16);
 
 // ============================================================================
 // Bone palette (cb3 when skinning is active)

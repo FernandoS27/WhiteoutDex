@@ -42,21 +42,40 @@ inline constexpr uint32_t kFramesInFlight = 2;
 //   [3]  Table UAV    u0..u3   ALL
 //   [4]  Table Sampler s0..s3  ALL
 // ============================================================================
-inline constexpr uint32_t kSrvsPerStage     = 8;
+// SRV slot 15 is reserved by HD shaders for the split-sum BRDF LUT; bump
+// to 16 so HD draws can bind it without the command-list dropping the
+// request. CB slot 2 (b2) is where HD VSPerDraw / PSPerDraw live per
+// Wc3Shaders/types/cb_structs.slang, so we need at least three root CBVs
+// per stage (b0, b1, b2). The SD pipeline only uses b0 today, so the
+// extra slots are harmless for it.
+//
+// `kSamplersPerStage` stays at 4 -- D3D12's sampler descriptor heap is
+// hard-capped at 2048 entries per heap, so allocating 16 per draw blows
+// the ring within a single frame (wraps over GPU-live data -> TDR). HD
+// needs samplers at s13/s14/s15 too, but those are always linear/default
+// so the root signature declares them as STATIC samplers (off-heap) --
+// see CreateRootSignatures in d3d12_device.cpp.
+inline constexpr uint32_t kSrvsPerStage     = 16;
 inline constexpr uint32_t kUavsForCompute   = 4;
 inline constexpr uint32_t kSamplersPerStage = 4;
-inline constexpr uint32_t kRootCbvsPerStage = 2;
+// Root CBVs per stage: b0..b3.
+// b3 is the bone palette consumed by vs/hd.bls's FourBoneSkinning
+// policy (ConstantBuffer<BonePalette> vsCB3 in Wc3Shaders/types/
+// cb_structs.slang). Without slot b3 reachable from the root signature
+// the bind silently drops and the HD VS reads garbage for skinning,
+// collapsing every vertex to the origin.
+inline constexpr uint32_t kRootCbvsPerStage = 4;
 
 enum class GraphicsRP : uint32_t {
-    CBV_VS_0 = 0, CBV_VS_1,
-    CBV_PS_0,     CBV_PS_1,
+    CBV_VS_0 = 0, CBV_VS_1, CBV_VS_2, CBV_VS_3,
+    CBV_PS_0,     CBV_PS_1, CBV_PS_2, CBV_PS_3,
     SRV_TABLE_VS,
     SRV_TABLE_PS,
     SAMPLER_TABLE_PS,
     Count
 };
 enum class ComputeRP : uint32_t {
-    CBV_0 = 0, CBV_1,
+    CBV_0 = 0, CBV_1, CBV_2, CBV_3,
     SRV_TABLE,
     UAV_TABLE,
     SAMPLER_TABLE,
