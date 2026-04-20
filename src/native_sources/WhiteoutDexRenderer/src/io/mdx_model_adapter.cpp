@@ -270,11 +270,25 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
             gfxFmt = tex.isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB
                                   : gfx::Format::R8G8B8A8_UNORM;
         }
-        auto pixels = tex.mipData(0);
-        td.width  = (int)tex.width();
-        td.height = (int)tex.height();
-        td.format = gfxFmt;
-        td.pixels.assign(pixels.begin(), pixels.end());
+        td.width     = (int)tex.width();
+        td.height    = (int)tex.height();
+        td.format    = gfxFmt;
+        td.mipLevels = (int)tex.mipCount();
+
+        // Concatenate all mip levels into one tight buffer, mip0
+        // first. D3D12Device::CreateTexture walks subresources in
+        // this order via GetCopyableFootprints, advancing by
+        // `rowSize * rows` per mip.
+        size_t total = 0;
+        for (uint32_t m = 0; m < tex.mipCount(); ++m)
+            total += tex.mipData(m).size();
+        td.pixels.resize(total);
+        uint8_t* cursor = td.pixels.data();
+        for (uint32_t m = 0; m < tex.mipCount(); ++m) {
+            auto src = tex.mipData(m);
+            std::memcpy(cursor, src.data(), src.size());
+            cursor += src.size();
+        }
     };
 
     // Try parsing from a file path on disk.

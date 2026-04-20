@@ -124,17 +124,16 @@ struct MeshData {
 struct TextureData {
     int textureId;
     int replaceableId;
-    // Raw mip-0 bytes in the source DDS/BLP pixel layout. Normal maps
-    // (BC3N / BC5 / Blizzard's packed-high-precision R+A) MUST reach
-    // the sampler in their native encoding -- decoding to plain RGBA8
-    // on CPU drops the channel conventions hd_ps.slang::decodeNormalMap
-    // relies on (nx = 2 * sample.x * sample.w - 1) and produces wrong
-    // world normals on one half of mirrored-UV meshes. `format`
-    // records which `gfx::Format` this blob is; the upload path binds
-    // it verbatim and the GPU sampler performs the decode.
+    // All mip levels packed tightly in mip0 → mipN-1 order (the byte
+    // layout D3D12_PLACED_SUBRESOURCE_FOOTPRINT expects). Source
+    // format preserved end-to-end — BC3/BC5/BC7 normal maps must
+    // reach the sampler in Blizzard's packed encoding because
+    // hd_ps.slang::decodeNormalMap reconstructs nx via the R*A
+    // product; a CPU decode to RGBA8 breaks that.
     std::vector<uint8_t> pixels;
     gfx::Format format = gfx::Format::R8G8B8A8_UNORM;
     int width, height;
+    int mipLevels = 1;
     uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V); default = wrap both
 };
 

@@ -20,15 +20,21 @@ constexpr float kRibbonMinLifespan       = 0.25f;  // minimum ribbon edge lifesp
 constexpr float kVectorEpsilon           = 1e-6f;  // minimum vector length for normalization
 constexpr float kBillboardDistThreshold  = 0.001f;  // minimum dist for billboard orientation
 
-// --- Lighting: geoset pass ---
-// Strong directional key + dim cool ambient fill. The previous values
-// had ambient (0.60) higher than diffuse (0.50), which flooded every
-// surface with flat light and flattened the model. With diffuse ~1.6×
-// ambient and a cooler tint on the fill, normals actually reveal form
-// and metallic surfaces pick up a visible highlight along the key's
-// direction, matching the look that authored-light MDX heroes get.
+// --- Lighting: SD geoset pass (baseline when model has no MDX lights) ---
+// Strong directional key + dim cool ambient. Diffuse ~1.6× ambient so
+// form reads and metals pick up a highlight along the key direction.
 constexpr Vector4f kGeosetLightColor    = {0.95f, 0.92f, 0.85f, 1.0f};
 constexpr Vector4f kGeosetAmbientColor  = {0.22f, 0.24f, 0.30f, 0.0f};
+
+// --- Lighting: HD geoset pass (baseline when model has no MDX lights) ---
+// HD adds its own indirect lighting through the IBL cube probe on top
+// of the analytic key, so the baseline can be dimmer than the SD one
+// without the model going flat. Tune these to adjust HD preview
+// brightness for MDX models that don't ship authored lights.
+// `kHdBaselineLightColor` is the directional diffuse; `kHdBaselineAmbientColor`
+// is the ambient fill. Alpha channels are unused.
+constexpr Vector4f kHdBaselineLightColor   = {0.15f, 0.15f, 0.15f, 1.0f};
+constexpr Vector4f kHdBaselineAmbientColor = {0.40f, 0.40f, 0.40f, 0.0f};
 
 // --- Lighting: particle & ribbon pass ---
 constexpr Vector4f kParticleLightColor   = {0.85f, 0.85f, 0.80f, 1.0f};

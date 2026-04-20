@@ -23,14 +23,15 @@ namespace WhiteoutDex {
 // ============================================================================
 
 struct StagedTexture {
+    // All mip levels packed tightly in mip0 → mipN-1 order (the byte
+    // layout D3D12's GetCopyableFootprints expects). Source format is
+    // preserved so BC3/BC5/BC7 normal maps reach the sampler without
+    // a CPU decode round-trip — see TextureData::format comment.
     std::vector<uint8_t> pixels;
-    // Native format of the pixel blob. When the adapter loads BC3/BC5/BC7
-    // the blob stays compressed and uploads verbatim; the sampler decodes
-    // on the GPU so Blizzard's packed-normal-map convention survives
-    // (see TextureData::format comment).
     gfx::Format format = gfx::Format::R8G8B8A8_UNORM;
     int width  = 0;
     int height = 0;
+    int mipLevels = 1;
     int replaceableId = 0;
     uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V)
 };

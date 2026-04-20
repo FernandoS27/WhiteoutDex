@@ -308,6 +308,7 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
     for (auto& tex : tmpl.textures) {
         StagedTexture& st = mi->stagedTextures[tex.textureId];
         st.width = tex.width; st.height = tex.height;
+        st.mipLevels = tex.mipLevels;
         st.replaceableId = tex.replaceableId;
         st.wrapFlags = tex.wrapFlags;
         st.format = tex.format;
@@ -509,6 +510,7 @@ void RenderService::UpdateMaterials(uint32_t handle, const std::vector<MaterialD
         StagedTexture& st = mi->stagedTextures[tex.textureId];
         st.width  = tex.width;
         st.height = tex.height;
+        st.mipLevels = tex.mipLevels;
         st.replaceableId = tex.replaceableId;
         st.wrapFlags = tex.wrapFlags;
         st.format = tex.format;
@@ -570,6 +572,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
         StagedTexture& st = mi->stagedTextures[tex.textureId];
         st.width  = tex.width;
         st.height = tex.height;
+        st.mipLevels = tex.mipLevels;
         st.replaceableId = tex.replaceableId;
         st.wrapFlags = tex.wrapFlags;
         st.format = tex.format;
@@ -1019,6 +1022,11 @@ void RenderService::UpdateTeamColorTextures() {
             // resetting the format would have the upload path treat 64
             // RGBA8 bytes as BCn blocks and corrupt the texture.
             st.format = gfx::Format::R8G8B8A8_UNORM;
+            // Generated TeamColor / TeamGlow are single-mip. Reset
+            // mipLevels in case a prior pass loaded a mipped image
+            // into this same slot (stale value would cause the GPU
+            // upload to walk off the end of `pixels`).
+            st.mipLevels = 1;
             if (replId == 2) {
                 st.pixels = DecodeTeamGlow(r, g, b, st.width, st.height);
             } else {
@@ -1249,10 +1257,11 @@ void RenderService::UploadStagedTextures(ModelInstance& mi) {
                                    ? gfx::Format::R8G8B8A8_UNORM
                                    : st.format;
         gt.tex = gfx_->CreateTexture({
-            .width  = st.width,
-            .height = st.height,
-            .format = texFormat,
-            .usage  = gfx::TextureUsage::ShaderResource,
+            .width     = st.width,
+            .height    = st.height,
+            .mipLevels = (std::max)(1, st.mipLevels),
+            .format    = texFormat,
+            .usage     = gfx::TextureUsage::ShaderResource,
         }, st.pixels.data());
         gt.wrapFlags = st.wrapFlags;
         mi.gpuTextures[id] = gt;
@@ -3034,7 +3043,7 @@ bool RenderService::RenderGeosetsHd() {
     // scene's actual lighting.
     frame.envFromMipEnd  = iblProbeMipEnd_;
     frame.envToMipEnd    = iblProbeMipEnd_;
-    frame.envTransitionT = 0.0f;
+    frame.envTransitionT = 0.75f;
 
     cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerLinear_);
 
@@ -3070,13 +3079,13 @@ bool RenderService::RenderGeosetsHd() {
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 15, iblSplitSumLut_);
     }
 
-    // Same fallback key light the SD path uses. HD PS standard-body reads
-    // ShaderLight.position / ambient / diffuse with the same semantics as
-    // the SD shader (direction-to-source in view space, type selector in
-    // .w), so the CPU-side packing is identical.
+    // HD baseline key (used ONLY when the model has no authored MDX
+    // lights). Tune via kHdBaselineLightColor / kHdBaselineAmbientColor
+    // in constants.h — dimmer than the SD baseline because the HD
+    // path gets additional indirect lighting from the IBL probe.
     const auto kBaselineToSourceWS = Vector3f{-kDefaultLightDir.x, -kDefaultLightDir.y, -kDefaultLightDir.z};
-    const auto kBaselineDiffuse    = Vector3f{kGeosetLightColor.x,   kGeosetLightColor.y,   kGeosetLightColor.z};
-    const auto kBaselineAmbient    = Vector3f{kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z};
+    const auto kBaselineDiffuse    = Vector3f{kHdBaselineLightColor.x,   kHdBaselineLightColor.y,   kHdBaselineLightColor.z};
+    const auto kBaselineAmbient    = Vector3f{kHdBaselineAmbientColor.x, kHdBaselineAmbientColor.y, kHdBaselineAmbientColor.z};
 
     for (auto& ref : refs) {
         auto* mi  = ref.mi;
