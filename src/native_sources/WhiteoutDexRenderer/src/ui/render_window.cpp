@@ -69,20 +69,18 @@ void RenderWindow::ThreadFunc(int w, int h, gfx::GfxApi api) {
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&lastTime);
     fpsTimer = lastTime;
-    const double targetDt = 1.0 / 60.0;
     int frameCount = 0;
     int lastParentTimeMs = service_.GetAnimationTime();
 
+    // Frame pacing is handled by `Present(1, 0)` (V-Sync) in the
+    // D3D12 backend. The previous manual 60 Hz `Sleep` loop stacked
+    // Windows' ~15.6 ms scheduler quantum on top of V-Sync's 16.6 ms
+    // wait, capping the visible framerate at ~40 FPS even on
+    // high-refresh monitors. Let Present do the pacing alone.
     while (running_) {
         if (!PumpMessages()) { running_ = false; break; }
 
         QueryPerformanceCounter(&now);
-        double elapsed = (double)(now.QuadPart - lastTime.QuadPart) / freq.QuadPart;
-        if (elapsed < targetDt) {
-            DWORD sleepMs = (DWORD)((targetDt - elapsed) * 1000.0);
-            if (sleepMs > 1) Sleep(sleepMs - 1);
-            continue;
-        }
         lastTime = now;
 
         // Particle/ribbon/PE1 simulation dt is derived from the parent's
