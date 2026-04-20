@@ -47,13 +47,25 @@ struct FileContentProvider::Impl {
 
     void Discover() {
         auto games = whiteout::utils::findBlizzardGames();
+
+        // Prefer an install that has a `Data` folder — that's the CASC
+        // storage marker and indicates a Reforged-capable install. Fall
+        // back to the first WC3 install otherwise (classic / MPQ-only).
+        std::string fallbackPath;
         for (auto& info : games) {
-            if (info.game == whiteout::utils::BlizzardGame::WarcraftIII ||
-                info.game == whiteout::utils::BlizzardGame::WarcraftIIIReforged) {
+            if (info.game != whiteout::utils::BlizzardGame::WarcraftIII &&
+                info.game != whiteout::utils::BlizzardGame::WarcraftIIIReforged)
+                continue;
+
+            if (fs::exists(fs::path(info.path) / "Data")) {
                 wc3Path = info.path;
                 break;
             }
+            if (fallbackPath.empty())
+                fallbackPath = info.path;
         }
+        if (wc3Path.empty())
+            wc3Path = std::move(fallbackPath);
 
         if (wc3Path.empty()) {
             std::printf("[FileContentProvider] Warcraft III installation not found.\n");
@@ -300,23 +312,30 @@ std::optional<std::vector<uint8_t>> FileContentProvider::ReadFromMpq(
     if (impl_->mpqStorages.empty())
         return std::nullopt;
 
-    std::string norm = NormalizeCascPath(path); // same normalization works for MPQ
-    std::string stem = StripExtension(norm);
-    std::string ext  = GetLowerExtension(norm);
+    // MPQ file tables are case-sensitive hash lookups of the exact
+    // string the archive was built with — lowercasing or converting
+    // separators breaks the hash and the file appears missing even
+    // when it's there. Pass the caller's path through verbatim.
+    // `stem` / `ext` are derived from the raw path for the alt-ext
+    // retry loop so a caller requesting `.blp` can still find `.dds`.
+    const std::string& raw = path;
+    std::string ext  = GetLowerExtension(raw);        // just for alt-ext classification
+    std::string stem = StripExtension(raw);           // preserves original case/separators
 
     auto [altExts, altCount] = AltExtensionsFor(ext);
 
     for (const auto& mpq : impl_->mpqStorages) {
-        // Try original extension first.
+        // Try the caller's path exactly as given.
         if (!ext.empty()) {
-            auto data = mpq.readFile(stem + ext);
+            auto data = mpq.readFile(raw);
             if (data && !data->empty()) {
                 if (actualExt) *actualExt = ext;
                 return data;
             }
         }
 
-        // Try alternate extensions.
+        // Try alternate extensions (still preserving original case
+        // of the stem — only the extension is swapped).
         for (size_t i = 0; i < altCount; ++i) {
             if (altExts[i] == ext) continue;
             auto data = mpq.readFile(stem + altExts[i]);
