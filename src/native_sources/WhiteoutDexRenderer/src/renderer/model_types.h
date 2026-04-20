@@ -200,9 +200,10 @@ struct SkinWeightData {
 };
 
 struct CollisionShapeData {
-    int type;              // 0=box, 1=sphere, 2=plane, 3=cylinder
-    Vector3f vertices[2]; // min/max for box, center for sphere
+    int type;              // Previewd: 0=box, 1=cylinder, 2=sphere, 3=plane
+    Vector3f vertices[2]; // min/max for box, center for sphere, endpoints for cylinder
     float radius;
+    Vector3f pivot = {0, 0, 0}; // Bind-pose world pivot; vertices[] are offsets from it
 };
 
 // Per-frame animated state — computed by the adapter, then passed to ApplyFrameState().

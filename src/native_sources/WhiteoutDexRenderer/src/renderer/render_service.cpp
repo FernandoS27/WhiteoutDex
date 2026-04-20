@@ -671,6 +671,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
         shape.vmin   = cs.vertices[0];
         shape.vmax   = cs.vertices[1];
         shape.radius = cs.radius;
+        shape.pivot  = cs.pivot;
         mi->collisionShapes.push_back(shape);
     }
 
@@ -1955,39 +1956,96 @@ void RenderService::RenderCollisions() {
         struct LV { Vector3f pos; Vector4f col; };
         std::vector<LV> lines;
 
+        // Previewd COLLIDE_TYPE (from IDA RE of MDL::ReadBinCollisions
+        // @0x1407810f0 / AddCollisionGeometryGeoset @0x1403155b0):
+        //   0 = Box (2 vec3 extents), 1 = Cylinder (2 vec3 endpoints + radius),
+        //   2 = Sphere (vec3 center + radius), 3 = Plane (2 floats width/height).
+        // WhiteoutLib stores the raw u32 in cs.type — labels in its enum
+        // are mis-named but the numeric values match the file.
+        // Previewd geoset layout: corners stored at `pivot + extent` in bind-pose
+        // world space; the bone matrix is a skinning delta (identity at bind).
+        // Reproduce that by adding pivot here before applying cs.transform.
+        const Vector3f& piv = cs.pivot;
+        auto pushLine = [&](const Vector3f& a, const Vector3f& b) {
+            Vector3f ap = {a.x + piv.x, a.y + piv.y, a.z + piv.z};
+            Vector3f bp = {b.x + piv.x, b.y + piv.y, b.z + piv.z};
+            Vector3f pa = whiteout::transform_point(ap, cs.transform);
+            Vector3f pb = whiteout::transform_point(bp, cs.transform);
+            lines.push_back({pa, col});
+            lines.push_back({pb, col});
+        };
+        auto emitCircle = [&](const Vector3f& c, float r, int axis) {
+            const int segs = 24;
+            for (int i = 0; i < segs; i++) {
+                float a0 = (float)i / segs * 6.28318530f;
+                float a1 = (float)(i+1) / segs * 6.28318530f;
+                float c0 = r * cosf(a0), s0 = r * sinf(a0);
+                float c1 = r * cosf(a1), s1 = r * sinf(a1);
+                Vector3f p0, p1;
+                if (axis == 2)      { p0 = {c.x+c0, c.y+s0, c.z}; p1 = {c.x+c1, c.y+s1, c.z}; }
+                else if (axis == 1) { p0 = {c.x+c0, c.y, c.z+s0}; p1 = {c.x+c1, c.y, c.z+s1}; }
+                else                { p0 = {c.x, c.y+c0, c.z+s0}; p1 = {c.x, c.y+c1, c.z+s1}; }
+                pushLine(p0, p1);
+            }
+        };
+
         if (cs.type == 0) {
-            // Box: 12 edges
+            // Box: 12 edges between (vmin, vmax)
             Vector3f mn = cs.vmin, mx = cs.vmax;
             Vector3f corners[8] = {
                 {mn.x,mn.y,mn.z}, {mx.x,mn.y,mn.z}, {mx.x,mx.y,mn.z}, {mn.x,mx.y,mn.z},
                 {mn.x,mn.y,mx.z}, {mx.x,mn.y,mx.z}, {mx.x,mx.y,mx.z}, {mn.x,mx.y,mx.z}
             };
             int edges[24] = {0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,5, 2,6, 3,7};
-            for (int i = 0; i < 24; i += 2) {
-                Vector3f pa = whiteout::transform_point(corners[edges[i]], cs.transform);
-                Vector3f pb = whiteout::transform_point(corners[edges[i+1]], cs.transform);
-                lines.push_back({pa, col});
-                lines.push_back({pb, col});
-            }
+            for (int i = 0; i < 24; i += 2)
+                pushLine(corners[edges[i]], corners[edges[i+1]]);
+        } else if (cs.type == 2) {
+            // Sphere: center = vertices[0] (stored in vmin), radius
+            emitCircle(cs.vmin, cs.radius, 0);
+            emitCircle(cs.vmin, cs.radius, 1);
+            emitCircle(cs.vmin, cs.radius, 2);
         } else if (cs.type == 1) {
-            // Sphere: 3 circles (XY, XZ, YZ planes)
+            // Cylinder: two endpoints (vmin, vmax) with radius.
+            // Draw end caps + 4 connecting lines along the axis.
+            Vector3f axisVec = { cs.vmax.x - cs.vmin.x, cs.vmax.y - cs.vmin.y, cs.vmax.z - cs.vmin.z };
+            float axisLen = std::sqrt(axisVec.x*axisVec.x + axisVec.y*axisVec.y + axisVec.z*axisVec.z);
+            Vector3f axis = (axisLen > 1e-5f)
+                ? Vector3f{axisVec.x/axisLen, axisVec.y/axisLen, axisVec.z/axisLen}
+                : Vector3f{0, 0, 1};
+            Vector3f tmp = (std::abs(axis.z) < 0.9f) ? Vector3f{0,0,1} : Vector3f{1,0,0};
+            Vector3f u = {
+                axis.y*tmp.z - axis.z*tmp.y,
+                axis.z*tmp.x - axis.x*tmp.z,
+                axis.x*tmp.y - axis.y*tmp.x };
+            float uLen = std::sqrt(u.x*u.x + u.y*u.y + u.z*u.z);
+            if (uLen > 1e-5f) { u.x/=uLen; u.y/=uLen; u.z/=uLen; }
+            Vector3f v = {
+                axis.y*u.z - axis.z*u.y,
+                axis.z*u.x - axis.x*u.z,
+                axis.x*u.y - axis.y*u.x };
             const int segs = 24;
-            for (int plane = 0; plane < 3; plane++) {
-                for (int i = 0; i < segs; i++) {
-                    float a0 = (float)i / segs * 6.28318530f;
-                    float a1 = (float)(i+1) / segs * 6.28318530f;
-                    Vector3f p0, p1;
-                    float c0 = cs.radius * cosf(a0), s0 = cs.radius * sinf(a0);
-                    float c1 = cs.radius * cosf(a1), s1 = cs.radius * sinf(a1);
-                    if (plane == 0)      { p0 = {cs.vmin.x+c0, cs.vmin.y+s0, cs.vmin.z}; p1 = {cs.vmin.x+c1, cs.vmin.y+s1, cs.vmin.z}; }
-                    else if (plane == 1) { p0 = {cs.vmin.x+c0, cs.vmin.y, cs.vmin.z+s0}; p1 = {cs.vmin.x+c1, cs.vmin.y, cs.vmin.z+s1}; }
-                    else                 { p0 = {cs.vmin.x, cs.vmin.y+c0, cs.vmin.z+s0}; p1 = {cs.vmin.x, cs.vmin.y+c1, cs.vmin.z+s1}; }
-                    Vector3f pa = whiteout::transform_point(p0, cs.transform);
-                    Vector3f pb = whiteout::transform_point(p1, cs.transform);
-                    lines.push_back({pa, col});
-                    lines.push_back({pb, col});
-                }
+            auto ringPt = [&](const Vector3f& c, float a) {
+                float cs_ = cs.radius * cosf(a), sn_ = cs.radius * sinf(a);
+                return Vector3f{ c.x + u.x*cs_ + v.x*sn_,
+                                 c.y + u.y*cs_ + v.y*sn_,
+                                 c.z + u.z*cs_ + v.z*sn_ };
+            };
+            for (int i = 0; i < segs; i++) {
+                float a0 = (float)i / segs * 6.28318530f;
+                float a1 = (float)(i+1) / segs * 6.28318530f;
+                pushLine(ringPt(cs.vmin, a0), ringPt(cs.vmin, a1));
+                pushLine(ringPt(cs.vmax, a0), ringPt(cs.vmax, a1));
             }
+            for (int i = 0; i < 4; i++) {
+                float a = (float)i / 4 * 6.28318530f;
+                pushLine(ringPt(cs.vmin, a), ringPt(cs.vmax, a));
+            }
+        } else if (cs.type == 3) {
+            // Plane: vmin.x / vmin.y = half-extents in local XY around pivot.
+            float hw = cs.vmin.x, hh = cs.vmin.y;
+            Vector3f p0 = {-hw, -hh, 0}, p1 = {hw, -hh, 0};
+            Vector3f p2 = {hw, hh, 0},   p3 = {-hw, hh, 0};
+            pushLine(p0, p1); pushLine(p1, p2); pushLine(p2, p3); pushLine(p3, p0);
         }
 
         if (lines.empty()) continue;

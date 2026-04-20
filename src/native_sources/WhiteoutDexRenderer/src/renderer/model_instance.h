@@ -154,11 +154,12 @@ struct GPUMaterial {
 // Collision shape (per-model, rendered as wireframe)
 // ============================================================================
 struct CollisionShape {
-    int type = 0;            // 0=box, 1=sphere
-    Vector3f vmin = {0,0,0};
-    Vector3f vmax = {0,0,0};
+    int type = 0;            // Previewd: 0=box, 1=cylinder, 2=sphere, 3=plane
+    Vector3f vmin = {0,0,0}; // extent[0] — min for box, center for sphere, endpoint A for cylinder
+    Vector3f vmax = {0,0,0}; // extent[1] — max for box, endpoint B for cylinder
     float radius = 0;
-    Matrix44f transform = Matrix44f::identity();
+    Vector3f pivot = {0,0,0}; // Bind-pose world pivot; geoset corners sit at pivot + extent
+    Matrix44f transform = Matrix44f::identity(); // skinning delta (identity at bind)
 };
 
 // ============================================================================

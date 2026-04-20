@@ -913,6 +913,13 @@ std::vector<CollisionShapeData> MdxModelAdapter::GetCollisionShapes() {
         if (cs.vertices.size() >= 2) {
             cd.vertices[1] = {cs.vertices[1].x, cs.vertices[1].y, cs.vertices[1].z};
         }
+        // Previewd builds geoset vertices at `pivot + extent` in bind-pose world;
+        // the bone matrix we apply is a skinning delta (identity at bind). Store the
+        // pivot so the renderer can reconstruct the bind-pose world-space corners.
+        if (cs.node.objectId < model_.pivotPoints.size()) {
+            const auto& p = model_.pivotPoints[cs.node.objectId];
+            cd.pivot = {p.x, p.y, p.z};
+        }
         result.push_back(cd);
     }
     return result;
