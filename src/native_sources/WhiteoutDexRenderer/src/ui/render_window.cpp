@@ -100,6 +100,9 @@ void RenderWindow::ThreadFunc(int w, int h, gfx::GfxApi api) {
         ProcessCameraPresets();
         ProcessSequences();
         if (service_.ConsumeTeamColorDirty()) InvalidateTeamColorSwatch();
+        // Drain auto-HD notifications — no user UI to sync, but we
+        // still clear the flag so it doesn't leak state.
+        (void)service_.ConsumeRenderModeDirty();
 
         // Advance simulation and render
         service_.Tick(parentDt);
@@ -195,12 +198,14 @@ bool RenderWindow::Create(int w, int h) {
     };
 
     DisplayFlags df = service_.GetDisplayFlags();
-    chkGrid_       = mkChk(L"Grid",       IDC_GRID,       df.showGrid);
-    chkParticles_  = mkChk(L"Particles",  IDC_PARTICLES,  df.showParticles);
-    chkRibbons_    = mkChk(L"Ribbons",    IDC_RIBBONS,    df.showRibbons);
-    chkCollisions_ = mkChk(L"Collisions", IDC_COLLISIONS, df.showCollisions);
-    chkLights_     = mkChk(L"Lights",     IDC_LIGHTS,     df.showLights);
-    chkHd_         = mkChk(L"HD",         IDC_HD,         df.renderMode == RenderMode::HD);
+    // Effects = particles + ribbons; DebugMarkers = collisions + lights.
+    // The checkbox initial state reflects "any sub-flag enabled" so
+    // toggling off a merged checkbox reliably hides both children.
+    const bool effectsOn = df.showParticles || df.showRibbons;
+    const bool debugOn   = df.showCollisions || df.showLights;
+    chkGrid_         = mkChk(L"Grid",          IDC_GRID,          df.showGrid);
+    chkEffects_      = mkChk(L"Effects",       IDC_EFFECTS,       effectsOn);
+    chkDebugMarkers_ = mkChk(L"Debug Markers", IDC_DEBUG_MARKERS, debugOn);
 
     // Separator
     x += 4;
@@ -390,19 +395,19 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         int code = HIWORD(wParam);
         switch (id) {
             case IDC_GRID:
-            case IDC_PARTICLES:
-            case IDC_RIBBONS:
-            case IDC_COLLISIONS:
-            case IDC_LIGHTS:
-            case IDC_HD: {
-                DisplayFlags df;
-                df.showGrid       = (SendMessage(chkGrid_,       BM_GETCHECK, 0, 0) == BST_CHECKED);
-                df.showParticles  = (SendMessage(chkParticles_,  BM_GETCHECK, 0, 0) == BST_CHECKED);
-                df.showRibbons    = (SendMessage(chkRibbons_,    BM_GETCHECK, 0, 0) == BST_CHECKED);
-                df.showCollisions = (SendMessage(chkCollisions_, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                df.showLights     = (SendMessage(chkLights_,     BM_GETCHECK, 0, 0) == BST_CHECKED);
-                df.renderMode     = (SendMessage(chkHd_,         BM_GETCHECK, 0, 0) == BST_CHECKED)
-                                      ? RenderMode::HD : RenderMode::SD;
+            case IDC_EFFECTS:
+            case IDC_DEBUG_MARKERS: {
+                // Render mode is service-managed (auto-HD on load),
+                // so preserve whatever it's currently set to instead
+                // of reading it from a checkbox.
+                DisplayFlags df = service_.GetDisplayFlags();
+                df.showGrid       = (SendMessage(chkGrid_,         BM_GETCHECK, 0, 0) == BST_CHECKED);
+                const bool effectsOn = (SendMessage(chkEffects_,      BM_GETCHECK, 0, 0) == BST_CHECKED);
+                const bool debugOn   = (SendMessage(chkDebugMarkers_, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                df.showParticles  = effectsOn;
+                df.showRibbons    = effectsOn;
+                df.showCollisions = debugOn;
+                df.showLights     = debugOn;
                 service_.SetDisplayFlags(df);
                 break;
             }

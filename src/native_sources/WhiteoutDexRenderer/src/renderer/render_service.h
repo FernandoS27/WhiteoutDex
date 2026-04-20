@@ -160,6 +160,9 @@ public:
     uint32_t GetTeamColorRaw() const { return teamColor_; }
     // True if team color changed since last poll; clears the flag.
     bool ConsumeTeamColorDirty() { return teamColorDirty_.exchange(false); }
+    // True if LoadModel auto-flipped renderMode_ (e.g. HD on non-SD
+    // materials); the UI polls this to re-sync its HD checkbox.
+    bool ConsumeRenderModeDirty() { return renderModeDirty_.exchange(false); }
 
     // Pending data transfer (RenderWindow consumes from render thread)
     std::optional<std::vector<CameraPreset>> TakePendingCameraPresets();
@@ -281,6 +284,10 @@ private:
     // flipping to HD causes MatSelect-style canonicalisation in the mesh draw
     // path (SD/SD_on_HD route through sd_on_hd.bls, HD/Crystal through hd.bls).
     RenderMode            renderMode_     = RenderMode::SD;
+    // Set by LoadModel when it auto-activates HD; consumed by the UI
+    // loop to re-sync the HD checkbox. Atomic so the UI can poll
+    // without locking the data mutex.
+    std::atomic<bool>     renderModeDirty_{false};
 
     // ---- Model instances ----
     uint32_t nextModelHandle_ = 1;

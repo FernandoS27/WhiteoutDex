@@ -74,17 +74,19 @@ private:
     HWND hwnd_ = nullptr;
     HWND hwndRender_ = nullptr;
 
-    // Toolbar controls
-    HWND chkGrid_ = nullptr, chkParticles_ = nullptr;
-    HWND chkRibbons_ = nullptr, chkCollisions_ = nullptr;
-    HWND chkLights_ = nullptr;
-    HWND chkHd_ = nullptr;
+    // Toolbar controls. `chkEffects_` drives particles+ribbons as a
+    // single user-facing option; `chkDebugMarkers_` drives collision
+    // shapes+lights. HD mode is auto-activated by the service when
+    // LoadModel sees a non-SD material, so no user-facing toggle.
+    HWND chkGrid_ = nullptr;
+    HWND chkEffects_ = nullptr;       // particles + ribbons
+    HWND chkDebugMarkers_ = nullptr;  // collisions + lights
     HWND btnTeamColor_ = nullptr;
     HWND cmbCamera_ = nullptr;
     HWND lblSequence_ = nullptr;
     HWND cmbSequence_ = nullptr;
-    enum { IDC_GRID=1001, IDC_PARTICLES, IDC_RIBBONS, IDC_COLLISIONS,
-           IDC_LIGHTS, IDC_HD, IDC_TEAMCOLOR, IDC_CAMERA, IDC_SEQUENCE };
+    enum { IDC_GRID=1001, IDC_EFFECTS, IDC_DEBUG_MARKERS,
+           IDC_TEAMCOLOR, IDC_CAMERA, IDC_SEQUENCE };
 
     // Mouse state
     bool lmbDown_ = false, rmbDown_ = false, mmbDown_ = false;

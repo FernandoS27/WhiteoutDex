@@ -693,6 +693,22 @@ void RenderService::LoadModel(const std::vector<MeshData>& meshes,
     uint32_t h = AddModel(meshes, textures, materials, skeleton,
                           skinWeights, particleConfigs, ribbonConfigs, collisions);
     focusModelHandle_ = h;
+
+    // Auto-activate HD when any material layer ships a non-SD shader
+    // (Layer::ShaderType: 0=SD, 1=HD, 2=SDOnHD, 24=Crystal). Flip the
+    // pending flag so the UI thread re-syncs the HD checkbox to match.
+    bool anyNonSd = false;
+    for (auto& mat : materials) {
+        for (auto& layer : mat.layers) {
+            if (layer.shaderId != 0) { anyNonSd = true; break; }
+        }
+        if (anyNonSd) break;
+    }
+    const RenderMode desired = anyNonSd ? RenderMode::HD : RenderMode::SD;
+    if (renderMode_ != desired) {
+        renderMode_ = desired;
+        renderModeDirty_ = true;
+    }
 }
 
 // ============================================================================
