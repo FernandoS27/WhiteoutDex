@@ -171,6 +171,12 @@ public:
     void SetHdDebugMode(int mode) { hdDebugMode_.store(mode); }
     int  GetHdDebugMode() const   { return hdDebugMode_.load(); }
 
+    // Swap the HD IBL probe at runtime. `relPath` is the CASC-relative
+    // path ("environment/environmentmap/.../foo_ibl.dds"). Empty or a
+    // load failure reverts to the built-in debug probe so HAS_IBL
+    // draws keep sampling something valid.
+    void SetEnvProbe(const std::string& relPath);
+
     // Pending data transfer (RenderWindow consumes from render thread)
     std::optional<std::vector<CameraPreset>> TakePendingCameraPresets();
     std::optional<std::vector<std::string>>  TakePendingSequences();

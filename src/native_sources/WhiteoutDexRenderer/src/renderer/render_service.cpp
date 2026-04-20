@@ -2299,47 +2299,43 @@ bool RenderService::InitBlsShaders() {
     // single-threaded, trivial compared to the first-frame shader compile).
     iblSplitSumLut_ = ibl::CreateSplitSumLutTexture(*gfx_);
 
-    // Load the real Lordaeron-Summer IBL probes (Previewd 0x140166f61
-    // loads these via EnvironmentMapCreate). Day goes to t13 (from),
-    // Night goes to t14 (to); envTransitionT selects between them at
-    // frame time. If the content provider can't find either (no Wc3
-    // install / custom basepath without Environment data) we fall
-    // through to the procedural debug-faces probe so HAS_IBL draws keep
-    // sampling something sane instead of reading uninit memory.
-    int fromMips = 0, toMips = 0;
-    {
-        auto day = ibl::LoadEnvProbe(*gfx_, *activeContentProvider_,
-                                     ibl::kDayIblPath);
-        if (day.handle != gfx::TextureHandle::Invalid) {
-            iblFromProbe_ = day.handle;
-            fromMips      = day.mipCount;
+    // Default to the portrait-tuned probe — softer, horizontally
+    // isotropic, no sharp sun/horizon features. Avoids the "dark
+    // patches in concavities" look that Day_IBL's directional
+    // content produces on close-range preview subjects. SetEnvProbe()
+    // swaps at runtime via the UI combo.
+    SetEnvProbe(ibl::kPortraitIblPath);
+
+    return blsSdProgram_ != nullptr;
+}
+
+void RenderService::SetEnvProbe(const std::string& relPath) {
+    if (!gfx_) return;
+
+    // Destroy the previous pair; skip double-free when from/to alias.
+    if (iblFromProbe_ != gfx::TextureHandle::Invalid) {
+        gfx_->Destroy(iblFromProbe_);
+        if (iblToProbe_ != iblFromProbe_ && iblToProbe_ != gfx::TextureHandle::Invalid)
+            gfx_->Destroy(iblToProbe_);
+        iblFromProbe_ = gfx::TextureHandle::Invalid;
+        iblToProbe_   = gfx::TextureHandle::Invalid;
+    }
+
+    int mips = 0;
+    if (!relPath.empty() && activeContentProvider_) {
+        auto probe = ibl::LoadEnvProbe(*gfx_, *activeContentProvider_, relPath);
+        if (probe.handle != gfx::TextureHandle::Invalid) {
+            iblFromProbe_ = probe.handle;
+            mips          = probe.mipCount;
         }
     }
     if (iblFromProbe_ == gfx::TextureHandle::Invalid) {
-        OutputDebugStringA("[WDEX IBL] Day probe load failed — using procedural debug probe\n");
+        OutputDebugStringA("[WDEX IBL] probe load failed — using procedural debug probe\n");
         iblFromProbe_ = ibl::CreateDebugFacesEnvProbe(*gfx_);
-        fromMips      = ibl::kEnvProbeMipLevels;
+        mips          = ibl::kEnvProbeMipLevels;
     }
-    {
-        auto night = ibl::LoadEnvProbe(*gfx_, *activeContentProvider_,
-                                       ibl::kNightIblPath);
-        if (night.handle != gfx::TextureHandle::Invalid) {
-            iblToProbe_ = night.handle;
-            toMips      = night.mipCount;
-        }
-    }
-    if (iblToProbe_ == gfx::TextureHandle::Invalid) {
-        // Night missing — alias to the day probe so the from/to lerp
-        // still has a valid second cube (envTransitionT=0 keeps the
-        // contribution as pure day).
-        iblToProbe_ = iblFromProbe_;
-        toMips      = fromMips;
-    }
-    // envFromMipEnd / envToMipEnd go to the shader via envMapParams and
-    // pick the last valid mip index for the roughness->mip remap.
-    iblProbeMipEnd_ = static_cast<float>(std::min(fromMips, toMips) - 1);
-
-    return blsSdProgram_ != nullptr;
+    iblToProbe_     = iblFromProbe_;           // aliased; envTransitionT=0 picks "from"
+    iblProbeMipEnd_ = static_cast<float>(mips - 1);
 }
 
 void RenderService::ShutdownBlsShaders() {
@@ -2810,15 +2806,15 @@ bool RenderService::RenderGeosetsBls() {
 
     cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerLinear_);
 
-    // Fallback "baseline" directional so MDX models without authored lights
-    // still look lit. kDefaultLightDir is the EMISSION direction (legacy
-    // mesh.slang does `L = normalize(-cb.lightDir)` to derive "to source").
-    // The BLS shader uses ShaderLight.position directly as lightVec for NdotL,
-    // so it must be "direction TO source" in view space -- i.e. the negated
-    // world emission direction transformed by view.
-    const auto kBaselineToSourceWS = Vector3f{-kDefaultLightDir.x, -kDefaultLightDir.y, -kDefaultLightDir.z};
-    const auto kBaselineDiffuse    = Vector3f{kGeosetLightColor.x, kGeosetLightColor.y, kGeosetLightColor.z};
-    const auto kBaselineAmbient    = Vector3f{kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z};
+    // Fallback "baseline" directional so MDX models without authored
+    // lights still look lit. Camera-attached headlight: light ray
+    // goes along view-forward, so `direction TO source` is constant
+    // in view space (camera at origin). RH view has forward = -Z, so
+    // from any fragment in front of the camera, the light source
+    // sits along +Z. No per-camera-pose transform needed.
+    const auto kBaselineDirToSourceVS = Vector3f{0.0f, 0.0f, 1.0f};
+    const auto kBaselineDiffuse       = Vector3f{kGeosetLightColor.x, kGeosetLightColor.y, kGeosetLightColor.z};
+    const auto kBaselineAmbient       = Vector3f{kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z};
 
     for (auto& ref : refs) {
         auto* mi  = ref.mi;
@@ -2851,10 +2847,9 @@ bool RenderService::RenderGeosetsBls() {
         for (const auto& L : mi->activeLights) { if (L.enabled) { anyEnabled = true; break; } }
         if (!anyEnabled) {
             bls::ShaderLight& sl = frame.lights[lightCountForGeoset++];
-            Vector3f lvView = whiteout::transform_normal(kBaselineToSourceWS, view2);
             sl.ambient  = { kBaselineAmbient.x, kBaselineAmbient.y, kBaselineAmbient.z, 0.0f };
             sl.diffuse  = { kBaselineDiffuse.x, kBaselineDiffuse.y, kBaselineDiffuse.z, 0.0f };
-            sl.position = { lvView.x, lvView.y, lvView.z, 0.0f };   // type=0 (directional)
+            sl.position = { kBaselineDirToSourceVS.x, kBaselineDirToSourceVS.y, kBaselineDirToSourceVS.z, 0.0f };
         }
         for (const auto& L : mi->activeLights) {
             if (!L.enabled) continue;
@@ -3101,12 +3096,12 @@ bool RenderService::RenderGeosetsHd() {
     }
 
     // HD baseline key (used ONLY when the model has no authored MDX
-    // lights). Tune via kHdBaselineLightColor / kHdBaselineAmbientColor
-    // in constants.h — dimmer than the SD baseline because the HD
-    // path gets additional indirect lighting from the IBL probe.
-    const auto kBaselineToSourceWS = Vector3f{-kDefaultLightDir.x, -kDefaultLightDir.y, -kDefaultLightDir.z};
-    const auto kBaselineDiffuse    = Vector3f{kHdBaselineLightColor.x,   kHdBaselineLightColor.y,   kHdBaselineLightColor.z};
-    const auto kBaselineAmbient    = Vector3f{kHdBaselineAmbientColor.x, kHdBaselineAmbientColor.y, kHdBaselineAmbientColor.z};
+    // lights). Camera-attached headlight: LH view has forward = +Z,
+    // so direction-to-source is -Z in view space regardless of
+    // camera pose. Tune intensity via constants.h.
+    const auto kBaselineDirToSourceVS = Vector3f{0.0f, 0.0f, -1.0f};
+    const auto kBaselineDiffuse       = Vector3f{kHdBaselineLightColor.x,   kHdBaselineLightColor.y,   kHdBaselineLightColor.z};
+    const auto kBaselineAmbient       = Vector3f{kHdBaselineAmbientColor.x, kHdBaselineAmbientColor.y, kHdBaselineAmbientColor.z};
 
     for (auto& ref : refs) {
         auto* mi  = ref.mi;
@@ -3165,10 +3160,9 @@ bool RenderService::RenderGeosetsHd() {
         for (const auto& L : mi->activeLights) { if (L.enabled) { anyEnabled = true; break; } }
         if (!anyEnabled) {
             bls::ShaderLight& sl = frame.lights[lightCountForGeoset++];
-            Vector3f lvView = whiteout::transform_normal(kBaselineToSourceWS, view2);
             sl.ambient  = { kBaselineAmbient.x, kBaselineAmbient.y, kBaselineAmbient.z, 0.0f };
             sl.diffuse  = { kBaselineDiffuse.x, kBaselineDiffuse.y, kBaselineDiffuse.z, 0.0f };
-            sl.position = { lvView.x, lvView.y, lvView.z, 0.0f };
+            sl.position = { kBaselineDirToSourceVS.x, kBaselineDirToSourceVS.y, kBaselineDirToSourceVS.z, 0.0f };
         }
         for (const auto& L : mi->activeLights) {
             if (!L.enabled) continue;

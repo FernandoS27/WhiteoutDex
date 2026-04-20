@@ -74,20 +74,40 @@ private:
     HWND hwnd_ = nullptr;
     HWND hwndRender_ = nullptr;
 
-    // Toolbar controls. `chkEffects_` drives particles+ribbons as a
-    // single user-facing option; `chkDebugMarkers_` drives collision
-    // shapes+lights. HD mode is auto-activated by the service when
-    // LoadModel sees a non-SD material, so no user-facing toggle.
-    HWND chkGrid_ = nullptr;
-    HWND chkEffects_ = nullptr;       // particles + ribbons
-    HWND chkDebugMarkers_ = nullptr;  // collisions + lights
-    HWND cmbDebugVis_ = nullptr;      // HD shader debug-vis mode
+    // Toolbar: only the live controls users touch every frame
+    // (Team / Camera / Animation). Show/hide toggles + debug pickers
+    // moved to the menu bar (View + Debug).
     HWND btnTeamColor_ = nullptr;
-    HWND cmbCamera_ = nullptr;
-    HWND lblSequence_ = nullptr;
-    HWND cmbSequence_ = nullptr;
-    enum { IDC_GRID=1001, IDC_EFFECTS, IDC_DEBUG_MARKERS, IDC_DEBUGVIS,
-           IDC_TEAMCOLOR, IDC_CAMERA, IDC_SEQUENCE };
+    HWND cmbCamera_    = nullptr;
+    HWND lblSequence_  = nullptr;
+    HWND cmbSequence_  = nullptr;
+    HMENU hMenuBar_      = nullptr;
+    HMENU hMenuView_     = nullptr;
+    HMENU hMenuProbe_    = nullptr;
+    HMENU hMenuDebug_    = nullptr;
+    HMENU hMenuDebugVis_ = nullptr;
+
+    // Menu item IDs. Ranged enums for the two submenu groups so the
+    // WM_COMMAND handler can dispatch by range instead of a case per
+    // entry.
+    enum : UINT {
+        IDC_TEAMCOLOR = 1001,
+        IDC_CAMERA,
+        IDC_SEQUENCE,
+        // View menu toggles
+        IDM_VIEW_GRID      = 1100,
+        IDM_VIEW_PARTICLES,
+        IDM_VIEW_RIBBONS,
+        // Debug menu toggles
+        IDM_DBG_COLLISIONS = 1200,
+        IDM_DBG_LIGHTS,
+        // Probe submenu (5 entries; index = id - IDM_PROBE_BASE)
+        IDM_PROBE_BASE     = 1300,
+        IDM_PROBE_LAST     = IDM_PROBE_BASE + 4,
+        // Debug-vis submenu (8 entries; index = id - IDM_DBGVIS_BASE)
+        IDM_DBGVIS_BASE    = 1400,
+        IDM_DBGVIS_LAST    = IDM_DBGVIS_BASE + 7,
+    };
 
     // Mouse state
     bool lmbDown_ = false, rmbDown_ = false, mmbDown_ = false;

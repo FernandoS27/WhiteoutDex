@@ -170,72 +170,105 @@ bool RenderWindow::Create(int w, int h) {
     if (!RegisterClassExW(&rc))
         if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
 
-    // Create parent window
+    // Build the menu bar (View + Debug) BEFORE parent-window creation
+    // so AdjustWindowRect can factor the menu height into the client
+    // size. Menu handle attaches via the CreateWindowEx param.
+    DisplayFlags df = service_.GetDisplayFlags();
+    hMenuBar_      = CreateMenu();
+    hMenuView_     = CreatePopupMenu();
+    hMenuProbe_    = CreatePopupMenu();
+    hMenuDebug_    = CreatePopupMenu();
+    hMenuDebugVis_ = CreatePopupMenu();
+
+    auto addToggle = [](HMENU m, UINT id, const wchar_t* label, bool checked) {
+        AppendMenuW(m, MF_STRING | (checked ? MF_CHECKED : MF_UNCHECKED), id, label);
+    };
+    addToggle(hMenuView_, IDM_VIEW_GRID,      L"Grid",      df.showGrid);
+    addToggle(hMenuView_, IDM_VIEW_PARTICLES, L"Particles", df.showParticles);
+    addToggle(hMenuView_, IDM_VIEW_RIBBONS,   L"Ribbons",   df.showRibbons);
+    AppendMenuW(hMenuView_, MF_SEPARATOR, 0, nullptr);
+
+    static const wchar_t* const kProbeLabels[5] = {
+        L"Dungeon Night",
+        L"Lordaeron Summer Day",
+        L"Lordaeron Summer Night",
+        L"Northrend Sunset",
+        L"Portrait Default",
+    };
+    const int kDefaultProbeIdx = 4;  // matches RenderService default
+    for (int i = 0; i < 5; ++i)
+        AppendMenuW(hMenuProbe_, MF_STRING, IDM_PROBE_BASE + i, kProbeLabels[i]);
+    CheckMenuRadioItem(hMenuProbe_,
+                       IDM_PROBE_BASE, IDM_PROBE_BASE + 4,
+                       IDM_PROBE_BASE + kDefaultProbeIdx, MF_BYCOMMAND);
+    AppendMenuW(hMenuView_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuProbe_, L"Probe");
+
+    addToggle(hMenuDebug_, IDM_DBG_COLLISIONS, L"Collision Markers", df.showCollisions);
+    addToggle(hMenuDebug_, IDM_DBG_LIGHTS,     L"Light Markers",     df.showLights);
+    AppendMenuW(hMenuDebug_, MF_SEPARATOR, 0, nullptr);
+
+    static const wchar_t* const kDebugVisLabels[8] = {
+        L"Off",
+        L"Albedo",
+        L"World Normal",
+        L"LOD Heatmap",
+        L"Light Count",
+        L"Shading Only (white albedo)",
+        L"Shading Only (grey albedo)",
+        L"Specular Only (black albedo)",
+    };
+    for (int i = 0; i < 8; ++i)
+        AppendMenuW(hMenuDebugVis_, MF_STRING, IDM_DBGVIS_BASE + i, kDebugVisLabels[i]);
+    const int initDbg = service_.GetHdDebugMode();
+    CheckMenuRadioItem(hMenuDebugVis_,
+                       IDM_DBGVIS_BASE, IDM_DBGVIS_BASE + 7,
+                       IDM_DBGVIS_BASE + (initDbg >= 0 && initDbg < 8 ? initDbg : 0),
+                       MF_BYCOMMAND);
+    AppendMenuW(hMenuDebug_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuDebugVis_, L"Debug View");
+
+    AppendMenuW(hMenuBar_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuView_,  L"&View");
+    AppendMenuW(hMenuBar_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuDebug_, L"&Debug");
+
+    // Create parent window (menu bar adds its own height — pass TRUE).
     RECT adj = {0, 0, w, h + kToolbarH};
-    AdjustWindowRect(&adj, WS_OVERLAPPEDWINDOW, FALSE);
+    AdjustWindowRect(&adj, WS_OVERLAPPEDWINDOW, TRUE);
     hwnd_ = CreateWindowExW(WS_EX_TOPMOST, WINDOW_CLASS, WINDOW_TITLE, WS_OVERLAPPEDWINDOW,
                             CW_USEDEFAULT, CW_USEDEFAULT,
                             adj.right - adj.left, adj.bottom - adj.top,
-                            nullptr, nullptr, hInst, this);
+                            nullptr, hMenuBar_, hInst, this);
     if (!hwnd_) return false;
 
-    // Create DX11 render child window (below toolbar)
+    // Child render surface (below toolbar).
     hwndRender_ = CreateWindowExW(0, RENDER_CLASS, L"", WS_CHILD | WS_VISIBLE,
                                    0, kToolbarH, w, h,
                                    hwnd_, nullptr, hInst, this);
     if (!hwndRender_) return false;
 
-    // Create toolbar controls in parent window
+    // Toolbar: only the live controls users adjust every frame.
+    // --- Animation ---
     int x = 8;
-    auto mkChk = [&](const wchar_t* label, int id, bool checked) -> HWND {
-        int labelW = (int)wcslen(label) * 7 + 28;
-        HWND ctl = CreateWindowW(L"BUTTON", label,
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            x, 4, labelW, 20, hwnd_, (HMENU)(INT_PTR)id, hInst, nullptr);
-        if (ctl && checked) SendMessage(ctl, BM_SETCHECK, BST_CHECKED, 0);
-        x += labelW + 8;
-        return ctl;
-    };
+    lblSequence_ = CreateWindowW(L"STATIC", L"Animation:",
+        WS_CHILD | SS_CENTERIMAGE,
+        x, 4, 64, 20, hwnd_, nullptr, hInst, nullptr);
+    x += 66;
+    cmbSequence_ = CreateWindowW(L"COMBOBOX", L"",
+        WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL,
+        x, 2, 180, 300, hwnd_, (HMENU)(INT_PTR)IDC_SEQUENCE, hInst, nullptr);
+    x += 188;
 
-    DisplayFlags df = service_.GetDisplayFlags();
-    // Effects = particles + ribbons; DebugMarkers = collisions + lights.
-    // The checkbox initial state reflects "any sub-flag enabled" so
-    // toggling off a merged checkbox reliably hides both children.
-    const bool effectsOn = df.showParticles || df.showRibbons;
-    const bool debugOn   = df.showCollisions || df.showLights;
-    chkGrid_         = mkChk(L"Grid",          IDC_GRID,          df.showGrid);
-    chkEffects_      = mkChk(L"Effects",       IDC_EFFECTS,       effectsOn);
-    chkDebugMarkers_ = mkChk(L"Debug Markers", IDC_DEBUG_MARKERS, debugOn);
-
-    // HD debug-vis combo. Off = normal render; other entries trigger
-    // the HD shader's HAS_DEBUG_VIS permute with the corresponding
-    // psCB3.debugMode value.
-    CreateWindowW(L"STATIC", L"Debug:",
+    // --- Camera ---
+    CreateWindowW(L"STATIC", L"Camera:",
         WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
-        x, 4, 42, 20, hwnd_, nullptr, hInst, nullptr);
-    x += 44;
-    cmbDebugVis_ = CreateWindowW(L"COMBOBOX", L"",
+        x, 4, 50, 20, hwnd_, nullptr, hInst, nullptr);
+    x += 52;
+    cmbCamera_ = CreateWindowW(L"COMBOBOX", L"",
         WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-        x, 2, 130, 200, hwnd_, (HMENU)(INT_PTR)IDC_DEBUGVIS, hInst, nullptr);
-    // Built-in modes 0-4 directly map to psCB3.debugMode. Extra
-    // entries (>=5) drive the enabledShaders bit-0 override to force
-    // the albedo to a known color while keeping all lighting math
-    // active — useful for isolating shading from texture content.
-    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Off");
-    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Albedo");
-    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"World Normal");
-    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"LOD Heatmap");
-    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Light Count");
-    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Shading Only (white albedo)");
-    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Shading Only (grey albedo)");
-    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Specular Only (black albedo)");
-    SendMessageW(cmbDebugVis_, CB_SETCURSEL, service_.GetHdDebugMode(), 0);
-    x += 138;
+        x, 2, 180, 200, hwnd_, (HMENU)(INT_PTR)IDC_CAMERA, hInst, nullptr);
+    SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)L"Free Camera");
+    SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
+    x += 188;
 
-    // Separator
-    x += 4;
-
-    // Team color label + swatch
+    // --- Team color ---
     CreateWindowW(L"STATIC", L"Team:",
         WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
         x, 4, 36, 20, hwnd_, nullptr, hInst, nullptr);
@@ -244,27 +277,6 @@ bool RenderWindow::Create(int w, int h) {
         WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         x, 4, 22, 20, hwnd_, (HMENU)(INT_PTR)IDC_TEAMCOLOR, hInst, nullptr);
     x += 30;
-
-    // Camera combo box
-    CreateWindowW(L"STATIC", L"Camera:",
-        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
-        x, 4, 50, 20, hwnd_, nullptr, hInst, nullptr);
-    x += 52;
-    cmbCamera_ = CreateWindowW(L"COMBOBOX", L"",
-        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-        x, 2, 150, 200, hwnd_, (HMENU)(INT_PTR)IDC_CAMERA, hInst, nullptr);
-    SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)L"Free Camera");
-    SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
-    x += 158;
-
-    // Sequence combo box (hidden until SetSequences() is called — standalone viewer)
-    lblSequence_ = CreateWindowW(L"STATIC", L"Animation:",
-        WS_CHILD | SS_CENTERIMAGE,
-        x, 4, 64, 20, hwnd_, nullptr, hInst, nullptr);
-    x += 66;
-    cmbSequence_ = CreateWindowW(L"COMBOBOX", L"",
-        WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL,
-        x, 2, 180, 300, hwnd_, (HMENU)(INT_PTR)IDC_SEQUENCE, hInst, nullptr);
 
     return true;
 }
@@ -418,24 +430,46 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_COMMAND: {
         int id = LOWORD(wParam);
         int code = HIWORD(wParam);
+
+        // Menu toggles — flip the stored state, push to service. Menu
+        // checkmark is toggled via CheckMenuItem on the current state.
+        auto toggleView = [&](UINT menuId, bool DisplayFlags::*field) {
+            DisplayFlags df = service_.GetDisplayFlags();
+            bool& v = df.*field;
+            v = !v;
+            CheckMenuItem(hMenuBar_, menuId, MF_BYCOMMAND | (v ? MF_CHECKED : MF_UNCHECKED));
+            service_.SetDisplayFlags(df);
+        };
+        if (id == IDM_VIEW_GRID)        { toggleView(id, &DisplayFlags::showGrid);       return 0; }
+        if (id == IDM_VIEW_PARTICLES)   { toggleView(id, &DisplayFlags::showParticles);  return 0; }
+        if (id == IDM_VIEW_RIBBONS)     { toggleView(id, &DisplayFlags::showRibbons);    return 0; }
+        if (id == IDM_DBG_COLLISIONS)   { toggleView(id, &DisplayFlags::showCollisions); return 0; }
+        if (id == IDM_DBG_LIGHTS)       { toggleView(id, &DisplayFlags::showLights);     return 0; }
+
+        // Probe submenu (radio). Map id → path, update check, apply.
+        if (id >= (int)IDM_PROBE_BASE && id <= (int)IDM_PROBE_LAST) {
+            static const char* kPaths[5] = {
+                "environment/environmentmap/dungeon/night_ibl.dds",
+                "environment/environmentmap/lordaeronsummer/day_ibl.dds",
+                "environment/environmentmap/lordaeronsummer/night_ibl.dds",
+                "environment/environmentmap/northrend/sunset_ibl.dds",
+                "environment/environmentmap/portraits/portraitdefault_ibl.dds",
+            };
+            const int idx = id - IDM_PROBE_BASE;
+            CheckMenuRadioItem(hMenuProbe_, IDM_PROBE_BASE, IDM_PROBE_LAST, id, MF_BYCOMMAND);
+            service_.SetEnvProbe(kPaths[idx]);
+            return 0;
+        }
+
+        // Debug-vis submenu (radio). id → mode passed to the service.
+        if (id >= (int)IDM_DBGVIS_BASE && id <= (int)IDM_DBGVIS_LAST) {
+            const int mode = id - IDM_DBGVIS_BASE;
+            CheckMenuRadioItem(hMenuDebugVis_, IDM_DBGVIS_BASE, IDM_DBGVIS_LAST, id, MF_BYCOMMAND);
+            service_.SetHdDebugMode(mode);
+            return 0;
+        }
+
         switch (id) {
-            case IDC_GRID:
-            case IDC_EFFECTS:
-            case IDC_DEBUG_MARKERS: {
-                // Render mode is service-managed (auto-HD on load),
-                // so preserve whatever it's currently set to instead
-                // of reading it from a checkbox.
-                DisplayFlags df = service_.GetDisplayFlags();
-                df.showGrid       = (SendMessage(chkGrid_,         BM_GETCHECK, 0, 0) == BST_CHECKED);
-                const bool effectsOn = (SendMessage(chkEffects_,      BM_GETCHECK, 0, 0) == BST_CHECKED);
-                const bool debugOn   = (SendMessage(chkDebugMarkers_, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                df.showParticles  = effectsOn;
-                df.showRibbons    = effectsOn;
-                df.showCollisions = debugOn;
-                df.showLights     = debugOn;
-                service_.SetDisplayFlags(df);
-                break;
-            }
             case IDC_TEAMCOLOR: {
                 CHOOSECOLORW cc = {};
                 static COLORREF customColors[16] = {};
@@ -473,13 +507,6 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 if (code == CBN_SELCHANGE) {
                     int sel = (int)SendMessageW(cmbSequence_, CB_GETCURSEL, 0, 0);
                     if (sel >= 0) service_.SetActiveSequence(sel);
-                }
-                break;
-            }
-            case IDC_DEBUGVIS: {
-                if (code == CBN_SELCHANGE) {
-                    int sel = (int)SendMessageW(cmbDebugVis_, CB_GETCURSEL, 0, 0);
-                    if (sel >= 0) service_.SetHdDebugMode(sel);
                 }
                 break;
             }
