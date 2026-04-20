@@ -235,6 +235,20 @@ struct SdOnHdShadowCascadeCountCb {
 };
 static_assert(sizeof(SdOnHdShadowCascadeCountCb) == 16);
 
+// Debug-vis CB @ PS register b3 (only bound when the HAS_DEBUG_VIS
+// permute is picked). Matches cb_structs.slang::DebugVisCB.
+// `debugMode` selects the visualiser (0=normal render, 1=albedo,
+// 2=world-normal, 3=LOD heatmap, 4=lightCount).
+// `enabledShaders`: bit0 = replace albedo with overrideAlbedo;
+//                   bit1 = replace ORM  with overrideOrm.
+struct DebugVisCb {
+    uint32_t enabledShaders;  float    debugMode;
+    float    _p0[2];
+    Vector3f overrideAlbedo;  float    _p1;
+    Vector3f overrideOrm;     float    _p2;
+};
+static_assert(sizeof(DebugVisCb) == 48);
+
 // ============================================================================
 // Bone palette (cb3 when skinning is active)
 // ============================================================================

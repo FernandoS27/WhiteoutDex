@@ -207,6 +207,31 @@ bool RenderWindow::Create(int w, int h) {
     chkEffects_      = mkChk(L"Effects",       IDC_EFFECTS,       effectsOn);
     chkDebugMarkers_ = mkChk(L"Debug Markers", IDC_DEBUG_MARKERS, debugOn);
 
+    // HD debug-vis combo. Off = normal render; other entries trigger
+    // the HD shader's HAS_DEBUG_VIS permute with the corresponding
+    // psCB3.debugMode value.
+    CreateWindowW(L"STATIC", L"Debug:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        x, 4, 42, 20, hwnd_, nullptr, hInst, nullptr);
+    x += 44;
+    cmbDebugVis_ = CreateWindowW(L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        x, 2, 130, 200, hwnd_, (HMENU)(INT_PTR)IDC_DEBUGVIS, hInst, nullptr);
+    // Built-in modes 0-4 directly map to psCB3.debugMode. Extra
+    // entries (>=5) drive the enabledShaders bit-0 override to force
+    // the albedo to a known color while keeping all lighting math
+    // active — useful for isolating shading from texture content.
+    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Off");
+    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Albedo");
+    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"World Normal");
+    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"LOD Heatmap");
+    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Light Count");
+    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Shading Only (white albedo)");
+    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Shading Only (grey albedo)");
+    SendMessageW(cmbDebugVis_, CB_ADDSTRING, 0, (LPARAM)L"Specular Only (black albedo)");
+    SendMessageW(cmbDebugVis_, CB_SETCURSEL, service_.GetHdDebugMode(), 0);
+    x += 138;
+
     // Separator
     x += 4;
 
@@ -448,6 +473,13 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 if (code == CBN_SELCHANGE) {
                     int sel = (int)SendMessageW(cmbSequence_, CB_GETCURSEL, 0, 0);
                     if (sel >= 0) service_.SetActiveSequence(sel);
+                }
+                break;
+            }
+            case IDC_DEBUGVIS: {
+                if (code == CBN_SELCHANGE) {
+                    int sel = (int)SendMessageW(cmbDebugVis_, CB_GETCURSEL, 0, 0);
+                    if (sel >= 0) service_.SetHdDebugMode(sel);
                 }
                 break;
             }

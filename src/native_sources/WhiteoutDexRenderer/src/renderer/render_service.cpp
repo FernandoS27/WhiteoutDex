@@ -2288,6 +2288,10 @@ bool RenderService::InitBlsShaders() {
         .size  = sizeof(bls::SdOnHdPsCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
     });
+    blsHdDebugVisCb_ = gfx_->CreateBuffer({
+        .size  = sizeof(bls::DebugVisCb),
+        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+    });
 
     // Generate the 128x128 split-sum BRDF LUT once at device init. Matches
     // Previewd's UpdateSplitSumTexture (0x14036daf0) lazy-init pattern
@@ -2348,6 +2352,7 @@ void RenderService::ShutdownBlsShaders() {
         gfx_->Destroy(blsHdVsCb_);     blsHdVsCb_     = gfx::BufferHandle::Invalid;
         gfx_->Destroy(blsHdPsCb_);     blsHdPsCb_     = gfx::BufferHandle::Invalid;
         gfx_->Destroy(blsSdOnHdPsCb_); blsSdOnHdPsCb_ = gfx::BufferHandle::Invalid;
+        gfx_->Destroy(blsHdDebugVisCb_); blsHdDebugVisCb_ = gfx::BufferHandle::Invalid;
         gfx_->Destroy(iblSplitSumLut_); iblSplitSumLut_ = gfx::TextureHandle::Invalid;
         // from + to may alias when the night probe failed to load -- guard
         // the second destroy so we don't touch a freed handle.
@@ -3304,6 +3309,9 @@ bool RenderService::RenderGeosetsHd() {
             // a TeamColor subtexture — the standard perm is what
             // every other HD draw wants.
             rs.teamColor      = (layerTeamColorId >= 0);
+            const int  dbgMode     = hdDebugMode_.load();
+            const bool debugActive = (dbgMode > 0);
+            rs.debugShader = debugActive;
             auto perm = bls::SelectPermutes(rs);
 
             bls::PsoRequest req{};
@@ -3352,6 +3360,36 @@ bool RenderService::RenderGeosetsHd() {
                     gfx_->UnmapBuffer(blsHdPsCb_);
                 }
                 cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, blsHdPsCb_);
+                // b3 DebugVisCB. Only meaningful when the HAS_DEBUG_VIS
+                // permute is picked (rs.debugShader); bound
+                // unconditionally so the shader slot is always live
+                // even in "mode 0 = normal render" — cheap no-op bind.
+                if (auto* dbg = (bls::DebugVisCb*)gfx_->MapBuffer(blsHdDebugVisCb_)) {
+                    // UI combo index → shader state:
+                    //   0..4: psCB3.debugMode, enabledShaders = 0
+                    //   5: albedo override WHITE (shading only)
+                    //   6: albedo override 50% GREY
+                    //   7: albedo override BLACK (specular only)
+                    uint32_t enabled   = 0;
+                    int      psMode    = dbgMode;
+                    Vector3f overrideA = {0, 0, 0};
+                    if (dbgMode >= 5 && dbgMode <= 7) {
+                        enabled = 1;  // bit 0 = albedo override
+                        psMode  = 0;  // normal render with custom albedo
+                        overrideA = (dbgMode == 5) ? Vector3f{1, 1, 1}
+                                   : (dbgMode == 6) ? Vector3f{0.5f, 0.5f, 0.5f}
+                                                    : Vector3f{0, 0, 0};
+                    }
+                    dbg->enabledShaders = enabled;
+                    // debugMode read via asint() — bit-reinterpret.
+                    const uint32_t modeBits = static_cast<uint32_t>(psMode);
+                    std::memcpy(&dbg->debugMode, &modeBits, sizeof(float));
+                    dbg->_p0[0] = dbg->_p0[1] = 0.0f;
+                    dbg->overrideAlbedo = overrideA; dbg->_p1 = 0.0f;
+                    dbg->overrideOrm    = {0, 0, 0}; dbg->_p2 = 0.0f;
+                    gfx_->UnmapBuffer(blsHdDebugVisCb_);
+                }
+                cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, blsHdDebugVisCb_);
             } else {
                 if (auto* ps = (bls::SdOnHdPsCb*)gfx_->MapBuffer(blsSdOnHdPsCb_)) {
                     bls::BuildSdOnHdPsCb(*ps, frame, mp);

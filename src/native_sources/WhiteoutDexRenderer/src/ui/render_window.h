@@ -81,11 +81,12 @@ private:
     HWND chkGrid_ = nullptr;
     HWND chkEffects_ = nullptr;       // particles + ribbons
     HWND chkDebugMarkers_ = nullptr;  // collisions + lights
+    HWND cmbDebugVis_ = nullptr;      // HD shader debug-vis mode
     HWND btnTeamColor_ = nullptr;
     HWND cmbCamera_ = nullptr;
     HWND lblSequence_ = nullptr;
     HWND cmbSequence_ = nullptr;
-    enum { IDC_GRID=1001, IDC_EFFECTS, IDC_DEBUG_MARKERS,
+    enum { IDC_GRID=1001, IDC_EFFECTS, IDC_DEBUG_MARKERS, IDC_DEBUGVIS,
            IDC_TEAMCOLOR, IDC_CAMERA, IDC_SEQUENCE };
 
     // Mouse state

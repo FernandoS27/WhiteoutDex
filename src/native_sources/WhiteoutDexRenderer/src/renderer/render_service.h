@@ -164,6 +164,13 @@ public:
     // materials); the UI polls this to re-sync its HD checkbox.
     bool ConsumeRenderModeDirty() { return renderModeDirty_.exchange(false); }
 
+    // HD debug visualisation. Mode 0 = normal render (default),
+    // 1 = albedo, 2 = world normal, 3 = LOD heatmap, 4 = light count.
+    // Only takes effect on HD-program draws. Matches the HAS_DEBUG_VIS
+    // permute's `psCB3.debugMode` switch in ps_post.slang::debugVisualize.
+    void SetHdDebugMode(int mode) { hdDebugMode_.store(mode); }
+    int  GetHdDebugMode() const   { return hdDebugMode_.load(); }
+
     // Pending data transfer (RenderWindow consumes from render thread)
     std::optional<std::vector<CameraPreset>> TakePendingCameraPresets();
     std::optional<std::vector<std::string>>  TakePendingSequences();
@@ -288,6 +295,8 @@ private:
     // loop to re-sync the HD checkbox. Atomic so the UI can poll
     // without locking the data mutex.
     std::atomic<bool>     renderModeDirty_{false};
+    // 0 = off (normal render). See SetHdDebugMode() for the palette.
+    std::atomic<int>      hdDebugMode_{0};
 
     // ---- Model instances ----
     uint32_t nextModelHandle_ = 1;
@@ -432,6 +441,9 @@ private:
     gfx::BufferHandle                       blsHdVsCb_        = gfx::BufferHandle::Invalid;
     gfx::BufferHandle                       blsHdPsCb_        = gfx::BufferHandle::Invalid;
     gfx::BufferHandle                       blsSdOnHdPsCb_    = gfx::BufferHandle::Invalid;
+    // PS b3 debug-vis CB; only bound when the HAS_DEBUG_VIS permute
+    // is active (rs.debugShader = true in the HD draw path).
+    gfx::BufferHandle                       blsHdDebugVisCb_  = gfx::BufferHandle::Invalid;
 
     // IBL resources for the HD path.
     //   iblSplitSumLut_ : 128x128 BRDF pre-integral at t15 (CPU-generated).
