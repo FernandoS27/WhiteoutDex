@@ -202,6 +202,7 @@ std::vector<MeshData> MdxModelAdapter::GetMeshes() {
         MeshData mesh;
         mesh.geosetId   = i;
         mesh.materialId = (int)gs.materialId;
+        mesh.lod        = gs.lod;
 
         int vc = (int)gs.vertexPositions.size();
         mesh.positions.resize(vc);

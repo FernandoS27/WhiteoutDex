@@ -109,6 +109,11 @@ enum MaterialFlags {
 struct MeshData {
     int geosetId;
     int materialId;
+    // MDX Reforged LOD level (0..3). Raw u32 from the file —
+    // 0xFFFFFFFF means "always render regardless of selected LOD"
+    // (see Previewd AddGeosetsToScene @0x140306750). Classic/pre-v900
+    // models have no LOD data; the adapter leaves this 0.
+    uint32_t lod = 0;
     std::vector<Vector3f> positions;
     std::vector<Vector3f> normals;
     std::vector<Vector2f> uvs;

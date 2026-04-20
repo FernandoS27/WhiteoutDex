@@ -171,6 +171,13 @@ public:
     void SetHdDebugMode(int mode) { hdDebugMode_.store(mode); }
     int  GetHdDebugMode() const   { return hdDebugMode_.load(); }
 
+    // LOD override. -1 = auto (screen-size driven, mirrors Previewd's
+    // CalculateLOD @0x140305ae0). 0..3 = force that LOD level. Geosets
+    // with lod = 0xFFFFFFFF are always drawn regardless. Applies to all
+    // render paths (HD / BLS / legacy).
+    void SetLodOverride(int lod) { lodOverride_.store(lod); }
+    int  GetLodOverride() const  { return lodOverride_.load(); }
+
     // Swap the HD IBL probe at runtime. `relPath` is the CASC-relative
     // path ("environment/environmentmap/.../foo_ibl.dds"). Empty or a
     // load failure reverts to the built-in debug probe so HAS_IBL
@@ -235,6 +242,15 @@ private:
 
     // Collision shape wireframes
     void RenderCollisions();
+
+    // LOD selection: -1 override -> screen-size computation (mirrors
+    // Previewd CalculateLOD @0x140305ae0). Returns 0..3. Models without
+    // LOD data always get 0 — caller checks mi.hasLods to decide which
+    // to use, then tests each geoset with GeosetPassesLod.
+    int  ComputeSelectedLod() const;
+    static bool GeosetPassesLod(uint32_t geosetLod, int selectedLod) {
+        return geosetLod == 0xFFFFFFFFu || (int)geosetLod == selectedLod;
+    }
 
     // Debug light markers (one wireframe sphere per evaluated light at its
     // final world-space position; tinted by the light's diffuse colour).
@@ -303,6 +319,8 @@ private:
     std::atomic<bool>     renderModeDirty_{false};
     // 0 = off (normal render). See SetHdDebugMode() for the palette.
     std::atomic<int>      hdDebugMode_{0};
+    // LOD override: -1 = auto (screen-size), 0..3 = force that LOD
+    std::atomic<int>      lodOverride_{-1};
 
     // ---- Model instances ----
     uint32_t nextModelHandle_ = 1;

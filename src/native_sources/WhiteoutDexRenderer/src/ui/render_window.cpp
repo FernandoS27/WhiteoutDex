@@ -8,6 +8,7 @@
 #include "resource.h"
 #include <windowsx.h>
 #include <commdlg.h>
+#include <algorithm>
 
 #pragma comment(lib, "comdlg32.lib")
 
@@ -177,6 +178,7 @@ bool RenderWindow::Create(int w, int h) {
     hMenuProbe_    = CreatePopupMenu();
     hMenuDebug_    = CreatePopupMenu();
     hMenuDebugVis_ = CreatePopupMenu();
+    hMenuLod_      = CreatePopupMenu();
 
     auto addToggle = [](HMENU m, UINT id, const wchar_t* label, bool checked) {
         AppendMenuW(m, MF_STRING | (checked ? MF_CHECKED : MF_UNCHECKED), id, label);
@@ -223,6 +225,24 @@ bool RenderWindow::Create(int w, int h) {
                        IDM_DBGVIS_BASE + (initDbg >= 0 && initDbg < 8 ? initDbg : 0),
                        MF_BYCOMMAND);
     AppendMenuW(hMenuDebug_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuDebugVis_, L"Debug View");
+
+    // LOD submenu: Auto + Force 0..3. Radio-checked. Auto (=-1) is
+    // the default and matches Previewd's screen-size-driven LOD.
+    static const wchar_t* const kLodLabels[5] = {
+        L"Auto (screen size)",
+        L"Force LOD 0 (base)",
+        L"Force LOD 1",
+        L"Force LOD 2",
+        L"Force LOD 3 (lowest)",
+    };
+    for (int i = 0; i < 5; ++i)
+        AppendMenuW(hMenuLod_, MF_STRING, IDM_LOD_BASE + i, kLodLabels[i]);
+    const int initLod = service_.GetLodOverride(); // -1 = auto, 0..3 = force
+    const int lodCheckIdx = (initLod < 0) ? 0 : (1 + std::clamp(initLod, 0, 3));
+    CheckMenuRadioItem(hMenuLod_,
+                       IDM_LOD_BASE, IDM_LOD_LAST,
+                       IDM_LOD_BASE + lodCheckIdx, MF_BYCOMMAND);
+    AppendMenuW(hMenuDebug_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuLod_, L"LOD");
 
     AppendMenuW(hMenuBar_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuView_,  L"&View");
     AppendMenuW(hMenuBar_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuDebug_, L"&Debug");
@@ -464,6 +484,14 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             const int mode = id - IDM_DBGVIS_BASE;
             CheckMenuRadioItem(hMenuDebugVis_, IDM_DBGVIS_BASE, IDM_DBGVIS_LAST, id, MF_BYCOMMAND);
             service_.SetHdDebugMode(mode);
+            return 0;
+        }
+
+        // LOD submenu (radio). idx 0 = Auto (-1), idx 1..4 = force LOD 0..3.
+        if (id >= (int)IDM_LOD_BASE && id <= (int)IDM_LOD_LAST) {
+            const int idx = id - IDM_LOD_BASE;
+            CheckMenuRadioItem(hMenuLod_, IDM_LOD_BASE, IDM_LOD_LAST, id, MF_BYCOMMAND);
+            service_.SetLodOverride(idx == 0 ? -1 : (idx - 1));
             return 0;
         }
 

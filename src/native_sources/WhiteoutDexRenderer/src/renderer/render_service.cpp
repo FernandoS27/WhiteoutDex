@@ -18,6 +18,7 @@
 #include "ibl/split_sum.h"
 #include "ibl/env_probe.h"
 #include <whiteout/models/mdx/parser.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <numbers>
@@ -343,6 +344,7 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
     for (auto& mesh : tmpl.meshes) {
         StagedGeoset& sg = mi->stagedGeosets[mesh.geosetId];
         sg.materialId = mesh.materialId;
+        sg.lod        = mesh.lod;
         int vc = (int)mesh.positions.size();
         sg.vertices.resize(vc);
         for (int i = 0; i < vc; i++) {
@@ -610,6 +612,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
     for (auto& mesh : meshes) {
         StagedGeoset& sg = mi->stagedGeosets[mesh.geosetId];
         sg.materialId = mesh.materialId;
+        sg.lod        = mesh.lod;
         int vc = (int)mesh.positions.size();
         sg.vertices.resize(vc);
         for (int i = 0; i < vc; i++) {
@@ -1291,6 +1294,7 @@ void RenderService::UploadStagedGeosets(ModelInstance& mi) {
         GPUGeoset gg;
         gg.geosetId    = id;
         gg.materialId  = sg.materialId;
+        gg.lod         = sg.lod;
         gg.indexCount   = (int)sg.indices.size();
         gg.vertexCount  = (int)sg.vertices.size();
         gg.baseVertices = sg.vertices;  // keep CPU copy for particle/ribbon reads
@@ -1392,6 +1396,16 @@ void RenderService::UploadStagedGeosets(ModelInstance& mi) {
         mi.gpuGeosets.push_back(gg);
     }
     mi.stagedGeosets.clear();
+
+    // Detect whether this model has a real LOD chain. Mirrors Previewd's
+    // HasLODs @0x1401b6670 intent: if any geoset carries a non-zero LOD
+    // (and not the 0xFFFFFFFF always-render sentinel), there are multiple
+    // LOD levels to select between. Classic / pre-v900 models leave all
+    // lods at 0 and we pin selectedLOD to 0 so nothing gets filtered out.
+    mi.hasLods = false;
+    for (const auto& g : mi.gpuGeosets) {
+        if (g.lod != 0 && g.lod != 0xFFFFFFFFu) { mi.hasLods = true; break; }
+    }
 }
 
 void RenderService::CreateNodePalette(ModelInstance& mi) {
@@ -1926,6 +1940,45 @@ void RenderService::RenderRibbons() {
         drawOffset += count;
     }
     } // end for each model
+}
+
+// ============================================================================
+// LOD selection — port of Previewd's CalculateLOD @0x140305ae0.
+//
+// Reforged picks a LOD level by measuring the projected size of a 1-unit
+// feature on screen: `screenPixels = proj.m11 / viewDist * halfHeight`,
+// then `deviation = 5.0 / screenPixels`. It walks the thresholds
+//   deviations = [0.0, 1.0, 2.0, 4.0]   (data @0x1454d09b0)
+// starting at LOD 3 and dropping one LOD per threshold cleared. The
+// result is clamped to [s_minLOD, s_maxLOD] (both default 0 in Previewd,
+// so the game clamps all LODs down to 0 unless ModelSetMinLOD/MaxLOD is
+// called at startup — which it is in the real client).
+// ============================================================================
+
+int RenderService::ComputeSelectedLod() const {
+    int ov = lodOverride_.load();
+    if (ov >= 0) return std::clamp(ov, 0, 3);
+
+    // Approximate viewDist as camera-to-origin (models sit near origin in
+    // this viewer). Previewd uses the model-to-world translation column
+    // transformed by view — at origin they collapse to the same scalar.
+    Vector3f camPos = camera_.GetSource();
+    float viewDist = std::sqrt(camPos.x*camPos.x + camPos.y*camPos.y + camPos.z*camPos.z);
+    if (viewDist < 1.0f) return 0;
+
+    const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
+    Matrix44f proj = camera_.ProjectionLH(aspect);
+    // Previewd reads proj.b1 = m11 (row-major[1][1]) — the vertical scale.
+    float projM11 = proj.data[1][1];
+    float screenPixels = projM11 / viewDist * (float)height_ * 0.5f;
+    if (screenPixels <= 0.001f) return 3;
+    float deviation = 5.0f / screenPixels;
+
+    static constexpr float kDeviations[4] = {0.0f, 1.0f, 2.0f, 4.0f};
+    int selectedLOD = 4;
+    do { --selectedLOD; }
+    while (selectedLOD > 0 && deviation <= kDeviations[selectedLOD]);
+    return std::clamp(selectedLOD, 0, 3);
 }
 
 // ============================================================================
@@ -2828,12 +2881,15 @@ bool RenderService::RenderGeosetsBls() {
         int idx;
         int renderOrder, priorityPlane, geosetId;
     };
+    const int selectedLod = ComputeSelectedLod();
     std::vector<GeosetRef> refs;
     for (auto& [h, miPtr] : models_) {
         auto* mi = miPtr.get();
         if (mi->parentVisibility <= 0.02f) continue;
+        const int modelLod = mi->hasLods ? selectedLod : 0;
         for (int i = 0; i < (int)mi->gpuGeosets.size(); i++) {
             auto& geo = mi->gpuGeosets[i];
+            if (!GeosetPassesLod(geo.lod, modelLod)) continue;
             int ro = 1;
             int matId = geo.materialId;
             if (matId >= 0 && matId < (int)mi->gpuMaterials.size() && !mi->gpuMaterials[matId].cpu.layers.empty())
@@ -3060,12 +3116,15 @@ bool RenderService::RenderGeosetsHd() {
         int idx;
         int renderOrder, priorityPlane, geosetId;
     };
+    const int selectedLod = ComputeSelectedLod();
     std::vector<GeosetRef> refs;
     for (auto& [h, miPtr] : models_) {
         auto* mi = miPtr.get();
         if (mi->parentVisibility <= 0.02f) continue;
+        const int modelLod = mi->hasLods ? selectedLod : 0;
         for (int i = 0; i < (int)mi->gpuGeosets.size(); i++) {
             auto& geo = mi->gpuGeosets[i];
+            if (!GeosetPassesLod(geo.lod, modelLod)) continue;
             int ro = 1;
             int matId = geo.materialId;
             if (matId >= 0 && matId < (int)mi->gpuMaterials.size() && !mi->gpuMaterials[matId].cpu.layers.empty())
@@ -3530,12 +3589,15 @@ void RenderService::RenderGeosets() {
         int idx;
         int renderOrder, priorityPlane, geosetId;
     };
+    const int selectedLod = ComputeSelectedLod();
     std::vector<GeosetRef> refs;
     for (auto& [h, miPtr] : models_) {
         auto* mi = miPtr.get();
         if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
+        const int modelLod = mi->hasLods ? selectedLod : 0;
         for (int i = 0; i < (int)mi->gpuGeosets.size(); i++) {
             auto& geo = mi->gpuGeosets[i];
+            if (!GeosetPassesLod(geo.lod, modelLod)) continue;
             int ro = 1;
             int matId = geo.materialId;
             if (matId >= 0 && matId < (int)mi->gpuMaterials.size() && !mi->gpuMaterials[matId].cpu.layers.empty())

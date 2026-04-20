@@ -86,6 +86,7 @@ private:
     HMENU hMenuProbe_    = nullptr;
     HMENU hMenuDebug_    = nullptr;
     HMENU hMenuDebugVis_ = nullptr;
+    HMENU hMenuLod_      = nullptr;
 
     // Menu item IDs. Ranged enums for the two submenu groups so the
     // WM_COMMAND handler can dispatch by range instead of a case per
@@ -107,6 +108,9 @@ private:
         // Debug-vis submenu (8 entries; index = id - IDM_DBGVIS_BASE)
         IDM_DBGVIS_BASE    = 1400,
         IDM_DBGVIS_LAST    = IDM_DBGVIS_BASE + 7,
+        // LOD submenu: [0]=Auto, [1]=Force 0, [2]=Force 1, [3]=Force 2, [4]=Force 3
+        IDM_LOD_BASE       = 1500,
+        IDM_LOD_LAST       = IDM_LOD_BASE + 4,
     };
 
     // Mouse state

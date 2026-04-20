@@ -69,6 +69,7 @@ struct StagedGeoset {
     // then falls back to the no-tangent permute.
     std::vector<Vector4f> tangents;
     int materialId = -1;
+    uint32_t lod = 0; // 0xFFFFFFFF = always-render sentinel (Previewd's -1)
 };
 
 // ============================================================================
@@ -87,6 +88,7 @@ struct GPUGeoset {
     int indexCount      = 0;
     int vertexCount     = 0;
     int materialId      = -1;
+    uint32_t lod        = 0; // Previewd: 0..3 or 0xFFFFFFFF (always render)
 
     std::vector<Vertex> baseVertices;
     bool hasSkinning    = false;
@@ -253,6 +255,12 @@ struct ModelInstance {
     // hosted as an attachment child. 1 = fully visible, 0 = fully hidden.
     // Authoritative source: only the parent's ApplyFrameState writes this.
     float parentVisibility = 1.0f;
+
+    // Whether the model has a real LOD chain (>= 2 distinct LOD levels
+    // among its geosets, i.e. any gpuGeoset::lod != 0 and != 0xFFFFFFFF).
+    // Computed once during upload. Drives whether ComputeSelectedLod's
+    // screen-size logic applies or the render loop pins to LOD 0.
+    bool hasLods = false;
 
     // ---- PE1 (model particle emitter) ----
     PE1System pe1;
