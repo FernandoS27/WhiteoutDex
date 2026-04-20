@@ -56,6 +56,9 @@ struct PsoRequest {
     gfx::Format            rtvFormat  = gfx::Format::R8G8B8A8_UNORM;
     gfx::Format            dsvFormat  = gfx::Format::D24_UNORM_S8_UINT;
     bool                   wireframe  = false;
+    // Folded into the PSO hash so HD (LH) and SD (RH) stacks keep
+    // separate cached PSOs even when the rasterizer desc matches.
+    bool                   lhClipSpace = false;
 };
 
 class BlsPsoBuilder {

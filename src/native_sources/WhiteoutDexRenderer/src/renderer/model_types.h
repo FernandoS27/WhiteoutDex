@@ -13,15 +13,34 @@
 #include "../gfx/gfx_types.h"
 #include <vector>
 #include <string>
+#include <functional>
 
 namespace WhiteoutDex {
 
-// Camera preset for the camera selector combo box
+// Camera preset for the selector combo. One entry per MDX `CAMS`
+// chunk; "Free Camera" uses the orbital state instead.
 struct CameraPreset {
     std::wstring name;
-    float pitch, yaw, distance;
-    Vector3f target;
     bool isLive = false;
+
+    // Absolute pose + projection from the MDX.
+    Vector3f position{0.f, 0.f, 0.f};
+    Vector3f target  {0.f, 0.f, 0.f};
+    float    fovDiagonal = 0.95f;
+    float    zNear       = 1.0f;
+    float    zFar        = 10000.0f;
+    float    staticRoll  = 0.0f;
+
+    // Legacy pitch/yaw/distance readouts for UI tooltips.
+    float pitch    = 0.0f;
+    float yaw      = 0.0f;
+    float distance = 100.0f;
+
+    // Populated when the MDX camera has position/target/rotation
+    // tracks. Invoked per-frame while active.
+    std::function<void(Vector3f& pos, Vector3f& target,
+                       float& roll, int timeMs,
+                       int seqStart, int seqEnd)> animator;
 };
 
 // ============================================================================

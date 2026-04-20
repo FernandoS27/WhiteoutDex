@@ -171,14 +171,12 @@ gfx::DepthStencilDesc DepthFor(const MatParams& m) {
     return ds;
 }
 
-gfx::RasterizerDesc RasterFor(const MatParams& m, bool wireframe) {
+gfx::RasterizerDesc RasterFor(const MatParams& m, bool wireframe, bool lhClipSpace) {
+    (void)lhClipSpace;  // reserved for future per-stack state (depth-clear etc.)
     gfx::RasterizerDesc r{};
     r.cull     = m.CullEnabled() ? gfx::CullMode::Back : gfx::CullMode::None;
     r.fill     = wireframe ? gfx::FillMode::Wireframe : gfx::FillMode::Solid;
-    // MDX triangles are authored CW in Blizzard's D3D9 LH convention, but
-    // our pipeline uses look_at_rh + perspective_fov_rh which contains a
-    // Z-reflection and flips winding in clip space. Treat CCW as front,
-    // matching the legacy Slang mesh PSO (see render_service.cpp:2091).
+    // MDX triangles project as CCW in clip space under both our RH and LH pipelines.
     r.frontCCW = true;
     return r;
 }
@@ -194,7 +192,8 @@ uint64_t HashRequest(const PsoRequest& r) {
         ((uint32_t(r.topology)           & 0x03u) << 10) |
         ((uint32_t(r.rtvFormat)          & 0xFFu) << 12) |
         ((uint32_t(r.dsvFormat)          & 0xFFu) << 20) |
-        ((r.wireframe ? 1u : 0u)                  << 28);
+        ((r.wireframe ? 1u : 0u)                  << 28) |
+        ((r.lhClipSpace ? 1u : 0u)                << 29);
     k ^= uint64_t(bits) * 0xFF51AFD7ED558CCDull;
     return k;
 }
@@ -226,7 +225,7 @@ gfx::PipelineHandle BlsPsoBuilder::GetOrBuild(const PsoRequest& request) {
     desc.topology     = request.topology;
     desc.blend        = BlendFor(request.material.alpha);
     desc.depthStencil = DepthFor(request.material);
-    desc.rasterizer   = RasterFor(request.material, request.wireframe);
+    desc.rasterizer   = RasterFor(request.material, request.wireframe, request.lhClipSpace);
     desc.rtvFormat    = request.rtvFormat;
     desc.dsvFormat    = request.dsvFormat;
 

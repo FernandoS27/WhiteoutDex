@@ -75,7 +75,7 @@ LoadedEnvProbe LoadEnvProbe(gfx::IGFXDevice&       gfx,
 // corruption we're trying to isolate from actual pipeline errors.
 LoadedEnvProbe LoadEnvProbeFromFile(gfx::IGFXDevice&   gfx,
                                      const std::string& absPath,
-                                     bool applyBlizzardFaceRemap = true);
+                                     bool applyBlizzardFaceRemap = false);
 
 // ---------------------------------------------------------------------------
 // Procedural fallback -- small neutral-grey cubemap used when no DDS is

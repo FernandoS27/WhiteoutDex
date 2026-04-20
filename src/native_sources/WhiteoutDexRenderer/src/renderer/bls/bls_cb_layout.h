@@ -157,7 +157,7 @@ struct HdPsCb {
     Vector4f    fogParams;             // 0x010  {start, end, density, 0}
     Vector4f    fogColor;              // 0x020  sRGB->linear
     Matrix44f   worldView;             // 0x030
-    Matrix44f   viewInverse;           // 0x070
+    Matrix44f   view;                  // 0x070
     Matrix44f   projection;            // 0x0B0
     Vector4f    viewportRect;          // 0x0F0  {width, height, x, 1 - yHigh}
     Vector4f    pixelParams1;          // 0x100  {inverseSoftness, cloakAmount, fresnelTeamColor, 0}

@@ -843,19 +843,10 @@ std::vector<RibbonEmitterConfig> MdxModelAdapter::GetRibbonConfigs() {
         const auto& rb = model_.ribbonEmitters[i];
         RibbonEmitterConfig cfg;
 
-        // Resolve texture + layer flags through material. For ribbons the
-        // engine binds CWar3Mat per-layer, so unshaded/twoSided come from the
-        // LAYER shading flags, not the node — most Wc3 ribbons set Unshaded
-        // on the layer (the node flag is rarely used for ribbons).
         if (rb.materialId < (u32)model_.materials.size() &&
             !model_.materials[rb.materialId].layers.empty()) {
             const auto& layer = model_.materials[rb.materialId].layers[0];
 
-            // Texture resolution — same logic as GetMaterials():
-            //   Classic (v800-v1100): layer.textureId indexes the texture array.
-            //   Reforged (v1200+): layer.textureId is 0 (unused); textures
-            //     live in layer.subTextures[]. Pick the DiffuseMap slot, or
-            //     fall back to subTextures[0].
             if (!layer.subTextures.empty()) {
                 int diffuseTex = (int)layer.subTextures[0].textureId;
                 for (const auto& sub : layer.subTextures) {
@@ -951,10 +942,6 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     // in the hierarchy). Vertices can reference any node type via objectId.
     fs.boneWorldMatrices = std::move(allNodes);
 
-    // Helper: compute effective time for a track, handling global sequences.
-    // If the track uses a globalSequenceId, wraps by the global sequence duration
-    // using wall-clock time (globalTimeMs) so that global sequences run
-    // independently of the active animation sequence.
     auto effectiveTime = [&](u32 gsId) -> std::tuple<int, int, int> {
         if (gsId != whiteout::mdx::Track<whiteout::f32>::kNoGlobalSequence && gsId < (u32)model_.globalSequences.size()) {
             u32 duration = model_.globalSequences[gsId];
@@ -980,13 +967,6 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
             auto [t, s, e] = effectiveTime(ga.alphaTracks.globalSequenceId);
             fs.geosetAlphas[gid] = EvaluateTrackF32(ga.alphaTracks, t, s, e, ga.alpha);
         }
-
-        // MDX GeosetAnim color (KGAC) flows into CAnimGeoset::color which is
-        // a CKeyFrameTrack<C3Color>; C3Color's memory layout is {float b, g, r}
-        // (verified via tinfo at engine's tinfo_t). The MDL loader memcpy's
-        // keyframe values straight in, so the first float on disk is the blue
-        // channel. WhiteoutLib reads these as Vector3f{x,y,z} without a swap,
-        // so we swap here to produce RGB for downstream consumers.
         if (ga.colorTracks.isUsed) {
             auto [t, s, e] = effectiveTime(ga.colorTracks.globalSequenceId);
             Vector3f color = EvaluateTrackVec3(ga.colorTracks, t, s, e, ga.color);
@@ -1013,14 +993,6 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         }
     }
 
-    // Layer fresnel / emissive evaluation. Mirrors Previewd's
-    // RenderGeosetLayers (0x14030a210): `layerMaterial.m_pixelParams.fresnelR/
-    // .fresnelG/.fresnelB = modelptr->m_fresnelColor[i].rgb`, fresnelA =
-    // m_fresnelOpacity[i], coneLength (= fresnelTeamColor slot) =
-    // m_fresnelTeamColor[i], m_emissiveGain = m_layerEmissive[i]. We emit
-    // one LayerFresnelState per layer with any of the four tracks active;
-    // the static authored values are used as track defaults so a layer
-    // with only some tracks animated still produces the correct values.
     for (int mi = 0; mi < (int)model_.materials.size(); mi++) {
         const auto& mat = model_.materials[mi];
         for (int li = 0; li < (int)mat.layers.size(); li++) {
@@ -1459,24 +1431,56 @@ std::vector<IModelSource::SequenceInfo> MdxModelAdapter::GetSequences() {
 std::vector<CameraPreset> MdxModelAdapter::GetCameraPresets() const {
     std::vector<CameraPreset> presets;
     for (const auto& cam : model_.cameras) {
-        auto& pos = cam.position;
-        auto& tgt = cam.targetPosition;
+        const auto& pos = cam.position;
+        const auto& tgt = cam.targetPosition;
+
+        // Spherical decomposition for legacy UI readouts only.
         float dx = pos.x - tgt.x, dy = pos.y - tgt.y, dz = pos.z - tgt.z;
         float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
         if (dist < 0.01f) dist = 100.0f;
         float invD = 1.0f / dist;
         float pitch = std::asin(std::clamp(dz * invD, -1.0f, 1.0f));
-        float yaw = std::atan2(dy * invD, dx * invD);
+        float yaw   = std::atan2(dy * invD, dx * invD);
 
         CameraPreset cp;
-        // Convert std::string name to wstring
-        cp.name = std::wstring(cam.name.begin(), cam.name.end());
-        cp.pitch = pitch;
-        cp.yaw = yaw;
-        cp.distance = dist;
-        cp.target = {tgt.x, tgt.y, tgt.z};
-        cp.isLive = false;
-        presets.push_back(cp);
+        cp.name        = std::wstring(cam.name.begin(), cam.name.end());
+        cp.position    = pos;
+        cp.target      = tgt;
+        cp.fovDiagonal = cam.fieldOfView;
+        cp.zNear       = cam.nearClippingPlane;
+        cp.zFar        = cam.farClippingPlane;
+        cp.staticRoll  = 0.0f;
+        cp.pitch       = pitch;
+        cp.yaw         = yaw;
+        cp.distance    = dist;
+        cp.isLive      = false;
+
+        const bool animated = cam.positionTracks.isUsed
+                           || cam.targetPositionTracks.isUsed
+                           || cam.targetRotationTracks.isUsed;
+        if (animated) {
+            auto posTracks  = cam.positionTracks;
+            auto tgtTracks  = cam.targetPositionTracks;
+            auto rollTracks = cam.targetRotationTracks;
+            Vector3f pivot       = pos;
+            Vector3f targetPivot = tgt;
+            cp.animator = [posTracks  = std::move(posTracks),
+                           tgtTracks  = std::move(tgtTracks),
+                           rollTracks = std::move(rollTracks),
+                           pivot, targetPivot]
+                (Vector3f& outPos, Vector3f& outTgt,
+                 float& outRoll, int timeMs,
+                 int seqStart, int seqEnd) {
+                const Vector3f zero{0.0f, 0.0f, 0.0f};
+                Vector3f posDelta = EvaluateTrackVec3(posTracks, timeMs, seqStart, seqEnd, zero);
+                Vector3f tgtDelta = EvaluateTrackVec3(tgtTracks, timeMs, seqStart, seqEnd, zero);
+                outPos  = { pivot.x       + posDelta.x, pivot.y       + posDelta.y, pivot.z       + posDelta.z };
+                outTgt  = { targetPivot.x + tgtDelta.x, targetPivot.y + tgtDelta.y, targetPivot.z + tgtDelta.z };
+                outRoll = EvaluateTrackF32(rollTracks, timeMs, seqStart, seqEnd, 0.0f);
+            };
+        }
+
+        presets.push_back(std::move(cp));
     }
     return presets;
 }

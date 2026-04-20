@@ -157,6 +157,7 @@ int main(int argc, char* argv[]) {
         seqNames.reserve(sequences.size());
         for (auto& s : sequences) seqNames.push_back(s.name);
         renderer.SetSequences(seqNames);
+        renderer.SetSequenceRanges(sequences);  // needed for MDX camera animators
         adapter.SetActiveSequence(0);
         std::cout << "Playing: " << sequences[0].name
                   << " [" << sequences[0].startMs << "-" << sequences[0].endMs << "ms]\n";

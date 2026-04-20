@@ -14,6 +14,7 @@
 #include "ribbon.h"
 #include "model_types.h"
 #include "model_instance.h"
+#include "model_source.h"
 #include "content_provider.h"
 #include "file_content_provider.h"
 #include "render_target.h"
@@ -127,8 +128,14 @@ public:
     bool IsCameraLocked() const { return cameraLocked_; }
     void SetCameraLocked(bool locked) { cameraLocked_ = locked; }
 
-    // Sequence picker (used by standalone viewer; safe to ignore from Max plugin)
+    // Activate an MDX preset (Direct mode). idx = -1 reverts to orbital.
+    void ActivateCameraPreset(int idx);
+
+    // Sequence picker (standalone viewer; Max plugin ignores).
     void SetSequences(const std::vector<std::string>& names);
+    // Required for MDX camera animation playback — without frame
+    // ranges the animator bails to keyframe 0.
+    void SetSequenceRanges(const std::vector<IModelSource::SequenceInfo>& ranges);
     int  GetActiveSequenceIndex() const;
     void SetActiveSequence(int index) { activeSequence_ = index; }
 
@@ -329,11 +336,13 @@ private:
     std::vector<CameraPreset> pendingCameraPresets_;
     bool cameraDirty_ = false;
     bool cameraLocked_ = false;
+    int  activeCameraPresetIdx_ = -1;  // -1 = free camera
 
     // Sequence picker (standalone viewer)
     std::vector<std::string> pendingSequenceNames_;
     bool sequencesDirty_ = false;
     std::atomic<int> activeSequence_{0};
+    std::vector<IModelSource::SequenceInfo> sequenceRanges_;
 
     // ---- GFX device ----
     std::unique_ptr<gfx::IGFXDevice> gfx_;

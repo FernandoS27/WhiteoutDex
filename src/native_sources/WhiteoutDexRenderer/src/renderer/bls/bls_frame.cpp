@@ -92,17 +92,7 @@ void BuildHdPsCb(HdPsCb& out, const FrameInputs& in, const MatParams& mat) {
     out.fogParams    = in.fogParams;
     out.fogColor     = in.fogColor;
     out.worldView    = in.world * in.view;
-    // HdPsCb slot @0x70 — Slang calls it `invView` but the real shader
-    // uses it to transform `input.worldPos` (which VS outputs in MODEL /
-    // local space, not world) into world space before the .xzy*(1,1,-1)
-    // cube-sample swizzle. The slot actually wants the model's WORLD
-    // matrix — same "Slang names lie, IDA RE wins" pattern as HdVsCb
-    // slot 0. Evidence: a centred-model reflection sampled with cube.x
-    // aligned to view.x produces the +X/-X hemisphere seam down screen
-    // centre; swapping in the world matrix puts cube.x on world.x
-    // instead, which for a non-view-axis-aligned camera breaks the
-    // screen-aligned seam.
-    out.viewInverse  = in.world;
+    out.view         = in.view;
     out.projection   = in.projection;
     out.viewportRect = in.viewportRect;
     out.effectTime   = in.effectTime;

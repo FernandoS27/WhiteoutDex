@@ -427,14 +427,13 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 if (code == CBN_SELCHANGE) {
                     int sel = (int)SendMessageW(cmbCamera_, CB_GETCURSEL, 0, 0);
                     if (sel == 0) {
+                        service_.ActivateCameraPreset(-1);  // free camera
                         service_.SetCameraLocked(false);
                     } else {
                         int idx = sel - 1;
                         if (idx >= 0 && idx < (int)cameraPresets_.size()) {
-                            auto& p = cameraPresets_[idx];
-                            service_.SetCamera(p.pitch, p.yaw, p.distance,
-                                               p.target.x, p.target.y, p.target.z);
-                            service_.SetCameraLocked(p.isLive);
+                            service_.ActivateCameraPreset(idx);
+                            service_.SetCameraLocked(cameraPresets_[idx].isLive);
                         }
                     }
                 }

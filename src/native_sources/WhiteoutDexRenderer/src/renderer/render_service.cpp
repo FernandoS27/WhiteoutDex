@@ -1073,8 +1073,51 @@ void RenderService::UpdateTeamColorSwatch() {
 
 void RenderService::SetCameraPresets(const std::vector<CameraPreset>& presets) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    pendingCameraPresets_ = presets;
-    cameraDirty_ = true;
+    // Service keeps its own copy for ActivateCameraPreset; UI drains
+    // the pending queue separately.
+    cameraPresets_          = presets;
+    pendingCameraPresets_   = presets;
+    cameraDirty_            = true;
+    activeCameraPresetIdx_  = -1;
+}
+
+void RenderService::ActivateCameraPreset(int idx) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    if (idx < 0 || idx >= (int)cameraPresets_.size()) {
+        camera_.SetOrbitalMode();
+        activeCameraPresetIdx_ = -1;
+        return;
+    }
+    const auto& p = cameraPresets_[idx];
+    Vector3f pos  = p.position;
+    Vector3f tgt  = p.target;
+    float    roll = p.staticRoll;
+
+    // Invoke the animator immediately so the first frame shows the
+    // animated pose, not the pivot-only static default (which is
+    // often (0,0,0) for portrait cameras).
+    if (p.animator) {
+        int seqStart = 0, seqEnd = 0;
+        int seqIdx = activeSequence_.load();
+        if (seqIdx >= 0 && seqIdx < (int)sequenceRanges_.size()) {
+            seqStart = sequenceRanges_[seqIdx].startMs;
+            seqEnd   = sequenceRanges_[seqIdx].endMs;
+        }
+        // Fall back to an open range when no SequenceRanges are
+        // known, so FindBracket doesn't empty out and return static.
+        if (seqStart == 0 && seqEnd == 0) seqEnd = 1 << 30;
+        p.animator(pos, tgt, roll, animationTimeMs_.load(), seqStart, seqEnd);
+    }
+
+    camera_.SetDirectPose(pos, tgt, roll);
+
+    // Apply fov/near/far verbatim per Previewd's MdlReadCameras +
+    // SetupWorldProjection. fieldOfView=0 is "unset" — substitute a
+    // default so the preview doesn't render blank.
+    const float fov = (p.fovDiagonal > 1e-3f) ? p.fovDiagonal : Camera::kDefaultFovDiagonal;
+    camera_.SetFovDiagonal(fov);
+    camera_.SetClip(p.zNear, p.zFar);
+    activeCameraPresetIdx_ = idx;
 }
 
 std::optional<std::vector<CameraPreset>> RenderService::TakePendingCameraPresets() {
@@ -1088,6 +1131,12 @@ void RenderService::SetSequences(const std::vector<std::string>& names) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     pendingSequenceNames_ = names;
     sequencesDirty_ = true;
+}
+
+void RenderService::SetSequenceRanges(
+    const std::vector<IModelSource::SequenceInfo>& ranges) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    sequenceRanges_ = ranges;
 }
 
 int RenderService::GetActiveSequenceIndex() const {
@@ -2597,6 +2646,32 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     auto& target = it->second;
     if (target.color == gfx::TextureHandle::Invalid || !gfx_) return;
 
+    // Re-sample the active MDX camera animator every frame.
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        if (activeCameraPresetIdx_ >= 0 &&
+            activeCameraPresetIdx_ < (int)cameraPresets_.size()) {
+            const auto& preset = cameraPresets_[activeCameraPresetIdx_];
+            if (preset.animator) {
+                int seqStart = 0, seqEnd = 0;
+                int idx = activeSequence_.load();
+                if (idx >= 0 && idx < (int)sequenceRanges_.size()) {
+                    seqStart = sequenceRanges_[idx].startMs;
+                    seqEnd   = sequenceRanges_[idx].endMs;
+                }
+                if (seqStart == 0 && seqEnd == 0) {
+                    seqEnd = 1 << 30;
+                }
+                Vector3f pos  = preset.position;
+                Vector3f tgt  = preset.target;
+                float    roll = preset.staticRoll;
+                preset.animator(pos, tgt, roll,
+                                animationTimeMs_.load(), seqStart, seqEnd);
+                camera_.SetDirectPose(pos, tgt, roll);
+            }
+        }
+    }
+
     auto* cmd = gfx_->GetImmediateContext();
     float clearColor[4] = {0.39f, 0.39f, 0.40f, 1.0f};  // Magos-matched gray
     cmd->BeginRenderPass(target.color, target.depth, clearColor, 1.0f, 0);
@@ -2923,11 +2998,15 @@ bool RenderService::RenderGeosetsHd() {
         return a.geosetId < b.geosetId;
     });
 
-    Matrix44f view2;
-    { std::lock_guard<std::mutex> lock(dataMutex_); view2 = camera_.GetViewMatrix(); }
+    // HD / SD_on_HD require the LH view + diagonal-FOV projection —
+    // see docs/CAMERA_PLAN.md.
     const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    const Matrix44f proj = Matrix44f::perspective_fov_rh(
-        std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
+    Matrix44f view2, proj;
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        view2 = camera_.ViewLH();
+        proj  = camera_.ProjectionLH(aspect);
+    }
 
     bls::FrameInputs frame;
     frame.view       = view2;
@@ -3224,6 +3303,7 @@ bool RenderService::RenderGeosetsHd() {
             req.topology  = gfx::PrimitiveTopology::TriangleList;
             req.rtvFormat = gfx::Format::R8G8B8A8_UNORM;
             req.dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
+            req.lhClipSpace = true;  // HD/SD_on_HD stack (distinct PSO hash)
             auto pso = blsPsoBuilder_->GetOrBuild(req);
             if (pso == gfx::PipelineHandle::Invalid) continue;
             cmd->BindPipeline(pso);
