@@ -183,13 +183,17 @@ struct MaterialData {
     int sortOrder;
 };
 
-// Billboard flags for bones
+// Billboard flags for bones. Values mirror MDX Node::NodeFlag semantics:
+// only one axis/full flag should be set per node — Previewd's GetObjectFlags
+// @0x140456dd0 applies a priority Full > LockX > LockY > LockZ if the file
+// set more than one. CAMERA_ANCHORED is an independent bit that can stack.
 enum BoneBillboardFlag : uint32_t {
-    BONE_BILLBOARD_NONE    = 0,
-    BONE_BILLBOARD_FULL    = 1,
-    BONE_BILLBOARD_LOCK_X  = 2,
-    BONE_BILLBOARD_LOCK_Y  = 4,
-    BONE_BILLBOARD_LOCK_Z  = 8,
+    BONE_BILLBOARD_NONE            = 0,
+    BONE_BILLBOARD_FULL            = 1,
+    BONE_BILLBOARD_LOCK_X          = 2,
+    BONE_BILLBOARD_LOCK_Y          = 4,
+    BONE_BILLBOARD_LOCK_Z          = 8,
+    BONE_BILLBOARD_CAMERA_ANCHORED = 16,
 };
 
 struct SkeletonData {
@@ -197,6 +201,7 @@ struct SkeletonData {
     std::vector<Matrix44f> inverseBindMatrices;  // nodeCount entries (indexed by node position)
     std::vector<uint32_t> billboardFlags;        // nodeCount entries (indexed by node position)
     std::vector<Vector3f> nodePivots;            // nodeCount entries (indexed by node position)
+    std::vector<int>      nodeParents;           // nodeCount entries; -1 = root. Needed for CameraAnchored.
 };
 
 struct SkinWeightData {

@@ -365,6 +365,7 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
         mi->skinning.SetSkeleton(tmpl.skeleton.nodeCount, invBind.data());
         mi->billboardFlags = tmpl.skeleton.billboardFlags;
         mi->nodePivots         = tmpl.skeleton.nodePivots;
+        mi->nodeParents        = tmpl.skeleton.nodeParents;
         mi->skinDirty = true;
     }
     // Skin weights
@@ -635,6 +636,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
         mi->skinning.SetSkeleton(skeleton.nodeCount, invBindFlat.data());
         mi->billboardFlags = skeleton.billboardFlags;
         mi->nodePivots         = skeleton.nodePivots;
+        mi->nodeParents        = skeleton.nodeParents;
         mi->skinDirty = true;
     }
 
@@ -731,91 +733,137 @@ void RenderService::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state
 
         uint32_t bbFlags = (i < (int)mi.billboardFlags.size()) ? mi.billboardFlags[i] : 0;
         if (bbFlags != 0) {
+            // Match Previewd TransformObjectView @0x140534ee0. Two independent
+            // pieces: CameraAnchored (0x80 in file) moves the pivot along the
+            // parent→camera ray, then the Full/LockX/LockY/LockZ switch writes
+            // a replacement rotation basis around that (modified) pivot.
+
             Vector3f pivF = (i < (int)mi.nodePivots.size())
                               ? mi.nodePivots[i] : Vector3f{0, 0, 0};
+
+            // Target world-pivot starts as the authored one from boneM. We may
+            // overwrite it below for CameraAnchored.
             Vector3f pivWorld = whiteout::transform_point(pivF, boneM);
+
+            if (bbFlags & BONE_BILLBOARD_CAMERA_ANCHORED) {
+                // PositionAnchor @0x140534950: place the node on the line
+                // from parent-world to camera, at the node's rest distance
+                // from parent. Rotation/scale of the stack are then reset
+                // — we achieve the same by rebuilding boneM below.
+                int parentIdx = (i < (int)mi.nodeParents.size()) ? mi.nodeParents[i] : -1;
+                Vector3f parentWorld = {0, 0, 0};
+                if (parentIdx >= 0 && parentIdx < (int)state.boneWorldMatrices.size()) {
+                    Vector3f parentPivF = (parentIdx < (int)mi.nodePivots.size())
+                                            ? mi.nodePivots[parentIdx] : Vector3f{0, 0, 0};
+                    parentWorld = whiteout::transform_point(
+                        parentPivF, state.boneWorldMatrices[parentIdx]);
+                }
+                Vector3f toCamDir = camPos - parentWorld;
+                float camLen = toCamDir.length();
+                if (camLen > kBillboardDistThreshold) {
+                    toCamDir = toCamDir.normalized();
+                    float restDist = (pivWorld - parentWorld).length();
+                    pivWorld = parentWorld + Vector3f{toCamDir.x * restDist,
+                                                      toCamDir.y * restDist,
+                                                      toCamDir.z * restDist};
+                }
+            }
 
             Vector3f toCamera = camPos - pivWorld;
             float dist = toCamera.length();
             if (dist > kBillboardDistThreshold) {
-                // Billboard math is authored directly in the renderer's native
-                // coordinate space. The "forward" axis (the model-local axis
-                // that should face the camera for an unrotated billboard) is
-                // space-dependent: Blizzard +X, Max -Y. All other work
-                // (cross products, basis assembly) happens in default-space
-                // world vectors — +Z is "up" in both supported spaces.
-                const Vector3f fwdAxis = DefaultForwardAxis();
                 Vector3f toCam = toCamera.normalized();
                 Vector3f worldUp = {0, 0, 1};
+
+                // Capture the authored X/Y axes BEFORE we replace the rotation
+                // — Previewd's LockX/LockY read WorldMatrixGetRow(0/1) AFTER
+                // the node's authored rotation is applied, which is exactly
+                // `boneM.data[0]` / `boneM.data[1]` in our row-vector layout.
+                auto rowToVec = [](const Matrix44f& m, int r) {
+                    return Vector3f{m.data[r][0], m.data[r][1], m.data[r][2]};
+                };
 
                 Matrix44f bbRot = Matrix44f::identity();
                 bool haveRot = false;
 
+                // One-hot priority (Previewd's GetObjectFlags collapses
+                // multiple file bits to one engine bit; our adapter already
+                // enforces this, but we keep an else-if chain so stray bit
+                // combinations still pick exactly one branch).
                 if (bbFlags & BONE_BILLBOARD_FULL) {
-                    // Build view-aligned basis in world space.
-                    Vector3f right = whiteout::cross(toCam, worldUp);
-                    float rightLen = right.length();
-                    if (rightLen < kBillboardDistThreshold) {
-                        // Degenerate: camera directly above/below pivot.
-                        right = {0, 1, 0};
-                    } else {
-                        right = right.normalized();
-                    }
-                    Vector3f up = whiteout::cross(right, toCam).normalized();
-
-                    // Assemble rotation rows per default-space axis convention.
+                    // RotateViewBillboarded @0x14052ddb0 + FaceDirection @0x14052d870:
+                    //   xprime = toCam                             (+X forward)
+                    //   yprime = normalize(-xp.y, xp.x, 0)         (perpendicular in XY; "left")
+                    //   zprime = cross(xprime, yprime)             (up)
+                    // Free-roll billboard — no world-up pinning, but Z falls
+                    // out of cross(x,y) so nearly-vertical cameras are stable.
+                    Vector3f xp = toCam;
+                    Vector3f yp = {-xp.y, xp.x, 0.0f};
+                    float yLen = yp.length();
+                    if (yLen < kBillboardDistThreshold) yp = {0, 1, 0};
+                    else                                yp = yp.normalized();
+                    Vector3f zp = whiteout::cross(xp, yp);
                     bbRot = {};
-                    if constexpr (kDefaultCoordSpace == CoordSpace::Blizzard) {
-                        // +X=forward → toCam
-                        // +Y=left    → cross(up, forward) (in a right-handed
-                        //              basis with +X forward and +Z up,
-                        //              cross(+Z, +X) = +Y = left)
-                        // +Z=up      → up
-                        // Previously used cross(toCam, up) which is -left;
-                        // that makes the matrix a reflection (det = -1) and
-                        // flips the winding, so billboard planes end up
-                        // rendering their back face toward the camera.
-                        Vector3f left = whiteout::cross(up, toCam);
-                        bbRot.data[0][0] = toCam.x; bbRot.data[0][1] = toCam.y; bbRot.data[0][2] = toCam.z;
-                        bbRot.data[1][0] = left.x;  bbRot.data[1][1] = left.y;  bbRot.data[1][2] = left.z;
-                        bbRot.data[2][0] = up.x;    bbRot.data[2][1] = up.y;    bbRot.data[2][2] = up.z;
-                    } else {
-                        // Max: +X=right, +Y=back(=away), +Z=up.
-                        //   away = -toCam, world-right viewed from camera = cross(away, worldUp) = -right
-                        Vector3f away{-toCam.x, -toCam.y, -toCam.z};
-                        Vector3f rMax = whiteout::cross(away, worldUp);
-                        if (rMax.length() < kBillboardDistThreshold) rMax = {1, 0, 0};
-                        else                                         rMax = rMax.normalized();
-                        Vector3f uMax = whiteout::cross(rMax, away).normalized();
-                        bbRot.data[0][0] = rMax.x; bbRot.data[0][1] = rMax.y; bbRot.data[0][2] = rMax.z;
-                        bbRot.data[1][0] = away.x; bbRot.data[1][1] = away.y; bbRot.data[1][2] = away.z;
-                        bbRot.data[2][0] = uMax.x; bbRot.data[2][1] = uMax.y; bbRot.data[2][2] = uMax.z;
-                    }
+                    bbRot.data[0][0] = xp.x; bbRot.data[0][1] = xp.y; bbRot.data[0][2] = xp.z;
+                    bbRot.data[1][0] = yp.x; bbRot.data[1][1] = yp.y; bbRot.data[1][2] = yp.z;
+                    bbRot.data[2][0] = zp.x; bbRot.data[2][1] = zp.y; bbRot.data[2][2] = zp.z;
+                    bbRot.data[3][3] = 1.0f;
+                    haveRot = true;
+                } else if (bbFlags & BONE_BILLBOARD_LOCK_X) {
+                    // RotateViewXAxisBillboarded @0x14052e2e0: lock the node's
+                    // authored X axis; rebuild Y,Z to face the camera.
+                    //   zprime = normalize(cross(toCam, xprime))
+                    //   yprime = cross(xprime, zprime)
+                    Vector3f xp = rowToVec(boneM, 0);
+                    float xLen = xp.length();
+                    if (xLen < kBillboardDistThreshold) xp = {1, 0, 0};
+                    else                                xp = xp.normalized();
+                    Vector3f zp = whiteout::cross(toCam, xp);
+                    float zLen = zp.length();
+                    if (zLen < kBillboardDistThreshold) zp = {0, 0, 1};
+                    else                                zp = zp.normalized();
+                    Vector3f yp = whiteout::cross(xp, zp);
+                    bbRot = {};
+                    bbRot.data[0][0] = xp.x; bbRot.data[0][1] = xp.y; bbRot.data[0][2] = xp.z;
+                    bbRot.data[1][0] = yp.x; bbRot.data[1][1] = yp.y; bbRot.data[1][2] = yp.z;
+                    bbRot.data[2][0] = zp.x; bbRot.data[2][1] = zp.y; bbRot.data[2][2] = zp.z;
+                    bbRot.data[3][3] = 1.0f;
+                    haveRot = true;
+                } else if (bbFlags & BONE_BILLBOARD_LOCK_Y) {
+                    // RotateViewYAxisBillboarded @0x14052e0b0: lock authored Y.
+                    //   zprime = normalize(cross(toCam, yprime))
+                    //   xprime = cross(yprime, zprime)
+                    Vector3f yp = rowToVec(boneM, 1);
+                    float yLen = yp.length();
+                    if (yLen < kBillboardDistThreshold) yp = {0, 1, 0};
+                    else                                yp = yp.normalized();
+                    Vector3f zp = whiteout::cross(toCam, yp);
+                    float zLen = zp.length();
+                    if (zLen < kBillboardDistThreshold) zp = {0, 0, 1};
+                    else                                zp = zp.normalized();
+                    Vector3f xp = whiteout::cross(yp, zp);
+                    bbRot = {};
+                    bbRot.data[0][0] = xp.x; bbRot.data[0][1] = xp.y; bbRot.data[0][2] = xp.z;
+                    bbRot.data[1][0] = yp.x; bbRot.data[1][1] = yp.y; bbRot.data[1][2] = yp.z;
+                    bbRot.data[2][0] = zp.x; bbRot.data[2][1] = zp.y; bbRot.data[2][2] = zp.z;
                     bbRot.data[3][3] = 1.0f;
                     haveRot = true;
                 } else if (bbFlags & BONE_BILLBOARD_LOCK_Z) {
-                    // Rotate around world +Z so that the local forward axis
-                    // (projected onto XY) aligns with toCamera (projected onto XY).
-                    float currentYaw = atan2f(fwdAxis.y, fwdAxis.x);
-                    float targetYaw  = atan2f(toCamera.y, toCamera.x);
-                    bbRot = Matrix44f::rotation_z(targetYaw - currentYaw);
-                    haveRot = true;
-                } else if (bbFlags & BONE_BILLBOARD_LOCK_Y) {
-                    // Rotate around world +Y so the local forward axis projected
-                    // onto XZ aligns with toCamera projected onto XZ.
-                    // rotation_y(a) sends +X → (cos(a), 0, -sin(a)), so the
-                    // current-forward angle (CCW in XZ viewed from +Y) is
-                    // atan2(-z, x), and similarly for the target.
-                    float currentPitch = atan2f(-fwdAxis.z, fwdAxis.x);
-                    float targetPitch  = atan2f(-toCamera.z, toCamera.x);
-                    bbRot = Matrix44f::rotation_y(targetPitch - currentPitch);
-                    haveRot = true;
-                } else if (bbFlags & BONE_BILLBOARD_LOCK_X) {
-                    // Rotate around world +X so the local forward axis projected
-                    // onto YZ aligns with toCamera projected onto YZ.
-                    float currentRoll = atan2f(fwdAxis.z, fwdAxis.y);
-                    float targetRoll  = atan2f(toCamera.z, toCamera.y);
-                    bbRot = Matrix44f::rotation_x(targetRoll - currentRoll);
+                    // RotateViewZAxisBillboarded @0x14052de70: Z is HARDCODED
+                    // to world +Z (not the authored Z row). Matches Previewd.
+                    //   yprime = normalize(cross(zprime, toCam))
+                    //   xprime = cross(yprime, zprime)
+                    Vector3f zp = worldUp;
+                    Vector3f yp = whiteout::cross(zp, toCam);
+                    float yLen = yp.length();
+                    if (yLen < kBillboardDistThreshold) yp = {0, 1, 0};
+                    else                                yp = yp.normalized();
+                    Vector3f xp = whiteout::cross(yp, zp);
+                    bbRot = {};
+                    bbRot.data[0][0] = xp.x; bbRot.data[0][1] = xp.y; bbRot.data[0][2] = xp.z;
+                    bbRot.data[1][0] = yp.x; bbRot.data[1][1] = yp.y; bbRot.data[1][2] = yp.z;
+                    bbRot.data[2][0] = zp.x; bbRot.data[2][1] = zp.y; bbRot.data[2][2] = zp.z;
+                    bbRot.data[3][3] = 1.0f;
                     haveRot = true;
                 }
 
@@ -823,6 +871,14 @@ void RenderService::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state
                     Matrix44f T_negRest = Matrix44f::translation({-pivF.x, -pivF.y, -pivF.z});
                     Matrix44f T_world   = Matrix44f::translation({pivWorld.x, pivWorld.y, pivWorld.z});
                     boneM = T_negRest * bbRot * T_world;
+                } else if (bbFlags & BONE_BILLBOARD_CAMERA_ANCHORED) {
+                    // CameraAnchored without a billboard rotation flag: still
+                    // need to re-center boneM so the pivot lands on pivWorld.
+                    // Previewd's PositionAnchor also strips rotation/scale;
+                    // replicate by rebuilding around identity rotation.
+                    Matrix44f T_negRest = Matrix44f::translation({-pivF.x, -pivF.y, -pivF.z});
+                    Matrix44f T_world   = Matrix44f::translation({pivWorld.x, pivWorld.y, pivWorld.z});
+                    boneM = T_negRest * T_world;
                 }
             }
         }

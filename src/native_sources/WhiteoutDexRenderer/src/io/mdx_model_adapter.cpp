@@ -550,19 +550,25 @@ SkeletonData MdxModelAdapter::GetSkeleton() {
     // node position in the hierarchy — matches allNodeMatrices indexing.
     sk.billboardFlags.assign(sk.nodeCount, 0);
     sk.nodePivots.assign(sk.nodeCount, Vector3f{0, 0, 0});
+    sk.nodeParents.assign(sk.nodeCount, -1);
     const auto& nodes = hierarchy_.Nodes();
     for (int i = 0; i < (int)nodes.size(); i++) {
         uint32_t nf = nodes[i].flags;
         uint32_t bbf = 0;
         using NF = whiteout::mdx::Node::NodeFlag;
-        if (nf & (uint32_t)NF::Billboarded)      bbf |= BONE_BILLBOARD_FULL;
-        if (nf & (uint32_t)NF::BillboardedLockX) bbf |= BONE_BILLBOARD_LOCK_X;
-        if (nf & (uint32_t)NF::BillboardedLockY) bbf |= BONE_BILLBOARD_LOCK_Y;
-        if (nf & (uint32_t)NF::BillboardedLockZ) bbf |= BONE_BILLBOARD_LOCK_Z;
+        // One-hot priority to match Previewd's GetObjectFlags @0x140456dd0:
+        // Billboarded > LockX > LockY > LockZ. Multiple file bits collapse
+        // to a single engine flag. CameraAnchored is independent.
+        if      (nf & (uint32_t)NF::Billboarded)      bbf |= BONE_BILLBOARD_FULL;
+        else if (nf & (uint32_t)NF::BillboardedLockX) bbf |= BONE_BILLBOARD_LOCK_X;
+        else if (nf & (uint32_t)NF::BillboardedLockY) bbf |= BONE_BILLBOARD_LOCK_Y;
+        else if (nf & (uint32_t)NF::BillboardedLockZ) bbf |= BONE_BILLBOARD_LOCK_Z;
+        if (nf & (uint32_t)NF::CameraAnchored)        bbf |= BONE_BILLBOARD_CAMERA_ANCHORED;
         sk.billboardFlags[i] = bbf;
 
         const auto& p = nodes[i].pivot;
         sk.nodePivots[i] = {p.x, p.y, p.z};
+        sk.nodeParents[i] = nodes[i].parentIdx;
     }
 
     return sk;

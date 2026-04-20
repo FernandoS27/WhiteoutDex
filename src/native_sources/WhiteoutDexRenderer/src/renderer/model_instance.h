@@ -199,6 +199,7 @@ struct ModelInstance {
     bool skinDirty = false;
     std::vector<uint32_t> billboardFlags;  // per-node billboard flags
     std::vector<Vector3f> nodePivots;     // per-node rest pivots (for billboard rotation center)
+    std::vector<int>      nodeParents;    // per-node parent indices (-1 = root), needed for CameraAnchored
 
     // GPU node palette (StructuredBuffer of offset matrices, one per model)
     gfx::BufferHandle nodePalette = gfx::BufferHandle::Invalid;

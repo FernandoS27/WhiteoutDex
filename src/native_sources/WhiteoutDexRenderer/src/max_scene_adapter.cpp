@@ -1070,6 +1070,7 @@ SkeletonData MaxSceneAdapter::GetSkeleton() {
     sd.nodeCount = (int)bones_.size();
     sd.inverseBindMatrices.resize(sd.nodeCount);
     sd.billboardFlags.resize(sd.nodeCount, 0);
+    sd.nodeParents.assign(sd.nodeCount, -1);
     for (int i = 0; i < sd.nodeCount; i++) {
         INode* node = bones_[i].node;
         Matrix3 inv = Inverse(node->GetNodeTM(0));
@@ -1078,13 +1079,16 @@ SkeletonData MaxSceneAdapter::GetSkeleton() {
         PackMatrix(inv, m16);
         sd.inverseBindMatrices[i] = {};
         memcpy(&sd.inverseBindMatrices[i].data[0][0], m16, 64);
-        // Read billboard flags from user properties
+        // Read billboard flags from user properties.
+        // One-hot priority Full > LockX > LockY > LockZ matches Previewd's
+        // GetObjectFlags @0x140456dd0. CameraAnchored stacks independently.
         int val = 0;
         uint32_t flags = 0;
-        if (node->GetUserPropInt(_T("Billboarded"), val) && val)      flags |= BONE_BILLBOARD_FULL;
-        if (node->GetUserPropInt(_T("BillboardedLockX"), val) && val) flags |= BONE_BILLBOARD_LOCK_X;
-        if (node->GetUserPropInt(_T("BillboardedLockY"), val) && val) flags |= BONE_BILLBOARD_LOCK_Y;
-        if (node->GetUserPropInt(_T("BillboardedLockZ"), val) && val) flags |= BONE_BILLBOARD_LOCK_Z;
+        if      (node->GetUserPropInt(_T("Billboarded"), val)      && val) flags |= BONE_BILLBOARD_FULL;
+        else if (node->GetUserPropInt(_T("BillboardedLockX"), val) && val) flags |= BONE_BILLBOARD_LOCK_X;
+        else if (node->GetUserPropInt(_T("BillboardedLockY"), val) && val) flags |= BONE_BILLBOARD_LOCK_Y;
+        else if (node->GetUserPropInt(_T("BillboardedLockZ"), val) && val) flags |= BONE_BILLBOARD_LOCK_Z;
+        if      (node->GetUserPropInt(_T("CameraAnchored"), val)   && val) flags |= BONE_BILLBOARD_CAMERA_ANCHORED;
         sd.billboardFlags[i] = flags;
     }
     return sd;
