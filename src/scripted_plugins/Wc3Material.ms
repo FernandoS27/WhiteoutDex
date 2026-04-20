@@ -1,20 +1,21 @@
 -------------------------------------------------------------------------------
--- Wc3 Material — FINAL
+-- Wc3 Material — FINAL (native Bitmaptexture edition)
 -- material plugin for 3ds Max (2016 - 2027)
 -- Extends Standard material with WC3/Reforged material parameters
 -- Parameters prefixed with  to avoid conflicts with NeoDex
--- Works with: Wc3Bitmap (replaceUI:false) or standard Bitmaptexture
+-- Works with: standard Bitmaptexture only (Wc3Bitmap no longer required)
 --
 -- All animation metadata lives here:
 --   Opacity (KMTA) + Controller Type
 --   Texture Slot (KMTF) + Coord ID
 --   UV Animation (TXAN) + Controller Type + U/V/W spinners
+--   replaceableId (was on Wc3Bitmap, now on this material)
 -------------------------------------------------------------------------------
 
 plugin material Wdx_Wc3Material
 name:"Wc3Material"
 classID:#(0x4b8e20a3, 0x1f6c3d57)
-extends:Standard replaceUI:true version:11
+extends:Standard replaceUI:true version:12
 (
 	local isLoading = false
 	
@@ -22,7 +23,7 @@ extends:Standard replaceUI:true version:11
 	-- LOCAL FUNCTIONS (before parameters)
 	---------------------------------------------------------------------------
 	
-	-- Gets UVGen from any texture (Wc3Bitmap or standard Bitmaptexture)
+	-- Gets UVGen from any Bitmaptexture
 	fn getUVGen tex =
 	(
 		if tex == undefined do return undefined
@@ -31,18 +32,24 @@ extends:Standard replaceUI:true version:11
 		undefined
 	)
 	
+	-- Gets the native texture for viewport delegate assignment.
+	-- With native Bitmaptexture this is simply the texture itself.
+	fn getNativeTex tex =
+	(
+		if tex == undefined do return undefined
+		tex
+	)
+	
 	fn adjustFilterMode val =
 	(
 		fn cfgOpacity bmpTex mono alpha =
 		(
-			local cl = classof bmpTex
-			if cl == Bitmaptexture or cl == Wc3Bitmap do
+			if classof bmpTex == Bitmaptexture do
 			( bmpTex.monoOutput = mono; bmpTex.alphaSource = alpha )
 		)
 		fn texHasAlpha bmpTex =
 		(
-			local cl = classof bmpTex
-			if cl != Bitmaptexture and cl != Wc3Bitmap do return false
+			if classof bmpTex != Bitmaptexture do return false
 			try (
 				local bmp = bmpTex.bitmap
 				if bmp == undefined do return false
@@ -62,8 +69,7 @@ extends:Standard replaceUI:true version:11
 		(
 			delegate.opacityMapEnable = on; delegate.opacityType = 0
 			delegate.Diffuse = color 0 0 0; delegate.Ambient = color 0 0 0
-			local cl = classof opMap
-			if cl == Bitmaptexture or cl == Wc3Bitmap do
+			if classof opMap == Bitmaptexture do
 			( opMap.coords.U_Tile = true; opMap.coords.V_Tile = true
 			  if texHasAlpha opMap then cfgOpacity opMap 1 0 else cfgOpacity opMap 0 2 )
 		)
@@ -73,13 +79,12 @@ extends:Standard replaceUI:true version:11
 	
 	fn generateOpacity tex =
 	(
-		local cl = classof tex
-		if cl != Bitmaptexture and cl != Wc3Bitmap do return undefined
+		if classof tex != Bitmaptexture do return undefined
 		local ok = false
 		try ( ok = (tex.fileName != undefined and tex.fileName != "") or (tex.bitmap != undefined) ) catch()
 		if not ok do return undefined
 		tex.alphaSource = 0; tex.monoOutput = 1
-		delegate.opacityMap = tex; tex
+		delegate.opacityMap = getNativeTex tex; tex
 	)
 	
 	fn applyFilterMode = ( adjustFilterMode this.filterMode )
@@ -202,6 +207,42 @@ extends:Standard replaceUI:true version:11
 		try ( fname = filenameFromPath texMap.fileName ) catch()
 		if fname != "" then fname else (classof texMap) as string
 	)
+
+	-- Extract the directory prefix from an MDX texture path.
+	-- Examples:
+	--   "Textures\Foo.blp"          → "Textures\"
+	--   "war3mapImported\bar.blp"   → "war3mapImported\"
+	--   "foo.blp"                   → ""
+	--   "ReplaceableTextures\Team\x.blp" → "ReplaceableTextures\Team\"
+	-- Handles both backslash and forward slash; always returns with the
+	-- trailing separator included (empty string if no separator present).
+	fn extractTexturePrefix mdxPath =
+	(
+		if mdxPath == undefined or mdxPath == "" then return ""
+		local s = mdxPath as string
+		-- Find the last path separator (either \ or /)
+		local lastSep = 0
+		for i = s.count to 1 by -1 do
+		(
+			local c = s[i]
+			if c == "\\" or c == "/" do ( lastSep = i; exit )
+		)
+		if lastSep == 0 then "" else (substring s 1 lastSep)
+	)
+
+	-- Build a full MDX path from (prefix + filename) for export.
+	-- Passes through anything already containing a separator unchanged,
+	-- so the exporter can call this without worrying about double-prefixing.
+	fn buildTexturePath prefix fileName =
+	(
+		if fileName == undefined or fileName == "" then return ""
+		-- If filename already contains a separator, assume it's a full path
+		local hasSep = (findString fileName "\\" != undefined) or \
+		               (findString fileName "/" != undefined)
+		if hasSep then fileName
+		else if prefix == undefined or prefix == "" then fileName
+		else prefix + fileName
+	)
 	
 	---------------------------------------------------------------------------
 	-- PARAMETERS: Material Basic
@@ -220,6 +261,8 @@ extends:Standard replaceUI:true version:11
 		unselectable	type:#boolean	animatable:false	default:false	ui:chkUnsel
 		sortOrder		type:#integer	animatable:false	default:1	ui:ddSortOrder
 		priorityPlane	type:#integer	animatable:false	default:0	ui:spnPriority
+		-- replaceableId: moved here from Wc3Bitmap (1 = Not Used, 2+ = replaceable type)
+		replaceableId	type:#integer	animatable:false	default:1	ui:ddReplaceable
 		
 		on twoSided set val do ( try ( delegate.twoSided = val ) catch() )
 		on noDepthTest set val do
@@ -260,6 +303,7 @@ extends:Standard replaceUI:true version:11
 		-- UV tracking params (share controllers with diffuse texture coords)
 		anim_UOffset	type:#float		animatable:true		default:0.0		ui:spnUOffset
 		anim_VOffset	type:#float		animatable:true		default:0.0		ui:spnVOffset
+		anim_WOffset	type:#float		animatable:true		default:0.0		ui:spnWOffset
 		anim_WAngle		type:#float		animatable:true		default:0.0		ui:spnWAngle
 		anim_UTiling	type:#float		animatable:true		default:1.0		ui:spnUTiling
 		anim_VTiling	type:#float		animatable:true		default:1.0		ui:spnVTiling
@@ -270,6 +314,7 @@ extends:Standard replaceUI:true version:11
 		-- Sync UV values directly to diffuse texture coords
 		on anim_UOffset set val do ( textureControllersUpdate() )
 		on anim_VOffset set val do ( textureControllersUpdate() )
+		on anim_WOffset set val do ()   -- StdUVGen has no W_Offset; param is MDX round-trip only
 		on anim_WAngle  set val do ( textureControllersUpdate() )
 		on anim_UTiling set val do ()
 		on anim_VTiling set val do ()
@@ -286,11 +331,24 @@ extends:Standard replaceUI:true version:11
 		emissiveMap		type:#texturemap	animatable:false	ui:mbEmissive
 		teamColorMap	type:#texturemap	animatable:false	ui:mbTeamColor
 		environmentMap	type:#texturemap	animatable:false	ui:mbEnv
-		
+
+		-- Texture path prefixes (MDX folder path, stripped of filename).
+		-- Populated by the importer from the original MDX texture path, e.g.
+		-- "Textures\Foo.blp" → prefix="Textures\", filename stored in the
+		-- bitmap. On export the prefix is re-prepended to produce the full
+		-- MDX path. User-editable so they can relocate textures between
+		-- folders (e.g. "war3mapImported\") without touching the filename.
+		diffusePrefix		type:#string	animatable:false	default:""	ui:edtDiffPrefix
+		normalPrefix		type:#string	animatable:false	default:""	ui:edtNormPrefix
+		ormPrefix			type:#string	animatable:false	default:""	ui:edtORMPrefix
+		emissivePrefix		type:#string	animatable:false	default:""	ui:edtEmisPrefix
+		teamColorPrefix		type:#string	animatable:false	default:""	ui:edtTeamColPrefix
+		environmentPrefix	type:#string	animatable:false	default:""	ui:edtEnvPrefix
+
 		on diffuseMap set val do
 		(
 			try (
-				delegate.diffuseMap = val
+				delegate.diffuseMap = getNativeTex val
 				generateOpacity val
 				applyFilterMode()
 				try ( this.texMapRollout.mbDiffuse.text = getMapName val ) catch()
@@ -349,6 +407,8 @@ extends:Standard replaceUI:true version:11
 		label		lblSep2		"" height:2
 		dropdownlist	ddSortOrder	"Sort Order ..................................................." items:#("Not Used", "Near to far", "Far to near") width:300 align:#center enabled:false
 		spinner		spnPriority		"Priority Plane ................." range:[-20,20,0] type:#integer fieldwidth:55 align:#right
+		label		lblSep2b	"" height:2
+		dropdownlist	ddReplaceable	"Replaceable Texture ................................" items:#("Not Used", "Team Color", "Team Glow", "Cliff", "Lord Cliffington") width:300 align:#center
 		
 		on basicRollout open do
 		(
@@ -380,6 +440,7 @@ extends:Standard replaceUI:true version:11
 			label		lblSepUV	"" height:2
 			spinner		spnUOffset	"U Offset .................." range:[-9999,9999,0.0] type:#float scale:0.01 fieldwidth:55 align:#right
 			spinner		spnVOffset	"V Offset .................." range:[-9999,9999,0.0] type:#float scale:0.01 fieldwidth:55 align:#right
+			spinner		spnWOffset	"W Offset ................" range:[-9999,9999,0.0] type:#float scale:0.01 fieldwidth:55 align:#right
 			spinner		spnWAngle	"W Angle ................." range:[-9999,9999,0.0] type:#float scale:0.1 fieldwidth:55 align:#right
 			spinner		spnUTiling	"U Tiling ..................." range:[-9999,9999,1.0] type:#float scale:0.01 fieldwidth:55 align:#right
 			spinner		spnVTiling	"V Tiling ..................." range:[-9999,9999,1.0] type:#float scale:0.01 fieldwidth:55 align:#right
@@ -391,23 +452,29 @@ extends:Standard replaceUI:true version:11
 	---------------------------------------------------------------------------
 	rollout texMapRollout "Material Texture Maps"
 	(
-		label		lblDiff		"Diffuse ............................................................." align:#left height:16
-		mapbutton	mbDiffuse	"(None)" width:300 height:20 align:#center
-		label		lblSep3		"" height:2
-		label		lblNorm		"Normal ............................................................" align:#left height:16
-		mapbutton	mbNormal	"(None)" width:300 height:20 align:#center
-		label		lblSep4		"" height:2
-		label		lblORM		"ORM ................................................................." align:#left height:16
-		mapbutton	mbORM		"(None)" width:300 height:20 align:#center
-		label		lblSep5		"" height:2
-		label		lblEmis		"Emissive ........................................................." align:#left height:16
-		mapbutton	mbEmissive	"(None)" width:300 height:20 align:#center
-		label		lblSepTC	"" height:2
-		label		lblTeamCol	"Team Color (HD, optional) ..........................." align:#left height:16
-		mapbutton	mbTeamColor	"(None)" width:300 height:20 align:#center
-		label		lblSep6		"" height:2
-		label		lblEnv		"Environment ................................................." align:#left height:16
-		mapbutton	mbEnv		"(None)" width:300 height:20 align:#center
+		label		lblDiff			"Diffuse ............................................................." align:#left height:16
+		mapbutton	mbDiffuse		"(None)" width:300 height:20 align:#center
+		edittext	edtDiffPrefix	"Path Prefix: " width:300 align:#center
+		label		lblSep3			"" height:2
+		label		lblNorm			"Normal ............................................................" align:#left height:16
+		mapbutton	mbNormal		"(None)" width:300 height:20 align:#center
+		edittext	edtNormPrefix	"Path Prefix: " width:300 align:#center
+		label		lblSep4			"" height:2
+		label		lblORM			"ORM ................................................................." align:#left height:16
+		mapbutton	mbORM			"(None)" width:300 height:20 align:#center
+		edittext	edtORMPrefix	"Path Prefix: " width:300 align:#center
+		label		lblSep5			"" height:2
+		label		lblEmis			"Emissive ........................................................." align:#left height:16
+		mapbutton	mbEmissive		"(None)" width:300 height:20 align:#center
+		edittext	edtEmisPrefix	"Path Prefix: " width:300 align:#center
+		label		lblSepTC		"" height:2
+		label		lblTeamCol		"Team Color (HD, optional) ............................" align:#left height:16
+		mapbutton	mbTeamColor		"(None)" width:300 height:20 align:#center
+		edittext	edtTeamColPrefix "Path Prefix: " width:300 align:#center
+		label		lblSep6			"" height:2
+		label		lblEnv			"Environment ................................................." align:#left height:16
+		mapbutton	mbEnv			"(None)" width:300 height:20 align:#center
+		edittext	edtEnvPrefix	"Path Prefix: " width:300 align:#center
 
 		on texMapRollout open do
 		(
@@ -445,7 +512,7 @@ extends:Standard replaceUI:true version:11
 	rollout infoRollout "Info"
 	(
 		label	lblName		"Wc3 Material" align:#center
-		label	lblBuild	"Build 2.1.0" align:#center
+		label	lblBuild	"Build 2.2.0" align:#center
 		label	lblInfo		"Material Plugin for 3ds Max" align:#center
 	)
 	

@@ -8,6 +8,8 @@
 #include "link_constraint_sampler.h"
 #include "subsample_engine.h"
 
+#include <modstack.h>  // IDerivedObject (full definition for GetObjRef etc.)
+
 #include <cmath>
 #include <fstream>
 
@@ -24,6 +26,23 @@ static std::ofstream& animLog() {
 }
 #define ALOG animLog()
 #define AFLUSH animLog().flush()
+
+// Dedicated PRE2 debug log — writes to %TEMP%\mdlx_pre2_debug.log
+// Separated from the main anim log so PRE2-only debugging doesn't drown
+// in bone/helper spam, and so it's easy to diff run-to-run.
+static std::ofstream& pre2Log() {
+    static std::ofstream log;
+    if (!log.is_open()) {
+        char tmp[MAX_PATH];
+        GetTempPathA(MAX_PATH, tmp);
+        std::string path = std::string(tmp) + "mdlx_pre2_debug.log";
+        log.open(path, std::ios::trunc);
+        log << "=== PRE2 Cyclic Rotation Debug Log ===\n";
+    }
+    return log;
+}
+#define PLOG pre2Log()
+#define PFLUSH pre2Log().flush()
 
 namespace core {
 
@@ -176,6 +195,231 @@ static bool isTrackAllIdentityScale(const ir::Vec3Track& track) {
     return true;
 }
 
+// ─── Patch C: PRE2 cyclic rotation extraction ────────────────────────
+//
+// Particle2 emitters often have their rotation sub-controller set to
+// ORT_CYCLE/ORT_LOOP with a short period (e.g. 333ms, 667ms). In MDX
+// this maps to a KGRT track with globalSequenceId referring to a GLBS
+// entry with the cycle duration.
+//
+// The regular per-sequence FK sampling path destroys this:
+//   * Each regular sequence (Stand, Walk...) resamples GetNodeTM every
+//     frame over seq.startTime..endTime.
+//   * A 3-second sequence on a 333ms cyclic rotation contains ~9 full
+//     rotations; the delta-against-bind evaluation either produces
+//     garbage or resolves to near-identity at sequence boundaries.
+//   * isTrackAllIdentityRot then strips the track entirely.
+//
+// This helper detects the cyclic case and extracts the rotation keys
+// directly from the controller (one pass, not per-sequence), tagging
+// the resulting NodeAnimation with the correct globalSequenceIndex.
+//
+// Scope: intentionally limited to Wc3Particles2 nodes. BONE and HELP
+// nodes with cyclic rotations may have similar issues but their
+// regular-rotation pipelines are currently validated and should not
+// be disturbed by this targeted fix.
+
+static bool isWc3Particles2Node(INode* maxNode) {
+    if (!maxNode) return false;
+    Object* obj = maxNode->GetObjectRef();
+    if (!obj) return false;
+    // Walk derived-object chain to get to the base object
+    while (obj && obj->SuperClassID() == GEN_DERIVOB_CLASS_ID) {
+        IDerivedObject* d = static_cast<IDerivedObject*>(obj);
+        obj = d->GetObjRef();
+    }
+    if (!obj) return false;
+    // WC3_PARTICLES2 from mdx_class_ids.h
+    const Class_ID kWc3Particles2(0xD9F33BC9u, 0x7A0DA37Au);
+    return obj->ClassID() == kWc3Particles2;
+}
+
+// Returns true if any of the rotation sub-controller's after-ORT is
+// CYCLE or LOOP (the two values Max treats as "looping" for GS purposes).
+static bool hasCyclicRotation(Control* rotCtrl) {
+    if (!rotCtrl) return false;
+    int afterORT = rotCtrl->GetORT(ORT_AFTER);
+    return afterORT == ORT_CYCLE || afterORT == ORT_LOOP;
+}
+
+// Extract the cyclic rotation for a PRE2 node into a single NodeAnimation
+// with globalSequenceIndex set. Returns true on success (keys + GS registered).
+// This function uses GetNodeTM-based delta just like the regular rotation
+// pipeline, but samples ONLY within one cycle period (0..duration), not
+// across multiple sequences.
+static bool extractPre2CyclicRotation(INode* maxNode, int32_t nodeIdx,
+                                      Control* rotCtrl, ir::IRModel& irModel)
+{
+    if (!maxNode || !rotCtrl) return false;
+
+    MSTR nodeName = maxNode->GetName();
+    std::string nameA;
+    {
+        int len = WideCharToMultiByte(CP_UTF8, 0, nodeName.data(), -1,
+                                       nullptr, 0, nullptr, nullptr);
+        if (len > 0) {
+            nameA.resize(len - 1);
+            WideCharToMultiByte(CP_UTF8, 0, nodeName.data(), -1,
+                                 nameA.data(), len, nullptr, nullptr);
+        }
+    }
+
+    PLOG << "\n──────────────────────────────────────────────────\n";
+    PLOG << "Node[" << nodeIdx << "] '" << nameA << "'\n";
+
+    // Duration = last key's time
+    int numKeys = rotCtrl->NumKeys();
+    if (numKeys <= 0) {
+        PLOG << "  REJECT: no keys on rotation controller\n";
+        PFLUSH;
+        ALOG << "    [PRE2-cyclic] no keys on rotation controller — skip\n";
+        return false;
+    }
+    TimeValue duration = rotCtrl->GetKeyTime(numKeys - 1);
+    if (duration <= 0) {
+        PLOG << "  REJECT: duration=" << duration << " (must be > 0)\n";
+        PFLUSH;
+        ALOG << "    [PRE2-cyclic] duration<=0 — skip\n";
+        return false;
+    }
+
+    // Convert ticks to milliseconds for logging only
+    uint32_t durMs = static_cast<uint32_t>(
+        static_cast<int64_t>(duration) * 1000 / 4800);
+
+    PLOG << "  rotCtrl ClassID=(0x" << std::hex << rotCtrl->ClassID().PartA()
+         << "," << rotCtrl->ClassID().PartB() << std::dec << ")\n";
+    PLOG << "  numKeys=" << numKeys << " duration=" << duration
+         << " ticks (" << durMs << " ms)\n";
+    PLOG << "  afterORT=" << rotCtrl->GetORT(ORT_AFTER)
+         << " beforeORT=" << rotCtrl->GetORT(ORT_BEFORE) << "\n";
+
+    ALOG << "    [PRE2-cyclic] numKeys=" << numKeys
+         << " duration=" << duration << " ticks\n";
+
+    // Register the GlobalSequence (de-duped by duration)
+    // IMPORTANT: globalSequenceDurations stores TICKS (matches
+    // GEOA/material convention). Writer converts ticks→ms at MDX output.
+    uint32_t durU = static_cast<uint32_t>(duration);
+    int32_t gsIdx = -1;
+    for (size_t i = 0; i < irModel.globalSequenceDurations.size(); ++i) {
+        if (irModel.globalSequenceDurations[i] == durU) {
+            gsIdx = static_cast<int32_t>(i);
+            break;
+        }
+    }
+    if (gsIdx < 0) {
+        irModel.globalSequenceDurations.push_back(durU);
+        gsIdx = static_cast<int32_t>(irModel.globalSequenceDurations.size() - 1);
+        PLOG << "  registered NEW GLBS[" << gsIdx << "] durationTicks=" << durU
+             << " (=" << durMs << "ms)\n";
+        ALOG << "    [PRE2-cyclic] registered new GLBS[" << gsIdx << "] dur=" << durU << "\n";
+    } else {
+        PLOG << "  reusing GLBS[" << gsIdx << "] durationTicks=" << durU
+             << " (=" << durMs << "ms)\n";
+        ALOG << "    [PRE2-cyclic] reusing GLBS[" << gsIdx << "] dur=" << durU << "\n";
+    }
+
+    // Extract local rotation via GetNodeTM for each key time.
+    //
+    // Earlier attempts failed:
+    //   1. GetNodeTM-delta against bind pose → identity for ORT_CYCLE at t=0
+    //      (bind sampled at t=0, where cyclic already active).
+    //   2. rotCtrl->GetValue(t, &quat, iv) directly → returns identity for t=0
+    //      because Max's PRS rotation sub-controller stores *deltas* relative
+    //      to the node's rest pose, not absolute local rotation.
+    //
+    // Correct method: maxNode->GetNodeTM(t) * Inverse(parentTM) yields the
+    // ABSOLUTE local transform at time t, including the rest pose.
+    INode* parentNode = maxNode->GetParentNode();
+    INode* rootNode = GetCOREInterface()->GetRootNode();
+    bool hasParent = (parentNode && parentNode != rootNode && !parentNode->IsRootNode());
+
+    PLOG << "  parent=" << (hasParent ? "yes" : "no-or-root")
+         << " parentName='";
+    if (hasParent) {
+        MSTR pname = parentNode->GetName();
+        std::string pnameA;
+        int len = WideCharToMultiByte(CP_UTF8, 0, pname.data(), -1,
+                                       nullptr, 0, nullptr, nullptr);
+        if (len > 0) {
+            pnameA.resize(len - 1);
+            WideCharToMultiByte(CP_UTF8, 0, pname.data(), -1,
+                                 pnameA.data(), len, nullptr, nullptr);
+        }
+        PLOG << pnameA;
+    }
+    PLOG << "'\n";
+
+    ir::NodeAnimation nodeAnim;
+    nodeAnim.nodeIndex = nodeIdx;
+    nodeAnim.rotation.interpolation = ir::InterpolationType::Linear;
+    nodeAnim.rotation.globalSequenceIndex = gsIdx;
+
+    PLOG << "  --- Key extraction ---\n";
+
+    for (int i = 0; i < numKeys; ++i) {
+        TimeValue t = rotCtrl->GetKeyTime(i);
+
+        Matrix3 nodeTM = maxNode->GetNodeTM(t);
+        Matrix3 localTM = nodeTM;
+        if (hasParent) {
+            Matrix3 parentTM = parentNode->GetNodeTM(t);
+            localTM = nodeTM * Inverse(parentTM);
+        }
+        localTM.NoTrans();
+
+        // Normalize row vectors to strip any scale component
+        Point3 r0 = Normalize(localTM.GetRow(0));
+        Point3 r1 = Normalize(localTM.GetRow(1));
+        Point3 r2 = Normalize(localTM.GetRow(2));
+        Quat localRot = Quat(Matrix3(r0, r1, r2, Point3(0, 0, 0)));
+
+        // Log RAW value before any adjustments
+        PLOG << "    key[" << i << "] t=" << t << " ticks ("
+             << (static_cast<int64_t>(t) * 1000 / 4800) << "ms)"
+             << " raw=(" << localRot.x << "," << localRot.y
+             << "," << localRot.z << "," << localRot.w << ")";
+
+        // Hemisphere consistency: ensure continuity with previous key
+        bool flipped = false;
+        if (!nodeAnim.rotation.keys.empty()) {
+            const Quat& prev = nodeAnim.rotation.keys.back().value;
+            if ((prev.x*localRot.x + prev.y*localRot.y +
+                 prev.z*localRot.z + prev.w*localRot.w) < 0.0f) {
+                localRot.x = -localRot.x; localRot.y = -localRot.y;
+                localRot.z = -localRot.z; localRot.w = -localRot.w;
+                flipped = true;
+            }
+        }
+
+        // Snap near-identity components
+        if (fabsf(localRot.x) < 0.00001f) localRot.x = 0.0f;
+        if (fabsf(localRot.y) < 0.00001f) localRot.y = 0.0f;
+        if (fabsf(localRot.z) < 0.00001f) localRot.z = 0.0f;
+        if (fabsf(localRot.w - 1.0f) < 0.00001f) localRot.w = 1.0f;
+        if (fabsf(localRot.w + 1.0f) < 0.00001f) localRot.w = -1.0f;
+
+        PLOG << " final=(" << localRot.x << "," << localRot.y
+             << "," << localRot.z << "," << localRot.w << ")"
+             << (flipped ? " [HEMI-FLIPPED]" : "") << "\n";
+
+        ir::Keyframe<Quat> key;
+        key.time = t;
+        key.value = localRot;
+        nodeAnim.rotation.keys.push_back(key);
+    }
+
+    PLOG << "  --- DONE: pushing NodeAnimation with "
+         << numKeys << " keys, gsIdx=" << gsIdx << " ---\n";
+    PFLUSH;
+
+    irModel.nodeAnimations.push_back(std::move(nodeAnim));
+    ALOG << "    [PRE2-cyclic] emitted NodeAnimation with "
+         << numKeys << " rotation keys, gsIdx=" << gsIdx << "\n";
+    return true;
+}
+
 void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                               const std::vector<ir::Sequence>& sequences,
                               const Config& config,
@@ -291,6 +535,31 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
              << " rotDelta=" << (needsRotDelta ? "ACTIVE" : "none(identity)")
              << "\n";
 
+        // ── Patch C: PRE2 cyclic rotation short-circuit ────────────
+        //
+        // For Wc3Particles2 emitters with ORT_CYCLE/ORT_LOOP rotations,
+        // we extract ONCE from the controller (respecting the cycle
+        // period as a Global Sequence) instead of per-sequence resampling
+        // which destroys the cyclic nature.
+        //
+        // IMPORTANT: we still fall through to the regular translation/
+        // scale pipeline below. Only the rotation is short-circuited.
+        //
+        // Scope: intentionally limited to Wc3Particles2 nodes. Extending
+        // to HELP nodes was tried and reverted — did not resolve the
+        // helper-parented particle orientation issue, and risked regressing
+        // regular helper animations. Left for a future dedicated patch.
+        bool pre2CyclicHandled = false;
+        if (isWc3Particles2Node(maxNode)) {
+            Control* rotCtrl = tmCtrl->GetRotationController();
+            if (hasCyclicRotation(rotCtrl)) {
+                ALOG << "  [PRE2-cyclic] node[" << nodeIdx << "] '" << irNode.name
+                     << "' has cyclic rotation — using GlobalSequence path\n";
+                pre2CyclicHandled = extractPre2CyclicRotation(
+                    maxNode, static_cast<int32_t>(nodeIdx), rotCtrl, irModel);
+            }
+        }
+
         // Collect all sequence animations for this node
         std::vector<ir::NodeAnimation> nodeAnims;
         bool hasAnyRealTranslation = false;
@@ -346,6 +615,21 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                                                  nodeAnim.translation, nodeAnim.rotation,
                                                  nodeAnim.scale);
                 }
+            }
+
+            // ── Patch C: PRE2 cyclic rotation — clear sampler output ──
+            //
+            // The samplers above unconditionally write rotation keys into
+            // nodeAnim.rotation. For PRE2 nodes handled by the cyclic path,
+            // those keys would later merge into the per-node KGRT and
+            // overwrite/duplicate our correct cyclic values.
+            //
+            // The fix: clear the rotation keys right after sampling so only
+            // our cyclic-path NodeAnimation feeds into the merge.
+            // Also zero the interpolation so isTrackAllIdentityRot passes,
+            // keeping hasAnyRealRotation=false (→ no identity rest-pose key).
+            if (pre2CyclicHandled) {
+                nodeAnim.rotation.keys.clear();
             }
 
             // ── Translation delta using world TMs ──
@@ -447,7 +731,13 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
             // Resample at EVERY FRAME using GetNodeTM() world transforms.
             // NeoDex samples all bones at every frame — GetNodeTM() captures
             // IK, constraints, and all controller effects correctly.
-            if (needsRotDelta) {
+            //
+            // Skip entirely for PRE2 nodes that used the cyclic path above —
+            // their rotation is already emitted as a single NodeAnimation
+            // with globalSequenceIndex. The earlier clear block (right after
+            // the samplers) already stripped any FK/IK sampler output, so
+            // skipping here keeps rotation empty for this per-sequence nodeAnim.
+            if (needsRotDelta && !pre2CyclicHandled) {
                 nodeAnim.rotation.keys.clear();
                 nodeAnim.rotation.interpolation = ir::InterpolationType::Linear;
 

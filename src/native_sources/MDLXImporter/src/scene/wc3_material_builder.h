@@ -4,6 +4,7 @@
 #include <core/intermediate_types.h>
 #include <util/error_reporter.h>
 #include <max.h>
+#include <functional>
 
 namespace mdx_scene {
 
@@ -21,10 +22,17 @@ public:
         core::ExportErrorReporter& reporter);
 
 private:
+    /// Function type that returns a texmap vector (indexed by texture index)
+    /// for a given layer. Different layers may get different bitmap instances
+    /// for the same texture index if they use different texture animations.
+    using LayerTexmapsFn =
+        std::function<std::vector<Texmap*>(const ir::MaterialLayer&)>;
+
     Mtl* buildWc3Material(
         const ir::Material& irMat,
         const ir::IRModel& irModel,
-        const std::vector<Texmap*>& texmaps,
+        const std::vector<Texmap*>& texmapsFlat,
+        const LayerTexmapsFn& buildLayerTexmaps,
         const std::wstring& modelDir,
         Interface* gi,
         core::ExportErrorReporter& reporter);

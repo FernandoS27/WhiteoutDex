@@ -17,6 +17,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <sstream>
 
 // Debug log shared with mdlx_importer_plugin.cpp
 static std::ofstream& matLog() {
@@ -380,53 +382,43 @@ namespace {
 
 using mdx_scene::resolveTexturePathFull;
 
-Texmap* createWc3Bitmap(const ir::Texture& irTex, const std::wstring& modelDir,
-                        void* cascStorage, Interface* gi)
+/// Create a native 3ds Max BitmapTex for one IR texture entry.
+/// Sets file path and tiling (wrapU/wrapV) on the StdUVGen.
+/// replaceableId is NOT set here — it is stored on the Wc3Material later
+/// (see buildSingleLayerWc3Material).
+/// sphereEnvMap is also set on the Wc3Material level via StdUVGen.
+Texmap* createNativeBitmap(const ir::Texture& irTex, const std::wstring& modelDir,
+                           void* cascStorage, Interface* /*gi*/)
 {
-    MLOG << "[TEX] createWc3Bitmap for '" << irTex.filePath << "'" << std::endl;
+    MLOG << "[TEX] createNativeBitmap for '" << irTex.filePath << "'" << std::endl;
 
-    Texmap* tex = static_cast<Texmap*>(
-        gi->CreateInstance(TEXMAP_CLASS_ID, mdx_ids::WC3_BITMAP));
-
-    if (!tex) {
-        MLOG << "[TEX]   Wc3Bitmap plugin unavailable, using default BitmapTex" << std::endl;
-        // Fallback: standard BitmapTex
-        BitmapTex* bmpTex = NewDefaultBitmapTex();
-        if (!irTex.filePath.empty()) {
-            auto wpath = resolveTexturePathFull(modelDir, toWstr(irTex.filePath), cascStorage);
-            bmpTex->SetMapName(wpath.c_str());
-        }
-        return bmpTex;
+    BitmapTex* bmpTex = NewDefaultBitmapTex();
+    if (!bmpTex) {
+        MLOG << "[TEX]   ERROR: NewDefaultBitmapTex() returned null" << std::endl;
+        return nullptr;
     }
 
-    // Set file path on the BitmapTex delegate (found in references)
+    // Set the file path
     if (!irTex.filePath.empty()) {
         auto wpath = resolveTexturePathFull(modelDir, toWstr(irTex.filePath), cascStorage);
-        bool delegateFound = false;
-        for (int i = 0; i < tex->NumRefs(); i++) {
-            ReferenceTarget* ref = tex->GetReference(i);
-            if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
-                static_cast<BitmapTex*>(ref)->SetMapName(wpath.c_str());
-                delegateFound = true;
-                MLOG << "[TEX]   SetMapName on delegate (refIdx=" << i << ")" << std::endl;
-                break;
-            }
-        }
-        if (!delegateFound)
-            MLOG << "[TEX]   WARNING: no BitmapTex delegate found among "
-                 << tex->NumRefs() << " refs" << std::endl;
+        bmpTex->SetMapName(wpath.c_str());
+        MLOG << "[TEX]   SetMapName '" << irTex.filePath << "'" << std::endl;
     }
 
-    // Set custom properties
-    auto* ref = dynamic_cast<ReferenceTarget*>(tex);
-    if (ref) {
-        // replaceableId is 1-based in the plugin: 1 = Not Used, 2+ = replaceable types
-        pbSetInt(ref, L"replaceableId", irTex.replaceableId + 1);
-        pbSetBool(ref, L"wrapU", irTex.wrapU ? TRUE : FALSE);
-        pbSetBool(ref, L"wrapV", irTex.wrapV ? TRUE : FALSE);
+    // Configure tiling (wrap) on the StdUVGen
+    // U_WRAP and V_WRAP are the standard 3ds Max texture symmetry flags
+    StdUVGen* uvGen = bmpTex->GetUVGen();
+    if (uvGen) {
+        int tilingFlags = 0;
+        if (irTex.wrapU) tilingFlags |= U_WRAP;
+        if (irTex.wrapV) tilingFlags |= V_WRAP;
+        uvGen->SetTextureTiling(tilingFlags);
+
+        MLOG << "[TEX]   Tiling: U=" << (irTex.wrapU ? "wrap" : "clamp")
+             << " V=" << (irTex.wrapV ? "wrap" : "clamp") << std::endl;
     }
 
-    return tex;
+    return bmpTex;
 }
 
 // Map ir::BlendMode to filterMode int (1-based)
@@ -457,6 +449,185 @@ const wchar_t* textureSlotParamName(ir::TextureSlot slot) {
     }
 }
 
+// Map ir::TextureSlot to Wc3Material prefix-param name.
+// Must stay in sync with the Wc3Material.ms parameter declarations.
+const wchar_t* textureSlotPrefixParamName(ir::TextureSlot slot) {
+    switch (slot) {
+    case ir::TextureSlot::Diffuse:     return L"diffusePrefix";
+    case ir::TextureSlot::Normal:      return L"normalPrefix";
+    case ir::TextureSlot::ORM:         return L"ormPrefix";
+    case ir::TextureSlot::Emissive:    return L"emissivePrefix";
+    case ir::TextureSlot::TeamColor:   return L"teamColorPrefix";
+    case ir::TextureSlot::Reflection:
+    case ir::TextureSlot::Environment: return L"environmentPrefix";
+    default: return nullptr;
+    }
+}
+
+// Extract the folder-prefix portion of an MDX texture path.
+// "Textures\Foo.blp"              → "Textures\"
+// "war3mapImported\bar.blp"       → "war3mapImported\"
+// "ReplaceableTextures\Team\x.blp"→ "ReplaceableTextures\Team\"
+// "foo.blp"                       → ""
+// Handles both separators; normalizes forward slash to backslash.
+std::wstring extractTexturePrefix(const std::string& mdxPath) {
+    if (mdxPath.empty()) return {};
+    std::wstring w(mdxPath.begin(), mdxPath.end());
+    std::replace(w.begin(), w.end(), L'/', L'\\');
+    auto lastSep = w.find_last_of(L'\\');
+    if (lastSep == std::wstring::npos) return {};
+    return w.substr(0, lastSep + 1);  // include trailing separator
+}
+
+// ── IFL (Image File List) generator for KMTF texture animation ──
+// When a material layer has a textureIdTrack (KMTF in MDX), the game
+// cycles through multiple textures at specified time intervals.
+// 3ds Max has a native equivalent: BitmapTex references an .ifl file
+// (simple filename-per-line list), and three additional properties
+// control timing:
+//   - SetStartTime(t)       : when to begin cycling
+//   - SetPlaybackRate(r)    : frames-of-IFL per render-frame
+//                             (e.g. 0.5 → hold each frame for 2 render frames)
+//   - SetEndCondition(c)    : END_LOOP (0) or END_HOLD (2)
+// Approach is modelled after the NeoDex MaxScript importer: the IFL
+// contains ONLY filenames (no per-line frame counts), and timing is
+// driven by the playback rate derived from the average key interval.
+
+struct IFLGenResult {
+    std::wstring iflPath;
+    TimeValue    startTime;
+    float        playbackRate;
+    int          endCondition;
+};
+
+IFLGenResult generateIFLForLayer(
+    const ir::MaterialLayer& layer,
+    const ir::IRModel& irModel,
+    const std::wstring& modelDir,
+    void* cascStorage = nullptr)
+{
+    IFLGenResult result{L"", 0, 1.0f, 0};
+
+    int32_t tidx = layer.textureIdTrackIndex;
+    MLOG << "[IFL-DEBUG] generateIFLForLayer: tidx=" << tidx << std::endl;
+
+    if (tidx < 0) {
+        MLOG << "[IFL-DEBUG] no textureIdTrack — skip" << std::endl;
+        return result;
+    }
+    if (tidx >= static_cast<int32_t>(irModel.intTracks.size())) {
+        MLOG << "[IFL-DEBUG] tidx out of bounds (intTracks.size=" 
+             << irModel.intTracks.size() << ")" << std::endl;
+        return result;
+    }
+
+    const auto& track = irModel.intTracks[tidx];
+    MLOG << "[IFL-DEBUG] track has " << track.keys.size() << " keys, "
+         << "globalSeq=" << track.globalSequenceIndex << std::endl;
+
+    if (track.keys.size() < 2) {
+        MLOG << "[IFL-DEBUG] <2 keys — skip" << std::endl;
+        return result;
+    }
+
+    // Log the actual keys.
+    for (size_t i = 0; i < track.keys.size(); ++i) {
+        MLOG << "[IFL-DEBUG]   key[" << i << "] t=" << track.keys[i].time
+             << " val=" << track.keys[i].value << std::endl;
+    }
+
+    // Ensure we have at least two different texture indices.
+    int32_t firstVal = track.keys[0].value;
+    bool hasVariation = false;
+    for (const auto& k : track.keys) {
+        if (k.value != firstVal) { hasVariation = true; break; }
+    }
+    if (!hasVariation) {
+        MLOG << "[IFL-DEBUG] all keys same value — skip" << std::endl;
+        return result;
+    }
+
+    // Build IFL content: one FULL PATH per line (this is what NeoDex
+    // does — Max's IFL loader resolves relative or absolute paths).
+    std::stringstream iflA;
+    int linesWritten = 0;
+    for (const auto& k : track.keys) {
+        int32_t texIdx = k.value;
+        if (texIdx < 0 || texIdx >= static_cast<int32_t>(irModel.textures.size())) {
+            MLOG << "[IFL-DEBUG]   skip bad texIdx " << texIdx << std::endl;
+            continue;
+        }
+        const auto& irTex = irModel.textures[texIdx];
+        // Use the same path resolution as createNativeBitmap so the
+        // IFL and the non-animated fallback point at consistent files.
+        std::wstring fullPath = resolveTexturePathFull(
+            modelDir, toWstr(irTex.filePath), cascStorage);
+
+        // Convert wide path to UTF-8 for IFL file (narrow ASCII output).
+        // Standard library's wstring→string conversion via std::string
+        // constructor assumes the source is ASCII-compatible which is
+        // fine for typical Windows filesystem paths.
+        std::string narrow(fullPath.begin(), fullPath.end());
+        iflA << narrow << "\n";
+        ++linesWritten;
+
+        MLOG << "[IFL-DEBUG]   wrote '" << narrow << "'" << std::endl;
+    }
+
+    if (linesWritten == 0) {
+        MLOG << "[IFL-DEBUG] no valid texture entries — skip" << std::endl;
+        return result;
+    }
+
+    // Compute average inter-key interval (in ticks). NeoDex formula:
+    //   playbackRate = TicksPerFrame / avgInterval_ticks
+    const TimeValue tpf = GetTicksPerFrame();
+    const size_t n = track.keys.size();
+    TimeValue avgIntervalTicks = tpf;
+    if (n >= 2) {
+        TimeValue total = track.keys[n - 1].time - track.keys[0].time;
+        avgIntervalTicks = total / static_cast<TimeValue>(n - 1);
+        if (avgIntervalTicks < 1) avgIntervalTicks = tpf;
+    }
+    float playbackRate = static_cast<float>(tpf) /
+                         static_cast<float>(avgIntervalTicks);
+
+    // End condition: bound to global sequence → loop (0), else hold (2).
+    int endCondition = (track.globalSequenceIndex >= 0) ? 0 : 2;
+
+    TimeValue startTime = track.keys[0].time;
+
+    // Write IFL file next to the model.
+    std::stringstream iflName;
+    iflName << "anim_t" << tidx << ".ifl";
+    namespace fs = std::filesystem;
+    fs::path iflPath = fs::path(modelDir) / iflName.str();
+
+    MLOG << "[IFL-DEBUG] writing IFL file to: " << iflPath.string() << std::endl;
+
+    std::ofstream ofs(iflPath, std::ios::binary);
+    if (!ofs) {
+        MLOG << "[IFL] Failed to open for write: " << iflPath.string() << std::endl;
+        return result;
+    }
+    std::string content = iflA.str();
+    ofs.write(content.data(), content.size());
+    ofs.close();
+
+    MLOG << "[IFL] Generated '" << iflName.str() << "' — "
+         << linesWritten << " filenames, startTime=" << startTime
+         << " playbackRate=" << playbackRate
+         << " endCondition=" << endCondition
+         << " avgInterval=" << avgIntervalTicks << " ticks" << std::endl;
+    MLOG << "[IFL] Content:\n" << content << std::endl;
+
+    result.iflPath      = iflPath.wstring();
+    result.startTime    = startTime;
+    result.playbackRate = playbackRate;
+    result.endCondition = endCondition;
+    return result;
+}
+
 } // anonymous namespace
 
 namespace mdx_scene {
@@ -466,7 +637,9 @@ namespace mdx_scene {
 static Mtl* buildSingleLayerWc3Material(
     const ir::MaterialLayer& layer,
     const ir::Material& irMat,
+    const ir::IRModel& irModel,
     const std::vector<Texmap*>& texmaps,
+    const std::wstring& modelDir,
     Interface* gi,
     bool showInViewport = true)
 {
@@ -534,6 +707,54 @@ static Mtl* buildSingleLayerWc3Material(
         pbSetString(ref, L"shaderPath", wshader.c_str());
     }
 
+    // ── Material-level replaceableId dropdown ──
+    //
+    // MDX-Semantik: Jede Texture im TEXS-chunk kann einen replaceableId haben
+    // (0 = normal, 1 = TeamColor, 2 = TeamGlow, 3+ = Cliff/Tree/etc.).
+    // Im Wc3Material Plugin gibt es zwei VERSCHIEDENE Konstrukte für TC:
+    //
+    //   Konstrukt A — reines TC-Material (SD/classic):
+    //     ddReplaceable = "Team Color"      (Dropdown)
+    //     diffuseMap = NONE
+    //     → Ganzes Material wird zur TC-Fläche
+    //
+    //   Konstrukt B — HD-Material mit TC-Mask (Reforged):
+    //     ddReplaceable = "Not Used"        (Dropdown bleibt leer)
+    //     diffuseMap   = main_diffuse.dds
+    //     teamColorMap = TC_mask.dds        (dedizierter Slot)
+    //     → Mask bestimmt wo TC-Tint angewendet wird
+    //
+    // Diskriminator: der SLOT der Textur-Referenz, nicht nur der replaceableId.
+    //   slot == Diffuse  mit replaceableId > 0 → Konstrukt A, Dropdown setzen
+    //   slot == TeamColor (HD-Sub)             → Konstrukt B, teamColorMap-Slot
+    //                                            wird unten im Texmap-Loop
+    //                                            gesetzt; Dropdown bleibt 0
+    //
+    // Historischer Bug: Ein früherer Versuch nahm max(replaceableId) über alle
+    // Texture-Refs. Das funktionierte für SD aber ruinierte HD-Materials:
+    // Arthas v1200 hat Diffuse(replId=0) + TC-Sub(replId=1) → max=1 → Dropdown
+    // fälschlich "Team Color" → Exporter löschte dann den Diffuse-Pfad.
+    // NeoDex's Äquivalent: NeoDexSceneRebuilder.ms lines 1068-1073
+    //   (teamColorTexId für HD separat, layer.retexture nur für SD-Diffuse).
+    //
+    // Dropdown-Mapping (Wc3Material.ms line 411):
+    //   1 = Not Used (=MDX 0)
+    //   2 = Team Color (=MDX 1)
+    //   3 = Team Glow (=MDX 2)
+    //   4+ = Cliff, Lord Cliffington etc. (=MDX 3+)
+    {
+        int32_t diffuseReplaceableId = 0;
+        for (const auto& texRef : layer.textureRefs) {
+            if (texRef.slot != ir::TextureSlot::Diffuse) continue;
+            if (texRef.textureIndex < 0 ||
+                texRef.textureIndex >= static_cast<int32_t>(irModel.textures.size()))
+                continue;
+            int32_t rid = irModel.textures[texRef.textureIndex].replaceableId;
+            if (rid > diffuseReplaceableId) diffuseReplaceableId = rid;
+        }
+        pbSetInt(ref, L"replaceableId", diffuseReplaceableId + 1);
+    }
+
     // Texture maps — use pre-created Wc3Bitmaps (1 per MDX TEXS entry)
     {
         Texmap* diffuseTexmap = nullptr;
@@ -551,14 +772,32 @@ static Mtl* buildSingleLayerWc3Material(
 
             pbSetTexmap(ref, paramName, texmap);
 
+            // Store the MDX folder prefix (e.g. "Textures\") on the material
+            // so the exporter can reconstruct the original full path on
+            // re-export. The user can also edit this in the material UI to
+            // relocate textures (e.g. change "Textures\" → "war3mapImported\").
+            if (texRef.textureIndex < static_cast<int32_t>(irModel.textures.size())) {
+                const wchar_t* prefixParam = textureSlotPrefixParamName(texRef.slot);
+                if (prefixParam) {
+                    const auto& irTex = irModel.textures[texRef.textureIndex];
+                    std::wstring prefix = extractTexturePrefix(irTex.filePath);
+                    pbSetString(ref, prefixParam, prefix.c_str());
+                }
+            }
+
             if (texRef.slot == ir::TextureSlot::Diffuse) {
                 diffuseTexmap = texmap;
-                // sphereEnvMap stored on diffuse Wc3Bitmap for round-trip
-                // (exporter reads it from diffuseMap; callback sets
-                //  delegate.coords.mappingType for viewport sphere mapping)
+
+                // ── sphereEnvMap: set via native BitmapTex StdUVGen mapping type ──
                 if (layer.sphereEnvMap) {
-                    auto* bmpRef = dynamic_cast<ReferenceTarget*>(texmap);
-                    if (bmpRef) pbSetBool(bmpRef, L"sphereEnvMap", TRUE);
+                    if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+                        BitmapTex* bmpTex = static_cast<BitmapTex*>(texmap);
+                        StdUVGen* uvGen = bmpTex->GetUVGen();
+                        if (uvGen) {
+                            uvGen->SetCoordMapping(UVMAP_SPHERE_ENV);
+                            MLOG << "[MAT]   sphereEnvMap -> UVMAP_SPHERE_ENV on diffuse" << std::endl;
+                        }
+                    }
                 }
             }
         }
@@ -566,6 +805,40 @@ static Mtl* buildSingleLayerWc3Material(
         if (diffuseTexmap && showInViewport) {
             diffuseTexmap->SetMtlFlag(MTL_TEX_DISPLAY_ENABLED);
             mtl->SetActiveTexmap(diffuseTexmap);
+        }
+
+        // ── IFL texture animation (KMTF track in MDX) ──
+        // Following NeoDex's proven approach: generate an .ifl file with
+        // a simple filename-per-line list, then use BitmapTex's native
+        // playback controls to drive timing.
+        MLOG << "[IFL-CHECK] layer.textureIdTrackIndex=" << layer.textureIdTrackIndex
+             << " diffuseTexmap=" << (diffuseTexmap ? "yes" : "null");
+        if (diffuseTexmap) {
+            Class_ID cid = diffuseTexmap->ClassID();
+            MLOG << " cid=(" << cid.PartA() << "," << cid.PartB() << ")"
+                 << " isBMTEX=" << (cid == Class_ID(BMTEX_CLASS_ID, 0) ? "yes" : "NO");
+        }
+        MLOG << std::endl;
+
+        if (layer.textureIdTrackIndex >= 0 && diffuseTexmap &&
+            diffuseTexmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+        {
+            IFLGenResult ifl = generateIFLForLayer(layer, irModel, modelDir);
+            if (!ifl.iflPath.empty()) {
+                BitmapTex* bmpTex = static_cast<BitmapTex*>(diffuseTexmap);
+                std::string narrowPath(ifl.iflPath.begin(), ifl.iflPath.end());
+                bmpTex->SetMapName(ifl.iflPath.c_str());
+                bmpTex->SetStartTime(ifl.startTime);
+                bmpTex->SetPlaybackRate(ifl.playbackRate);
+                bmpTex->SetEndCondition(ifl.endCondition);
+                MLOG << "[IFL] SetMapName='" << narrowPath << "'"
+                     << " startTime=" << ifl.startTime
+                     << " playbackRate=" << ifl.playbackRate
+                     << " endCond=" << ifl.endCondition << std::endl;
+            } else {
+                MLOG << "[IFL] generateIFLForLayer returned empty path — no IFL set"
+                     << std::endl;
+            }
         }
     }
 
@@ -601,21 +874,105 @@ std::vector<Mtl*> Wc3MaterialBuilder::buildMaterials(
     MLOG << "[CASC] buildMaterials: importTextures=" << importTextures
          << " cascStorage=" << (cascStorage ? "yes" : "null") << std::endl;
 
-    // Pre-create 1 Wc3Bitmap per MDX texture entry.
-    // These are shared (instanced) across all materials/layers that reference
-    // the same texture index, matching the MDX 1:1 texture-entry-to-bitmap model.
-    std::vector<Texmap*> texmaps;
+    // Step 1: Baseline — create 1 Wc3Bitmap per MDX texture entry (as before).
+    // These are the "default" instances used by layers WITHOUT texture animation,
+    // or layers whose animation happens to be the first one seen for that texture.
+    std::vector<Texmap*> texmapsFlat;
     if (importTextures) {
-        texmaps.reserve(irModel.textures.size());
+        texmapsFlat.reserve(irModel.textures.size());
         for (const auto& irTex : irModel.textures)
-            texmaps.push_back(createWc3Bitmap(irTex, modelDir, cascStorage, gi));
+            texmapsFlat.push_back(createNativeBitmap(irTex, modelDir, cascStorage, gi));
     }
+
+    // Step 2: For layers that use a DIFFERENT texture animation on the same
+    // texture, allocate additional bitmap instances so the animations don't
+    // overwrite each other on a shared bitmap.
+    //
+    // Key format: textureIndex * 100000 + (taIdx + 1)
+    //   → taIdx = -1 (no animation) maps to the baseline (slot 0).
+    //   → the FIRST unique taIdx per texIdx also uses the baseline (no clone).
+    //   → subsequent unique taIdx per texIdx get their own fresh bitmap.
+    std::map<int64_t, Texmap*> bitmapCache;
+    auto makeKey = [](int32_t texIdx, int32_t taIdx) -> int64_t {
+        return static_cast<int64_t>(texIdx) * 100000LL +
+               static_cast<int64_t>(taIdx + 1);
+    };
+
+    // Track the first VALID animation (taIdx >= 0) assigned to each texture.
+    // The first one reuses the baseline; later DIFFERENT valid animations get
+    // fresh bitmap instances. taIdx == -1 means "no animation" and always
+    // shares the baseline (never triggers a clone).
+    std::map<int32_t, int32_t> firstTaForTex;  // texIdx → first valid taIdx seen
+
+    if (importTextures) {
+        for (const auto& irMat : irModel.materials) {
+            for (const auto& layer : irMat.layers) {
+                int32_t taIdx = layer.textureAnimationIndex;
+                for (const auto& texRef : layer.textureRefs) {
+                    if (texRef.textureIndex < 0 ||
+                        texRef.textureIndex >= (int32_t)irModel.textures.size())
+                        continue;
+
+                    int32_t texIdx = texRef.textureIndex;
+                    int64_t key = makeKey(texIdx, taIdx);
+
+                    if (bitmapCache.find(key) != bitmapCache.end())
+                        continue; // already allocated for this (texIdx, taIdx)
+
+                    // No animation → always share the baseline bitmap
+                    if (taIdx < 0) {
+                        bitmapCache[key] = texmapsFlat[texIdx];
+                        continue;
+                    }
+
+                    auto fit = firstTaForTex.find(texIdx);
+                    if (fit == firstTaForTex.end()) {
+                        // First valid animation for this texture → reuse baseline
+                        firstTaForTex[texIdx] = taIdx;
+                        bitmapCache[key] = texmapsFlat[texIdx];
+                    } else if (fit->second == taIdx) {
+                        // Same animation as first → reuse baseline (already in cache)
+                        bitmapCache[key] = texmapsFlat[texIdx];
+                    } else {
+                        // Different valid animation on same texture → fresh bitmap
+                        const auto& irTex = irModel.textures[texIdx];
+                        Texmap* bmp = createNativeBitmap(irTex, modelDir, cascStorage, gi);
+                        bitmapCache[key] = bmp;
+                        MLOG << "[TEX-ANIM] Cloned bitmap for texIdx=" << texIdx
+                             << " taIdx=" << taIdx
+                             << " (baseline taIdx=" << fit->second << ")" << std::endl;
+                    }
+                }
+            }
+        }
+    }
+
+    // Lambda: returns a texmap vector (indexed by texture index) for a given
+    // layer, picking the correct bitmap instance for that layer's animation.
+    auto buildLayerTexmaps = [&](const ir::MaterialLayer& layer) -> std::vector<Texmap*> {
+        // Start from the baseline — every texIdx has an entry, even if this
+        // layer doesn't animate. Then override with animation-specific clones.
+        std::vector<Texmap*> t = texmapsFlat;
+        int32_t taIdx = layer.textureAnimationIndex;
+        for (const auto& texRef : layer.textureRefs) {
+            if (texRef.textureIndex < 0 ||
+                texRef.textureIndex >= (int32_t)t.size())
+                continue;
+            int64_t key = makeKey(texRef.textureIndex, taIdx);
+            auto it = bitmapCache.find(key);
+            if (it != bitmapCache.end())
+                t[texRef.textureIndex] = it->second;
+        }
+        return t;
+    };
 
     std::vector<Mtl*> materials;
     materials.reserve(irModel.materials.size());
 
     for (const auto& irMat : irModel.materials) {
-        materials.push_back(buildWc3Material(irMat, irModel, texmaps, modelDir, gi, reporter));
+        materials.push_back(buildWc3Material(
+            irMat, irModel, texmapsFlat, buildLayerTexmaps,
+            modelDir, gi, reporter));
     }
 
     return materials;
@@ -623,7 +980,8 @@ std::vector<Mtl*> Wc3MaterialBuilder::buildMaterials(
 
 Mtl* Wc3MaterialBuilder::buildWc3Material(
     const ir::Material& irMat, const ir::IRModel& irModel,
-    const std::vector<Texmap*>& texmaps,
+    const std::vector<Texmap*>& texmapsFlat,
+    const LayerTexmapsFn& buildLayerTexmaps,
     const std::wstring& modelDir, Interface* gi, core::ExportErrorReporter& reporter)
 {
     if (irMat.layers.empty())
@@ -631,8 +989,9 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
 
     // Single layer → single Wc3Material (also used for Reforged PBR)
     if (irMat.layers.size() == 1) {
+        auto layerTexmaps = buildLayerTexmaps(irMat.layers[0]);
         Mtl* mtl = buildSingleLayerWc3Material(
-            irMat.layers[0], irMat, texmaps, gi);
+            irMat.layers[0], irMat, irModel, layerTexmaps, modelDir, gi);
 
         if (mtl) {
             if (!irMat.name.empty()) {
@@ -644,7 +1003,7 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
         }
 
         // Fallback to StdMat2 if Wc3Material plugin not available
-        return buildStdFallback(irMat, irModel, texmaps, modelDir, gi);
+        return buildStdFallback(irMat, irModel, texmapsFlat, modelDir, gi);
     }
 
     // Multi-layer → CompositeMaterial wrapping Wc3Material children
@@ -654,8 +1013,9 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
 
     if (!compMtl) {
         // CompositeMaterial not available — fall back to first layer only
+        auto layerTexmaps = buildLayerTexmaps(irMat.layers[0]);
         Mtl* mtl = buildSingleLayerWc3Material(
-            irMat.layers[0], irMat, texmaps, gi);
+            irMat.layers[0], irMat, irModel, layerTexmaps, modelDir, gi);
         if (mtl && !irMat.name.empty()) {
             MSTR name;
             name.printf(_T("%hs"), irMat.name.c_str());
@@ -681,8 +1041,9 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
     if (!pb) {
         // Can't access PBlock — fall back to first layer
         compMtl->DeleteMe();
+        auto layerTexmaps = buildLayerTexmaps(irMat.layers[0]);
         Mtl* mtl = buildSingleLayerWc3Material(
-            irMat.layers[0], irMat, texmaps, gi);
+            irMat.layers[0], irMat, irModel, layerTexmaps, modelDir, gi);
         return mtl;
     }
 
@@ -699,8 +1060,12 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
 
     for (int j = 0; j < numLayers; ++j) {
         bool isLastLayer = (j == numLayers - 1);
+        // Each layer gets its own texmap vector — this ensures that when two
+        // layers in the same composite reference the same texture with
+        // different texture animations, each gets its own bitmap instance.
+        auto layerTexmaps = buildLayerTexmaps(irMat.layers[j]);
         Mtl* subMtl = buildSingleLayerWc3Material(
-            irMat.layers[j], irMat, texmaps, gi, isLastLayer);
+            irMat.layers[j], irMat, irModel, layerTexmaps, modelDir, gi, isLastLayer);
 
         if (subMtl) {
             MSTR subName;

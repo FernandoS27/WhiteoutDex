@@ -1,12 +1,12 @@
-// MDLXExporter — BlizzPopcorn/CornEmitter extractor implementation
+// MDLXExporter — Wc3Popcorn (CornEmitter) extractor implementation
 #include "wc3_popcorn_extractor.h"
 #include "../mdx_class_ids.h"
 #include <scene/paramblock_reader.h>
 
 namespace mdx_extract {
 
-// Popcorn data is stored in ir::ParticleEmitter with variant=3
-// The model builder converts variant=3 to mdx::CornEmitter
+// Popcorn data is stored in ir::ParticleEmitter with variant=3.
+// The model builder converts variant=3 to mdx::CornEmitter.
 
 void extractPopcorn(const std::vector<core::SceneNode>& nodes,
                     ir::IRModel& model,
@@ -15,7 +15,7 @@ void extractPopcorn(const std::vector<core::SceneNode>& nodes,
     using PBR = core::ParamBlockReader;
 
     for (auto& sn : nodes) {
-        if (sn.customTag != "BlizzPopcorn") continue;
+        if (sn.customTag != "Wc3Popcorn") continue;
         if (!sn.maxNode) continue;
 
         auto* obj = sn.maxNode->GetObjectRef();

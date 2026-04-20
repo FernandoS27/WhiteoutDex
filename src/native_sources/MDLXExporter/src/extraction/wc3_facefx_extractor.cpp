@@ -1,4 +1,4 @@
-// MDLXExporter — BlizzFaceFX extractor implementation
+// MDLXExporter — Wc3FaceFX extractor implementation
 #include "wc3_facefx_extractor.h"
 #include "../mdx_class_ids.h"
 #include <scene/paramblock_reader.h>
@@ -25,7 +25,7 @@ void extractFaceFX(const std::vector<core::SceneNode>& nodes,
     using PBR = core::ParamBlockReader;
 
     for (auto& sn : nodes) {
-        if (sn.customTag != "BlizzFaceFX") continue;
+        if (sn.customTag != "Wc3FaceFX") continue;
         if (!sn.maxNode) continue;
 
         auto* obj = sn.maxNode->GetObjectRef();

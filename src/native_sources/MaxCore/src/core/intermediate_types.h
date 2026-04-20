@@ -42,6 +42,16 @@ struct Mesh {
     int32_t materialIndex = -1;
     bool hasDropShadow = false;
 
+    // LOD (v1000+ only): level-of-detail index. 0 = highest detail / main mesh,
+    // 1,2,... = lower detail HD layers. Populated from the `Wc3GeosetLod`
+    // UserProp on import; default 0 for new meshes and all v800 meshes.
+    int32_t lod = 0;
+
+    // LOD name (v1000+ only): semantic label like "head", "body", "cape".
+    // Populated from the `Wc3LodName` UserProp when present. Empty string
+    // for v800 geosets or v1000+ geosets without a lodName.
+    std::string lodName;
+
     struct SequenceExtent {
         Point3 minBound, maxBound;
         float boundRadius = 0.0f;

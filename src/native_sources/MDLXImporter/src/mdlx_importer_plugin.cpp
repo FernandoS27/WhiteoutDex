@@ -30,12 +30,16 @@
 #include <iskin.h>
 #include <istdplug.h>
 #include <stdmat.h>
+#include <ilayer.h>
+#include <ilayermanager.h>
 #include <maxscript/maxscript.h>
 
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <set>
@@ -62,6 +66,246 @@ static std::ofstream& importLog() {
     return s_log;
 }
 #define ILOG importLog()
+
+// ── Bone Debug Dump ─────────────────────────────────────────
+//
+// Dumps bone state to the import log so we can diagnose skinning
+// explosions.  Compares NodeTM vs ObjectTM (a mismatch reveals stretchTM
+// or ObjectOffset contamination — the #1 cause of mid-frame explosions
+// when using BoneGeometry).
+//
+// label: short string shown before the dump ("after-create",
+//        "after-skin", "after-animation", ...)
+// sampleFrames: additional frames to sample (in addition to t=0).
+static void dumpBoneState(
+    const std::vector<INode*>& boneNodes,
+    const char* label,
+    const std::vector<TimeValue>& sampleFrames = {})
+{
+    ILOG << "\n==== BONE DEBUG DUMP [" << label << "] ====\n";
+    int boneIdx = 0;
+    for (INode* node : boneNodes) {
+        if (!node) { ++boneIdx; continue; }
+
+        // Narrow name for logging
+        std::string nm;
+        const MCHAR* wname = node->GetName();
+        while (wname && *wname) {
+            nm += static_cast<char>(*wname > 127 ? '?' : *wname);
+            ++wname;
+        }
+
+        // Bone-specific flags
+        BOOL isBone   = node->GetBoneNodeOnOff();
+        BOOL autoAln  = node->GetBoneAutoAlign();
+        BOOL freezeLn = node->GetBoneFreezeLen();
+
+        ILOG << "  bone[" << boneIdx << "] '" << nm << "'"
+             << " isBone=" << isBone
+             << " autoAlign=" << autoAln
+             << " freezeLen=" << freezeLn << "\n";
+
+        // stretchTM: non-identity ⇒ bone has accumulated stretch
+        Matrix3 stretchTM = node->GetStretchTM(0);
+        {
+            Point3 r0 = stretchTM.GetRow(0);
+            Point3 r1 = stretchTM.GetRow(1);
+            Point3 r2 = stretchTM.GetRow(2);
+            Point3 tr = stretchTM.GetTrans();
+            bool isId = (std::abs(r0.x - 1.0f) < 1e-5f && std::abs(r0.y) < 1e-5f && std::abs(r0.z) < 1e-5f &&
+                         std::abs(r1.x) < 1e-5f && std::abs(r1.y - 1.0f) < 1e-5f && std::abs(r1.z) < 1e-5f &&
+                         std::abs(r2.x) < 1e-5f && std::abs(r2.y) < 1e-5f && std::abs(r2.z - 1.0f) < 1e-5f &&
+                         std::abs(tr.x) < 1e-5f && std::abs(tr.y) < 1e-5f && std::abs(tr.z) < 1e-5f);
+            ILOG << "    stretchTM=" << (isId ? "IDENTITY" : "NON-IDENTITY!");
+            if (!isId) {
+                ILOG << "  r0=(" << r0.x << "," << r0.y << "," << r0.z << ")"
+                     << " r1=(" << r1.x << "," << r1.y << "," << r1.z << ")"
+                     << " r2=(" << r2.x << "," << r2.y << "," << r2.z << ")"
+                     << " t=(" << tr.x << "," << tr.y << "," << tr.z << ")";
+            }
+            ILOG << "\n";
+        }
+
+        // Sample NodeTM vs ObjectTM at t=0 and at each sample frame
+        std::vector<TimeValue> frames = {0};
+        for (auto t : sampleFrames) frames.push_back(t);
+
+        Point3 prevNodePos(0, 0, 0);
+        bool havePrev = false;
+        for (TimeValue t : frames) {
+            Matrix3 nodeTM = node->GetNodeTM(t);
+            Matrix3 objTM  = node->GetObjectTM(t);
+            Point3 nPos = nodeTM.GetTrans();
+            Point3 oPos = objTM.GetTrans();
+            Point3 delta = oPos - nPos;
+            bool mismatch = (delta.LengthSquared() > 1e-6f);
+
+            ILOG << "    t=" << t
+                 << " nodeTM.pos=(" << nPos.x << "," << nPos.y << "," << nPos.z << ")"
+                 << " objTM.pos=(" << oPos.x << "," << oPos.y << "," << oPos.z << ")";
+            if (mismatch) {
+                ILOG << " *** MISMATCH delta=(" << delta.x << "," << delta.y << "," << delta.z << ")";
+            }
+            // Jump detection: compare to previous sampled frame
+            if (havePrev) {
+                Point3 jump = nPos - prevNodePos;
+                float jumpLen = jump.Length();
+                if (jumpLen > 1000.0f) {
+                    ILOG << " *** JUMP jumpLen=" << jumpLen;
+                }
+            }
+            ILOG << "\n";
+            prevNodePos = nPos;
+            havePrev = true;
+        }
+        ++boneIdx;
+    }
+    ILOG << "==== end BONE DEBUG DUMP ====\n";
+    ILOG.flush();
+}
+
+// ── Layer Organization ──────────────────────────────────────
+//
+// Traverses the scene graph and places each imported node into a
+// layer based on its Class_ID.  Mirrors the categories used by the
+// WdxNodeManager UI so users see the same grouping in the layer
+// manager and in the node manager.
+//
+// Layer names (matching NodeManager.ms labels):
+//   Geometry, Bones, Helpers / Dummies, Attachments, Events, Lights,
+//   Cameras, Particle Emitters 1, Particle Emitters 2,
+//   Ribbon Emitters, Popcorn FX, FaceFX, Collision Shapes
+//
+// Notes:
+//   - Cameras are also placed into "Cameras" by Wc3CameraBuilder;
+//     re-adding is idempotent (AddToLayer no-ops if already present).
+//   - Root node is skipped.
+//   - Unclassified nodes are left on whatever layer Max assigned
+//     (usually the default "0" layer).
+//
+static void organizeNodesIntoLayers(Interface* gi) {
+    ILayerManager* lm = GetCOREInterface13()->GetLayerManager();
+    if (!lm) {
+        ILOG << "[layers] no layer manager available — skipping\n";
+        return;
+    }
+
+    // Layer name resolver — creates the layer lazily on first use
+    // and caches it so we don't hammer GetLayer/CreateLayer per node.
+    std::map<std::wstring, ILayer*> layerCache;
+    auto getOrCreateLayer = [&](const TCHAR* name) -> ILayer* {
+        std::wstring key(name);
+        auto it = layerCache.find(key);
+        if (it != layerCache.end()) return it->second;
+        MSTR layerName(name);
+        ILayer* layer = lm->GetLayer(layerName);
+        if (!layer) layer = lm->CreateLayer(layerName);
+        layerCache[key] = layer;
+        return layer;
+    };
+
+    // Classify one node — returns layer name or nullptr if unclassified.
+    // For geometry (meshes), the Wc3GeosetLod UserProp (written by
+    // createMeshNode) is consulted to route LOD>0 geosets into their own
+    // layers, matching NeoDex convention:
+    //   LOD 0      → "Geosets"        (visible)
+    //   LOD N > 0  → "Geosets_LOD<N>" (hidden)
+    // Non-mesh nodes still go to their respective type-specific layers.
+    auto classifyNode = [](INode* n, std::wstring& outLayerName) -> bool {
+        outLayerName.clear();
+        if (!n || n->IsRootNode()) return false;
+        Object* obj = n->GetObjectRef();
+        if (!obj) return false;
+        // Walk down derived-object / WSM stack to the base object
+        while (obj && (obj->SuperClassID() == GEN_DERIVOB_CLASS_ID ||
+                       obj->SuperClassID() == WSM_DERIVOB_CLASS_ID)) {
+            IDerivedObject* dobj = static_cast<IDerivedObject*>(obj);
+            obj = dobj->GetObjRef();
+        }
+        if (!obj) return false;
+
+        Class_ID  cid  = obj->ClassID();
+        SClass_ID scid = obj->SuperClassID();
+
+        // Wc3-specific types first (most specific)
+        if (cid == mdx_ids::WC3_ATTACH_POINT)   { outLayerName = L"Attachments"; return true; }
+        if (cid == mdx_ids::WC3_LIGHT)          { outLayerName = L"Lights"; return true; }
+        if (cid == mdx_ids::WC3_EVENT_V2021 ||
+            cid == mdx_ids::WC3_EVENT_V2020)    { outLayerName = L"Events"; return true; }
+        if (cid == mdx_ids::WC3_COLLISION_SPH ||
+            cid == mdx_ids::WC3_COLLISION_BOX)  { outLayerName = L"Collision Shapes"; return true; }
+        if (cid == mdx_ids::WC3_PARTICLES1)     { outLayerName = L"Particle Emitters 1"; return true; }
+        if (cid == mdx_ids::WC3_PARTICLES2)     { outLayerName = L"Particle Emitters 2"; return true; }
+        if (cid == mdx_ids::WC3_RIBBON)         { outLayerName = L"Ribbon Emitters"; return true; }
+        if (cid == mdx_ids::BLIZZ_POPCORN)      { outLayerName = L"Popcorn FX"; return true; }
+        if (cid == mdx_ids::BLIZZ_FACEFX)       { outLayerName = L"FaceFX"; return true; }
+
+        // Bones before generic geometry (BoneGeometry's superclass is GEOMOBJECT)
+        if (cid == BONE_OBJ_CLASSID) { outLayerName = L"Bones"; return true; }
+
+        // Cameras
+        if (scid == CAMERA_CLASS_ID) { outLayerName = L"Cameras"; return true; }
+
+        // Camera / light targets — must be checked BEFORE generic GEOMOBJECT_CLASS_ID
+        if (n->IsTarget()) { outLayerName = L"Cameras"; return true; }
+
+        // Dummies / Helpers — only reach here if not one of the Wc3 helper types above
+        if (cid == Class_ID(DUMMY_CLASS_ID, 0)) { outLayerName = L"Helpers / Dummies"; return true; }
+        if (scid == HELPER_CLASS_ID)            { outLayerName = L"Helpers / Dummies"; return true; }
+
+        // Generic geometry (meshes) — catch-all last
+        if (scid == GEOMOBJECT_CLASS_ID) {
+            int lodLevel = 0;
+            n->GetUserPropInt(_T("Wc3GeosetLod"), lodLevel);
+            if (lodLevel > 0) {
+                outLayerName = L"Geosets_LOD" + std::to_wstring(lodLevel);
+            } else {
+                outLayerName = L"Geosets";
+            }
+            return true;
+        }
+
+        return false;
+    };
+
+    // Recursive traversal. Uses std::function to allow the lambda to
+    // reference itself.
+    std::function<void(INode*)> walk = [&](INode* n) {
+        if (!n) return;
+        std::wstring layerName;
+        if (classifyNode(n, layerName)) {
+            if (ILayer* layer = getOrCreateLayer(layerName.c_str()))
+                layer->AddToLayer(n);
+        }
+        for (int i = 0; i < n->NumberOfChildren(); ++i)
+            walk(n->GetChildNode(i));
+    };
+
+    INode* root = gi->GetRootNode();
+    if (root) {
+        for (int i = 0; i < root->NumberOfChildren(); ++i)
+            walk(root->GetChildNode(i));
+    }
+
+    ILOG << "[layers] organized into " << layerCache.size() << " layer(s)";
+    for (auto& kv : layerCache) {
+        ILOG << "  [" << narrow(kv.first.c_str()) << "]";
+    }
+    ILOG << "\n";
+
+    // Hide all "Geosets_LOD<N>" layers (N > 0), matching NeoDex convention
+    // (NeoDexSceneRebuilder.ms fn recreateGeosets lines 2072-2073).
+    // The main "Geosets" layer stays visible.
+    const std::wstring lodPrefix = L"Geosets_LOD";
+    for (auto& kv : layerCache) {
+        if (kv.first.rfind(lodPrefix, 0) == 0 && kv.second) {
+            kv.second->Hide(TRUE);
+            ILOG << "[layers] hiding " << narrow(kv.first.c_str()) << " (LOD>0)\n";
+        }
+    }
+
+    ILOG.flush();
+}
 
 // Forward declarations for INI loading
 void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts);
@@ -102,20 +346,65 @@ std::string wcharToUtf8(const wchar_t* wstr) {
 
 // ── Bone/Helper creation ────────────────────────────────────
 
-INode* createBoneNode(const ir::Bone& bone, Interface* gi, bool /*asPointHelper*/) {
-    // Always use Point helpers instead of BoneGeometry.
-    // Max bones auto-orient along their length axis and require special
-    // mode (BoneSys) to position freely — Point helpers behave like plain
-    // transform nodes and match MaxScript's `point pos:pivot` path.
-    Object* obj = static_cast<Object*>(
-        gi->CreateInstance(HELPER_CLASS_ID, core_ids::POINT_HELPER_ID));
+// Real MDX bones (isHelper=false)        → Max BoneGeometry (GEOMOBJECT_CLASS_ID, BONE_OBJ_CLASSID).
+//   Matches MaxScript `bone pos:pivot` — a proper deformable bone visible as a
+//   diamond in the viewport, accepted by Skin, picked up by FBX/glTF as a Bone.
+// MDX helpers (isHelper=true) with       → Point helper (non-deforming transform node:
+// importHelpersAsPointHelpers              fake bones, attachment sockets, model root).
+//
+// Note: BoneGeometry draws its length along local X toward the child's pivot,
+// but that's purely visual — the node's TM controller is untouched, so
+// SetNodeTM works exactly as it did with Point helpers.
+INode* createBoneNode(const ir::Bone& bone, Interface* gi, bool asPointHelper) {
+    Object* obj = nullptr;
+
+    if (asPointHelper) {
+        obj = static_cast<Object*>(
+            gi->CreateInstance(HELPER_CLASS_ID, core_ids::POINT_HELPER_ID));
+    } else {
+        obj = static_cast<Object*>(
+            gi->CreateInstance(GEOMOBJECT_CLASS_ID, BONE_OBJ_CLASSID));
+    }
 
     if (!obj) return nullptr;
 
     INode* node = gi->CreateObjectNode(obj);
+    if (!node) return nullptr;
+
     MSTR name;
     name.printf(_T("%hs"), bone.name.c_str());
     node->SetName(name);
+
+    // Flag BoneGeometry nodes as bones so Max's tools & exporters treat them
+    // correctly (equivalent to MaxScript's `.boneEnable = true`).
+    if (!asPointHelper) {
+        node->ShowBone(1);              // display as bone shape (line + triangle)
+        node->SetBoneNodeOnOff(TRUE, 0);
+
+        // CRITICAL: Disable every bone behavior that modifies the effective TM.
+        //
+        // Why: MDX animations are authoritative per-frame TM keys.  Max's
+        // default BoneGeometry behavior silently adds rotation & stretch via a
+        // hidden stretchTM that leaks into ObjectTM (and Skin's AddBoneEx uses
+        // ObjectTM to snapshot the bind pose).
+        //
+        //   Auto-Align = OFF     → parent doesn't rotate to face child
+        //   FreezeLen  = OFF     → bone length isn't locked
+        //   ScaleType  = NONE    → NO STRETCH AT ALL (the critical one).
+        //                          Without this, even with AutoAlign off, child
+        //                          animation keys can introduce stretch scale
+        //                          up to 55000× on specific bones where the
+        //                          axis math degenerates (fengmo04 in test data).
+        //
+        // NOTE: Do NOT call ResetBoneStretch() — despite its name it does
+        // NOT reset stretch to identity.  From SDK docs: "Specifies the time
+        // at which to calculate and store INITIAL child position" — i.e. it
+        // freezes the current (possibly already-stretched) state as the new
+        // baseline.  That's why earlier attempts actually made things worse.
+        node->SetBoneAutoAlign(FALSE);
+        node->SetBoneFreezeLen(FALSE);
+        node->SetBoneScaleType(BONE_SCALETYPE_NONE);
+    }
 
     return node;
 }
@@ -242,9 +531,44 @@ INode* createMeshNode(const ir::Mesh& irMesh, Interface* gi) {
     mesh.InvalidateTopologyCache();
 
     INode* node = gi->CreateObjectNode(triObj);
+
+    // Mesh naming + LOD handling. The disassembler encodes LOD level as a
+    // "#LOD<n>" suffix on irMesh.name (or no suffix for LOD 0 / v800). We:
+    //   1. Strip the suffix for the visible node name
+    //   2. Store the LOD level on a UserProp so the layer classifier can
+    //      sort meshes into "Geosets" / "Geosets_LOD1" / "Geosets_LOD2" ...
+    //   3. Store the original lodName (everything before the trailing "_<id>")
+    //      so it's available for future Wc3LodName queries / round-trip export.
+    // Matches NeoDex convention (NeoDexSceneRebuilder.ms fn recreateGeosets).
+    std::string fullName = irMesh.name;
+    int lodLevel = 0;
+    size_t lodPos = fullName.rfind("#LOD");
+    if (lodPos != std::string::npos) {
+        try {
+            lodLevel = std::stoi(fullName.substr(lodPos + 4));
+        } catch (...) { lodLevel = 0; }
+        fullName = fullName.substr(0, lodPos);
+    }
+
     MSTR name;
-    name.printf(_T("%hs"), irMesh.name.c_str());
+    name.printf(_T("%hs"), fullName.c_str());
     node->SetName(name);
+
+    node->SetUserPropInt(_T("Wc3GeosetLod"), lodLevel);
+
+    // Recover the lodName (NeoDex-compatible) by stripping the trailing "_<id>".
+    // The disassembler wrote either "<lodName>_<id>" or "Geoset_<id>".
+    // If the prefix is literally "Geoset" it's a v800 fallback — no lodName
+    // to preserve.
+    size_t lastUnderscore = fullName.rfind('_');
+    if (lastUnderscore != std::string::npos) {
+        std::string prefix = fullName.substr(0, lastUnderscore);
+        if (prefix != "Geoset" && !prefix.empty()) {
+            MSTR lodNameStr;
+            lodNameStr.printf(_T("%hs"), prefix.c_str());
+            node->SetUserPropString(_T("Wc3LodName"), lodNameStr);
+        }
+    }
 
     return node;
 }
@@ -920,6 +1244,132 @@ void animateColorNamed(ReferenceTarget* ref, const wchar_t* name,
         p.pb->SetControllerByID(p.id, 0, ctrl, FALSE);
 }
 
+// ── MaxScript-based animation helpers for scripted simpleManipulator plugins ──
+//
+// Scripted `simpleManipulator` plugins (Wdx_Wc3Light, Wdx_Wc3Event, etc.)
+// wrap their parameters in a runtime MSPlugin proxy with dynamic ParamBlock
+// and ParamIDs. `findPBParam + SetControllerByID` locates the parameter but
+// fails to attach controllers reliably — the static value from the last
+// keyframe leaks into the plugin's static parameter, but the Control* is
+// not connected, so animation is dead on playback.
+//
+// The reliable route (proven for KGAC) is via MaxScript:
+//   selected[1].<param>.controller = bezier_float()   -- oder bezier_color()
+//   local c = selected[1].<param>.controller
+//   addNewKey c <ticks>
+//   k.value = ...
+//
+// MaxScript sees the parameter via the plugin's published interface directly
+// and the resulting controller is attached through the plugin's own
+// published API.
+//
+// These helpers take a node (to resolve via `getNodeByName`) and a parameter
+// name. Used only for scripted simpleManipulator plugins.
+
+void animateFloatNamedScript(INode* node, const wchar_t* paramName,
+                             int32_t trackIndex, const ir::IRModel& irModel)
+{
+    if (!node || trackIndex < 0 ||
+        trackIndex >= static_cast<int32_t>(irModel.floatTracks.size()))
+        return;
+    const auto& track = irModel.floatTracks[trackIndex];
+    if (track.empty()) return;
+
+    const wchar_t* tanType = L"#smooth";
+    switch (track.interpolation) {
+        case ir::InterpolationType::None:   tanType = L"#step";   break;
+        case ir::InterpolationType::Linear: tanType = L"#linear"; break;
+        default: break;
+    }
+
+    std::wstring nodeName(node->GetName());
+    std::wstringstream ss;
+    ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
+       << L"if n != undefined do ("
+       << L"n." << paramName << L".controller = bezier_float();"
+       << L"local c = n." << paramName << L".controller;";
+
+    for (const auto& kf : track.keys) {
+        ss << L"local k = addNewKey c " << kf.time << L"t;"
+           << L"k.value = " << kf.value << L";"
+           << L"k.inTangentType = " << tanType << L";"
+           << L"k.outTangentType = " << tanType << L";";
+    }
+
+    if (track.globalSequenceIndex >= 0) {
+        ss << L"setBeforeORT c #constant;"
+           << L"setAfterORT c #cycle;"
+           << L"enableORTs c true;";
+    }
+
+    ss << L"))";
+
+    std::wstring scriptStr = ss.str();
+    ExecuteMAXScriptScript(
+        const_cast<wchar_t*>(scriptStr.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+        MAXScript::ScriptSource::NonEmbedded,
+#endif
+        TRUE, nullptr);
+}
+
+void animateColorNamedScript(INode* node, const wchar_t* paramName,
+                             int32_t trackIndex, const ir::IRModel& irModel)
+{
+    if (!node || trackIndex < 0 ||
+        trackIndex >= static_cast<int32_t>(irModel.colorTracks.size()))
+        return;
+    const auto& track = irModel.colorTracks[trackIndex];
+    if (track.empty()) return;
+
+    const wchar_t* tanType = L"#smooth";
+    switch (track.interpolation) {
+        case ir::InterpolationType::None:   tanType = L"#step";   break;
+        case ir::InterpolationType::Linear: tanType = L"#linear"; break;
+        default: break;
+    }
+
+    std::wstring nodeName(node->GetName());
+    std::wstringstream ss;
+    ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
+       << L"if n != undefined do ("
+       << L"n." << paramName << L".controller = bezier_color();"
+       << L"local c = n." << paramName << L".controller;";
+
+    for (const auto& kf : track.keys) {
+        // Max's color picker uses 0..255 range (confirmed by Wc3Light plugin
+        // defaults: AmbColor=[255,230,142], ShadowColor=[122,172,255]).
+        // Convert MDX 0..1 float to 0..255 byte. BGR->RGB swap is already
+        // done in the disassembler.
+        int r = static_cast<int>(kf.value.r * 255.0f + 0.5f);
+        int g = static_cast<int>(kf.value.g * 255.0f + 0.5f);
+        int b = static_cast<int>(kf.value.b * 255.0f + 0.5f);
+        if (r < 0) r = 0; if (r > 255) r = 255;
+        if (g < 0) g = 0; if (g > 255) g = 255;
+        if (b < 0) b = 0; if (b > 255) b = 255;
+        ss << L"local k = addNewKey c " << kf.time << L"t;"
+           << L"k.value = color " << r << L" " << g << L" " << b << L";"
+           << L"k.inTangentType = " << tanType << L";"
+           << L"k.outTangentType = " << tanType << L";";
+    }
+
+    if (track.globalSequenceIndex >= 0) {
+        ss << L"setBeforeORT c #constant;"
+           << L"setAfterORT c #cycle;"
+           << L"enableORTs c true;";
+    }
+
+    ss << L"))";
+
+    std::wstring scriptStr = ss.str();
+    ExecuteMAXScriptScript(
+        const_cast<wchar_t*>(scriptStr.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+        MAXScript::ScriptSource::NonEmbedded,
+#endif
+        TRUE, nullptr);
+}
+
 
 // Animate a color paramblock param from an IR color track index.
 void animateColorPB(IParamBlock2* pb, ParamID pid,
@@ -932,6 +1382,60 @@ void animateColorPB(IParamBlock2* pb, ParamID pid,
     Control* ctrl = createColorController(track);
     if (ctrl)
         pb->SetControllerByID(pid, 0, ctrl, FALSE);
+}
+
+// ParamIDs for native plugins (mirrored from scene builders)
+
+// ── Helper: get diffuse BitmapTex from a Wc3Material ────────
+// Reads the "diffuseMap" paramblock param and returns the BitmapTex pointer
+// (or nullptr if not a native BitmapTex).
+static BitmapTex* getDiffuseBitmapTex(ReferenceTarget* wc3MatRef) {
+    if (!wc3MatRef) return nullptr;
+    auto p = findPBParam(wc3MatRef, L"diffuseMap");
+    if (!p) return nullptr;
+    ParamType2 ptype = p.pb->GetParameterType(p.id);
+    if (ptype != TYPE_TEXMAP) return nullptr;
+    Texmap* tex = nullptr;
+    Interval valid = FOREVER;
+    p.pb->GetValue(p.id, 0, tex, valid);
+    if (!tex) return nullptr;
+    if (tex->ClassID() != Class_ID(BMTEX_CLASS_ID, 0)) return nullptr;
+    return static_cast<BitmapTex*>(tex);
+}
+
+// ── Helper: assign a float controller to a StdUVGen parameter ──
+// Uses findPBParam on the StdUVGen's IParamBlock2 to find the param by name.
+// If that fails (older Max versions), falls back to sub-anim assignment.
+//
+// Known StdUVGen internal param names (3ds Max 2020+):
+//   "U_Offset", "V_Offset", "U_Tiling", "V_Tiling",
+//   "U_Angle", "V_Angle", "W_Angle"
+//
+// Sub-anim indices (stable across all Max versions):
+//   0=U_Offset, 1=V_Offset, 2=U_Tiling, 3=V_Tiling,
+//   4=U_Angle, 5=V_Angle, 6=W_Angle
+static bool assignControllerToUVGen(StdUVGen* uvGen, const wchar_t* paramName,
+                                     int subAnimFallbackIndex, Control* ctrl)
+{
+    if (!uvGen || !ctrl) return false;
+
+    // Strategy 1: IParamBlock2 by internal name (most reliable for modern Max)
+    auto* uvRef = dynamic_cast<ReferenceTarget*>(uvGen);
+    if (uvRef) {
+        auto p = findPBParam(uvRef, paramName);
+        if (p) {
+            p.pb->SetControllerByID(p.id, 0, ctrl, FALSE);
+            return true;
+        }
+    }
+
+    // Strategy 2: Sub-anim assignment (works on all Max versions)
+    if (subAnimFallbackIndex >= 0 && subAnimFallbackIndex < uvGen->NumSubs()) {
+        BOOL result = uvGen->AssignController(ctrl, subAnimFallbackIndex);
+        return result != FALSE;
+    }
+
+    return false;
 }
 
 // ParamIDs for native plugins (mirrored from scene builders)
@@ -1002,6 +1506,22 @@ void insertVisibilityKeys(INode* node, const ir::FloatTrack& track,
             state = !state;
         };
 
+        // ── GLOBAL SEQUENCE PATH ────────────────────────────────
+        // Global-sequence tracks live on [0, globalSeqDuration] and don't
+        // honor named-sequence boundaries (remapTrackKeys skips them, so
+        // track.keys are still in their original MDX-local times).
+        // Named-sequence boundary toggling would drop keys outside those
+        // windows and misplace the ones that fall inside — for a globalSeq
+        // track the authoritative toggle points ARE track.keys in order.
+        if (track.globalSequenceIndex >= 0) {
+            for (const auto& [t, v] : keyMap) {
+                bool desired = (v >= 0.5f);
+                if (state != desired)
+                    emitToggle(t);
+            }
+            break;
+        }
+
         if (!sequences.empty()) {
             // Process sequence by sequence.
             for (const auto& seq : sequences) {
@@ -1015,9 +1535,15 @@ void insertVisibilityKeys(INode* node, const ir::FloatTrack& track,
                 if (state != startVis)
                     emitToggle(seq.startTime);
 
-                // Process keys within (startTime, endTime)
+                // Process keys within (startTime, endTime]
+                // NOTE: endTime is INCLUSIVE. A key at t == seq.endTime is
+                // the final frame of the sequence and represents a real
+                // alpha transition (e.g. a geoset hidden at the last frame
+                // of a death animation). Skipping it loses toggles — bug
+                // visible on Madara Susanoo geosets 14/16, which drop from
+                // 4 real transitions down to 2 when endTime is exclusive.
                 auto kit = keyMap.upper_bound(seq.startTime);
-                for (; kit != keyMap.end() && kit->first < seq.endTime; ++kit) {
+                for (; kit != keyMap.end() && kit->first <= seq.endTime; ++kit) {
                     bool desired = (kit->second >= 0.5f);
                     if (state != desired)
                         emitToggle(kit->first);
@@ -1177,7 +1703,54 @@ void remapTrackKeys(ir::Track<T>& track,
 {
     if (track.keys.empty() || track.globalSequenceIndex >= 0) return;
 
+    // De-duplicate keys at same tick time. This handles MDX models where
+    // two adjacent keys at near-identical ms values (e.g., 2999ms + 3000ms
+    // at a sequence boundary) both round to the same Max tick via
+    // msToTicks. Without this, the remap picks the wrong key for loop
+    // closure (e.g., Walk-loop-close uses Stand-end-pose, causing the
+    // Stand pose to appear at the end of Walk).
+    // Strategy: keep the LAST key at each tick — semantically the "new"
+    // value that should take effect from that frame onward.
+    if (track.keys.size() > 1) {
+        std::stable_sort(track.keys.begin(), track.keys.end(),
+            [](const ir::Keyframe<T>& a, const ir::Keyframe<T>& b) {
+                return a.time < b.time;
+            });
+        std::vector<ir::Keyframe<T>> deduped;
+        deduped.reserve(track.keys.size());
+        for (const auto& k : track.keys) {
+            if (!deduped.empty() && deduped.back().time == k.time)
+                deduped.back() = k;
+            else
+                deduped.push_back(k);
+        }
+        track.keys = std::move(deduped);
+    }
+
     std::vector<ir::Keyframe<T>> newKeys;
+
+    // Pre-first-sequence keys: proportional remap into [0, firstSeq.newStart].
+    // Without this, MDX keys at t=0ms (common for initial/baseline states)
+    // are silently dropped because the per-sequence loop only collects keys
+    // within [oldStart, oldEnd] ranges. The Campfire model's KLAC/KLBC
+    // Key[0] at t=0ms landed nowhere until this block was added.
+    if (!ranges.empty()) {
+        const auto& r0 = ranges[0];
+        TimeValue ogS = 0, ogE = r0.oldStart;
+        TimeValue ngS = 0, ngE = r0.newStart;
+        float oLen = static_cast<float>(ogE - ogS);
+        float nLen = static_cast<float>(ngE - ngS);
+        if (oLen > 0.0f && nLen > 0.0f) {
+            for (const auto& k : track.keys) {
+                if (k.time >= ogS && k.time < ogE) {
+                    float ratio = static_cast<float>(k.time - ogS) / oLen;
+                    ir::Keyframe<T> gk = k;
+                    gk.time = ngS + static_cast<TimeValue>(ratio * nLen);
+                    newKeys.push_back(gk);
+                }
+            }
+        }
+    }
 
     for (size_t si = 0; si < ranges.size(); ++si) {
         const auto& r = ranges[si];
@@ -1197,9 +1770,44 @@ void remapTrackKeys(ir::Track<T>& track,
         TimeValue offset = r.newStart - r.oldStart;
 
         if (seqKeyIdx.empty()) {
-            // No keys in this sequence — stub at start and end
-            ir::Keyframe<T> sk{}; sk.time = r.newStart; sk.value = defaultVal;
-            ir::Keyframe<T> ek{}; ek.time = r.newEnd;   ek.value = defaultVal;
+            // No keys in this sequence — hold a sensible neutral value.
+            // Previously defaultVal (1.0f) was used, but that was only correct
+            // for visibility tracks. For Speed/EmissionRate/Gravity/Width/
+            // Height/Variation, 1.0 is not a meaningful neutral and produces
+            // wrong stubs when the track's keys all cluster in one sequence
+            // (e.g. saurus BLOOD_FX has Speed keys only within "Death" — all
+            // other 20 sequences would get stubs at 1.0 otherwise).
+            //
+            // Priority for the "held" value:
+            //   1. Last output key we already produced (track's current state
+            //      through earlier remapped sequences).
+            //   2. Last MDX key at or before r.oldStart (state before this seq).
+            //   3. First MDX key (track's initial/anchor value). This is the
+            //      critical fallback for sequences BEFORE the first keyed one.
+            //   4. defaultVal (should never reach this — track has keys).
+            T holdVal = defaultVal;
+            if (!newKeys.empty()) {
+                holdVal = newKeys.back().value;
+            } else {
+                bool found = false;
+                for (size_t ki = track.keys.size(); ki-- > 0;) {
+                    if (track.keys[ki].time <= r.oldStart) {
+                        holdVal = track.keys[ki].value;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found && !track.keys.empty()) {
+                    // All MDX keys are in a future sequence — use the first
+                    // key as the anchor. This matches what an emitter with
+                    // a keyed run (e.g. BLOOD_FX on saurus Death) would look
+                    // like: before Death it sits at whatever value the first
+                    // Death key specifies, not a synthesised 1.0.
+                    holdVal = track.keys.front().value;
+                }
+            }
+            ir::Keyframe<T> sk{}; sk.time = r.newStart; sk.value = holdVal;
+            ir::Keyframe<T> ek{}; ek.time = r.newEnd;   ek.value = holdVal;
             newKeys.push_back(sk);
             newKeys.push_back(ek);
         } else {
@@ -1207,8 +1815,13 @@ void remapTrackKeys(ir::Track<T>& track,
             if (track.keys[seqKeyIdx[0]].time + offset != r.newStart) {
                 ir::Keyframe<T> sk{};
                 sk.time = r.newStart;
-                sk.value = useDefaultForStartBoundary
-                    ? defaultVal : track.keys[seqKeyIdx[0]].value;
+                // Previously: useDefaultForStartBoundary ? defaultVal : firstKey
+                // That flag was set for float/int tracks and forced a jump to
+                // 1.0 (or 0) between sequences, destroying the held value.
+                // Now: always use the first in-sequence key's value — the
+                // emitter "enters" each sequence at whatever the author wrote
+                // as the first keyframe. This matches what NeoDex does.
+                sk.value = track.keys[seqKeyIdx[0]].value;
                 newKeys.push_back(sk);
             }
 
@@ -1277,14 +1890,19 @@ void remapTimeline(ir::IRModel& irModel) {
     std::sort(ranges.begin(), ranges.end(),
         [](const SeqRange& a, const SeqRange& b) { return a.oldStart < b.oldStart; });
 
-    // Compact: frame 10 start, gap = ((endFrame/10)*10 + 20) frames
+    // Compact: frame 10 start, gap = 20 frames between sequences.
+    // Previously this used ((endFrames / 10) * 10 + 20) which rounds
+    // DOWN to the next multiple of 10, silently losing up to 9 frames
+    // when a sequence's duration is not a multiple of 10 (e.g. Campfire
+    // Stand=45 frames → end=85 → rounds to 80, Death starts at 100
+    // instead of 105). The correct behavior is a consistent 20-frame gap.
     TimeValue nextStart = 10 * tpf;
     for (auto& r : ranges) {
         TimeValue dur = r.oldEnd - r.oldStart;
         r.newStart = nextStart;
         r.newEnd   = nextStart + dur;
         TimeValue endFrames = r.newEnd / tpf;
-        nextStart = ((endFrames / 10) * 10 + 20) * tpf;
+        nextStart = (endFrames + 20) * tpf;
     }
 
     // Update ir::Sequence times
@@ -1389,17 +2007,28 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     // 4b. Compact timeline (MaxScript convertSequences + preProcessKeys)
     remapTimeline(irModel);
 
-    // 4c. For v1200 (Reforged), pivot points from PIVT may be zero.
-    // The authoritative world-space positions come from the BPOS bind pose
-    // matrix translations.  Patch pivots so all downstream code (bone
-    // positioning, animation offsets, scene builders) uses correct values.
+    // 4c. PIVT / BPOS reconciliation.
+    // In some v1200 (Reforged) models PIVT is left zero for certain bones —
+    // in that case BPOS.row3 is the authoritative world-space position.
+    // BUT: in v1000/v1100 (and mixed v1200 rigs) PIVT is populated and
+    // authoritative, while BPOS may encode a different pose (e.g. Maya bind
+    // vs exported rest) — KulTirasMarine has Shield_Root / pauldrons with
+    // massively divergent values. Fix: per-bone fallback — use BPOS only if
+    // PIVT is (near-)zero AND BPOS has a meaningful value.
+    // NOTE: the whiteout parser auto-upgrades mdx.version to CurrentVersion
+    // (1200) after loading, so detectedVersion==1200 alone does NOT mean
+    // the file was originally v1200.
     if (opts.detectedVersion >= 1200) {
         for (auto& bone : irModel.bones) {
             Point3 bposPos = bone.bindPose.GetTrans();
-            bone.pivotPoint = bposPos;
-            if (bone.nodeIndex >= 0
-                && bone.nodeIndex < static_cast<int32_t>(irModel.nodes.size())) {
-                irModel.nodes[bone.nodeIndex].pivotPoint = bposPos;
+            const bool pivtIsZero = bone.pivotPoint.LengthSquared() < 0.0001f;
+            const bool bposIsZero = bposPos.LengthSquared() < 0.0001f;
+            if (pivtIsZero && !bposIsZero) {
+                bone.pivotPoint = bposPos;
+                if (bone.nodeIndex >= 0
+                    && bone.nodeIndex < static_cast<int32_t>(irModel.nodes.size())) {
+                    irModel.nodes[bone.nodeIndex].pivotPoint = bposPos;
+                }
             }
         }
     }
@@ -1547,6 +2176,11 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     }
 
     ResumeAnimate();  // ← skeleton setup done, restore animate state
+
+    // DEBUG: dump bone state immediately after creation (before skin, before animation).
+    // Expect: autoAlign=0, freezeLen=0, isBone=1, stretchTM=IDENTITY for all bones.
+    // nodeTM.pos == objTM.pos at t=0.
+    dumpBoneState(boneNodes, "after-create");
 
     // 8. Build meshes
     std::vector<INode*> meshNodes;
@@ -1736,6 +2370,9 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             if (meshNodes[mi] && matIdx >= 0 && matIdx < static_cast<int32_t>(materials.size()))
                 meshNodes[mi]->SetMtl(materials[matIdx]);
         }
+
+        // 10b. Trigger Wc3Material delegate viewport update
+        // C++ paramblock SetValue does NOT fire scripted plugin "on X set" handlers.
     }
 
     // 11. Build format-specific scene objects (scripted plugins)
@@ -1792,6 +2429,13 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
     // 12. Apply skin modifiers BEFORE animation (MaxScript order)
     ILOG << "\n==== Skinning (before animation) ====\n";
+
+    // DEBUG: dump bones RIGHT BEFORE skin is applied — these are the transforms
+    // AddBoneEx will snapshot as bind pose.  If any bone's ObjectTM differs from
+    // its NodeTM here, Skin will store a wrong bind pose and every frame will
+    // look wrong relative to it.
+    dumpBoneState(boneNodes, "pre-skin");
+
     if (opts.core.importSkinning) {
         for (size_t mi = 0; mi < irModel.meshes.size(); ++mi) {
             if (meshNodes[mi])
@@ -1959,7 +2603,33 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
         // Material animations: KMTA (layer alpha) + texture animation (KTAT/KTAS)
         if (opts.core.importMaterials && !materials.empty()) {
+
+            // ── Disable unused composite slots ──
+            // (Bitmap sharing is now done in buildMaterials per (texIdx, taIdx) —
+            // assigning diffuseMap here via MaxScript would trigger on-set
+            // handlers that wipe animation controllers on the shared bitmap.)
+            ExecuteMAXScriptScript(
+                _M("for m in sceneMaterials do ("
+                     "local isComp = try(m.materialList != undefined)catch(false);"
+                     "if isComp do ("
+                       "local sc = try(m.materialList.count)catch(0);"
+                       "local usedCount = 0;"
+                       "for i = 1 to sc do ("
+                         "if try(m.materialList[i] != undefined)catch(false) then usedCount = i"
+                       ");"
+                       "for i = 1 to sc do ("
+                         "if i > usedCount then try(m.mapEnables[i] = false)catch()"
+                       ")"
+                     ")"
+                   ")"),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+                MAXScript::ScriptSource::NonEmbedded,
+#endif
+                TRUE, nullptr);
+
             ILOG << "\n==== Material Animations ====\n";
+
+            std::set<BitmapTex*> processedBitmaps;  // track shared bitmaps
 
             for (size_t mi = 0; mi < irModel.materials.size() && mi < materials.size(); ++mi) {
                 Mtl* mtl = materials[mi];
@@ -1995,7 +2665,9 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                     auto* ref = dynamic_cast<ReferenceTarget*>(layerMtl);
                     if (!ref) continue;
 
-                    // KMTA: animate "opacity" on Wc3Material (0-100) and delegate (0-1)
+                    // KMTA: animate "opacity" on Wc3Material (0-100 range)
+                    // The delegate.opacity sync is done in the late MaxScript block
+                    // (after all animations are set up, via sub.opacity.controller).
                     if (layer.alphaTrackIndex >= 0 &&
                         layer.alphaTrackIndex < (int32_t)irModel.floatTracks.size()) {
                         const auto& srcTrack = irModel.floatTracks[layer.alphaTrackIndex];
@@ -2016,44 +2688,47 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                                 if (p) p.pb->SetControllerByID(p.id, 0, ctrl100, FALSE);
                             }
 
-                            // Standard delegate opacity uses 0-1 range.
-                            // Create a second controller with 0-1 keys and assign to
-                            // delegate.opacity so the viewport reflects the animation.
-                            Control* ctrl01 = createFloatController(srcTrack);
-                            if (ctrl01) {
-                                for (int ri = 0; ri < layerMtl->NumRefs(); ri++) {
-                                    auto* r = layerMtl->GetReference(ri);
-                                    auto* sm = dynamic_cast<StdMat2*>(r);
-                                    if (!sm) continue;
-                                    // StdMat2 sub-anim 2 = Extended Parameters,
-                                    // sub-anim 0 = Basic Parameters. Opacity is in
-                                    // Basic params. Access via paramblock directly.
-                                    for (int pi = 0; pi < sm->NumRefs(); pi++) {
-                                        auto* pb = dynamic_cast<IParamBlock2*>(sm->GetReference(pi));
-                                        if (!pb) continue;
-                                        auto* desc = pb->GetDesc();
-                                        if (!desc) continue;
-                                        for (int j = 0; j < desc->Count(); j++) {
-                                            ParamID pid = desc->IndextoID(j);
-                                            const ParamDef& pd = desc->GetParamDef(pid);
-                                            if (pd.int_name && _wcsicmp(pd.int_name, L"opacity") == 0) {
-                                                pb->SetControllerByID(pid, 0, ctrl01, FALSE);
-                                                goto kmta_delegate_done;
-                                            }
-                                        }
-                                    }
+                            // Set opacityCtrl dropdown to match interpolation type
+                            // Dropdown: 1=None, 2=Linear, 3=Bezier, 4=Hermite
+                            {
+                                int ctrlType = 1; // None
+                                switch (srcTrack.interpolation) {
+                                case ir::InterpolationType::Linear:  ctrlType = 2; break;
+                                case ir::InterpolationType::Hermite: ctrlType = 4; break;
+                                default:                             ctrlType = 3; break; // Bezier
                                 }
-                                kmta_delegate_done:;
+                                auto pCtrl = findPBParam(ref, L"opacityCtrl");
+                                if (pCtrl) pCtrl.pb->SetValue(pCtrl.id, 0, ctrlType);
                             }
+
                             ILOG << "  mat[" << mi << "] layer[" << li << "] KMTA keys="
                                  << srcTrack.keys.size() << "\n";
                         }
                     }
 
                     // Texture animation (KTAT translation, KTAR rotation, KTAS scale)
+                    // Controllers are written to BOTH targets:
+                    //   1. BitmapTex StdUVGen  (direct viewport animation)
+                    //   2. Wc3Material params  (exporter round-trip)
+                    // For composites with shared BitmapTex instances, write to the
+                    // bitmap only ONCE (first layer). Use materialControllersUpdate()
+                    // on subsequent layers to sync from the shared bitmap.
                     if (layer.textureAnimationIndex >= 0 &&
                         layer.textureAnimationIndex < (int32_t)irModel.textureAnimations.size()) {
                         const auto& ta = irModel.textureAnimations[layer.textureAnimationIndex];
+
+                        // Get the diffuse BitmapTex for direct StdUVGen access
+                        BitmapTex* diffuseBmp = getDiffuseBitmapTex(ref);
+                        StdUVGen* uvGen = diffuseBmp ? diffuseBmp->GetUVGen() : nullptr;
+
+                        // Check if this bitmap was already processed (shared texture)
+                        bool bitmapAlreadyProcessed = false;
+                        if (diffuseBmp) {
+                            if (processedBitmaps.count(diffuseBmp))
+                                bitmapAlreadyProcessed = true;
+                            else
+                                processedBitmaps.insert(diffuseBmp);
+                        }
 
                         // Split a Vec3 track into a per-channel float track
                         auto splitVec3Channel = [](const ir::Vec3Track& v3, int ch) -> ir::FloatTrack {
@@ -2075,30 +2750,85 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                             return ft;
                         };
 
-                        // KTAT: UV offset — X → U_Offset, Y → V_Offset
-                        // (C++ IR has raw MDX values, no coord transform for UV space)
+                        // KTAT: UV offset — after swizzle: ch1=-X→U_Offset, ch0=Y→V_Offset
+                        // NeoDex applies the same transform during read (readMDXPosition).
+                        // Result: U_Offset = -X_original, V_Offset = Y_original.
+                        //
+                        // Z channel: StdUVGen has NO W_Offset property (only W_Angle).
+                        // For 2D bitmaps the W component is not renderable in Max — but we
+                        // still preserve it on the Wc3Material.anim_WOffset custom attribute
+                        // so the exporter can round-trip the original MDX KTAT untouched.
                         if (ta.translationTrackIndex >= 0 &&
                             ta.translationTrackIndex < (int32_t)irModel.vec3Tracks.size()) {
                             const auto& v3track = irModel.vec3Tracks[ta.translationTrackIndex];
                             if (!v3track.empty()) {
-                                animateFloatNamed(ref, L"anim_UOffset", splitVec3Channel(v3track, 0));
-                                animateFloatNamed(ref, L"anim_VOffset", splitVec3Channel(v3track, 1));
+                                if (!bitmapAlreadyProcessed) {
+                                    auto uTrack = splitVec3Channel(v3track, 1);  // Y → U_Offset
+                                    auto vTrack = splitVec3Channel(v3track, 0);  // X → V_Offset
+                                    auto wTrack = splitVec3Channel(v3track, 2);  // Z → anim_WOffset (round-trip only)
+                                    Control* uCtrl = createFloatController(uTrack);
+                                    Control* vCtrl = createFloatController(vTrack);
+                                    Control* wCtrl = createFloatController(wTrack);
+
+                                    // Write directly to BitmapTex StdUVGen (U/V only — no W_Offset exists)
+                                    if (uvGen && uCtrl)
+                                        assignControllerToUVGen(uvGen, L"U_Offset", 0, uCtrl);
+                                    if (uvGen && vCtrl)
+                                        assignControllerToUVGen(uvGen, L"V_Offset", 1, vCtrl);
+
+                                    // Also set on Wc3Material params (includes W for round-trip)
+                                    if (uCtrl) {
+                                        auto p = findPBParam(ref, L"anim_UOffset");
+                                        if (p) p.pb->SetControllerByID(p.id, 0, uCtrl, FALSE);
+                                    }
+                                    if (vCtrl) {
+                                        auto p = findPBParam(ref, L"anim_VOffset");
+                                        if (p) p.pb->SetControllerByID(p.id, 0, vCtrl, FALSE);
+                                    }
+                                    if (wCtrl) {
+                                        auto p = findPBParam(ref, L"anim_WOffset");
+                                        if (p) p.pb->SetControllerByID(p.id, 0, wCtrl, FALSE);
+                                    }
+                                } else {
+                                    // Shared bitmap already has controllers from first layer.
+                                    // Create same controllers for this sub-material's params only.
+                                    auto uTrack = splitVec3Channel(v3track, 1);
+                                    auto vTrack = splitVec3Channel(v3track, 0);
+                                    auto wTrack = splitVec3Channel(v3track, 2);
+                                    Control* uCtrl = createFloatController(uTrack);
+                                    Control* vCtrl = createFloatController(vTrack);
+                                    Control* wCtrl = createFloatController(wTrack);
+                                    if (uCtrl) {
+                                        auto p = findPBParam(ref, L"anim_UOffset");
+                                        if (p) p.pb->SetControllerByID(p.id, 0, uCtrl, FALSE);
+                                    }
+                                    if (vCtrl) {
+                                        auto p = findPBParam(ref, L"anim_VOffset");
+                                        if (p) p.pb->SetControllerByID(p.id, 0, vCtrl, FALSE);
+                                    }
+                                    if (wCtrl) {
+                                        auto p = findPBParam(ref, L"anim_WOffset");
+                                        if (p) p.pb->SetControllerByID(p.id, 0, wCtrl, FALSE);
+                                    }
+                                }
+
                                 ILOG << "  mat[" << mi << "] layer[" << li << "] KTAT keys="
-                                     << v3track.keys.size() << "\n";
+                                     << v3track.keys.size()
+                                     << " (direct-to-bitmap: " << (uvGen ? "yes" : "no")
+                                     << ", shared: " << (bitmapAlreadyProcessed ? "yes" : "no") << ")\n";
                             }
                         }
 
-                        // KTAR: UV rotation — quaternion → Z-euler angle (negated, degrees) → W_Angle
+                        // KTAR: UV rotation — quaternion → Z-euler angle → W_Angle (degrees)
                         if (ta.rotationTrackIndex >= 0 &&
                             ta.rotationTrackIndex < (int32_t)irModel.quatTracks.size()) {
                             const auto& qtrack = irModel.quatTracks[ta.rotationTrackIndex];
                             if (!qtrack.empty()) {
-                                // Convert quat keys to float keys (degrees)
                                 auto quatToZAngle = [](const Quat& q) -> float {
                                     float ang[3];
-                                    Quat mq = q;  // QuatToEuler takes non-const ref
+                                    Quat mq = q;
                                     QuatToEuler(mq, ang);
-                                    return -ang[2] * (180.0f / 3.14159265f);  // negate Z, radians → degrees
+                                    return -ang[2] * (180.0f / 3.14159265f);
                                 };
 
                                 ir::FloatTrack rotFloat;
@@ -2116,9 +2846,24 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                                     }
                                     rotFloat.keys.push_back(fk);
                                 }
-                                animateFloatNamed(ref, L"anim_WAngle", rotFloat);
+
+                                Control* wCtrl = createFloatController(rotFloat);
+
+                                if (!bitmapAlreadyProcessed) {
+                                    // Write directly to BitmapTex StdUVGen
+                                    if (uvGen && wCtrl)
+                                        assignControllerToUVGen(uvGen, L"W_Angle", 6, wCtrl);
+                                }
+
+                                // Always set on Wc3Material param
+                                if (wCtrl) {
+                                    auto p = findPBParam(ref, L"anim_WAngle");
+                                    if (p) p.pb->SetControllerByID(p.id, 0, wCtrl, FALSE);
+                                }
+
                                 ILOG << "  mat[" << mi << "] layer[" << li << "] KTAR keys="
-                                     << qtrack.keys.size() << "\n";
+                                     << qtrack.keys.size()
+                                     << " (direct-to-bitmap: " << (uvGen ? "yes" : "no") << ")\n";
                             }
                         }
 
@@ -2127,24 +2872,274 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                             ta.scaleTrackIndex < (int32_t)irModel.vec3Tracks.size()) {
                             const auto& v3track = irModel.vec3Tracks[ta.scaleTrackIndex];
                             if (!v3track.empty()) {
-                                animateFloatNamed(ref, L"anim_UTiling", splitVec3Channel(v3track, 0));
-                                animateFloatNamed(ref, L"anim_VTiling", splitVec3Channel(v3track, 1));
+                                auto uTrack = splitVec3Channel(v3track, 0);
+                                auto vTrack = splitVec3Channel(v3track, 1);
+                                Control* uCtrl = createFloatController(uTrack);
+                                Control* vCtrl = createFloatController(vTrack);
+
+                                if (!bitmapAlreadyProcessed) {
+                                    // Write directly to BitmapTex StdUVGen
+                                    if (uvGen && uCtrl)
+                                        assignControllerToUVGen(uvGen, L"U_Tiling", 2, uCtrl);
+                                    if (uvGen && vCtrl)
+                                        assignControllerToUVGen(uvGen, L"V_Tiling", 3, vCtrl);
+                                }
+
+                                // Always set on Wc3Material params
+                                if (uCtrl) {
+                                    auto p = findPBParam(ref, L"anim_UTiling");
+                                    if (p) p.pb->SetControllerByID(p.id, 0, uCtrl, FALSE);
+                                }
+                                if (vCtrl) {
+                                    auto p = findPBParam(ref, L"anim_VTiling");
+                                    if (p) p.pb->SetControllerByID(p.id, 0, vCtrl, FALSE);
+                                }
+
                                 ILOG << "  mat[" << mi << "] layer[" << li << "] KTAS keys="
-                                     << v3track.keys.size() << "\n";
+                                     << v3track.keys.size()
+                                     << " (direct-to-bitmap: " << (uvGen ? "yes" : "no") << ")\n";
+                            }
+                        }
+
+                        // Set uvCtrlType dropdown to match interpolation type
+                        // Dropdown: 1=None, 2=Linear, 3=Bezier, 4=Hermite
+                        // Determine from KTAT, KTAR, or KTAS (first one found)
+                        {
+                            ir::InterpolationType interpType = ir::InterpolationType::None;
+                            bool found = false;
+                            if (!found && ta.translationTrackIndex >= 0 &&
+                                ta.translationTrackIndex < (int32_t)irModel.vec3Tracks.size()) {
+                                const auto& t = irModel.vec3Tracks[ta.translationTrackIndex];
+                                if (!t.empty()) { interpType = t.interpolation; found = true; }
+                            }
+                            if (!found && ta.rotationTrackIndex >= 0 &&
+                                ta.rotationTrackIndex < (int32_t)irModel.quatTracks.size()) {
+                                const auto& t = irModel.quatTracks[ta.rotationTrackIndex];
+                                if (!t.empty()) { interpType = t.interpolation; found = true; }
+                            }
+                            if (!found && ta.scaleTrackIndex >= 0 &&
+                                ta.scaleTrackIndex < (int32_t)irModel.vec3Tracks.size()) {
+                                const auto& t = irModel.vec3Tracks[ta.scaleTrackIndex];
+                                if (!t.empty()) { interpType = t.interpolation; found = true; }
+                            }
+                            if (found) {
+                                int ctrlType = 1; // None
+                                switch (interpType) {
+                                case ir::InterpolationType::Linear:  ctrlType = 2; break;
+                                case ir::InterpolationType::Hermite: ctrlType = 4; break;
+                                default:                             ctrlType = 3; break; // Bezier
+                                }
+                                auto pUV = findPBParam(ref, L"uvCtrlType");
+                                if (pUV) pUV.pb->SetValue(pUV.id, 0, ctrlType);
                             }
                         }
                     }
                 }
             }
-            // Sync UV animation controllers from Wc3Material params to diffuse bitmap coords.
-            // This calls textureControllersUpdate() on each Wc3Material so the viewport
-            // reflects texture animation in real-time.
+            // After animation setup, only touch what's safe to touch:
+            //   - showInViewport: per-sub-material visibility
+            //   - delegate.opacity sync: needed for composite sub-materials
+            //     (on-set handlers don't fire reliably for nested Wc3Materials)
+            //
+            // We do NOT call applyFilterMode() / generateOpacity() / materialControllersUpdate()
+            // here — those trigger coords refreshes (opMap.coords.U_Tile = true) that
+            // wipe animation controllers we just set up. The filter mode and opacity
+            // map were already configured in C++ during material build.
             ExecuteMAXScriptScript(
                 _M("for m in sceneMaterials do ("
-                   "if classOf m == Wc3Material then try(m.textureControllersUpdate())catch();"
-                   "if m.numsubs > 0 then for i = 1 to m.numsubs do "
-                   "(local s = try(m[i])catch(undefined); if classOf s == Wc3Material then try(s.textureControllersUpdate())catch())"
+                     "local isComp = try(m.materialList != undefined)catch(false);"
+                     "if isComp do ("
+                       "local hasAdditive = false;"
+                       "for i = 1 to m.materialList.count do ("
+                         "local sub = try(m.materialList[i])catch(undefined);"
+                         "if sub != undefined do ("
+                           "local fm = try(sub.filterMode)catch(1);"
+                           "if fm >= 4 and fm <= 5 do hasAdditive = true"
+                         ")"
+                       ");"
+                       "for i = 1 to m.materialList.count do ("
+                         "local sub = try(m.materialList[i])catch(undefined);"
+                         "if sub == undefined do continue;"
+                         "local fm = try(sub.filterMode)catch(1);"
+                         "local isAdd = (fm >= 4 and fm <= 5);"
+                         "if hasAdditive then ("
+                           "try(sub.showInViewport = isAdd)catch()"
+                         ") else ("
+                           "try(sub.showInViewport = true)catch()"
+                         ");"
+                         "local tex = try(sub.diffuseMap)catch(undefined);"
+                         "if tex != undefined do try(showTextureMap m tex true)catch();"
+                         "try(sub.delegate.opacity = sub.opacity)catch();"
+                         "local aCtrl = try(sub.opacity.controller)catch(undefined);"
+                         "if aCtrl != undefined do try(sub.delegate.opacity.controller = aCtrl)catch()"
+                       ")"
+                     ");"
+                     "if not isComp do ("
+                       "try(m.showInViewport = true)catch()"
+                     ")"
                    ")"),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+                MAXScript::ScriptSource::NonEmbedded,
+#endif
+                TRUE, nullptr);
+
+            // ── Fix BitmapTex tiling — LAST operation in material setup ──
+            // Setting bm.coords.U_Tile = X can trigger a paramblock refresh on
+            // the UVGen. To protect animation controllers on U_Offset/V_Offset/
+            // W_Angle set during Phase 2, we SAVE them before the tiling fix
+            // runs and RESTORE them afterwards. Same for Wc3Material params
+            // (anim_UOffset/VOffset/WAngle + opacity).
+            {
+                std::wstring tilingScript =
+                    L"( "
+                    // Phase A1: save bitmap coords controllers
+                    L"local savedBmpCtrls = #();"
+                    L"for bm in getClassInstances Bitmaptexture do ("
+                      L"local uC = try(bm.coords.U_Offset.controller)catch(undefined);"
+                      L"local vC = try(bm.coords.V_Offset.controller)catch(undefined);"
+                      L"local wC = try(bm.coords.W_Angle.controller)catch(undefined);"
+                      L"if uC != undefined or vC != undefined or wC != undefined do "
+                        L"append savedBmpCtrls #(bm, uC, vC, wC)"
+                    L");"
+                    // Phase A2: save Wc3Material anim_* + opacity controllers
+                    L"local savedMatCtrls = #();"
+                    L"fn saveMatCtrl m = ("
+                      L"local uC = try(m.anim_UOffset.controller)catch(undefined);"
+                      L"local vC = try(m.anim_VOffset.controller)catch(undefined);"
+                      L"local wC = try(m.anim_WAngle.controller)catch(undefined);"
+                      L"local oC = try(m.opacity.controller)catch(undefined);"
+                      L"if uC != undefined or vC != undefined or wC != undefined or oC != undefined do "
+                        L"append savedMatCtrls #(m, uC, vC, wC, oC)"
+                    L");"
+                    L"for m in sceneMaterials do ("
+                      L"if classof m == Wdx_Wc3Material do saveMatCtrl m;"
+                      L"if try(m.materialList != undefined)catch(false) do ("
+                        L"for sub in m.materialList do ("
+                          L"if sub != undefined and classof sub == Wdx_Wc3Material do saveMatCtrl sub"
+                        L")"
+                      L")"
+                    L");"
+
+                    L"local wrapLookup = #(); ";
+                for (const auto& irTex : irModel.textures) {
+                    if (irTex.filePath.empty()) continue;
+                    std::string stem = irTex.filePath;
+                    auto slashPos = stem.find_last_of("\\/");
+                    if (slashPos != std::string::npos) stem = stem.substr(slashPos + 1);
+                    auto dotPos = stem.find_last_of('.');
+                    if (dotPos != std::string::npos) stem = stem.substr(0, dotPos);
+                    std::transform(stem.begin(), stem.end(), stem.begin(),
+                                   [](unsigned char c) { return (char)std::tolower(c); });
+
+                    std::wstring wstem;
+                    wstem.reserve(stem.size());
+                    for (char c : stem) {
+                        if (c == L'"' || c == L'\\') continue;
+                        wstem.push_back((wchar_t)(unsigned char)c);
+                    }
+
+                    tilingScript += L"append wrapLookup #(\"";
+                    tilingScript += wstem;
+                    tilingScript += L"\", ";
+                    tilingScript += (irTex.wrapU ? L"true" : L"false");
+                    tilingScript += L", ";
+                    tilingScript += (irTex.wrapV ? L"true" : L"false");
+                    tilingScript += L"); ";
+                }
+                tilingScript +=
+                    // Phase B: apply tiling booleans
+                    L"local fixed = 0;"
+                    L"for bm in getClassInstances Bitmaptexture do ("
+                      L"local fn2 = \"\";"
+                      L"try(fn2 = getFilenameFile bm.fileName)catch();"
+                      L"if fn2 != \"\" do ("
+                        L"local entry = undefined;"
+                        L"for e in wrapLookup while entry == undefined do ("
+                          L"if stricmp e[1] fn2 == 0 do entry = e"
+                        L");"
+                        L"if entry != undefined do ("
+                          L"try(bm.coords.U_Tile = entry[2])catch();"
+                          L"try(bm.coords.V_Tile = entry[3])catch();"
+                          L"fixed += 1"
+                        L")"
+                      L")"
+                    L");"
+                    // Phase C1: restore bitmap coords controllers
+                    L"for entry in savedBmpCtrls do ("
+                      L"local bm = entry[1];"
+                      L"if entry[2] != undefined do "
+                        L"try(bm.coords.U_Offset.controller = entry[2])catch();"
+                      L"if entry[3] != undefined do "
+                        L"try(bm.coords.V_Offset.controller = entry[3])catch();"
+                      L"if entry[4] != undefined do "
+                        L"try(bm.coords.W_Angle.controller = entry[4])catch()"
+                    L");"
+                    // Phase C2: restore Wc3Material anim_* + opacity controllers
+                    L"for entry in savedMatCtrls do ("
+                      L"local m = entry[1];"
+                      L"if entry[2] != undefined do "
+                        L"try(m.anim_UOffset.controller = entry[2])catch();"
+                      L"if entry[3] != undefined do "
+                        L"try(m.anim_VOffset.controller = entry[3])catch();"
+                      L"if entry[4] != undefined do "
+                        L"try(m.anim_WAngle.controller = entry[4])catch();"
+                      L"if entry[5] != undefined do "
+                        L"try(m.opacity.controller = entry[5])catch()"
+                    L");"
+                    // Phase C3: push material UV controllers down to diffuseMap.coords.
+                    // This is needed because the bitmap's own controllers may have
+                    // been wiped by a paramblock refresh, while the material's
+                    // controllers survived. Only push when the material controller
+                    // actually has keys (numKeys > 0) — otherwise an empty default
+                    // controller would overwrite a valid one on a shared bitmap.
+                    L"local pushed = 0;"
+                    L"for entry in savedMatCtrls do ("
+                      L"local m = entry[1];"
+                      L"local dm = try(m.diffuseMap)catch(undefined);"
+                      L"if dm == undefined do continue;"
+                      L"local uC = entry[2];"
+                      L"if uC != undefined and (try(numKeys uC)catch(0)) > 0 do ("
+                        L"try(dm.coords.U_Offset.controller = uC)catch(); pushed += 1"
+                      L");"
+                      L"local vC = entry[3];"
+                      L"if vC != undefined and (try(numKeys vC)catch(0)) > 0 do ("
+                        L"try(dm.coords.V_Offset.controller = vC)catch(); pushed += 1"
+                      L");"
+                      L"local wC = entry[4];"
+                      L"if wC != undefined and (try(numKeys wC)catch(0)) > 0 do ("
+                        L"try(dm.coords.W_Angle.controller = wC)catch(); pushed += 1"
+                      L")"
+                    L");"
+                    L"format \"[MDLX] Tiling fix: % bitmaps, bmp ctrls=%, mat ctrls=%, pushed=%\\n\" fixed savedBmpCtrls.count savedMatCtrls.count pushed"
+                    L" )";
+
+                ExecuteMAXScriptScript(tilingScript.c_str(),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+                    MAXScript::ScriptSource::NonEmbedded,
+#endif
+                    TRUE, nullptr);
+            }
+
+            // Force viewport to Nitrous "Shaded Materials with Maps" mode so
+            // transparent/additive MDX materials render correctly. Without this,
+            // composite materials with additive layers show a black halo around
+            // transparent areas. This mirrors what NeoDex users typically have
+            // configured as their default. If the user prefers a different mode,
+            // they can change it via the viewport label menu.
+            //
+            // Reference: NitrousGraphicsManager.GetActiveViewportSetting() exposes
+            // the viewport shading options. "Shaded Materials with Maps" is the
+            // default in 3ds Max 2020.2+, but older defaults or user prefs may
+            // leave it off, which breaks transparent composite materials.
+            ExecuteMAXScriptScript(
+                _M("try ("
+                     "local vs = NitrousGraphicsManager.GetActiveViewportSetting();"
+                     "if vs != undefined do ("
+                       "vs.UseTextureEnabled = true;"
+                       "vs.TransparencyEnabled = true"
+                     ")"
+                   ") catch();"
+                   "try(completeRedraw())catch(try(redrawViews())catch())"),
 #if MAX_PRODUCT_YEAR_NUMBER >= 2022
                 MAXScript::ScriptSource::NonEmbedded,
 #endif
@@ -2181,26 +3176,82 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 }
 
                 // Color → animate Wc3VertexMod.VertexColor on the mesh node's modifier
+                //
+                // The old C++-path used mod->ClassID() == mdx_ids::WC3_VERTEX_MOD to
+                // locate the modifier, but scripted-extend plugins (Wdx_Wc3VertexMod
+                // extends VertexPaint) get wrapped by Max at runtime in an MSPlugin
+                // class with its own ClassID that differs from the declared one.
+                // The check always returned false → animation never applied.
+                //
+                // Route via MaxScript — same pattern Wc3VertexColorBuilder already
+                // uses for modifier creation, and proven in probe_vertexmod.ms:
+                // m.VertexColor.controller = bezier_color() works reliably.
                 if (ga.usesColor && ga.colorTrackIndex >= 0 &&
                     ga.colorTrackIndex < static_cast<int32_t>(irModel.colorTracks.size())) {
-                    // Find the Wc3VertexMod modifier on this mesh
-                    Object* objRef = meshNode->GetObjectRef();
-                    if (objRef && objRef->SuperClassID() == GEN_DERIVOB_CLASS_ID) {
-                        auto* dobj = static_cast<IDerivedObject*>(objRef);
-                        for (int mi = 0; mi < dobj->NumModifiers(); mi++) {
-                            Modifier* mod = dobj->GetModifier(mi);
-                            if (mod && mod->ClassID() == mdx_ids::WC3_VERTEX_MOD) {
-                                auto* modRef = dynamic_cast<ReferenceTarget*>(mod);
-                                if (modRef) {
-                                    animateColorNamed(modRef, L"VertexColor",
-                                                      ga.colorTrackIndex, irModel);
-                                    ILOG << "  geosetAnim mesh[" << ga.meshIndex << "] '"
-                                         << narrow(meshNode->GetName()) << "' color keys="
-                                         << irModel.colorTracks[ga.colorTrackIndex].keys.size() << "\n";
-                                }
-                                break;
-                            }
+                    const auto& track = irModel.colorTracks[ga.colorTrackIndex];
+                    if (!track.empty()) {
+                        // Tangent type per MaxScript key: maps IR interpolation
+                        //   None    → #step   (hard toggles, no interp)
+                        //   Linear  → #linear (straight lines between keys)
+                        //   Hermite → #smooth (auto-smoothed, Max computes tangents)
+                        //   Bezier  → #smooth (same; explicit tangent values are
+                        //                     rare on KGAC and not worth the
+                        //                     extra scripting complexity)
+                        const wchar_t* tanType = L"#smooth";
+                        switch (track.interpolation) {
+                            case ir::InterpolationType::None:   tanType = L"#step";   break;
+                            case ir::InterpolationType::Linear: tanType = L"#linear"; break;
+                            default: break;
                         }
+
+                        std::wstring nodeName(meshNode->GetName());
+                        std::wstringstream ss;
+                        ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
+                           << L"if n != undefined do ("
+                           << L"for m in n.modifiers do ("
+                           << L"if (classOf m) as string == \"Wc3VertexMod\" do ("
+                           << L"m.VertexColor.controller = bezier_color();"
+                           << L"local c = m.VertexColor.controller;";
+
+                        // Add each key via addNewKey — returns the MAXKey directly
+                        // (NOT an index), so we can set .value/.inTangentType/
+                        // .outTangentType on the returned key.
+                        for (const auto& kf : track.keys) {
+                            int r = static_cast<int>(kf.value.r * 255.0f + 0.5f);
+                            int g = static_cast<int>(kf.value.g * 255.0f + 0.5f);
+                            int b = static_cast<int>(kf.value.b * 255.0f + 0.5f);
+                            if (r < 0) r = 0; if (r > 255) r = 255;
+                            if (g < 0) g = 0; if (g > 255) g = 255;
+                            if (b < 0) b = 0; if (b > 255) b = 255;
+                            ss << L"local k = addNewKey c " << kf.time << L"t;"
+                               << L"k.value = color " << r << L" " << g << L" " << b << L";"
+                               << L"k.inTangentType = " << tanType << L";"
+                               << L"k.outTangentType = " << tanType << L";";
+                        }
+
+                        // Global sequence → ORT=cycle so the track loops over its
+                        // [0, globalSeqDuration] window.
+                        if (track.globalSequenceIndex >= 0) {
+                            ss << L"setBeforeORT c #constant;"
+                               << L"setAfterORT c #cycle;"
+                               << L"enableORTs c true;";
+                        }
+
+                        ss << L"exit))))";   // close: if-do, for-do, if-do, (local
+
+                        std::wstring scriptStr = ss.str();
+                        ExecuteMAXScriptScript(
+                            const_cast<wchar_t*>(scriptStr.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+                            MAXScript::ScriptSource::NonEmbedded,
+#endif
+                            TRUE, nullptr);
+
+                        ILOG << "  geosetAnim mesh[" << ga.meshIndex << "] '"
+                             << narrow(meshNode->GetName()) << "' color keys="
+                             << track.keys.size()
+                             << (track.globalSequenceIndex >= 0 ? " (globalSeq)" : "")
+                             << " (via MaxScript)\n";
                     }
                 }
             }
@@ -2302,21 +3353,10 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 ILOG << "  PE2 node[" << pe.nodeIndex << "]\n";
                 animateFloatPB(pb, P2_PB_SPEED,      pe.speedTrackIndex, irModel);
                 animateFloatPB(pb, P2_PB_VARIATION,  pe.variationTrackIndex, irModel);
-                // Latitude: MDX stores radians, plugin expects degrees
-                if (pe.latitudeTrackIndex >= 0 &&
-                    pe.latitudeTrackIndex < (int32_t)irModel.floatTracks.size()) {
-                    ir::FloatTrack degTrack = irModel.floatTracks[pe.latitudeTrackIndex];
-                    constexpr float kRadToDeg = 180.0f / 3.14159265f;
-                    for (auto& k : degTrack.keys) {
-                        k.value *= kRadToDeg;
-                        if (k.hasTangents) {
-                            k.inTangent *= kRadToDeg;
-                            k.outTangent *= kRadToDeg;
-                        }
-                    }
-                    Control* ctrl = createFloatController(degTrack);
-                    if (ctrl) pb->SetControllerByID(P2_PB_ANGLE_Y, 0, ctrl, FALSE);
-                }
+                // Latitude (ConeAngle): PE2 stores latitude in DEGREES
+                // (WC3 engine converts internally, unlike PE1 which is radians).
+                // No unit conversion needed — pass the track straight through.
+                animateFloatPB(pb, P2_PB_ANGLE_Y,    pe.latitudeTrackIndex, irModel);
                 animateFloatPB(pb, P2_PB_GRAVITY,    pe.gravityTrackIndex, irModel);
                 animateFloatPB(pb, P2_PB_INITVEL,    pe.emissionRateTrackIndex, irModel);
                 animateFloatPB(pb, P2_PB_WIDTH,      pe.widthTrackIndex, irModel);
@@ -2338,18 +3378,24 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             }
 
             // Lights: attStart, attEnd, color, intensity, ambColor, ambIntensity
+            //
+            // Wc3Light ist ein scripted simpleManipulator → ParamBlock-Controller-
+            // Assignment ist unzuverlässig. Gleiche Lösung wie bei KGAC: MaxScript-
+            // Route über *NamedScript-Helpers. Die setzen `n.<param>.controller =
+            // bezier_float/bezier_color` und fügen Keys via addNewKey hinzu.
             for (const auto& light : irModel.lights) {
                 if (light.nodeIndex < 0 || light.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
                     continue;
-                auto* ref = getNodeRef(nodeMap[light.nodeIndex]);
-                if (!ref) continue;
-                ILOG << "  Light node[" << light.nodeIndex << "]\n";
-                animateFloatNamed(ref, L"DecayStart",   light.attStartTrackIndex, irModel);
-                animateFloatNamed(ref, L"DecayEnd",     light.attEndTrackIndex, irModel);
-                animateColorNamed(ref, L"ShadowColor",  light.colorTrackIndex, irModel);
-                animateFloatNamed(ref, L"ShadowValue",  light.intensityTrackIndex, irModel);
-                animateColorNamed(ref, L"AmbColor",     light.ambColorTrackIndex, irModel);
-                animateFloatNamed(ref, L"AmbValue",     light.ambIntensityTrackIndex, irModel);
+                INode* lightNode = nodeMap[light.nodeIndex];
+                if (!lightNode) continue;
+                ILOG << "  Light node[" << light.nodeIndex << "] '"
+                     << narrow(lightNode->GetName()) << "' (via MaxScript)\n";
+                animateFloatNamedScript(lightNode, L"DecayStart",   light.attStartTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"DecayEnd",     light.attEndTrackIndex, irModel);
+                animateColorNamedScript(lightNode, L"ShadowColor",  light.colorTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"ShadowValue",  light.intensityTrackIndex, irModel);
+                animateColorNamedScript(lightNode, L"AmbColor",     light.ambColorTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"AmbValue",     light.ambIntensityTrackIndex, irModel);
             }
 
             ILOG << "==== end parameter animations ====\n";
@@ -2416,15 +3462,177 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     ILOG << "==== end animation ====\n";
     ILOG.flush();
 
+    // DEBUG: sample bone state at multiple frames after animation keys are in place.
+    // This reveals:
+    //   - Whether NodeTM and ObjectTM diverge at any frame (stretchTM leaks)
+    //   - Whether any bone "jumps" > 1000 units between samples (explosion origin)
+    //   - Whether autoAlign/freezeLen have been silently re-enabled
+    {
+        std::vector<TimeValue> sampleFrames;
+        int tpf = GetTicksPerFrame();
+        // Sample every 20 frames across the animation range
+        Interval range = gi->GetAnimRange();
+        for (TimeValue t = range.Start(); t <= range.End(); t += 20 * tpf) {
+            sampleFrames.push_back(t);
+        }
+        dumpBoneState(boneNodes, "after-animation", sampleFrames);
+    }
+
     // 14. Build sequences (Note Track entries)
     {
         mdx_scene::Wc3SequenceBuilder seqBuilder;
         seqBuilder.buildSequences(irModel, gi, reporter);
     }
 
-    // 15. Report
+    // 15. Organize imported nodes into type-based layers
+    // (Geometry, Bones, Attachments, Events, Lights, Cameras,
+    //  Particle Emitters 1/2, Ribbon Emitters, Popcorn FX, FaceFX,
+    //  Collision Shapes, Helpers / Dummies) — matches WdxNodeManager.
+    organizeNodesIntoLayers(gi);
+
+    // 16. Report
     if (reporter.hasWarnings() || reporter.hasErrors()) {
         reporter.showSummaryDialog(gi->GetMAXHWnd());
+    }
+
+    // 17. Populate Material Editor with imported materials
+    // Done at the very end so all materials, textures, and animation
+    // controllers are fully set up before they appear in the editor.
+    // Uses meditMaterials[i] = sceneMaterials[i] (same approach as NeoDex)
+    // via ExecuteMAXScriptScript (C++ SDK call into MaxScript).
+    ILOG << "\n==== Material Editor Population ====\n";
+    ILOG << "  opts.importMaterials=" << opts.core.importMaterials
+         << "  materials.size()=" << materials.size() << "\n";
+
+    if (opts.core.importMaterials && !materials.empty()) {
+        // Debug: log all materials we created in C++
+        int nonNull = 0;
+        for (size_t i = 0; i < materials.size(); ++i) {
+            Mtl* m = materials[i];
+            if (m) {
+                ++nonNull;
+                ILOG << "  materials[" << i << "] = " << narrow(m->GetName())
+                     << "  classID=(" << std::hex
+                     << m->ClassID().PartA() << ", "
+                     << m->ClassID().PartB() << std::dec << ")\n";
+            } else {
+                ILOG << "  materials[" << i << "] = nullptr\n";
+            }
+        }
+        ILOG << "  non-null materials: " << nonNull << "\n";
+
+        // Debug: log which meshes have materials assigned
+        int assignedCount = 0;
+        for (size_t mi = 0; mi < meshNodes.size(); ++mi) {
+            if (meshNodes[mi] && meshNodes[mi]->GetMtl()) {
+                ++assignedCount;
+            }
+        }
+        ILOG << "  mesh nodes with materials assigned: " << assignedCount
+             << " / " << meshNodes.size() << "\n";
+        ILOG.flush();
+
+        // Step A: Query sceneMaterials count
+        FPValue result;
+        BOOL ok = ExecuteMAXScriptScript(
+            _M("format \"[MDLX DEBUG] sceneMaterials.count = %\\n\" sceneMaterials.count;"
+               "for i = 1 to sceneMaterials.count do "
+               "  format \"[MDLX DEBUG]   sceneMat[%] = '%' class=%\\n\" i sceneMaterials[i].name (classOf sceneMaterials[i]);"
+               "sceneMaterials.count"),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE, &result);
+
+        ILOG << "  Step A (query sceneMaterials): ok=" << ok << "\n";
+        ILOG.flush();
+
+        // Step B: Populate Compact Material Editor
+        // Uses direct meditMaterials[i] assignment (same as NeoDex MaxScript importer)
+        ok = ExecuteMAXScriptScript(
+            _M("try ("
+                 "local count = 0;"
+                 "local n = if sceneMaterials.count > 24 then 24 else sceneMaterials.count;"
+                 "format \"[MDLX DEBUG] Populating % medit slots...\\n\" n;"
+                 "for i = 1 to n do ("
+                   "try ("
+                     "meditMaterials[i] = sceneMaterials[i];"
+                     "setMTLMeditObjType sceneMaterials[i] 3;"
+                     "count += 1;"
+                     "format \"[MDLX DEBUG]   slot[%] = '%' OK\\n\" i sceneMaterials[i].name"
+                   ") catch ("
+                     "format \"[MDLX DEBUG]   slot[%] FAILED: %\\n\" i (getCurrentException())"
+                   ")"
+                 ");"
+                 "if count > 0 do activeMeditSlot = 1;"
+                 "format \"[MDLX DEBUG] Compact Editor: % slots populated\\n\" count"
+               ") catch ("
+                 "format \"[MDLX DEBUG] medit populate OUTER ERROR: %\\n\" (getCurrentException())"
+               ")"),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE, nullptr);
+
+        ILOG << "  Step B (medit populate): ok=" << ok << "\n";
+        ILOG.flush();
+
+        // Step C: Populate Slate Material Editor (if open)
+        ok = ExecuteMAXScriptScript(
+            _M("try ("
+                 "local viewIdx = sme.CreateView \"Imported Materials\";"
+                 "format \"[MDLX DEBUG] SME CreateView returned index: %\\n\" viewIdx;"
+                 "if viewIdx != undefined and viewIdx > 0 do ("
+                   "local v = sme.GetView viewIdx;"
+                   "format \"[MDLX DEBUG] SME GetView returned: %\\n\" (classOf v);"
+                   "if v != undefined do ("
+                     "for i = 1 to sceneMaterials.count do "
+                       "v.CreateNode sceneMaterials[i] [((mod (i-1) 5) * 250), (((i-1) / 5) * 300)];"
+                     "actionMan.executeAction 369891408 \"40060\";"
+                     "format \"[MDLX DEBUG] SME: % nodes created\\n\" sceneMaterials.count"
+                   ")"
+                 ")"
+               ") catch ("
+                 "format \"[MDLX DEBUG] SME failed (OK if editor not open): %\\n\" (getCurrentException())"
+               ")"),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE, nullptr);
+
+        ILOG << "  Step C (SME populate): ok=" << ok << "\n";
+    } else {
+        ILOG << "  SKIPPED: importMaterials="
+             << opts.core.importMaterials
+             << " materials.empty()=" << materials.empty() << "\n";
+    }
+    ILOG << "==== end Material Editor ====\n";
+    ILOG.flush();
+
+    // Set animation range to cover all sequences
+    if (!irModel.sequences.empty()) {
+        TimeValue maxEnd = 0;
+        for (const auto& seq : irModel.sequences)
+            if (seq.endTime > maxEnd) maxEnd = seq.endTime;
+        if (maxEnd > 0) {
+            Interval range(0, maxEnd);
+            gi->SetAnimRange(range);
+            ILOG << "  Animation range set to 0 - " << maxEnd
+                 << " ticks (" << (maxEnd / GetTicksPerFrame()) << " frames)\n";
+        }
+    } else if (!irModel.globalSequenceDurations.empty()) {
+        // No named sequences but has global sequences — use longest
+        TimeValue maxGS = 0;
+        for (const auto& dur : irModel.globalSequenceDurations) {
+            TimeValue t = static_cast<TimeValue>(static_cast<int64_t>(dur) * 4800 / 1000);
+            if (t > maxGS) maxGS = t;
+        }
+        if (maxGS > 0) {
+            Interval range(0, maxGS);
+            gi->SetAnimRange(range);
+            ILOG << "  Animation range (global seq) set to 0 - " << maxGS
+                 << " ticks (" << (maxGS / GetTicksPerFrame()) << " frames)\n";
+        }
     }
 
     gi->ForceCompleteRedraw();

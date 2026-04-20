@@ -3,14 +3,14 @@
 #pragma once
 
 // ============================================================================
-//  ManagedWrapper.h  —  C++/CLI .NET wrapper for WhiteoutDexNative
+//  ManagedWrapper.h  —  C++/CLI .NET wrapper for WhiteoutDexTextureBrowser
 //
 //  This header defines the managed ref classes that MaxScript accesses
 //  via dotNet interop.  Compile with /clr.
 //
 //  MaxScript usage:
-//    dotNet.loadAssembly "WhiteoutDexNative.dll"
-//    local ndx = dotNetClass "WhiteoutDex.WhiteoutDexNative"
+//    dotNet.loadAssembly "WhiteoutDexTextureBrowser.dll"
+//    local ndx = dotNetClass "WhiteoutDex.WhiteoutDexTextureBrowser"
 //    local h = ndx.MPQ_Open "C:\\path\\War3.mpq"
 //    local files = ndx.MPQ_ListFiles h
 //    local bmp = ndx.DecodeBLP "C:\\temp\\texture.blp"
@@ -36,12 +36,12 @@ namespace WhiteoutDex {
     };
 
     // ========================================================================
-    //  WhiteoutDexNative  —  static façade class for MaxScript
+    //  WhiteoutDexTextureBrowser  —  static façade class for MaxScript
     //
     //  All methods are static so MaxScript can call them directly:
-    //    (dotNetClass "WhiteoutDex.WhiteoutDexNative").MethodName(args)
+    //    (dotNetClass "WhiteoutDex.WhiteoutDexTextureBrowser").MethodName(args)
     // ========================================================================
-    public ref class WhiteoutDexNative abstract sealed {
+    public ref class WhiteoutDexTextureBrowser abstract sealed {
     public:
         // ── MPQ ──────────────────────────────────────────────────────────────
         //  Returns handle (≥0) on success, negative error code on failure.

@@ -205,7 +205,7 @@ Warcraft III MDX/MDL Modeling Toolkit for 3ds Max 2022-2027
         <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexMDXWriter.ms" />
         <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexModelRelinker.ms" />
         <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexOptimize.ms" />
-        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexNativeHelper.ms" />
+        <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexTextureBrowserHelper.ms" />
         <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexSceneRebuilder.ms" />
         <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexSceneParser.ms" />
         <ComponentEntry ModuleName="./src/pre_startup_scripts/WhiteoutDexImportFunctions.ms" />

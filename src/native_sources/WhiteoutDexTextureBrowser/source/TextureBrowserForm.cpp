@@ -369,11 +369,11 @@ namespace WhiteoutDex {
         if (File::Exists(outPath)) return outPath;
 
         if (src == "CASC") {
-            if (WhiteoutDexNative::CASC_ExtractToDisk(clean, outPath) > 0) return outPath;
+            if (WhiteoutDexTextureBrowser::CASC_ExtractToDisk(clean, outPath) > 0) return outPath;
         } else if (src == "MPQ") {
-            for (int h = 0; h < WhiteoutDexNative::MPQ_Count(); h++)
-                if (WhiteoutDexNative::MPQ_HasFile(h, clean))
-                    if (WhiteoutDexNative::MPQ_ExtractToDisk(h, clean, outPath)) return outPath;
+            for (int h = 0; h < WhiteoutDexTextureBrowser::MPQ_Count(); h++)
+                if (WhiteoutDexTextureBrowser::MPQ_HasFile(h, clean))
+                    if (WhiteoutDexTextureBrowser::MPQ_ExtractToDisk(h, clean, outPath)) return outPath;
         }
         return nullptr;
     }
@@ -467,32 +467,32 @@ namespace WhiteoutDex {
 
     void TextureBrowserForm::CollectPaths(int sourceIdx) {
         allPaths_->Clear();
-        if ((sourceIdx == 0 || sourceIdx == 1) && WhiteoutDexNative::MPQ_Count() > 0) {
-            auto b = WhiteoutDexNative::MPQ_ListAllFiles(".blp");
+        if ((sourceIdx == 0 || sourceIdx == 1) && WhiteoutDexTextureBrowser::MPQ_Count() > 0) {
+            auto b = WhiteoutDexTextureBrowser::MPQ_ListAllFiles(".blp");
             if (b) for each (String^ p in b) allPaths_->Add("[MPQ] " + p);
-            auto d = WhiteoutDexNative::MPQ_ListAllFiles(".dds");
+            auto d = WhiteoutDexTextureBrowser::MPQ_ListAllFiles(".dds");
             if (d) for each (String^ p in d) allPaths_->Add("[MPQ] " + p);
-            auto p1 = WhiteoutDexNative::MPQ_ListAllFiles(".png");
+            auto p1 = WhiteoutDexTextureBrowser::MPQ_ListAllFiles(".png");
             if (p1) for each (String^ p in p1) allPaths_->Add("[MPQ] " + p);
-            auto j = WhiteoutDexNative::MPQ_ListAllFiles(".jpg");
+            auto j = WhiteoutDexTextureBrowser::MPQ_ListAllFiles(".jpg");
             if (j) for each (String^ p in j) allPaths_->Add("[MPQ] " + p);
-            auto bm = WhiteoutDexNative::MPQ_ListAllFiles(".bmp");
+            auto bm = WhiteoutDexTextureBrowser::MPQ_ListAllFiles(".bmp");
             if (bm) for each (String^ p in bm) allPaths_->Add("[MPQ] " + p);
-            auto tg = WhiteoutDexNative::MPQ_ListAllFiles(".tga");
+            auto tg = WhiteoutDexTextureBrowser::MPQ_ListAllFiles(".tga");
             if (tg) for each (String^ p in tg) allPaths_->Add("[MPQ] " + p);
         }
-        if ((sourceIdx == 0 || sourceIdx == 2) && WhiteoutDexNative::CASC_IsOpen()) {
-            auto b = WhiteoutDexNative::CASC_SearchFiles(".blp");
+        if ((sourceIdx == 0 || sourceIdx == 2) && WhiteoutDexTextureBrowser::CASC_IsOpen()) {
+            auto b = WhiteoutDexTextureBrowser::CASC_SearchFiles(".blp");
             if (b) for each (String^ p in b) allPaths_->Add("[CASC] " + p);
-            auto d = WhiteoutDexNative::CASC_SearchFiles(".dds");
+            auto d = WhiteoutDexTextureBrowser::CASC_SearchFiles(".dds");
             if (d) for each (String^ p in d) allPaths_->Add("[CASC] " + p);
-            auto p1 = WhiteoutDexNative::CASC_SearchFiles(".png");
+            auto p1 = WhiteoutDexTextureBrowser::CASC_SearchFiles(".png");
             if (p1) for each (String^ p in p1) allPaths_->Add("[CASC] " + p);
-            auto j = WhiteoutDexNative::CASC_SearchFiles(".jpg");
+            auto j = WhiteoutDexTextureBrowser::CASC_SearchFiles(".jpg");
             if (j) for each (String^ p in j) allPaths_->Add("[CASC] " + p);
-            auto bm = WhiteoutDexNative::CASC_SearchFiles(".bmp");
+            auto bm = WhiteoutDexTextureBrowser::CASC_SearchFiles(".bmp");
             if (bm) for each (String^ p in bm) allPaths_->Add("[CASC] " + p);
-            auto tg = WhiteoutDexNative::CASC_SearchFiles(".tga");
+            auto tg = WhiteoutDexTextureBrowser::CASC_SearchFiles(".tga");
             if (tg) for each (String^ p in tg) allPaths_->Add("[CASC] " + p);
         }
         allPaths_->Sort();
@@ -566,7 +566,7 @@ namespace WhiteoutDex {
 
         auto fresh = gcnew Dictionary<int, Bitmap^>();
         if (cL->Count > 0) {
-            auto t = WhiteoutDexNative::GenerateThumbnailsCASC(cL->ToArray(), thumbSize_);
+            auto t = WhiteoutDexTextureBrowser::GenerateThumbnailsCASC(cL->ToArray(), thumbSize_);
             if (t) for (int i = 0; i < t->Length; i++)
                 if (t[i]->Success && t[i]->Thumbnail) {
                     fresh[cI[i]] = t[i]->Thumbnail;
@@ -574,7 +574,7 @@ namespace WhiteoutDex {
                 }
         }
         if (mL->Count > 0) {
-            auto t = WhiteoutDexNative::GenerateThumbnailsMPQAll(mL->ToArray(), thumbSize_);
+            auto t = WhiteoutDexTextureBrowser::GenerateThumbnailsMPQAll(mL->ToArray(), thumbSize_);
             if (t) for (int i = 0; i < t->Length; i++)
                 if (t[i]->Success && t[i]->Thumbnail) {
                     fresh[mI[i]] = t[i]->Thumbnail;
@@ -729,8 +729,8 @@ namespace WhiteoutDex {
 
         auto ext = Path::GetExtension(tf)->ToLower();
         Bitmap^ bmp = nullptr;
-        if (ext == ".blp") bmp = WhiteoutDexNative::DecodeBLP(tf);
-        else if (ext == ".dds") bmp = WhiteoutDexNative::DecodeDDS(tf);
+        if (ext == ".blp") bmp = WhiteoutDexTextureBrowser::DecodeBLP(tf);
+        else if (ext == ".dds") bmp = WhiteoutDexTextureBrowser::DecodeDDS(tf);
 
         if (bmp) {
             bmp->Save(dlg->FileName, ImageFormat::Png);

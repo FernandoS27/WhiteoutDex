@@ -200,6 +200,94 @@ struct WdxGlobalSequenceManager
 		catch()
 	),
 	
+	-- Rekursive Material-Traversierung: scannt ein Material, dessen Bitmap-Slot
+	-- UND alle Sub-Materials (Multi/Sub, Composite, Blend, Shellac, Wc3Material-Layer, ...)
+	-- Verhindert Doppelscannen via scannedMaterials-Liste.
+	fn scanMaterial mat &entriesMap &scannedMaterials =
+	(
+		if mat == undefined then return()
+		if (findItem scannedMaterials mat) != 0 then return()
+		append scannedMaterials mat
+		
+		local matName = if mat.name != undefined then mat.name else "Material"
+		
+		-- Legacy StandardMaterial alpha-Slot (meist undefined bei Wc3Material)
+		try (this.collectController mat.alpha.controller (matName + ".Alpha") "Alpha" &entriesMap) catch()
+		
+		-- Wc3Material-Properties direkt: opacity + anim_UOffset/VOffset/WAngle.
+		-- W_Angle liegt NUR am Material (Bitmap hat kein entsprechendes Feld).
+		-- U/V-Offset werden auch am Material synchron gehalten (siehe Wc3Material.ms).
+		try (this.collectController mat.opacity.controller      (matName + ".Opacity")     "Alpha" &entriesMap) catch()
+		try (this.collectController mat.anim_UOffset.controller (matName + ".UV.U_Offset") "Flow"  &entriesMap) catch()
+		try (this.collectController mat.anim_VOffset.controller (matName + ".UV.V_Offset") "Flow"  &entriesMap) catch()
+		try (this.collectController mat.anim_WAngle.controller  (matName + ".UV.Rotation") "Flow"  &entriesMap) catch()
+		
+		-- Bitmap-Slot auflösen: erst StandardMaterial.texture, dann Wc3Material.diffuseMap
+		local bmp = undefined
+		try (if mat.texture != undefined and classOf mat.texture == BitmapTexture then bmp = mat.texture) catch()
+		if bmp == undefined do (
+			try (if mat.diffuseMap != undefined and classOf mat.diffuseMap == BitmapTexture then bmp = mat.diffuseMap) catch()
+		)
+		
+		-- Bitmap-UV-Controller scannen
+		if bmp != undefined do
+		(
+			try
+			(
+				local coords = bmp.coords
+				local cU  = coords.U_offset.controller
+				local cV  = coords.V_offset.controller
+				local cW  = coords.W_angle.controller
+				local cSU = coords.U_tiling.controller
+				local cSV = coords.V_tiling.controller
+				
+				local uvType = "Flow"
+				for c in #(cU, cV, cW, cSU, cSV) where c != undefined do
+				(
+					uvType = this.classifyUVController c
+					exit
+				)
+				
+				this.collectController cU  (matName + ".UV.U_Offset")  uvType &entriesMap
+				this.collectController cV  (matName + ".UV.V_Offset")  uvType &entriesMap
+				this.collectController cW  (matName + ".UV.Rotation")  uvType &entriesMap
+				this.collectController cSU (matName + ".UV.U_Scale")   uvType &entriesMap
+				this.collectController cSV (matName + ".UV.V_Scale")   uvType &entriesMap
+			)
+			catch()
+			
+			try (this.collectIFL bmp matName &entriesMap) catch()
+		)
+		
+		-- REKURSION: Multi/Sub-Object
+		try
+		(
+			if classOf mat == MultiMaterial then
+			(
+				for sm in mat.materialList do
+					this.scanMaterial sm &entriesMap &scannedMaterials
+			)
+		)
+		catch()
+		
+		-- REKURSION: alle Material-Klassen die getNumSubMtls/getSubMtl unterstützen
+		-- (CompositeMaterial, Blend, Shellac, Wdx_Wc3Material mit Layer-Slots, ...)
+		try
+		(
+			local n = getNumSubMtls mat
+			if n > 0 do
+			(
+				for i = 1 to n do
+				(
+					local sm = getSubMtl mat i
+					if sm != undefined do
+						this.scanMaterial sm &entriesMap &scannedMaterials
+				)
+			)
+		)
+		catch()
+	),
+	
 	fn scanScene =
 	(
 		local entriesMap = #()
@@ -209,51 +297,43 @@ struct WdxGlobalSequenceManager
 		(
 			local objName = obj.name
 			
-			try (this.collectController obj.pos.controller       (objName + ".Position")   "Bone" &entriesMap) catch()
+			try (this.collectController obj.pos.controller        (objName + ".Position")   "Bone" &entriesMap) catch()
 			try (this.collectController obj.rotation.controller   (objName + ".Rotation")   "Bone" &entriesMap) catch()
 			try (this.collectController obj.scale.controller      (objName + ".Scale")      "Bone" &entriesMap) catch()
-			try (this.collectController obj.visibility.controller  (objName + ".Visibility") "Vis"  &entriesMap) catch()
+			try (this.collectController obj.visibility.controller (objName + ".Visibility") "Vis"  &entriesMap) catch()
+			
+			-- Scan Modifier-Stack: Wc3VertexMod.VertexColor (KGAC-Tracks) und
+			-- andere potenziell animierte Modifier-Parameter.
+			try
+			(
+				for m in obj.modifiers do
+				(
+					local mClass = (classOf m) as string
+					if mClass == "Wc3VertexMod" or mClass == "Wdx_Wc3VertexMod" do
+					(
+						try
+						(
+							local vc = m.VertexColor.controller
+							this.collectController vc (objName + ".VertexColor") "Color" &entriesMap
+						) catch()
+					)
+				)
+			) catch()
 			
 			local mat = undefined
 			try (mat = obj.material) catch()
-			
-			if mat != undefined and (findItem scannedMaterials mat) == 0 then
-			(
-				append scannedMaterials mat
-				local matName = if mat.name != undefined then mat.name else "Material"
-				
-				try (this.collectController mat.alpha.controller (matName + ".Alpha") "Alpha" &entriesMap) catch()
-				
-				try
-				(
-					if mat.texture != undefined and classOf mat.texture == BitmapTexture then
-					(
-						local coords = mat.texture.coords
-						local cU = coords.U_offset.controller
-						local cV = coords.V_offset.controller
-						local cW = coords.W_angle.controller
-						local cSU = coords.U_tiling.controller
-						local cSV = coords.V_tiling.controller
-						
-						local uvType = "Flow"
-						for c in #(cU, cV, cW, cSU, cSV) where c != undefined do
-						(
-							uvType = this.classifyUVController c
-							exit
-						)
-						
-						this.collectController cU  (matName + ".UV.U_Offset")  uvType &entriesMap
-						this.collectController cV  (matName + ".UV.V_Offset")  uvType &entriesMap
-						this.collectController cW  (matName + ".UV.Rotation")  uvType &entriesMap
-						this.collectController cSU (matName + ".UV.U_Scale")   uvType &entriesMap
-						this.collectController cSV (matName + ".UV.V_Scale")   uvType &entriesMap
-					)
-				)
-				catch()
-				
-				try (this.collectIFL mat.texture matName &entriesMap) catch()
-			)
+			if mat != undefined do
+				this.scanMaterial mat &entriesMap &scannedMaterials
 		)
+		
+		-- Zusätzlich: sceneMaterials auch scannen (fängt standalone Materials ab
+		-- die gerade keinem Objekt zugewiesen sind, z.B. nach Material-Duplikation)
+		try
+		(
+			for m in sceneMaterials do
+				this.scanMaterial m &entriesMap &scannedMaterials
+		)
+		catch()
 		
 		for entry in entriesMap do
 		(

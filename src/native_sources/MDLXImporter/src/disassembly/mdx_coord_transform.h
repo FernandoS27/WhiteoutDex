@@ -35,8 +35,15 @@ inline Quat rotation(float x, float y, float z, float w) {
 }
 
 // Time conversion: MDX milliseconds → Max ticks (4800 ticks/sec)
+// Snaps to nearest whole frame to avoid keys landing between frames.
+// NeoDex does the same: readMDXTime rounds to whole frames via
+//   round(ms * framerate / 100) / 10 → always lands on exact frames.
 inline TimeValue msToTicks(uint32_t ms) {
-    return static_cast<TimeValue>(static_cast<int64_t>(ms) * 4800 / 1000);
+    int64_t rawTicks = static_cast<int64_t>(ms) * 4800 / 1000;
+    int tpf = GetTicksPerFrame();
+    // Round to nearest whole frame
+    rawTicks = ((rawTicks + tpf / 2) / tpf) * tpf;
+    return static_cast<TimeValue>(rawTicks);
 }
 
 } // namespace mdx_coord

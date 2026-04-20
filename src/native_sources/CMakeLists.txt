@@ -8,7 +8,7 @@ project(WhiteoutDexPlugins LANGUAGES C CXX RC)
 #   -DBUILD_COMMON_ONLY=ON      (build only Max-SDK-independent libraries)
 #   -DPREBUILT_COMMON_DIR=<dir> (import pre-built common libs, skip rebuild)
 # ===========================================================================
-option(BUILD_COMMON_ONLY "Build only Max-SDK-independent libraries (whiteout_lib, zlib, WhiteoutDexNative)" OFF)
+option(BUILD_COMMON_ONLY "Build only Max-SDK-independent libraries (whiteout_lib, zlib, WhiteoutDexTextureBrowser)" OFF)
 set(PREBUILT_COMMON_DIR "" CACHE PATH "Path to a build_common/ tree with pre-built common libraries")
 
 # ===========================================================================
@@ -119,7 +119,7 @@ else()
     set(WHITEOUT_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
     add_subdirectory("${WHITEOUT_DIR}" "${CMAKE_BINARY_DIR}/WhiteoutLib" EXCLUDE_FROM_ALL)
 
-    # zlib (for MPQ decompression in WhiteoutDexNative)
+    # zlib (for MPQ decompression in WhiteoutDexTextureBrowser)
     include(FetchContent)
     FetchContent_Declare(zlib
         GIT_REPOSITORY https://github.com/madler/zlib.git
@@ -135,8 +135,8 @@ else()
         "${zlib_BINARY_DIR}"
     )
 
-    # WhiteoutDexNative (no Max SDK dependency)
-    add_subdirectory(WhiteoutDexNative)
+    # WhiteoutDexTextureBrowser (no Max SDK dependency)
+    add_subdirectory(WhiteoutDexTextureBrowser)
 endif()
 
 # ===========================================================================

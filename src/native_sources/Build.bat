@@ -48,7 +48,7 @@ echo Generator: %CMAKE_GEN%
 echo.
 
 REM ============================================================
-REM  Build common libraries once (WhiteoutLib, zlib, WhiteoutDexNative)
+REM  Build common libraries once (WhiteoutLib, zlib, WhiteoutDexTextureBrowser)
 REM  These have no Max SDK dependency and are shared across all versions.
 REM ============================================================
 set "COMMON_BUILD_DIR=%PROJECT_DIR%\build_common"
@@ -56,7 +56,7 @@ set "COMMON_FWD=%COMMON_BUILD_DIR:\=/%"
 set "SRC_FWD=%PROJECT_DIR:\=/%"
 
 echo ============================================================
-echo  Building common libraries (WhiteoutLib, zlib, WhiteoutDexNative)
+echo  Building common libraries (WhiteoutLib, zlib, WhiteoutDexTextureBrowser)
 echo ============================================================
 
 if exist "%COMMON_BUILD_DIR%" rmdir /s /q "%COMMON_BUILD_DIR%"
@@ -176,7 +176,7 @@ echo  Max SDK Plugins: %BUILT% built, %FAILED% failed, %SKIPPED% skipped
 echo ============================================================
 
 REM ============================================================
-REM  Managed Wrappers (WhiteoutDexNative.dll)
+REM  Managed Wrappers (WhiteoutDexTextureBrowser.dll)
 REM  Uses the native static lib from the common build.
 REM ============================================================
 if not defined MSBUILD (
@@ -187,14 +187,14 @@ if not defined MSBUILD (
 
 echo.
 echo ============================================================
-echo  Building WhiteoutDexNative managed wrappers...
+echo  Building WhiteoutDexTextureBrowser managed wrappers...
 echo  Using native libs from: %COMMON_BUILD_DIR%
 echo ============================================================
 
 REM --- .NET Framework 4.8 (Max 2016-2025) ---
 echo.
-echo [fw48] WhiteoutDexNative.dll (.NET Framework 4.8)
-"%MSBUILD%" "%PROJECT_DIR%\WhiteoutDexNative\wrapper\WhiteoutDexNative_fw48.vcxproj" ^
+echo [fw48] WhiteoutDexTextureBrowser.dll (.NET Framework 4.8)
+"%MSBUILD%" "%PROJECT_DIR%\WhiteoutDexTextureBrowser\wrapper\WhiteoutDexTextureBrowser_fw48.vcxproj" ^
     /p:Configuration=Release ^
     /p:Platform=x64 ^
     /p:PlatformToolset=%PLATFORM_TOOLSET% ^
@@ -208,21 +208,44 @@ if errorlevel 1 (
     for %%V in (2016 2017 2018 2019 2020 2021 2022 2023 2024 2025) do (
         if not exist "%NATIVE_DIR%\Max%%V" mkdir "%NATIVE_DIR%\Max%%V"
         if not exist "%OUTPUT_DIR%\Max%%V" mkdir "%OUTPUT_DIR%\Max%%V"
-        copy /Y "%PROJECT_DIR%\WhiteoutDexNative\output\Max2016-2025\WhiteoutDexNative.dll" "%NATIVE_DIR%\Max%%V\WhiteoutDexNative.dll" >nul 2>nul
-        copy /Y "%PROJECT_DIR%\WhiteoutDexNative\output\Max2016-2025\WhiteoutDexNative.dll" "%OUTPUT_DIR%\Max%%V\WhiteoutDexNative.dll" >nul 2>nul
-        echo [%%V]   WhiteoutDexNative.dll (fw48)  --^> output + AppData
+        copy /Y "%PROJECT_DIR%\WhiteoutDexTextureBrowser\output\Max2016-2025\WhiteoutDexTextureBrowser.dll" "%NATIVE_DIR%\Max%%V\WhiteoutDexTextureBrowser.dll" >nul 2>nul
+        copy /Y "%PROJECT_DIR%\WhiteoutDexTextureBrowser\output\Max2016-2025\WhiteoutDexTextureBrowser.dll" "%OUTPUT_DIR%\Max%%V\WhiteoutDexTextureBrowser.dll" >nul 2>nul
+        echo [%%V]   WhiteoutDexTextureBrowser.dll [fw48] deployed
     )
 )
 
 REM --- .NET 8.0 (Max 2026-2027) ---
 echo.
-echo [net8] WhiteoutDexNative.dll (.NET 8.0)
+echo [net8] WhiteoutDexTextureBrowser.dll (.NET 8.0)
 
-if exist "%ProgramFiles%\dotnet\dotnet.exe" (
-    dotnet restore "%PROJECT_DIR%\WhiteoutDexNative\wrapper\WhiteoutDexNative_net8.vcxproj" >nul 2>nul
+REM Find .NET 8 SDK Sdks path for MSBuild
+set "SDKBASE=%ProgramFiles%\dotnet\sdk"
+set "MSBuildSDKsPath="
+for /d %%d in ("%SDKBASE%\8.0.*") do set "MSBuildSDKsPath=%%d\Sdks"
+
+if not defined MSBuildSDKsPath (
+    echo [net8] WARNING: .NET 8 SDK not found - skipping
+    goto :skip_net8
 )
 
-"%MSBUILD%" "%PROJECT_DIR%\WhiteoutDexNative\wrapper\WhiteoutDexNative_net8.vcxproj" ^
+REM Resolve .NET 8 ref assembly dirs for /AI (AdditionalUsingDirectories)
+set "DOTNET_WINFORMS_REF="
+set "DOTNET_NETCORE_REF="
+set "PACKS=%ProgramFiles%\dotnet\packs"
+for /d %%d in ("%PACKS%\Microsoft.WindowsDesktop.App.Ref\8.*") do (
+    if exist "%%d\ref\net8.0\System.Windows.Forms.dll" set "DOTNET_WINFORMS_REF=%%d\ref\net8.0"
+)
+for /d %%d in ("%PACKS%\Microsoft.NETCore.App.Ref\8.*") do (
+    if exist "%%d\ref\net8.0\System.dll" set "DOTNET_NETCORE_REF=%%d\ref\net8.0"
+)
+echo [net8] WinForms ref: %DOTNET_WINFORMS_REF%
+echo [net8] NetCore ref:  %DOTNET_NETCORE_REF%
+
+if exist "%ProgramFiles%\dotnet\dotnet.exe" (
+    dotnet restore "%PROJECT_DIR%\WhiteoutDexTextureBrowser\wrapper\WhiteoutDexTextureBrowser_net8.vcxproj" >nul 2>nul
+)
+
+"%MSBUILD%" "%PROJECT_DIR%\WhiteoutDexTextureBrowser\wrapper\WhiteoutDexTextureBrowser_net8.vcxproj" ^
     /p:Configuration=Release ^
     /p:Platform=x64 ^
     /p:PlatformToolset=%PLATFORM_TOOLSET% ^
@@ -236,11 +259,13 @@ if errorlevel 1 (
     for %%V in (2026 2027) do (
         if not exist "%NATIVE_DIR%\Max%%V" mkdir "%NATIVE_DIR%\Max%%V"
         if not exist "%OUTPUT_DIR%\Max%%V" mkdir "%OUTPUT_DIR%\Max%%V"
-        copy /Y "%PROJECT_DIR%\WhiteoutDexNative\output\Max2026-2027\WhiteoutDexNative.dll" "%NATIVE_DIR%\Max%%V\WhiteoutDexNative.dll" >nul 2>nul
-        copy /Y "%PROJECT_DIR%\WhiteoutDexNative\output\Max2026-2027\WhiteoutDexNative.dll" "%OUTPUT_DIR%\Max%%V\WhiteoutDexNative.dll" >nul 2>nul
-        echo [%%V]   WhiteoutDexNative.dll (net8)  --^> output + AppData
+        copy /Y "%PROJECT_DIR%\WhiteoutDexTextureBrowser\output\Max2026-2027\WhiteoutDexTextureBrowser.dll" "%NATIVE_DIR%\Max%%V\WhiteoutDexTextureBrowser.dll" >nul 2>nul
+        copy /Y "%PROJECT_DIR%\WhiteoutDexTextureBrowser\output\Max2026-2027\WhiteoutDexTextureBrowser.dll" "%OUTPUT_DIR%\Max%%V\WhiteoutDexTextureBrowser.dll" >nul 2>nul
+        echo [%%V]   WhiteoutDexTextureBrowser.dll [net8] deployed
     )
 )
+
+:skip_net8
 
 REM ============================================================
 REM  Deploy Scripts + PackageContents.xml to AppData

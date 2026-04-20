@@ -1,6 +1,7 @@
 // MDLXExporter — Wc3Ribbon extractor implementation
 #include "wc3_ribbon_extractor.h"
 #include "../mdx_class_ids.h"
+#include "visibility_track_helper.h"
 #include <scene/paramblock_reader.h>
 
 // ParamIDs from Wc3Ribbon/Ribbon.h
@@ -65,6 +66,9 @@ void extractRibbons(const std::vector<core::SceneNode>& nodes,
             if (it != mtlToIndex.end())
                 rib.materialIndex = it->second;
         }
+
+        // Visibility animation (handles on_off_float etc.)
+        rib.visibilityTrackIndex = extractVisibilityTrack(sn.maxNode, model);
 
         model.ribbonEmitters.push_back(std::move(rib));
     }

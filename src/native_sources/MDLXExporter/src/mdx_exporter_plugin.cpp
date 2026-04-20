@@ -29,6 +29,8 @@
 #include "extraction/wc3_popcorn_extractor.h"
 #include "extraction/wc3_facefx_extractor.h"
 #include "extraction/wc3_vertex_color_extractor.h"
+#include "extraction/geoset_anim_extractor.h"
+#include "extraction/camera_extractor_wrapper.h"
 
 #include "assembly/mdx_sequence_manager.h"
 #include "assembly/mdx_model_builder.h"
@@ -252,12 +254,16 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     mdx_extract::extractRibbons(sceneResult.nodes,irModel,mtlMap,reporter);
     mdx_extract::extractEvents(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractCollisions(sceneResult.nodes,irModel,reporter);
+    mdx_extract::extractCameras(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractVertexColors(sceneResult.nodes,irModel,reporter);
+    mdx_extract::extractGeosetAnims(sceneResult.nodes,irModel,reporter);
     if(opts.version>=1200){mdx_extract::extractPopcorn(sceneResult.nodes,irModel,reporter);mdx_extract::extractFaceFX(sceneResult.nodes,irModel,reporter);}
     ELOG << "Materials=" << irModel.materials.size() << " Textures=" << irModel.textures.size()
          << " Lights=" << irModel.lights.size() << " Attach=" << irModel.attachments.size()
          << " PE=" << irModel.particleEmitters.size() << " Ribbons=" << irModel.ribbonEmitters.size()
-         << " Events=" << irModel.eventObjects.size() << " Collisions=" << irModel.collisionShapes.size() << "\n";
+         << " Events=" << irModel.eventObjects.size() << " Collisions=" << irModel.collisionShapes.size()
+         << " Cameras=" << irModel.cameras.size()
+         << " GeosetAnims=" << irModel.geosetAnims.size() << "\n";
     EFLUSH;
 
     // Sequences
