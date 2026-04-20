@@ -7,24 +7,26 @@
 #include "model_source.h"
 #include "mdx_animation.h"
 #include "file_resolver.h"
+#include "renderer/particle/plane_emitter.h"
 #include <whiteout/models/mdx/types.h>
 #include <string>
 #include <filesystem>
+#include <vector>
 
 namespace WhiteoutDex {
 
-class FileContentProvider;
+class IContentProvider;
 
 class MdxModelAdapter : public IModelSource {
 public:
     // Construct from a parsed MDX model. basePath is the directory containing
     // the .mdx file, used to resolve relative texture paths.
-    // space: MDX = raw coordinates, Max = swizzle (y, -x, z) for Max integration
-    // contentProvider: optional; when set, falls back to CASC/MPQ for textures
+    // contentProvider: optional; when set, falls back to CASC/MPQ for textures.
+    // Coordinate space is controlled at compile time via WDX_DEFAULT_COORD_SPACE
+    // (see renderer/coordinate_system.h).
     explicit MdxModelAdapter(whiteout::mdx::Model model,
                              std::filesystem::path basePath = {},
-                             CoordSpace space = CoordSpace::MDX,
-                             FileContentProvider* contentProvider = nullptr);
+                             IContentProvider* contentProvider = nullptr);
 
     // ---- IModelSource static data ----
     std::vector<MeshData>              GetMeshes()          override;
@@ -34,6 +36,9 @@ public:
     std::vector<SkinWeightData>        GetSkinWeights()     override;
     std::vector<ParticleEmitterConfig> GetParticleConfigs() override;
     std::vector<RibbonEmitterConfig>   GetRibbonConfigs()   override;
+
+    // PE2 service path (new, co-exists with GetParticleConfigs).
+    std::vector<particle::PlaneEmitterInit> GetPlaneEmitterInits() const;
     std::vector<CollisionShapeData>    GetCollisionShapes() override;
     std::vector<AttachmentConfig>      GetAttachmentConfigs() override;
     std::vector<PE1EmitterConfig>      GetPE1Configs()      override;
@@ -57,7 +62,7 @@ private:
     whiteout::mdx::Model model_;
     std::filesystem::path basePath_;
     FileResolver resolver_;
-    FileContentProvider* contentProvider_ = nullptr;
+    IContentProvider* contentProvider_ = nullptr;
     MdxHierarchy hierarchy_;
 
     // Active sequence

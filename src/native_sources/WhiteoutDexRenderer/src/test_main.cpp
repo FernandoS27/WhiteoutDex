@@ -1,15 +1,19 @@
 // ============================================================================
 // WhiteoutDex Standalone Test Harness
-// Loads an .mdx file via MdxModelAdapter → Renderer, no 3ds Max required.
-// Usage: WhiteoutDexTest.exe <path-to-mdx-file>
+// Loads an .mdx file via MdxModelAdapter → RenderService, no 3ds Max required.
+// Usage: WhiteoutDexRenderer.exe [--backend d3d11|d3d12] [<path-to-mdx-file>]
 // ============================================================================
 
-#include "renderer/renderer.h"
-#include "renderer/mdx_model_adapter.h"
+#include "renderer/render_service.h"
+#include "ui/render_window.h"
+#include "io/mdx_model_adapter.h"
+#include "gfx/gfx_types.h"
 #include <whiteout/models/mdx/parser.h>
 #include <filesystem>
 #include <iostream>
 #include <chrono>
+#include <string>
+#include <cstring>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -30,10 +34,31 @@ static std::filesystem::path OpenFileDialog() {
 }
 
 int main(int argc, char* argv[]) {
+    // ---- Parse args: [--backend <d3d11|d3d12>] [<mdx-path>] ----
+    WhiteoutDex::gfx::GfxApi backend = WhiteoutDex::gfx::GfxApi::D3D12;
     std::filesystem::path mdxPath;
-    if (argc >= 2) {
-        mdxPath = argv[1];
-    } else {
+
+    for (int i = 1; i < argc; ++i) {
+        const char* a = argv[i];
+        if ((std::strcmp(a, "--backend") == 0 || std::strcmp(a, "-b") == 0) && i + 1 < argc) {
+            const char* v = argv[++i];
+            if      (_stricmp(v, "d3d11") == 0 || _stricmp(v, "dx11") == 0)
+                backend = WhiteoutDex::gfx::GfxApi::D3D11;
+            else if (_stricmp(v, "d3d12") == 0 || _stricmp(v, "dx12") == 0)
+                backend = WhiteoutDex::gfx::GfxApi::D3D12;
+            else {
+                std::cerr << "Unknown backend: " << v << " (valid: d3d11, d3d12)\n";
+                return 1;
+            }
+        } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
+            std::cout << "Usage: WhiteoutDexRenderer.exe [--backend d3d11|d3d12] [<mdx-path>]\n";
+            return 0;
+        } else if (mdxPath.empty()) {
+            mdxPath = a;
+        }
+    }
+
+    if (mdxPath.empty()) {
         mdxPath = OpenFileDialog();
         if (mdxPath.empty()) {
             std::cerr << "No file selected.\n";
@@ -44,6 +69,9 @@ int main(int argc, char* argv[]) {
         std::cerr << "File not found: " << mdxPath.string() << "\n";
         return 1;
     }
+
+    std::cout << "Backend: "
+              << (backend == WhiteoutDex::gfx::GfxApi::D3D11 ? "D3D11" : "D3D12") << "\n";
 
     // Parse MDX
     std::cout << "Parsing " << mdxPath.filename().string() << "...\n";
@@ -64,8 +92,9 @@ int main(int argc, char* argv[]) {
               << ", " << model.ribbonEmitters.size() << " ribbons\n";
 
     // Open renderer (initializes the FileContentProvider which discovers WC3)
-    WhiteoutDex::Renderer renderer;
-    if (!renderer.Open(1024, 768)) {
+    WhiteoutDex::RenderService renderer;
+    WhiteoutDex::RenderWindow renderWindow(renderer);
+    if (!renderWindow.Open(1024, 768, backend)) {
         std::cerr << "Failed to open renderer window\n";
         return 1;
     }
@@ -73,8 +102,7 @@ int main(int argc, char* argv[]) {
     // Create adapter — pass content provider for CASC/MPQ texture fallback
     auto basePath = mdxPath.parent_path();
     WhiteoutDex::MdxModelAdapter adapter(
-        std::move(model), basePath, WhiteoutDex::CoordSpace::MDX,
-        &renderer.GetContentProvider());
+        std::move(model), basePath, &renderer.GetContentProvider());
     renderer.GetContentProvider().SetBasePath(basePath);
 
     // Fetch static data
@@ -105,11 +133,13 @@ int main(int argc, char* argv[]) {
 
     renderer.LoadModel(meshes, textures, materials, skeleton,
                        skinWeights, particles, ribbons, collisions);
+    // LoadModel internally registers PE2 emitters with the service via
+    // InitFromLegacyConfig. GetPlaneEmitterInits() / AddPlaneEmitters() is
+    // available for callers that want to bypass the legacy config path.
 
     // PE1 (model particle emitters) — set configs + base path for child model loading
     if (!pe1Configs.empty()) {
         renderer.SetPE1BasePath(basePath.string());
-        renderer.SetPE1ChildCoordSpace(WhiteoutDex::CoordSpace::MDX);
         renderer.SetPE1Configs(renderer.GetFocusModelHandle(), pe1Configs);
     }
 
@@ -117,7 +147,6 @@ int main(int argc, char* argv[]) {
     if (!attachConfigs.empty()) {
         if (pe1Configs.empty()) {
             renderer.SetPE1BasePath(basePath.string());
-            renderer.SetPE1ChildCoordSpace(WhiteoutDex::CoordSpace::MDX);
         }
         renderer.SetAttachmentConfigs(renderer.GetFocusModelHandle(), attachConfigs);
     }
@@ -128,6 +157,7 @@ int main(int argc, char* argv[]) {
         seqNames.reserve(sequences.size());
         for (auto& s : sequences) seqNames.push_back(s.name);
         renderer.SetSequences(seqNames);
+        renderer.SetSequenceRanges(sequences);  // needed for MDX camera animators
         adapter.SetActiveSequence(0);
         std::cout << "Playing: " << sequences[0].name
                   << " [" << sequences[0].startMs << "-" << sequences[0].endMs << "ms]\n";
@@ -146,7 +176,7 @@ int main(int argc, char* argv[]) {
     int currentSeq = 0;
     std::cout << "Renderer open. Close the window to exit.\n";
 
-    while (renderer.IsOpen()) {
+    while (renderWindow.IsOpen()) {
         auto now = std::chrono::steady_clock::now();
         int elapsed = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
 
@@ -178,7 +208,7 @@ int main(int argc, char* argv[]) {
         Sleep(16); // ~60 FPS
     }
 
-    renderer.Close();
+    renderWindow.Close();
     std::cout << "Done.\n";
     return 0;
 }

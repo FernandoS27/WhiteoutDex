@@ -1,6 +1,6 @@
 // ============================================================================
 // WhiteoutDex — All-in-One Max SDK Plugin (.dlx)
-// Adapter-Pattern: MaxSceneAdapter → IModelSource → Renderer
+// Adapter-Pattern: MaxSceneAdapter → IModelSource → RenderService
 //
 // MaxScript API:
 //   ndxStart()   → Extract scene + open renderer + start sync
@@ -8,7 +8,8 @@
 // ============================================================================
 
 #include "max_scene_adapter.h"
-#include "renderer/renderer.h"
+#include "renderer/render_service.h"
+#include "ui/render_window.h"
 
 #include <max.h>
 #include <maxversion.h>
@@ -22,9 +23,10 @@
 // ============================================================================
 // Global state
 // ============================================================================
-static WhiteoutDex::MaxSceneAdapter* g_adapter  = nullptr;
-static WhiteoutDex::Renderer*        g_renderer = nullptr;
-static bool                           g_running  = false;
+static WhiteoutDex::MaxSceneAdapter* g_adapter      = nullptr;
+static WhiteoutDex::RenderService*   g_renderer     = nullptr;
+static WhiteoutDex::RenderWindow*    g_renderWindow = nullptr;
+static bool                           g_running      = false;
 static HINSTANCE                      g_hInstance = nullptr;
 static DWORD                          g_lastTimeChangedTick = 0;
 static std::chrono::steady_clock::time_point g_wallClockStart;
@@ -41,7 +43,7 @@ class NdxTimeCallback : public TimeChangeCallback {
 public:
     void TimeChanged(TimeValue t) override {
         if (!g_running || !g_renderer || !g_adapter) return;
-        if (!g_renderer->IsOpen()) { /* will be cleaned up by ndxStop */ return; }
+        if (!g_renderWindow || !g_renderWindow->IsOpen()) { /* will be cleaned up by ndxStop */ return; }
         int tpf = GetTicksPerFrame(), fps = GetFrameRate();
         int timeMs = (tpf > 0 && fps > 0)
             ? (int)((float)t / (float)tpf * 1000.0f / (float)fps)
@@ -65,7 +67,7 @@ static UINT_PTR g_materialTimerId = 0;
 
 static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
     if (!g_running || !g_renderer || !g_adapter) return;
-    if (!g_renderer->IsOpen()) return;
+    if (!g_renderWindow || !g_renderWindow->IsOpen()) return;
 
     // Check for material property changes
     auto result = g_adapter->RefreshMaterials();
@@ -109,9 +111,12 @@ static void NdxCleanup() {
     g_running = false;
     if (g_renderer) {
         g_renderer->ClearModel();
-        g_renderer->Close();
-        delete g_renderer; g_renderer = nullptr;
     }
+    if (g_renderWindow) {
+        g_renderWindow->Close();
+        delete g_renderWindow; g_renderWindow = nullptr;
+    }
+    if (g_renderer) { delete g_renderer; g_renderer = nullptr; }
     if (g_adapter) { delete g_adapter; g_adapter = nullptr; }
     mprintf(_M("WhiteoutDex: === STOPPED ===\n"));
 }
@@ -167,10 +172,12 @@ Value* ndxStart_cf(Value** arg_list, int count)
 
     if (g_running) NdxCleanup();
 
-    // Create renderer
-    g_renderer = new WhiteoutDex::Renderer();
-    if (!g_renderer->Open(800, 600)) {
+    // Create render service + platform render window
+    g_renderer = new WhiteoutDex::RenderService();
+    g_renderWindow = new WhiteoutDex::RenderWindow(*g_renderer);
+    if (!g_renderWindow->Open(800, 600)) {
         mprintf(_M("WhiteoutDex: ERROR - Could not open renderer window\n"));
+        delete g_renderWindow; g_renderWindow = nullptr;
         delete g_renderer; g_renderer = nullptr;
         return Integer::intern(-1);
     }
@@ -223,8 +230,6 @@ Value* ndxStart_cf(Value** arg_list, int count)
     // Register PE1 emitters (model particle emitters)
     auto pe1Configs = g_adapter->GetPE1Configs();
     if (!pe1Configs.empty()) {
-        // Max scene operates in Max coordinate space — child MDX models need swizzle
-        g_renderer->SetPE1ChildCoordSpace(WhiteoutDex::CoordSpace::Max);
         // Set base path for resolving PE1 model files + textures (Max file directory)
         const MCHAR* maxFile = ip->GetCurFilePath().data();
         if (maxFile && maxFile[0]) {

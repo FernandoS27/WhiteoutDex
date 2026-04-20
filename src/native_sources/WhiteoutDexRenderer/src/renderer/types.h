@@ -1,21 +1,12 @@
 #pragma once
 // ============================================================================
-// WhiteoutDex Real-Time Renderer — Common Types
+// WhiteoutDex Real-Time Renderer — Common Types (public, platform-free)
 // ============================================================================
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <d3d11.h>
-#include <dxgi.h>
-#include <d3dcompiler.h>
 #include <whiteout/vector_types.h>
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <mutex>
@@ -23,12 +14,6 @@
 #include <atomic>
 #include <algorithm>
 #include <cstring>
-
-#pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "dxgi.lib")
-#pragma comment(lib, "d3dcompiler.lib")
-#pragma comment(lib, "user32.lib")
-#pragma comment(lib, "gdi32.lib")
 
 using whiteout::Vector2f;
 using whiteout::Vector3f;
@@ -38,19 +23,41 @@ using whiteout::Quaternion;
 
 namespace WhiteoutDex {
 
-// Safe COM release
-template<typename T>
-inline void SafeRelease(T*& ptr) {
-    if (ptr) { ptr->Release(); ptr = nullptr; }
-}
-
-// Vertex format for Phase 1 (position + normal + color + uv)
-struct Vertex {
-    Vector3f position;
-    Vector3f normal;
-    Vector4f color;
-    Vector2f uv;
+// Platform-neutral rectangle (matches RECT layout for easy conversion)
+struct Rect {
+    int left, top, right, bottom;
 };
+
+// Vertex format for Phase 1 (position + normal + color + uv). Retained
+// for the legacy Slang path and for PE2 particle geometry (matches the
+// BLS SD VS PNCT0 layout exactly -- ATTR0 pos, ATTR1 normal, ATTR2 color,
+// ATTR3 tc0).
+struct Vertex {
+    Vector3f position;  // ATTR0
+    Vector3f normal;    // ATTR1
+    Vector4f color;     // ATTR2 (float4, matches SD PNCT0)
+    Vector2f uv;        // ATTR3
+};
+static_assert(sizeof(Vertex) == 48);
+
+// Mesh vertex stream for BLS SD meshes (PNT0 / PNT0T1). No per-vertex
+// color on the geometry stream -- color is fed via CB.
+struct MeshVertexSD {
+    Vector3f position;  // ATTR0
+    Vector3f normal;    // ATTR1
+    Vector2f uv0;       // ATTR3
+    Vector2f uv1;       // ATTR4 (zero for single-layer geosets)
+};
+static_assert(sizeof(MeshVertexSD) == 40);
+
+// Skinning side-stream for BLS SD skinned geosets (GxVBF_B, 8 B/vertex,
+// bound at slot 1). ATTR5 is R8G8B8A8_UNORM (float4 weights) and ATTR6
+// is R8G8B8A8_UINT (uint4 indices) -- see docs/BLS_ShaderABI.md.
+struct BoneVertex {
+    uint8_t weights[4]; // ATTR5 -- normalized float4
+    uint8_t indices[4]; // ATTR6 -- uint4
+};
+static_assert(sizeof(BoneVertex) == 8);
 
 // Constant buffer for vertex shader (per-frame)
 struct alignas(16) CBPerFrame {
