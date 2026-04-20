@@ -488,7 +488,7 @@ private:
     // Dynamic CBs, one-each for the full SD/SD_on_HD ABI. Sized for
     // numLights=8 worst case (720 B PS CB). Uploaded per draw.
     gfx::BufferHandle                       blsSdVsCb_ = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle                       blsSdPsCb_ = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle                       blsSdPsCb_ = gfx::BufferHandle::Invalid;  // 48 B SDClassicPSPerDraw
 
     bool InitBlsShaders();
     void ShutdownBlsShaders();

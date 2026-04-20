@@ -92,7 +92,9 @@ static_assert(offsetof(SdVsCbA, lights)        == 0xD0);
 
 inline uint32_t SdVsCbASize(int numLights) { return 208u + 64u * static_cast<uint32_t>(numLights); }
 
-// PS CB (Path A, cb0, 48 B)
+// SD classic PS CB — 48 B at register b0. Contains alphaRef + fog only;
+// the shader does everything else from the per-vertex colour and texture
+// stages.
 struct SdPsCbA {
     float    alphaRef;        // 0x00
     float    _pad[3];         // 0x04

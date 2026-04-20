@@ -8,9 +8,19 @@ namespace WhiteoutDex::bls {
 
 namespace {
 
-// engine's IMatAlphaRef table: Blend->0, AlphaKey->192, others->0.
+// Per-blend-mode alpha discard threshold. AlphaKey cuts at 192/255 so
+// TEAM_GLOW / cutout sprites keep their hard edges; Blend / Add /
+// Modulate(2X) use a 4/255 near-zero cleanup; Opaque is unused.
 inline float AlphaRefFor(GxMatAlpha a) {
-    return (a == GxMatAlpha::AlphaKey) ? (192.0f / 255.0f) : 0.0f;
+    switch (a) {
+        case GxMatAlpha::AlphaKey:   return 192.0f / 255.0f;
+        case GxMatAlpha::Blend:
+        case GxMatAlpha::Add:
+        case GxMatAlpha::Modulate:
+        case GxMatAlpha::Modulate2X: return 4.0f / 255.0f;
+        case GxMatAlpha::Opaque:
+        default:                     return 0.0f;
+    }
 }
 
 } // namespace

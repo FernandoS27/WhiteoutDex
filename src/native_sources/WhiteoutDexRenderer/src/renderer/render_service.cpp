@@ -1724,8 +1724,8 @@ bool RenderService::RenderParticlesBls() {
         // stays white -- the Modulate special-case happens inside the VS/PS.
         mp.diffuseColor = {1, 1, 1, 1};
 
-        // Permute: weightIndex=0 (no bones), numColors=1 (PNCT0), numTexCoords=1,
-        // numLights=0 (unshaded).
+        // Permute: weightIndex=0 (no bones), numColors=1 (PNCT0),
+        // numTexCoords=1, numLights=0 (unshaded).
         bls::RenderState rs;
         rs.shaderId       = bls::GxShaderID::SD;
         rs.alphaMode      = static_cast<uint8_t>(mp.alpha);
@@ -1752,7 +1752,8 @@ bool RenderService::RenderParticlesBls() {
         if (pso == gfx::PipelineHandle::Invalid) { drawOffset += dl.vertexCount; continue; }
         cmd->BindPipeline(pso);
 
-        // Upload VS CB + PS CB (Path A for SD in SD mode).
+        // VS CB (208 B fixed + 64 B per light; unlit → 208 B).
+        // PS CB (48 B: alphaRef + fog).
         if (auto* vs = (bls::SdVsCbA*)gfx_->MapBuffer(blsSdVsCb_)) {
             bls::BuildSdVsCbA(*vs, frame, mp);
             gfx_->UnmapBuffer(blsSdVsCb_);
@@ -1764,9 +1765,12 @@ bool RenderService::RenderParticlesBls() {
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, blsSdVsCb_);
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, blsSdPsCb_);
 
-        // Texture t0 = diffuse. Wrap-flags come from the per-texture metadata.
-        uint32_t wrapFlags = kWrapFlagsMask;
-        bool     hasModelTex = false;
+        // PE2 draws always sample with wrap addressing — the cell-
+        // animation UV formula can produce out-of-range values when the
+        // authored range exceeds rows*cols, and clamp-edge would pick
+        // zero-alpha edge texels and discard every fragment.
+        const uint32_t wrapFlags = 0x3;
+        bool hasModelTex = false;
         {
             std::lock_guard<std::mutex> lock(dataMutex_);
             ModelInstance* owner = getModel(dl.model);
@@ -1774,7 +1778,6 @@ bool RenderService::RenderParticlesBls() {
                 auto it = owner->gpuTextures.find(dl.material.textureId);
                 if (it != owner->gpuTextures.end() && it->second.tex != gfx::TextureHandle::Invalid) {
                     cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, it->second.tex);
-                    wrapFlags   = it->second.wrapFlags & kWrapFlagsMask;
                     hasModelTex = true;
                 }
             }
@@ -2439,6 +2442,7 @@ bool RenderService::InitBlsShaders() {
         .size  = sizeof(bls::SdVsCbA),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
     });
+    // SD classic PS CB — 48 B at register b0 (alphaRef + fog).
     blsSdPsCb_ = gfx_->CreateBuffer({
         .size  = sizeof(bls::SdPsCbA),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,

@@ -48,7 +48,8 @@ struct FrameInputs {
     ShaderLight lights[kMaxLights] = {};
 };
 
-// Path A (SD shader, SD mode). VS = 208 + 48*nLights. PS = 48 B.
+// Path A (SD shader, SD mode). VS = 208 + 48*nLights. PS = 48 B
+// (SDClassicPSPerDraw — alphaRef + fog only).
 void BuildSdVsCbA(SdVsCbA& out, const FrameInputs& in, const MatParams& mat);
 void BuildSdPsCbA(SdPsCbA& out, const FrameInputs& in, const MatParams& mat);
 

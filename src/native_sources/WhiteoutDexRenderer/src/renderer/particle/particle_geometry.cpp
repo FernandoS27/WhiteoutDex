@@ -184,7 +184,12 @@ int BuildEmitterGeometry(const Emitter2& emitter,
         int headCell = 0, tailCell = 0;
         float scale = 0.0f;
         emitter.Key(kf).Interpolate(p.age, prevEnd, baseColor, headCell, tailCell, scale);
-        if (baseColor.a == 0) continue;   // fully transparent: nothing to draw
+        // Previewd's RenderSort @0x140476860 iterates every alive particle
+        // and calls RenderParticle unconditionally — there is NO CPU-side
+        // alpha=0 skip. Leaving the low-alpha quads in the draw stream lets
+        // the Blend pipeline handle them naturally (a few wasted invisible
+        // fragments per frame), and avoids a 1-frame "pop out" when byte
+        // rounding drops an authored fade-out to 0.
 
         // Fog blend if enabled and material doesn't opt out.
         ImVector color = baseColor;
@@ -198,13 +203,13 @@ int BuildEmitterGeometry(const Emitter2& emitter,
 
         Vector4f vcol = color.ToVec4();
 
-        // Scale convention: the WhiteoutDex legacy renderer ([particle.cpp:165])
-        // treats the MDX-authored scale value as FULL quad width, so corners sit
-        // at ±scale/2. RE's CParticleEmitter2 multiplies unit corners by `scale`
-        // directly (corners at ±scale, full width = 2*scale). We keep the legacy
-        // convention so existing MDX content renders at the expected size — see
-        // docs/PARTICLEEMITTERS2.md §8.8 for the open item.
-        float halfScale = scale * 0.5f;
+        // Scale convention (matches Previewd RenderParticle @0x140476f40):
+        // unit corners `vc[4] = {(-1,+1),(-1,-1),(+1,+1),(+1,-1)}` are
+        // multiplied by `scale` directly — corners sit at ±scale, so the
+        // full quad width/height = 2*scale. Earlier builds treated `scale`
+        // as full width (halving every authored emitter). Verified by
+        // reading `vc` at 0x1454d11e8.
+        const float corner = scale;
 
         // Shared world-space anchors.
         Vector3f worldPos, worldVel;
@@ -273,8 +278,8 @@ int BuildEmitterGeometry(const Emitter2& emitter,
 
             Vector3f corners[4];
             for (int c = 0; c < 4; ++c) {
-                float sx = vc[c][0] * halfScale;
-                float sy = vc[c][1] * halfScale;
+                float sx = vc[c][0] * corner;
+                float sy = vc[c][1] * corner;
                 corners[c] = {
                     worldPos.x + right.x * sx + up.x * sy,
                     worldPos.y + right.y * sx + up.y * sy,
@@ -327,7 +332,11 @@ int BuildEmitterGeometry(const Emitter2& emitter,
                 perp = Cross(tailDir, altUp);
             }
             perp = Normalize(perp);
-            Vector3f w = { perp.x * halfScale, perp.y * halfScale, perp.z * halfScale };
+            // Tail width — Previewd's `viewVel2d *= scale / |viewVel2d|`
+            // normalises to the unit perp then multiplies by `scale`
+            // directly, so half-width = scale and full width = 2*scale
+            // (matches the head quad).
+            Vector3f w = { perp.x * corner, perp.y * corner, perp.z * corner };
 
             // Corners: head-left, head-right, tail-left, tail-right.
             // "head" = particle position (worldPos), "tail" = ribbon endpoint (tailEnd).
