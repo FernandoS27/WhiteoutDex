@@ -151,18 +151,29 @@ Node buildNode(const ir::IRModel& ir, int32_t irNodeIndex,
             if (!na.translation.empty()) {
                 if (mergedTrans.empty())
                     mergedTrans.interpolation = na.translation.interpolation;
+                // Propagate globalSequenceIndex if this sub-track carries one
+                // and the merged track hasn't been tagged yet. (Patch C)
+                if (na.translation.globalSequenceIndex >= 0 &&
+                    mergedTrans.globalSequenceIndex < 0)
+                    mergedTrans.globalSequenceIndex = na.translation.globalSequenceIndex;
                 for (auto& key : na.translation.keys)
                     mergedTrans.keys.push_back(key);
             }
             if (!na.rotation.empty()) {
                 if (mergedRot.empty())
                     mergedRot.interpolation = na.rotation.interpolation;
+                if (na.rotation.globalSequenceIndex >= 0 &&
+                    mergedRot.globalSequenceIndex < 0)
+                    mergedRot.globalSequenceIndex = na.rotation.globalSequenceIndex;
                 for (auto& key : na.rotation.keys)
                     mergedRot.keys.push_back(key);
             }
             if (!na.scale.empty()) {
                 if (mergedScale.empty())
                     mergedScale.interpolation = na.scale.interpolation;
+                if (na.scale.globalSequenceIndex >= 0 &&
+                    mergedScale.globalSequenceIndex < 0)
+                    mergedScale.globalSequenceIndex = na.scale.globalSequenceIndex;
                 for (auto& key : na.scale.keys)
                     mergedScale.keys.push_back(key);
             }
@@ -227,6 +238,24 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     // 1. Hierarchy
     MdxHierarchyResolver hierarchy;
     hierarchy.resolve(ir, opts.version);
+
+    // Clear + banner the LOD debug log so each export starts fresh
+    {
+        char tempPath[MAX_PATH];
+        GetTempPathA(MAX_PATH, tempPath);
+        std::string lodLogPath = std::string(tempPath) + "mdlx_lod_debug.log";
+        std::ofstream lodLog(lodLogPath, std::ios::trunc);
+        if (lodLog.is_open()) {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            lodLog << "=== MDLX LOD Debug Log ===\n"
+                   << "Export started " << st.wYear << "-" << st.wMonth << "-" << st.wDay
+                   << " " << st.wHour << ":" << st.wMinute << ":" << st.wSecond << "\n"
+                   << "MDX version: " << opts.version << "\n"
+                   << "IR meshes:   " << ir.meshes.size() << "\n"
+                   << "----------------------------------------\n";
+        }
+    }
 
     // 2. Textures
     for (auto& tex : ir.textures) {
@@ -397,19 +426,40 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             if (opts.disableSkinQuantize) {
                 // Bypass quantizer: build matrix groups directly from raw weights.
                 // Each unique combination of bone objectIds becomes one group.
+                //
+                // Logic is intentionally 1:1 with NeoDex (NeoDexSceneParser.ms
+                // processSkinning): take EVERY bone reported by the Skin
+                // modifier, sort ascending by objectId, use the resulting list
+                // as the matrix-group key. Do NOT filter by weight threshold
+                // — v800 ignores weights and the Max SDK only reports bones
+                // that actually have an assignment, so there are no
+                // "bleed weights" to worry about at this stage.
+                //
+                // The vertex loop above already pushed one placeholder `0` per
+                // vertex into geo.vertexGroups. Clear it before we fill in the
+                // real group indices, or GNDX would end up with 2× the vertex
+                // count. (The quantizer branch below uses std::move which
+                // overwrites the placeholders in one shot, so it doesn't need
+                // an explicit clear().)
+                geo.vertexGroups.clear();
+
                 std::map<std::vector<uint32_t>, uint32_t> groupMap;
                 std::vector<std::vector<uint32_t>> groupBones;
 
                 for (auto& v : irMesh.vertices) {
                     std::vector<uint32_t> boneIds;
                     for (auto& inf : v.skinInfluences) {
-                        if (inf.boneIndex < 0 || inf.weight <= 0.0f) continue;
+                        if (inf.boneIndex < 0) continue;
                         uint32_t objId = hierarchy.getObjectId(inf.boneIndex);
                         if (objId != Node::NO_PARENT)
                             boneIds.push_back(objId);
                     }
+                    // Sort + dedupe (NeoDex uses `sort bonegroup`; duplicates
+                    // shouldn't normally occur but dedupe guards against
+                    // edge cases where the same bone is referenced twice).
                     std::sort(boneIds.begin(), boneIds.end());
-                    boneIds.erase(std::unique(boneIds.begin(), boneIds.end()), boneIds.end());
+                    boneIds.erase(std::unique(boneIds.begin(), boneIds.end()),
+                                  boneIds.end());
                     if (boneIds.empty()) boneIds.push_back(0);
 
                     auto it = groupMap.find(boneIds);
@@ -458,7 +508,39 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
 
         geo.selectionGroup = 0;
         geo.selectionFlags = 0;
-        geo.lod = 0;
+
+        // LOD fields — propagate from IR (populated by mesh_extractor from
+        // UserProps Wc3GeosetLod / Wc3LodName). For v800 these fields don't
+        // exist in the MDX GEOS layout, so we force (0, empty) to keep the
+        // legacy behavior byte-identical. For v1000+ we honor the user's
+        // imported values, which round-trips HD LOD layers correctly.
+        if (opts.version > 800) {
+            geo.lod = static_cast<uint32_t>(irMesh.lod);
+            geo.lodName = irMesh.lodName;
+        } else {
+            geo.lod = 0;
+            // geo.lodName stays default-constructed (empty) for v800
+        }
+
+        // DEDICATED LOD DEBUG LOG — writes what we're about to commit to the
+        // MDX Geoset. Compare against the [MESH EXTRACT] lines in the same
+        // log to verify IR→MDX propagation.
+        {
+            char tempPath[MAX_PATH];
+            GetTempPathA(MAX_PATH, tempPath);
+            std::string lodLogPath = std::string(tempPath) + "mdlx_lod_debug.log";
+            std::ofstream lodLog(lodLogPath, std::ios::app);
+            if (lodLog.is_open()) {
+                lodLog << "[GEOSET BUILD] geoset#" << (model.geosets.size())
+                       << " mdxVersion=" << opts.version
+                       << " mesh='" << irMesh.name << "'"
+                       << " irLod=" << irMesh.lod
+                       << " irLodName='" << irMesh.lodName << "'"
+                       << " -> geo.lod=" << geo.lod
+                       << " geo.lodName='" << geo.lodName << "'"
+                       << "\n";
+            }
+        }
 
         model.geosets.push_back(std::move(geo));
     }
@@ -518,6 +600,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             pe.node = buildNode(ir, irPe.nodeIndex, hierarchy,
                                 Node::NodeType::ParticleEmitter,
                                 Node::NodeFlag::ParticleEmitter, invScale);
+
             pe.emissionRate = irPe.emissionRate;
             pe.gravity = irPe.gravity;
             pe.longitude = irPe.longitude;
@@ -650,6 +733,23 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     }
 
     // 14. Collision shapes
+    //
+    // Two wire formats for CLID:
+    //   * v800 / v1000+ static: vertices[] are absolute world positions,
+    //                           PIVT for this node is (0, 0, 0) or pos,
+    //                           no animation tracks.
+    //   * v1000+ animated:      vertices[] are LOCAL extents centered
+    //                           around the pivot; PIVT is the world-space
+    //                           anchor the hitbox follows; parentId forced
+    //                           to root (0xFFFFFFFF); KGTR/KGRT tracks
+    //                           animate the offset from that anchor.
+    //
+    // Detection is per-node: a single model may mix static decorative
+    // hitboxes with animated bone-following hitboxes. We pick the
+    // animated branch when the node has at least one translation or
+    // rotation key AND the export version supports it (v1000+).
+    //
+    // See exporter_handoff_collision_shapes.md §3-4 for the contract.
     for (auto& irCs : ir.collisionShapes) {
         CollisionShape cs;
         cs.node = buildNode(ir, irCs.nodeIndex, hierarchy,
@@ -670,11 +770,115 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         for (auto& v : irCs.vertices)
             cs.vertices.push_back(mdx_transform::position(v * invScale));
 
+        // For BOX shapes: after swizzle, take component-wise min/max to
+        // ensure v1 ≤ v2 in MDX space. The Max→MDX swizzle (-y, x, z) flips
+        // the Y axis sign, so Max-min can become MDX-max on Y. Normalizing
+        // guarantees correct axis-aligned box representation downstream.
+        if (irCs.shape == ir::CollisionShape::Shape::Box && cs.vertices.size() == 2) {
+            auto& a = cs.vertices[0];
+            auto& b = cs.vertices[1];
+            whiteout::Vector3f vmin{ std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z) };
+            whiteout::Vector3f vmax{ std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z) };
+            cs.vertices[0] = vmin;
+            cs.vertices[1] = vmax;
+        }
+
         cs.radius = irCs.radius * invScale;
+
+        // ── v1000+ animated collision: convert absolute → local ──
+        //
+        // If the builder is emitting v1000 or higher AND this collision's
+        // node has animated transform tracks, rewrite the vertices to be
+        // pivot-relative (local extents) and set parentId to root.
+        //
+        // The absolute vertices we have are `pivot + local_extent`
+        // (produced by the extractor from node.pos + box half-sizes).
+        // Subtracting the pivot (in MDX space) gives the local extent
+        // directly. Tracks already animate around that pivot, so they
+        // need no modification.
+        //
+        // Reference model (KulTirasMarine.mdx, v1000):
+        //   B_KGS_Torso: pivot = ( 0.99,  0.00, 54.26)   ← world anchor
+        //                v1    = (-15.88, -24.03, -40.25) ← local min corner
+        //                v2    = ( 15.88,  24.03,   0.00) ← local max corner
+        //   + KGTR 554 keys, KGRT 480 keys, parentId = 0xFFFFFFFF
+        const bool isAnimated =
+            cs.node.translationTracks.isUsed ||
+            cs.node.rotationTracks.isUsed;
+        if (opts.version >= 1000 && isAnimated) {
+            // Fetch pivot in MDX space for this node
+            uint32_t objId = cs.node.objectId;
+            if (objId < model.pivotPoints.size()) {
+                const auto& pv = model.pivotPoints[objId];
+                for (auto& vert : cs.vertices) {
+                    vert.x -= pv.x;
+                    vert.y -= pv.y;
+                    vert.z -= pv.z;
+                }
+            }
+            // Box-bottom anchor for v1000+ animated shapes.
+            //
+            // The extractor produces a Max-space AABB where the pivot is at
+            // the box's BOTTOM (z ∈ [pos.z, pos.z+height]). That's correct
+            // for the legacy v800 convention and must stay unchanged so
+            // existing v800 models (e.g. Madara hitboxes) keep roundtripping.
+            //
+            // The v1000+ MDX convention, however, places the pivot at the
+            // box's TOP face — local z ∈ [-height, 0]. After the pivot
+            // subtract above we currently have z ∈ [0, +height], so we
+            // shift both Z values down by 'height' to match the ORIG file.
+            //
+            // Reference (KulTirasMarine.mdx, v1000):
+            //   Torso: ORIG v1.z=-40.25, v2.z=0.00 (height 40.25 below pivot)
+            if (irCs.shape == ir::CollisionShape::Shape::Box && cs.vertices.size() == 2) {
+                float height = cs.vertices[1].z - cs.vertices[0].z;
+                cs.vertices[0].z -= height;   // was 0, becomes -height
+                cs.vertices[1].z -= height;   // was +height, becomes 0
+            }
+            // Animated hitboxes live at root level; they follow their
+            // bone through the animation tracks, not through parenting.
+            cs.node.parentId = 0xFFFFFFFFu;
+        }
+
         model.collisionShapes.push_back(std::move(cs));
     }
 
     // 15. Cameras
+    //
+    // MDX-Spec camera convention: KCTR/KTTR tracks store OFFSETS relative to
+    // cam.position / cam.targetPosition, NOT absolute world positions.
+    // getVec3Track returns the Max-extracted absolute positions transformed
+    // into MDX-space. We must subtract the camera's base position/target to
+    // convert them into deltas, matching how Blizzard's arthas.mdx stores
+    // camera animation (KCTR[0] = (0,0,0) when static at t=0).
+    //
+    // Note: Track<T>::keys_data is a raw byte buffer; we reinterpret it as
+    // Key or TangentKey (same layout as used in convertTrack above).
+    auto applyCameraDelta = [](Track<Vector3f>& track, const Vector3f& origin) {
+        if (!track.isUsed) return;
+        bool hasTangents =
+            (track.interpolationType == InterpolationType::Hermite ||
+             track.interpolationType == InterpolationType::Bezier);
+        if (hasTangents) {
+            using TK = typename Track<Vector3f>::TangentKey;
+            auto* keys = reinterpret_cast<TK*>(track.keys_data.data());
+            for (uint32_t k = 0; k < track.keyCount; ++k) {
+                keys[k].value.x -= origin.x;
+                keys[k].value.y -= origin.y;
+                keys[k].value.z -= origin.z;
+                // Tangents are velocity-like deltas — do NOT shift them
+            }
+        } else {
+            using K = typename Track<Vector3f>::Key;
+            auto* keys = reinterpret_cast<K*>(track.keys_data.data());
+            for (uint32_t k = 0; k < track.keyCount; ++k) {
+                keys[k].value.x -= origin.x;
+                keys[k].value.y -= origin.y;
+                keys[k].value.z -= origin.z;
+            }
+        }
+    };
+
     for (auto& irCam : ir.cameras) {
         wdx::Camera cam;
         cam.name = irCam.name;
@@ -687,6 +891,10 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         cam.positionTracks = getVec3Track(ir, irCam.positionTrackIndex);
         cam.targetPositionTracks = getVec3Track(ir, irCam.targetPositionTrackIndex);
         cam.targetRotationTracks = getFloatTrack(ir, irCam.rotationTrackIndex);
+
+        // Convert absolute world positions -> deltas relative to cam.position/targetPosition
+        applyCameraDelta(cam.positionTracks,       cam.position);
+        applyCameraDelta(cam.targetPositionTracks, cam.targetPosition);
 
         model.cameras.push_back(std::move(cam));
     }
@@ -762,8 +970,16 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     //     Every node in the hierarchy gets a 3×4 row-major matrix derived from
     //     its world transform at frame 0, matching the MaxScript exporter which
     //     uses node.maxObj.transform for ALL node types (not just bones).
+    //
+    //     IMPORTANT: The BPOS chunk must contain PIVT_count + 1 matrices — one
+    //     per node PLUS a trailing identity matrix. Retera Model Studio expects
+    //     this and throws "Index N out of bounds for length N" in
+    //     updateIdObjectReferences if the trailer is missing. Verified against
+    //     Blizzard's arthas.mdx (v1000, BPOS=182, PIVT=181) and
+    //     KulTirasMarine.mdx (v1000, BPOS=157, PIVT=156).
     if (opts.version > 800) {
-        model.bindPoses.resize(hierarchy.totalNodes());
+        const uint32_t numNodes = hierarchy.totalNodes();
+        model.bindPoses.resize(numNodes + 1);   // +1 for trailing identity
 
         auto transformBP = [](const Matrix3& m) -> std::array<f32, 12> {
             Point3 r0 = m.GetRow(0), r1 = m.GetRow(1),
@@ -785,6 +1001,15 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             }
             model.bindPoses[mapping.objectId] = bp;
         }
+
+        // Trailing identity matrix at index numNodes — required by Retera.
+        // Row-major 3×4: [Xaxis(1,0,0), Yaxis(0,1,0), Zaxis(0,0,1), Trans(0,0,0)].
+        model.bindPoses[numNodes] = {{
+            1.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 0.0f
+        }};
     }
 
     // ── DEBUG: Dump final MDX bone pivots and KGTR keys ──

@@ -13,7 +13,7 @@
 --   C:\Program Files\Autodesk\3ds Max 2017\scripts\startup\
 --
 -- SKIPPED on Max 2016/2017 (require .NET / Max 2022+ features):
---   WhiteoutDexNativeHelper.ms  (loads .NET DLL for Max 2022+)
+--   WhiteoutDexTextureBrowserHelper.ms  (loads .NET DLL for Max 2022+)
 --   WhiteoutDexAutoUpdater.ms   (HTTP/.NET features)
 --   WhiteoutDexSidebar.ms       (.NET UI controls)
 -------------------------------------------------------------------------------
@@ -75,7 +75,7 @@
 		-----------------------------------------------------------------------
 		wdxLoad (pre + "WhiteoutDexGlobals.ms")
 		wdxLoad (pre + "WhiteoutDexLocalization.ms")
-		-- SKIP: WhiteoutDexNativeHelper.ms (needs .NET DLL, Max 2022+ only)
+		-- SKIP: WhiteoutDexTextureBrowserHelper.ms (needs .NET DLL, Max 2022+ only)
 		wdxLoad (pre + "WhiteoutDexUtility.ms")
 		
 		-----------------------------------------------------------------------

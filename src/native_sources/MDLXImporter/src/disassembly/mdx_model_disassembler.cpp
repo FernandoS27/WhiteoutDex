@@ -2,8 +2,24 @@
 #include "mdx_model_disassembler.h"
 #include "mdx_coord_transform.h"
 #include "mdx_track_mapper.h"
+#include <fstream>
+#include <windows.h>
 
 namespace wdx = whiteout::mdx;
+
+// ── Debug log (shared with main importer) ──
+static std::ofstream& disAsmLog() {
+    static std::ofstream s_log;
+    if (!s_log.is_open()) {
+        wchar_t tmp[MAX_PATH];
+        GetTempPathW(MAX_PATH, tmp);
+        std::wstring p(tmp);
+        p += L"mdlx_import_debug.log";
+        s_log.open(p, std::ios::app);  // append
+    }
+    return s_log;
+}
+#define DASM disAsmLog()
 
 // ── Centralized MDX → Max coordinate transform ─────────────
 // Applied once after all data has been mapped to IR types.
@@ -96,6 +112,10 @@ void transformToMaxCoordinates(ir::IRModel& ir) {
     }
 
     // ── Texture Animations (shared pool tracks) ──
+    // NeoDex applies the standard MDX→Max coordinate transform during READ
+    // (readMDXPosition does swizzlePos on KTAT values too). We apply the same
+    // transform here so that our channel mapping (ch1→U, ch0→V) matches
+    // NeoDex's (translation[2]→U, translation[1]→V).
     for (auto& ta : ir.textureAnimations) {
         if (ta.translationTrackIndex >= 0)
             transformPosTrack(ir.vec3Tracks[ta.translationTrackIndex]);
@@ -424,8 +444,28 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                 irLayer.textureRefs.push_back(ref);
             }
 
-            // HD (Reforged) PBR properties — applies to is_hd layers regardless of version
-            if (layer.is_hd) {
+            // HD (Reforged) PBR properties.
+            //
+            // Der whiteout_lib Parser liest emissiveGain/fresnel* für JEDEN
+            // Layer wenn mdx.version > 800 — egal ob SD oder HD. Wir reichen
+            // diese Werte genauso unconditional durch, damit Byte-Level-
+            // Roundtrips stimmen:
+            //
+            //   v800:   Parser liest nichts → Parser-Defaults (0.0, (1,1,1), 0, 0)
+            //           IR bleibt auf IR-Defaults. Das ist OK weil v800-Export
+            //           die Felder auch nicht schreibt.
+            //   v>800:  Parser liest alle vier Werte, wir propagieren sie in
+            //           die IR. Auch bei SD-Materialien (Material-Builder setzt
+            //           sie dann auf das Wc3Material; das Plugin ignoriert sie
+            //           visuell wenn shaderType=SD, aber Roundtrip bleibt sauber).
+            //
+            // Historie: Frühere Gates (layer.is_hd → buggy; isHdLayer-Heuristik
+            // → zu restriktiv) haben HD-Props je nach Layer-Klassifikation
+            // verworfen. Dadurch gingen für Arthas v1200:
+            //   - SD-Ribbon-Layer (Material #34): ORIG emissiveGain=1.0 → 0.0 in Max
+            //   - Alle HD-Layer (Material #25): ORIG emissiveGain=2.0 → 0.0 in Max
+            // Jetzt durchreichen statt gaten.
+            if (version_ > 800) {
                 irLayer.emissiveGain = layer.emissiveGain;
                 irLayer.fresnelColor = Point3(layer.fresnelColor.x,
                                                layer.fresnelColor.y,
@@ -434,17 +474,56 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                 irLayer.fresnelTeamColor = layer.fresnelTeamColor;
             }
 
+            // isHdLayer: Detection für v1200 animated tracks weiter unten.
+            // Die Detection wird nur dort gebraucht weil animierte HD-Tracks
+            // (KGMR/KGFC/KGFA/KGFT) echte HD-Bedingung benötigen — wenn wir
+            // sie auch für SD-Layer evaluieren würden käme es zu Phantom-Keys.
+            bool isHdLayer = layer.is_hd;
+            if (!isHdLayer) {
+                if (mat.shader == "Shader_HD_DefaultUnit" ||
+                    mat.shader == "Shader_HD_Crystal") {
+                    isHdLayer = true;
+                }
+            }
+            if (!isHdLayer && version_ >= 1100) {
+                for (const auto& sub : layer.subTextures) {
+                    if (sub.slot == wdx::Layer::SlotType::NormalMap ||
+                        sub.slot == wdx::Layer::SlotType::ORMMap ||
+                        sub.slot == wdx::Layer::SlotType::EmissiveMap ||
+                        sub.slot == wdx::Layer::SlotType::TeamColor ||
+                        sub.slot == wdx::Layer::SlotType::EnvironmentMap) {
+                        isHdLayer = true;
+                        break;
+                    }
+                }
+            }
+
             if (layer.alphaTracks.isUsed)
                 irLayer.alphaTrackIndex = storeFloatTrack(ir,
                     mapFloatTrack(layer.alphaTracks));
 
+            // Texture ID animation (KMTF track → IFL in Max).
+            // WhiteoutLib's parser migrates layer.textureIdTracks into
+            // layer.subTextures[].tracks during UpgradeOldVersions for
+            // ALL MDX versions — not just Reforged. So after parsing,
+            // a v800 KMTF track lives on the FIRST sub-texture's .tracks
+            // field, not on layer.textureIdTracks. Check both.
             if (layer.textureIdTracks.isUsed) {
                 irLayer.textureIdTrackIndex = static_cast<int32_t>(ir.intTracks.size());
                 ir.intTracks.push_back(mapIntTrack(layer.textureIdTracks));
+            } else {
+                // Look for a track on any sub-texture (first one wins).
+                for (const auto& sub : layer.subTextures) {
+                    if (sub.tracks.isUsed) {
+                        irLayer.textureIdTrackIndex = static_cast<int32_t>(ir.intTracks.size());
+                        ir.intTracks.push_back(mapIntTrack(sub.tracks));
+                        break;
+                    }
+                }
             }
 
-            // v1200 HD animated tracks
-            if (version_ >= 1200 && layer.is_hd) {
+            // v1200 HD animated tracks — use the robust isHdLayer check computed above
+            if (version_ >= 1200 && isHdLayer) {
                 if (layer.emissiveGainTracks.isUsed)
                     irLayer.emissiveGainTrackIndex = storeFloatTrack(ir,
                         mapFloatTrack(layer.emissiveGainTracks));
@@ -501,7 +580,26 @@ void MdxModelDisassembler::mapGeosets(const wdx::Model& mdx, ir::IRModel& ir) {
     for (size_t gi = 0; gi < mdx.geosets.size(); ++gi) {
         const auto& geo = mdx.geosets[gi];
         ir::Mesh irMesh;
-        irMesh.name = "Geoset" + std::to_string(gi);
+
+        // Mesh naming (matches NeoDexSceneRebuilder.ms recreateGeosets lines 2040-2047):
+        //   If lodName is set (v1000+ HD models): "<lodName>_<id>"
+        //   Otherwise:                            "Geoset_<id>"
+        // The id is the geoset index (1-based in NeoDex; we keep 1-based for parity).
+        // LOD level is encoded into the name suffix for the layer classifier to
+        // parse later: "#LOD<n>" — stripped before display. NeoDex stores this
+        // separately as a UserProp, but we can't set UserProps this early in
+        // the IR pipeline, so we use a name-tail marker that the mesh builder
+        // will convert into a real UserProp.
+        const uint32_t id1 = static_cast<uint32_t>(gi) + 1;
+        if (!geo.lodName.empty()) {
+            irMesh.name = geo.lodName + "_" + std::to_string(id1);
+        } else {
+            irMesh.name = "Geoset_" + std::to_string(id1);
+        }
+        if (geo.lod > 0) {
+            irMesh.name += "#LOD" + std::to_string(geo.lod);
+        }
+
         irMesh.materialIndex = static_cast<int32_t>(geo.materialId);
 
         size_t vertCount = geo.vertexPositions.size();
@@ -671,9 +769,11 @@ void MdxModelDisassembler::mapLights(const wdx::Model& mdx, ir::IRModel& ir) {
 
         irLight.attenuationStart = light.attenuationStart;
         irLight.attenuationEnd = light.attenuationEnd;
-        irLight.color = Color(light.color.x, light.color.y, light.color.z);
+        // MDX stores all colors as BGR (official format spec: gamedevs.org).
+        // Swap z,y,x → RGB for 3ds Max. Matches the KGAC handling above.
+        irLight.color = Color(light.color.z, light.color.y, light.color.x);
         irLight.intensity = light.intensity;
-        irLight.ambientColor = Color(light.ambientColor.x, light.ambientColor.y, light.ambientColor.z);
+        irLight.ambientColor = Color(light.ambientColor.z, light.ambientColor.y, light.ambientColor.x);
         irLight.ambientIntensity = light.ambientIntensity;
 
         if (light.attenuationStartTracks.isUsed)
@@ -682,15 +782,23 @@ void MdxModelDisassembler::mapLights(const wdx::Model& mdx, ir::IRModel& ir) {
         if (light.attenuationEndTracks.isUsed)
             irLight.attEndTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(light.attenuationEndTracks));
-        if (light.colorTracks.isUsed)
-            irLight.colorTrackIndex = storeColorTrack(ir,
-                mapColorTrack(light.colorTracks));
+        if (light.colorTracks.isUsed) {
+            // MDX color tracks are BGR — swap to RGB
+            auto bgrTrack = mapTrack<whiteout::Vector3f, Color>(
+                light.colorTracks,
+                [](const whiteout::Vector3f& v) { return Color(v.z, v.y, v.x); });
+            irLight.colorTrackIndex = storeColorTrack(ir, std::move(bgrTrack));
+        }
         if (light.intensityTracks.isUsed)
             irLight.intensityTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(light.intensityTracks));
-        if (light.ambientColorTracks.isUsed)
-            irLight.ambColorTrackIndex = storeColorTrack(ir,
-                mapColorTrack(light.ambientColorTracks));
+        if (light.ambientColorTracks.isUsed) {
+            // MDX ambient color tracks are BGR — swap to RGB
+            auto bgrTrack = mapTrack<whiteout::Vector3f, Color>(
+                light.ambientColorTracks,
+                [](const whiteout::Vector3f& v) { return Color(v.z, v.y, v.x); });
+            irLight.ambColorTrackIndex = storeColorTrack(ir, std::move(bgrTrack));
+        }
         if (light.ambientIntensityTracks.isUsed)
             irLight.ambIntensityTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(light.ambientIntensityTracks));
@@ -830,6 +938,37 @@ void MdxModelDisassembler::mapParticleEmitters2(const wdx::Model& mdx, ir::IRMod
         if (pe2.visibilityTracks.isUsed)
             irPE.visibilityTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(pe2.visibilityTracks));
+
+        // ── DEBUG: log track detection ──
+        DASM << "PE2 '" << pe2.node.name << "' (objId=" << pe2.node.objectId
+             << ") tracks:\n";
+        auto logTrack = [&](const char* name, bool isUsed, int32_t irIdx) {
+            DASM << "  " << name
+                 << ": isUsed=" << (isUsed ? "true" : "false")
+                 << " irIdx=" << irIdx;
+            if (irIdx >= 0 && irIdx < static_cast<int32_t>(ir.floatTracks.size())) {
+                const auto& t = ir.floatTracks[irIdx];
+                DASM << " irKeys=" << t.keys.size()
+                     << " interp=" << static_cast<int>(t.interpolation)
+                     << " gseq=" << t.globalSequenceIndex;
+                if (t.keys.size() > 0 && t.keys.size() <= 8) {
+                    DASM << " vals=[";
+                    for (const auto& k : t.keys)
+                        DASM << k.time << "->" << k.value << " ";
+                    DASM << "]";
+                }
+            }
+            DASM << "\n";
+        };
+        logTrack("emissionRate", pe2.emissionRateTracks.isUsed, irPE.emissionRateTrackIndex);
+        logTrack("speed",        pe2.speedTracks.isUsed,        irPE.speedTrackIndex);
+        logTrack("variation",    pe2.variationTracks.isUsed,    irPE.variationTrackIndex);
+        logTrack("gravity",      pe2.gravityTracks.isUsed,      irPE.gravityTrackIndex);
+        logTrack("latitude",     pe2.latitudeTracks.isUsed,     irPE.latitudeTrackIndex);
+        logTrack("length",       pe2.lengthTracks.isUsed,       irPE.lengthTrackIndex);
+        logTrack("width",        pe2.widthTracks.isUsed,        irPE.widthTrackIndex);
+        logTrack("visibility",   pe2.visibilityTracks.isUsed,   irPE.visibilityTrackIndex);
+        DASM.flush();
 
         ir.particleEmitters.push_back(std::move(irPE));
     }

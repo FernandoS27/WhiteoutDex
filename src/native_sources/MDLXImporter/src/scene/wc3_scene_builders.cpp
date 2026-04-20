@@ -9,6 +9,10 @@
 #include "texture_resolver.h"
 #include "../mdlx_class_ids.h"
 #include <filesystem>
+#include <sstream>
+#include <cctype>
+#include <utility>
+#include <algorithm>
 
 #include <scene/paramblock_reader.h>
 #include <notetrck.h>
@@ -87,6 +91,39 @@ void positionAtPivot(INode* node, int32_t nodeIndex,
     tm.IdentityMatrix();
     tm.SetTrans(irModel.nodes[nodeIndex].pivotPoint);
     node->SetNodeTM(0, tm);
+}
+
+// Split an MDX resource path (texture or model) into its directory prefix
+// and its filename. Used by particle emitter builders to populate the
+// plugin's m_*Prefix / m_*Path fields in the same shape the plugins'
+// own CASC-browser callbacks produce. Without this split, re-exported
+// MDX files end up with either an absolute Windows path or an empty
+// directory prefix, neither of which the game engine can load.
+//
+// Examples:
+//   "Textures\\Fireball.blp"             → prefix="Textures\\", file="Fireball.blp"
+//   "Units/Undead/Necromancer.mdx"       → prefix="Units\\Undead\\", file="Necromancer.mdx"
+//   "x.blp"                              → prefix="",              file="x.blp"
+//   ""                                   → prefix="",              file=""
+//
+// Forward slashes are normalized to backslashes so both MDX and MDL
+// variants (which sometimes use / in quoted paths) split correctly.
+static void splitMdxPath(const std::string& src,
+                         std::wstring& outPrefix,
+                         std::wstring& outFilename)
+{
+    outPrefix.clear();
+    outFilename.clear();
+    if (src.empty()) return;
+    std::wstring w(src.begin(), src.end());
+    std::replace(w.begin(), w.end(), L'/', L'\\');
+    auto lastSep = w.find_last_of(L'\\');
+    if (lastSep == std::wstring::npos) {
+        outFilename = std::move(w);
+    } else {
+        outPrefix   = w.substr(0, lastSep + 1);  // includes trailing '\'
+        outFilename = w.substr(lastSep + 1);
+    }
 }
 
 // Walk up the parent chain until we find one that exists in nodeMap,
@@ -220,11 +257,49 @@ void Wc3LightBuilder::buildLights(
             pbSetInt(ref, L"LightType", lightType);
             pbSetFloat(ref, L"DecayStart", irLight.attenuationStart);
             pbSetFloat(ref, L"DecayEnd", irLight.attenuationEnd);
-            // Wc3_Light uses ShadowColor/ShadowValue for main light color/intensity
+
+            // Max's color picker uses 0..255 range (confirmed by Wc3Light
+            // plugin defaults: AmbColor=[255,230,142], ShadowColor=
+            // [122,172,255]). Max SDK Color struct stores 0..1 floats which
+            // the picker renders as 0..255. MDX color 0.604 → picker 154.
+            // BGR->RGB swap is done in the disassembler.
+            // Wc3_Light uses ShadowColor/ShadowValue for the primary light
+            // (MDX "color") and AmbColor/AmbValue for the secondary (MDX
+            // "ambientColor").
             pbSetColor(ref, L"ShadowColor", irLight.color);
             pbSetFloat(ref, L"ShadowValue", irLight.intensity);
             pbSetColor(ref, L"AmbColor", irLight.ambientColor);
             pbSetFloat(ref, L"AmbValue", irLight.ambientIntensity);
+        }
+
+        // Store MDX-static values as UserProps so the exporter can
+        // round-trip them bit-identically. Reason: when an animation
+        // track (KLAC/KLBC/KLAI/etc.) exists, the scripted plugin's
+        // parameter is fully controlled by the Controller — the "static"
+        // value from the original MDX is no longer independently readable
+        // from Max. These UserProps preserve it for the exporter.
+        {
+            wchar_t buf[64];
+
+            swprintf_s(buf, 64, L"%.6f,%.6f,%.6f",
+                irLight.color.r, irLight.color.g, irLight.color.b);
+            node->SetUserPropString(MSTR(L"mdx_static_color"), MSTR(buf));
+
+            swprintf_s(buf, 64, L"%.6f,%.6f,%.6f",
+                irLight.ambientColor.r, irLight.ambientColor.g, irLight.ambientColor.b);
+            node->SetUserPropString(MSTR(L"mdx_static_ambColor"), MSTR(buf));
+
+            swprintf_s(buf, 64, L"%.6f", irLight.intensity);
+            node->SetUserPropString(MSTR(L"mdx_static_intensity"), MSTR(buf));
+
+            swprintf_s(buf, 64, L"%.6f", irLight.ambientIntensity);
+            node->SetUserPropString(MSTR(L"mdx_static_ambIntensity"), MSTR(buf));
+
+            swprintf_s(buf, 64, L"%.6f", irLight.attenuationStart);
+            node->SetUserPropString(MSTR(L"mdx_static_attStart"), MSTR(buf));
+
+            swprintf_s(buf, 64, L"%.6f", irLight.attenuationEnd);
+            node->SetUserPropString(MSTR(L"mdx_static_attEnd"), MSTR(buf));
         }
 
         // Register for animation key insertion
@@ -234,6 +309,99 @@ void Wc3LightBuilder::buildLights(
 }
 
 // ── Wc3AttachmentBuilder ────────────────────────────────────
+
+// Parse MDX attachment name (z.B. "Hand Right Ref") in die drei
+// 1-basierten Dropdown-Indices des Wc3AttachPoint-Plugins.
+//
+// Plugin-Listen (aus Wc3AttachPoint.ms):
+//   attachmentList     = #("Head", "Overhead", "Origin", "Foot", "Chest",
+//                          "Hand", "Weapon", "Sprite")
+//   attachmentAdd1List = #("None", "Right", "Left", "Mount Left", "Mount Right")
+//   attachmentAdd2List = #("None", "RallyPoint", "EatTree", "Gold", "Mount",
+//                          "Mount Rear", "Rear", "Smart", "Alternate",
+//                          "First", "Second", "Third", "Fourth", "Fifth", "Sixth")
+//
+// Alle Indices sind 1-basiert (MaxScript-Konvention). Default ist jeweils 1
+// wenn nichts matcht ("Head" / "None" / "None").
+struct AttachNameIndices {
+    int nameFirst = 1;   // "Head"
+    int nameAdd1  = 1;   // "None"
+    int nameAdd2  = 1;   // "None"
+};
+
+static AttachNameIndices parseAttachmentName(const std::string& name) {
+    AttachNameIndices out;
+
+    // Type-Tokens (matcht als separates Wort; "Head" darf NICHT auch "Overhead" matchen).
+    // Reihenfolge wichtig: längere Tokens zuerst matchen damit "Overhead" nicht als "Head" fehlerkannt wird.
+    static const std::pair<const char*, int> kTypeTable[] = {
+        {"Overhead", 2},
+        {"Origin",   3},
+        {"Sprite",   8},
+        {"Weapon",   7},
+        {"Chest",    5},
+        {"Head",     1},   // nach "Overhead" prüfen!
+        {"Foot",     4},
+        {"Hand",     6},
+    };
+    for (const auto& [tok, idx] : kTypeTable) {
+        size_t pos = name.find(tok);
+        if (pos != std::string::npos) {
+            // Als ganzes Wort prüfen: Grenze links & rechts
+            bool leftOk  = (pos == 0)                || !isalpha(static_cast<unsigned char>(name[pos - 1]));
+            bool rightOk = (pos + strlen(tok) >= name.size()) || !isalpha(static_cast<unsigned char>(name[pos + strlen(tok)]));
+            if (leftOk && rightOk) {
+                out.nameFirst = idx;
+                break;
+            }
+        }
+    }
+
+    // Add1 (Direction) — "Mount Left" / "Mount Right" vor "Left"/"Right" prüfen!
+    // Matchender Token wird aus `remaining` entfernt damit er nicht versehentlich
+    // auch als Add2-Token matcht (z.B. "Mount" in "Mount Left").
+    static const std::pair<const char*, int> kAdd1Table[] = {
+        {"Mount Left",  4},
+        {"Mount Right", 5},
+        {"Right",       2},   // nach "Mount Right" prüfen
+        {"Left",        3},   // nach "Mount Left" prüfen
+    };
+    std::string remaining = name;
+    for (const auto& [tok, idx] : kAdd1Table) {
+        size_t pos = remaining.find(tok);
+        if (pos != std::string::npos) {
+            out.nameAdd1 = idx;
+            remaining.erase(pos, strlen(tok));
+            break;
+        }
+    }
+
+    // Add2 (Additional) — sucht in `remaining` (ohne verbrauchten Add1-Token)
+    static const std::pair<const char*, int> kAdd2Table[] = {
+        {"Mount Rear",  6},
+        {"RallyPoint",  2},
+        {"EatTree",     3},
+        {"Alternate",   9},
+        {"Second",     11},
+        {"Fourth",     13},
+        {"Third",      12},
+        {"Fifth",      14},
+        {"Sixth",      15},
+        {"First",      10},
+        {"Smart",       8},
+        {"Mount",       5},   // nach "Mount Rear" prüfen
+        {"Rear",        7},
+        {"Gold",        4},
+    };
+    for (const auto& [tok, idx] : kAdd2Table) {
+        if (remaining.find(tok) != std::string::npos) {
+            out.nameAdd2 = idx;
+            break;
+        }
+    }
+
+    return out;
+}
 
 void Wc3AttachmentBuilder::buildAttachments(
     const ir::IRModel& irModel, std::vector<INode*>& nodeMap,
@@ -262,6 +430,12 @@ void Wc3AttachmentBuilder::buildAttachments(
         // Paramblock setup
         auto* ref = dynamic_cast<ReferenceTarget*>(obj);
         if (ref) {
+            // Type/Direction/Additional Dropdowns aus Node-Name parsen
+            AttachNameIndices idx = parseAttachmentName(irAtt.name);
+            pbSetInt(ref, L"nameFirst", idx.nameFirst);
+            pbSetInt(ref, L"nameAdd1",  idx.nameAdd1);
+            pbSetInt(ref, L"nameAdd2",  idx.nameAdd2);
+
             pbSetInt(ref, L"attachmentId", irAtt.attachmentId);
             if (!irAtt.path.empty()) {
                 // Resolve model path to absolute (pre-resolve extracted from CASC)
@@ -341,40 +515,45 @@ void Wc3Particle1Builder::buildParticles(
             pb->SetValue(P1_PB_LONGITUDE, 0, irPE.longitude * kRadToDeg);
         }
 
-        // Model path: resolve to absolute path on disk, set path + empty prefix.
-        // The pre-resolve step already extracted models from CASC, so we just
-        // need to find the file on disk (trying both .mdx and .mdl extensions).
+        // Model path — same split semantics as the PE2 texture path.
+        //
+        // The Wc3Particles1 plugin concatenates m_modelPrefix + m_modelPath
+        // when the MDX exporter reads them back. If we leave the resolved
+        // absolute Windows path in m_modelPath and empty prefix, the
+        // exported MDX ends up with "C:\Users\...\foo.mdx" which breaks
+        // in-game.
+        //
+        // Split the original MDX-relative model path into prefix + filename
+        // so the exporter rebuilds the original path verbatim (or the user
+        // can edit the prefix in the plugin UI). CASC extraction is a
+        // separate side effect; its return value isn't stored here.
         if (!irPE.modelPath.empty()) {
+            std::wstring prefix, filename;
+            splitMdxPath(irPE.modelPath, prefix, filename);
+
+            auto* pathPtr = static_cast<MSTR*>(obj->GetInterface(WC3P1_MODEL_PATH_IID));
+            if (pathPtr) *pathPtr = filename.c_str();
+            auto* prefixPtr = static_cast<MSTR*>(obj->GetInterface(WC3P1_MODEL_PREFIX_IID));
+            if (prefixPtr) *prefixPtr = prefix.c_str();
+
+            // Side effect: make sure the model file exists on disk so the
+            // renderer / viewport can locate it via <modelDir>\<relPath>.
             namespace fs = std::filesystem;
             std::wstring wRelPath = toWstr(irPE.modelPath);
-            std::wstring resolved;
-
-            // Try exact path, then alternate extension
-            auto tryPath = [&](const std::wstring& rel) -> bool {
+            auto exists = [&](const std::wstring& rel) -> bool {
                 fs::path full = fs::path(modelDir) / rel;
                 std::error_code ec;
-                if (fs::exists(full, ec)) { resolved = full.wstring(); return true; }
-                return false;
+                return fs::exists(full, ec);
             };
-
-            if (!tryPath(wRelPath)) {
-                // Swap .mdx↔.mdl
+            if (!exists(wRelPath)) {
+                // Try swapping .mdx↔.mdl (CASC models are often named
+                // differently than what's referenced in MDX)
                 fs::path p(wRelPath);
                 std::wstring ext = p.extension().wstring();
                 std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
-                if (ext == L".mdl")
-                    tryPath(p.replace_extension(L".mdx").wstring());
-                else if (ext == L".mdx")
-                    tryPath(p.replace_extension(L".mdl").wstring());
+                if (ext == L".mdl") (void)exists(p.replace_extension(L".mdx").wstring());
+                else if (ext == L".mdx") (void)exists(p.replace_extension(L".mdl").wstring());
             }
-
-            if (resolved.empty())
-                resolved = wRelPath;  // fallback: use relative path as-is
-
-            auto* pathPtr = static_cast<MSTR*>(obj->GetInterface(WC3P1_MODEL_PATH_IID));
-            if (pathPtr) *pathPtr = resolved.c_str();
-            auto* prefixPtr = static_cast<MSTR*>(obj->GetInterface(WC3P1_MODEL_PREFIX_IID));
-            if (prefixPtr) *prefixPtr = _T("");
         }
 
         // Register for animation key insertion
@@ -421,8 +600,12 @@ void Wc3Particle2Builder::buildParticles(
             pb->SetValue(PB_INITVEL, 0, irPE.emissionRate);
             pb->SetValue(PB_LIFE, 0, irPE.lifespan);
             pb->SetValue(PB_GRAVITY, 0, irPE.gravity);
-            // MDX latitude is in radians; plugin ConeAngle (PB_ANGLE_Y) is in degrees
-            pb->SetValue(PB_ANGLE_Y, 0, irPE.latitude * (180.0f / 3.14159265f));
+            // PE2 latitude is stored in DEGREES in the MDX binary — the WC3
+            // engine performs no conversion for PE2 (unlike PE1 which uses
+            // radians). So we pass it through unchanged to ConeAngle.
+            // Reference: NeoDexSceneRebuilder.ms applies `p.coneangle = sub.latitude`
+            // directly without any conversion.
+            pb->SetValue(PB_ANGLE_Y, 0, irPE.latitude);
             // PE2 has no longitude in MDX — plugin derives it from LineEmitter flag
             pb->SetValue(PB_WIDTH, 0, irPE.width);
             pb->SetValue(PB_HEIGHT, 0, irPE.length);
@@ -481,25 +664,44 @@ void Wc3Particle2Builder::buildParticles(
 
         // Texture path via custom interface.
         //
-        // The Wc3Particles2 plugin stores two fields: m_texturePrefix and
-        // m_particlePath. The renderer concatenates them with the .max file
-        // directory as: basePath + texPrefix + texFile. For a freshly imported
-        // file (unsaved .max), basePath is empty, so the natural fallback is
-        // to put the absolute resolved path in m_particlePath and leave the
-        // prefix empty — the renderer's Try3 fallback then uses texFile as-is.
-        // CASC extraction (inside resolveTexturePathFull) will extract the
-        // texture to <modelDir>\<relPath> and return that absolute path.
+        // The Wc3Particles2 plugin stores two separate fields:
+        //   m_texturePrefix : directory portion (e.g. "Textures\")
+        //   m_particlePath  : filename only     (e.g. "Fireball.blp")
+        //
+        // On export the plugin concatenates them back into an MDX texture
+        // path. The plugin's own CASC browser callback (see Particles.cpp
+        // lines ~894-924) enforces this split — if we leave m_particlePath
+        // holding a full absolute Windows path and m_texturePrefix empty,
+        // the re-exported MDX ends up with a garbage texture path that
+        // the game can't load.
+        //
+        // History:
+        //   v1 — put absolute disk path in m_particlePath, empty prefix.
+        //        Round-trip produced "" + "C:\Users\...\foo.blp" in MDX
+        //        → broken in-game.
+        //   v2 — extract prefix + filename from the original MDX texture
+        //        path (e.g. "Textures\Fireball.blp" → prefix="Textures\",
+        //        filename="Fireball.blp"). Matches what the CASC browser
+        //        does when the user picks a texture manually.
         if (irPE.textureIndex >= 0 &&
             irPE.textureIndex < static_cast<int32_t>(irModel.textures.size()))
         {
             const auto& irTex = irModel.textures[irPE.textureIndex];
             if (!irTex.filePath.empty()) {
-                auto wpath = mdx_scene::resolveTexturePathFull(
-                    modelDir, toWstr(irTex.filePath), cascStorage);
-                auto* pathPtr = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PATH_IID));
-                if (pathPtr) *pathPtr = wpath.c_str();
+                std::wstring prefix, filename;
+                splitMdxPath(irTex.filePath, prefix, filename);
+
+                auto* pathPtr   = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PATH_IID));
                 auto* prefixPtr = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PREFIX_IID));
-                if (prefixPtr) *prefixPtr = _T("");
+                if (pathPtr)   *pathPtr   = filename.c_str();
+                if (prefixPtr) *prefixPtr = prefix.c_str();
+
+                // Side effect: make sure CASC extracts the texture to disk so
+                // the renderer can find it (resolveTexturePathFull extracts to
+                // <modelDir>\<relPath> if the file isn't already there). We
+                // only need the extraction side effect, not the return value.
+                (void)mdx_scene::resolveTexturePathFull(
+                    modelDir, toWstr(irTex.filePath), cascStorage);
             }
         }
 
@@ -589,24 +791,76 @@ void Wc3EventBuilder::buildEvents(
 
         INode* node = gi->CreateObjectNode(obj);
         MSTR name;
+        // Wc3RefEvent-Plugin-UI erwartet "Obj:"-Prefix im Node-Name — das
+        // auto-detect in 'on params open do' parst objName[5..] um Type-Code
+        // (FPT/SPL/UBR/SND/SPN) und Data-Code zu extrahieren und die
+        // Dropboxen korrekt vorzuselektieren. Ohne diesen Prefix bleiben
+        // die Dropdowns auf Default (FPT + erster Eintrag).
         if (irEvt.nodeIndex >= 0 && irEvt.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
-            name.printf(_T("%hs"), irModel.nodes[irEvt.nodeIndex].name.c_str());
+            name.printf(_T("Obj:%hs"), irModel.nodes[irEvt.nodeIndex].name.c_str());
         else
-            name.printf(_T("%hs%hs"), irEvt.eventCode.c_str(), irEvt.eventData.c_str());
+            name.printf(_T("Obj:%hs%hs"), irEvt.eventCode.c_str(), irEvt.eventData.c_str());
         node->SetName(name);
 
         positionAtPivot(node, irEvt.nodeIndex, irModel);
         setupNodeProperties(node, irEvt.nodeIndex, irModel);
         attachToParent(node, irEvt.nodeIndex, irModel, nodeMap);
 
-        // Set event key times via IntTab paramblock
-        auto* ref = dynamic_cast<ReferenceTarget*>(obj);
-        IParamBlock2* pb = ref ? PBR::findParamBlock(ref, 0) : nullptr;
-        if (pb && !irEvt.keyTimes.empty()) {
-            pb->SetCount(0, 0); // Clear existing entries
+        // Set event key times via MaxScript — analog zum KGAC/Wc3VertexMod-Fix.
+        // Scripted simpleManipulator-Plugins (wie Wdx_Wc3Event extends
+        // simpleManipulator) haben ihre ParamBlocks nicht auf fixem BlockID 0,
+        // und ParamIDs werden von Max dynamisch vergeben. Der alte Code
+        // `PBR::findParamBlock(ref, 0) + pb->Append(0, 1, ...)` findet den
+        // IntTab-Parameter `keyList` nicht → Event-Notes blieben leer.
+        //
+        // MaxScript sieht den Plugin-Parameter `keyList` direkt (als
+        // IntTab-Array mit `tabSizeVariable:true`) und kann ihn als einfaches
+        // Array zuweisen.
+        //
+        // WICHTIG: Das Plugin erwartet Frame-Nummern, NICHT Ticks!
+        // Der btnAddNote-Handler macht: `sliderTime / ticksperframe`, d.h.
+        // die ListView-Darstellung rechnet Frames an. Wenn wir Ticks speichern,
+        // bleiben die Keys außerhalb der Timeline "unsichtbar".
+        if (irEvt.keyTimes.empty()) {
+            // Diagnose: IR-Seite hat diesem Event keine Keys mehr zugeordnet
+            // (z.B. durch Remap-Verlust). Damit man es im Log sieht:
+            std::wstring warn = L"Event '" + std::wstring(node->GetName()) +
+                L"' hat keine keyTimes nach Remap — Notes bleiben leer!";
+            reporter.warning(warn.c_str());
+        } else {
+            std::wstring nodeName(node->GetName());
+            const int tpf = GetTicksPerFrame();
+
+            std::wstringstream kl;
+            kl << L"#(";
+            bool first = true;
             for (auto t : irEvt.keyTimes) {
-                int keyTime = static_cast<int>(t);
-                pb->Append(0, 1, &keyTime);
+                if (!first) kl << L",";
+                // Ticks → Frames (UI erwartet Frame-Nummern)
+                int frame = static_cast<int>(t) / tpf;
+                kl << frame;
+                first = false;
+            }
+            kl << L")";
+
+            std::wstringstream ss;
+            ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
+               << L"if n != undefined do ("
+               << L"n.keyList = " << kl.str()
+               << L"))";
+
+            std::wstring scriptStr = ss.str();
+            BOOL execOk = ExecuteMAXScriptScript(
+                const_cast<wchar_t*>(scriptStr.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+                MAXScript::ScriptSource::NonEmbedded,
+#endif
+                TRUE, nullptr);
+
+            if (!execOk) {
+                std::wstring warn = L"ExecuteMAXScriptScript für Event '" +
+                    nodeName + L"' fehlgeschlagen. Script: " + scriptStr;
+                reporter.warning(warn.c_str());
             }
         }
 
@@ -641,7 +895,91 @@ void Wc3CollisionBuilder::buildCollisions(
             name = _T("Wc3Collision");
         node->SetName(name);
 
-        positionAtPivot(node, irCol.nodeIndex, irModel);
+        // Position collision shape — follows NeoDex (NeoDexSceneRebuilder.ms
+        // fn createCollisionShapes lines 2723-2759).
+        //
+        // MDX semantics splits by animation, not by version:
+        //   Static (no KGTR track): CLID vertices are ABSOLUTE world positions.
+        //                           Node goes at shape center/bottom.
+        //                           Classic v800 behavior.
+        //   Animated (KGTR track):  CLID vertices are LOCAL extents relative
+        //                           to the node's pivot. Node goes at
+        //                           (pivot + shape offset). Reforged v1000+
+        //                           Hitbox system (per-bone animated boxes).
+        //
+        // CRITICAL: Max pivot must equal MDX pivot so KGRT rotation keys
+        // rotate the box around the correct anchor (the bone being tracked),
+        // not around the box's visual bottom. NeoDex does `p.pivot = obj.pivot`
+        // unconditionally — same here.
+        //
+        // Helper-plugin draw conventions (scripted Wdx_CollisionSphere /
+        // Wdx_CollisionBox):
+        //   Sphere — radius drawn symmetrically around node origin.
+        //   Box    — Max-native: X/Y symmetric, Z upward (origin=bottom-center).
+        //
+        // History:
+        //   v1 — positionAtPivot() → all shapes landed at (0,0,0).
+        //   v2 — pivot + shapeCenter → OK spheres, double-offset boxes.
+        //   v3 — shapeCenter alone → spheres OK, boxes floated h/2 in Z.
+        //   v4 — shape-aware (sphere=v1, box=(xy-center, z-min)). v800 OK,
+        //        v1000+ animated hitboxes landed under the ground.
+        //   v5 — pivot-aware (pivot magnitude test): v800 & static v1000 OK,
+        //        but animated v1000+ had KGRT rotating around wrong anchor
+        //        and Weapon/Shield_BB with large KGTR offsets mis-placed.
+        //   v6 — NeoDex-aligned: hasTransAnim detection + SetObjectOffset
+        //        so Max pivot = MDX pivot.
+        Point3 pivot(0.0f, 0.0f, 0.0f);
+        if (irCol.nodeIndex >= 0 && irCol.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
+            pivot = irModel.nodes[irCol.nodeIndex].pivotPoint;
+
+        // hasTransAnim detection: does this node have KGTR keys?
+        bool hasTransAnim = false;
+        for (const auto& na : irModel.nodeAnimations) {
+            if (na.nodeIndex == irCol.nodeIndex && !na.translation.empty()) {
+                hasTransAnim = true;
+                break;
+            }
+        }
+
+        Point3 translation(0.0f, 0.0f, 0.0f);
+        if (irCol.shape == ir::CollisionShape::Shape::Sphere) {
+            if (!irCol.vertices.empty())
+                translation = irCol.vertices[0];          // sphere center
+        } else if (irCol.shape == ir::CollisionShape::Shape::Box) {
+            if (irCol.vertices.size() >= 2) {
+                const Point3& a = irCol.vertices[0];
+                const Point3& b = irCol.vertices[1];
+                translation.x = (a.x + b.x) * 0.5f;       // X center
+                translation.y = (a.y + b.y) * 0.5f;       // Y center
+                translation.z = std::min(a.z, b.z);       // Z bottom
+            } else if (!irCol.vertices.empty()) {
+                translation = irCol.vertices[0];
+            }
+        }
+        // Only add pivot for animated shapes (NeoDex convention)
+        if (hasTransAnim)
+            translation += pivot;
+
+        Matrix3 tm;
+        tm.IdentityMatrix();
+        tm.SetTrans(translation);
+        node->SetNodeTM(0, tm);
+
+        // Set the Max pivot to match the MDX pivot — so KGTR adds to pivot
+        // (not to shape-bottom) and KGRT rotates around the MDX anchor point.
+        // Equivalent to MaxScript `p.pivot = obj.pivot`.
+        // In Max SDK: move TM to pivot, then offset the object so geometry
+        // stays visually in place. The resulting node has:
+        //   GetNodeTM(0).GetTrans() == pivot        (animation anchor)
+        //   GetObjOffsetPos()       == translation - pivot  (visual offset)
+        if (hasTransAnim) {
+            Matrix3 pivotTM;
+            pivotTM.IdentityMatrix();
+            pivotTM.SetTrans(pivot);
+            node->SetNodeTM(0, pivotTM);
+            node->SetObjOffsetPos(translation - pivot);
+        }
+
         setupNodeProperties(node, irCol.nodeIndex, irModel);
         attachToParent(node, irCol.nodeIndex, irModel, nodeMap);
 

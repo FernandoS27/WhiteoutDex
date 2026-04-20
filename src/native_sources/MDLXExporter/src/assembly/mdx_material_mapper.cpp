@@ -103,8 +103,14 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
             layer.subTextures.push_back(sub);
         }
 
-        if (!layer.subTextures.empty())
+        if (!layer.subTextures.empty()) {
             layer.is_hd = true;
+            // v1200 HD layers must carry ShaderType::HD (=1) so the game
+            // and downstream tools interpret the sub-textures correctly.
+            // Without this the writer emits shader=0 (ShaderType::SD) and
+            // Reforged renders ignore the sub-texture array.
+            layer.shader = whiteout::mdx::Layer::ShaderType::HD;
+        }
     }
 
     // Animated alpha track

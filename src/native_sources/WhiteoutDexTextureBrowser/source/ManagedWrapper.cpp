@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Fernando Sahmkow
 /**
  * @file ManagedWrapper.cpp
- * @brief C++/CLI .NET wrapper — bridges native WhiteoutDexNative modules to MaxScript.
+ * @brief C++/CLI .NET wrapper — bridges native WhiteoutDexTextureBrowser modules to MaxScript.
  *
  * Compile with:  /clr /std:c++20
  */
@@ -416,31 +416,31 @@ static void retryFailedWithStandardDecode(
 //  MPQ
 // ============================================================================
 
-int WhiteoutDexNative::MPQ_Open(System::String^ path) {
+int WhiteoutDexTextureBrowser::MPQ_Open(System::String^ path) {
 
     return getMpqManager().openArchive(toNative(path));
 }
 
-void WhiteoutDexNative::MPQ_Close(int handle) {
+void WhiteoutDexTextureBrowser::MPQ_Close(int handle) {
 
     getMpqManager().closeArchive(handle);
 }
 
-void WhiteoutDexNative::MPQ_CloseAll() {
+void WhiteoutDexTextureBrowser::MPQ_CloseAll() {
 
     getMpqManager().closeAll();
 }
 
-int WhiteoutDexNative::MPQ_Count() {
+int WhiteoutDexTextureBrowser::MPQ_Count() {
 
     return getMpqManager().archiveCount();
 }
 
-array<System::String^>^ WhiteoutDexNative::MPQ_ListFiles(int handle) {
+array<System::String^>^ WhiteoutDexTextureBrowser::MPQ_ListFiles(int handle) {
     return MPQ_ListFiles(handle, nullptr);
 }
 
-array<System::String^>^ WhiteoutDexNative::MPQ_ListFiles(
+array<System::String^>^ WhiteoutDexTextureBrowser::MPQ_ListFiles(
     int handle, System::String^ filter)
 {
 
@@ -454,11 +454,11 @@ array<System::String^>^ WhiteoutDexNative::MPQ_ListFiles(
     return toManagedArray(paths);
 }
 
-array<System::String^>^ WhiteoutDexNative::MPQ_ListAllFiles() {
+array<System::String^>^ WhiteoutDexTextureBrowser::MPQ_ListAllFiles() {
     return MPQ_ListAllFiles(nullptr);
 }
 
-array<System::String^>^ WhiteoutDexNative::MPQ_ListAllFiles(
+array<System::String^>^ WhiteoutDexTextureBrowser::MPQ_ListAllFiles(
     System::String^ filter)
 {
 
@@ -467,7 +467,7 @@ array<System::String^>^ WhiteoutDexNative::MPQ_ListAllFiles(
     return toManagedArray(paths);
 }
 
-array<System::Byte>^ WhiteoutDexNative::MPQ_Extract(
+array<System::Byte>^ WhiteoutDexTextureBrowser::MPQ_Extract(
     int handle, System::String^ innerPath)
 {
 
@@ -478,7 +478,7 @@ array<System::Byte>^ WhiteoutDexNative::MPQ_Extract(
     return toManagedBytes(data);
 }
 
-bool WhiteoutDexNative::MPQ_ExtractToDisk(
+bool WhiteoutDexTextureBrowser::MPQ_ExtractToDisk(
     int handle, System::String^ innerPath, System::String^ destPath)
 {
 
@@ -488,7 +488,7 @@ bool WhiteoutDexNative::MPQ_ExtractToDisk(
     return (r == whiteoutdex::MpqResult::Ok);
 }
 
-bool WhiteoutDexNative::MPQ_HasFile(int handle, System::String^ innerPath) {
+bool WhiteoutDexTextureBrowser::MPQ_HasFile(int handle, System::String^ innerPath) {
 
     if (handle < 0 || handle >= getMpqManager().archiveCount()) return false;
     return getMpqManager().findArchiveContaining(toNative(innerPath)) >= 0;
@@ -499,7 +499,7 @@ bool WhiteoutDexNative::MPQ_HasFile(int handle, System::String^ innerPath) {
 //  Replaces ~1400 lines of custom CASCReader with Fernando's implementation.
 // ============================================================================
 
-System::String^ WhiteoutDexNative::CASC_Open(System::String^ w3path) {
+System::String^ WhiteoutDexTextureBrowser::CASC_Open(System::String^ w3path) {
     auto& cs = getCascState();
     cs.reset();
 
@@ -527,42 +527,42 @@ System::String^ WhiteoutDexNative::CASC_Open(System::String^ w3path) {
     return toManaged(log);
 }
 
-void WhiteoutDexNative::CASC_Close() {
+void WhiteoutDexTextureBrowser::CASC_Close() {
     getCascState().reset();
 }
 
-bool WhiteoutDexNative::CASC_IsOpen() {
+bool WhiteoutDexTextureBrowser::CASC_IsOpen() {
     auto& cs = getCascState();
     return cs.initialized && cs.storage && *cs.storage;
 }
 
-array<System::String^>^ WhiteoutDexNative::CASC_ListFiles() {
+array<System::String^>^ WhiteoutDexTextureBrowser::CASC_ListFiles() {
     return toManagedArray(getCascState().cachedFileList);
 }
 
-int WhiteoutDexNative::CASC_FileCount() {
+int WhiteoutDexTextureBrowser::CASC_FileCount() {
     auto& cs = getCascState();
     if (!cs.initialized || !cs.storage) return 0;
     return static_cast<int>(cs.storage->totalFileCount().value_or(0));
 }
 
-array<System::String^>^ WhiteoutDexNative::CASC_SearchFiles(System::String^ pattern) {
+array<System::String^>^ WhiteoutDexTextureBrowser::CASC_SearchFiles(System::String^ pattern) {
     return toManagedArray(getCascState().searchFiles(toNative(pattern)));
 }
 
-array<System::String^>^ WhiteoutDexNative::CASC_SearchFilesHD(System::String^ pattern) {
+array<System::String^>^ WhiteoutDexTextureBrowser::CASC_SearchFilesHD(System::String^ pattern) {
     return toManagedArray(getCascState().searchFilesHD(toNative(pattern)));
 }
 
-array<System::String^>^ WhiteoutDexNative::CASC_SearchFilesSD(System::String^ pattern) {
+array<System::String^>^ WhiteoutDexTextureBrowser::CASC_SearchFilesSD(System::String^ pattern) {
     return toManagedArray(getCascState().searchFilesSD(toNative(pattern)));
 }
 
-System::String^ WhiteoutDexNative::CASC_GetFileTag(System::String^ cascPath) {
+System::String^ WhiteoutDexTextureBrowser::CASC_GetFileTag(System::String^ cascPath) {
     return toManaged(CascState::detectTag(toNative(cascPath)));
 }
 
-array<System::Byte>^ WhiteoutDexNative::CASC_Extract(System::String^ cascPath) {
+array<System::Byte>^ WhiteoutDexTextureBrowser::CASC_Extract(System::String^ cascPath) {
     auto& cs = getCascState();
     if (!cs.initialized || !cs.storage) return nullptr;
 
@@ -571,7 +571,7 @@ array<System::Byte>^ WhiteoutDexNative::CASC_Extract(System::String^ cascPath) {
     return toManagedBytes(*result);
 }
 
-int WhiteoutDexNative::CASC_ExtractToDisk(
+int WhiteoutDexTextureBrowser::CASC_ExtractToDisk(
     System::String^ cascPath, System::String^ outputPath)
 {
     auto& cs = getCascState();
@@ -594,7 +594,7 @@ int WhiteoutDexNative::CASC_ExtractToDisk(
     return ofs.good() ? static_cast<int>(result->size()) : -1;
 }
 
-System::String^ WhiteoutDexNative::CASC_GetShaderType(System::String^ cascPath) {
+System::String^ WhiteoutDexTextureBrowser::CASC_GetShaderType(System::String^ cascPath) {
     auto& cs = getCascState();
     if (!cs.initialized || !cs.storage) return toManaged("?");
 
@@ -607,13 +607,13 @@ System::String^ WhiteoutDexNative::CASC_GetShaderType(System::String^ cascPath) 
 //  BLP / DDS Decoding
 // ============================================================================
 
-System::Drawing::Bitmap^ WhiteoutDexNative::DecodeBLP(System::String^ filePath) {
+System::Drawing::Bitmap^ WhiteoutDexTextureBrowser::DecodeBLP(System::String^ filePath) {
 
     whiteoutdex::DecodedImage img = getBlpDecoder().decodeFile(toNative(filePath));
     return toBitmap(img);
 }
 
-System::Drawing::Bitmap^ WhiteoutDexNative::DecodeBLPFromMemory(
+System::Drawing::Bitmap^ WhiteoutDexTextureBrowser::DecodeBLPFromMemory(
     array<System::Byte>^ data)
 {
 
@@ -625,13 +625,13 @@ System::Drawing::Bitmap^ WhiteoutDexNative::DecodeBLPFromMemory(
     return toBitmap(img);
 }
 
-System::Drawing::Bitmap^ WhiteoutDexNative::DecodeDDS(System::String^ filePath) {
+System::Drawing::Bitmap^ WhiteoutDexTextureBrowser::DecodeDDS(System::String^ filePath) {
 
     whiteoutdex::DecodedImage img = getDdsDecoder().decodeFile(toNative(filePath));
     return toBitmap(img);
 }
 
-System::Drawing::Bitmap^ WhiteoutDexNative::DecodeDDSFromMemory(
+System::Drawing::Bitmap^ WhiteoutDexTextureBrowser::DecodeDDSFromMemory(
     array<System::Byte>^ data)
 {
 
@@ -643,7 +643,7 @@ System::Drawing::Bitmap^ WhiteoutDexNative::DecodeDDSFromMemory(
     return toBitmap(img);
 }
 
-System::Drawing::Bitmap^ WhiteoutDexNative::DecodeTexture(
+System::Drawing::Bitmap^ WhiteoutDexTextureBrowser::DecodeTexture(
     array<System::Byte>^ data)
 {
 
@@ -672,7 +672,7 @@ System::Drawing::Bitmap^ WhiteoutDexNative::DecodeTexture(
 //  Thumbnails
 // ============================================================================
 
-array<ThumbnailEntry^>^ WhiteoutDexNative::GenerateThumbnailsMPQ(
+array<ThumbnailEntry^>^ WhiteoutDexTextureBrowser::GenerateThumbnailsMPQ(
     int mpqHandle, array<System::String^>^ fileList, int thumbSize)
 {
 
@@ -714,13 +714,13 @@ array<ThumbnailEntry^>^ WhiteoutDexNative::GenerateThumbnailsMPQ(
     return out;
 }
 
-array<ThumbnailEntry^>^ WhiteoutDexNative::GenerateThumbnailsMPQAll(
+array<ThumbnailEntry^>^ WhiteoutDexTextureBrowser::GenerateThumbnailsMPQAll(
     array<System::String^>^ fileList, int thumbSize)
 {
     return GenerateThumbnailsMPQ(0, fileList, thumbSize);
 }
 
-array<ThumbnailEntry^>^ WhiteoutDexNative::GenerateThumbnailsCASC(
+array<ThumbnailEntry^>^ WhiteoutDexTextureBrowser::GenerateThumbnailsCASC(
     array<System::String^>^ fileList, int thumbSize)
 {
     auto paths = toNativeVector(fileList);
@@ -756,7 +756,7 @@ array<ThumbnailEntry^>^ WhiteoutDexNative::GenerateThumbnailsCASC(
     return out;
 }
 
-array<ThumbnailEntry^>^ WhiteoutDexNative::GenerateThumbnailsDisk(
+array<ThumbnailEntry^>^ WhiteoutDexTextureBrowser::GenerateThumbnailsDisk(
     array<System::String^>^ filePaths, int thumbSize)
 {
     auto paths = toNativeVector(filePaths);
@@ -796,12 +796,12 @@ array<ThumbnailEntry^>^ WhiteoutDexNative::GenerateThumbnailsDisk(
 //  Thread configuration
 // ============================================================================
 
-void WhiteoutDexNative::SetThreadCount(int threads) {
+void WhiteoutDexTextureBrowser::SetThreadCount(int threads) {
 
     getThumbEngine().setThreadCount(threads);
 }
 
-int WhiteoutDexNative::GetThreadCount() {
+int WhiteoutDexTextureBrowser::GetThreadCount() {
 
     return getThumbEngine().threadCount();
 }

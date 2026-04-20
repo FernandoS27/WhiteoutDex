@@ -70,7 +70,7 @@ using ThumbnailProgressFn = std::function<void(int completed, int total)>;
 //    BLPDecoder/DDSDecoder are stateless and safe for concurrent use.
 //
 //  Usage from MaxScript (via ManagedWrapper):
-//    local engine = WhiteoutDexNative.CreateThumbnailEngine()
+//    local engine = WhiteoutDexTextureBrowser.CreateThumbnailEngine()
 //    local results = engine.GenerateFromMPQ(mpqHandle, fileList, 64, 64)
 //    -- results is array of (path, bitmap) pairs
 //

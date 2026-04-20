@@ -30,15 +30,22 @@ void MdxHierarchyResolver::resolve(const ir::IRModel& model, uint32_t version) {
     // Phase 1: Assign IDs by type in MDX canonical order
     MDX_LOG(_T("  Phase 1: Assigning objectIds...\n"));
 
-    // Bones first
+    // Bones — IMPORTANT: in v1200 (Reforged) there are NO separate helpers,
+    // all bones/helpers go into the BONE chunk. The BONE chunk is written in IR
+    // (tree-traversal) order, so we must ALSO assign objectIds in IR order for
+    // v1200. Splitting into "real bones first, helpers later" causes file-position
+    // to disagree with objectId, which breaks Retera's updateIdObjectReferences
+    // (ArrayIndexOutOfBoundsException "Index N out of bounds for length N").
     int boneCount = 0;
     for (auto& bone : model.bones) {
-        if (!bone.isHelper) {
-            uint32_t id = assignId(bone.nodeIndex, NT::Bone);
-            MDX_LOG(_T("    BONE  objId=%u irIdx=%d \"%S\"\n"),
-                    id, bone.nodeIndex, bone.name.c_str());
-            boneCount++;
-        }
+        // v<1200: only non-helper bones here; helpers assigned later (after lights) as HELP
+        // v1200: all bones (helpers stored inline as bones, preserving IR order)
+        if (version < 1200 && bone.isHelper) continue;
+        uint32_t id = assignId(bone.nodeIndex, NT::Bone);
+        MDX_LOG(_T("    BONE  objId=%u irIdx=%d \"%S\"%s\n"),
+                id, bone.nodeIndex, bone.name.c_str(),
+                bone.isHelper ? _T(" [isHelper]") : _T(""));
+        boneCount++;
     }
     MDX_LOG(_T("  → %d bones assigned (objId 0-%u)\n"), boneCount, nextId_ > 0 ? nextId_-1 : 0);
 
@@ -50,22 +57,14 @@ void MdxHierarchyResolver::resolve(const ir::IRModel& model, uint32_t version) {
         lightCount++;
     }
 
-    // Helpers
+    // Helpers — only for v<1200 (Classic/Reforged-Compat). For v1200 they were
+    // already assigned as bones above.
     int helperCount = 0;
     if (version < 1200) {
         for (auto& bone : model.bones) {
             if (bone.isHelper) {
                 uint32_t id = assignId(bone.nodeIndex, NT::Helper);
                 MDX_LOG(_T("    HELP  objId=%u irIdx=%d \"%S\"\n"),
-                        id, bone.nodeIndex, bone.name.c_str());
-                helperCount++;
-            }
-        }
-    } else {
-        for (auto& bone : model.bones) {
-            if (bone.isHelper) {
-                uint32_t id = assignId(bone.nodeIndex, NT::Bone);
-                MDX_LOG(_T("    BONE(helper) objId=%u irIdx=%d \"%S\"\n"),
                         id, bone.nodeIndex, bone.name.c_str());
                 helperCount++;
             }
@@ -94,6 +93,19 @@ void MdxHierarchyResolver::resolve(const ir::IRModel& model, uint32_t version) {
         }
     }
 
+    // CornEmitters (v1200 only) — MUST come BEFORE Ribbons to match Reforged canonical order.
+    // Verified against Blizzard's arthas.mdx (v1000): PRE2=157, CORN=158, RIBB=159, EVTS=160.
+    // If CORN is assigned last (after CLID), Retera's updateIdObjectReferences crashes with
+    // "Index N out of bounds" because CORN's objectId ends up outside the expected range.
+    if (version >= 1200) {
+        for (auto& pe : model.particleEmitters) {
+            if (pe.variant == 3) {
+                uint32_t id = assignId(pe.nodeIndex, NT::CornEmitter);
+                MDX_LOG(_T("    CORN  objId=%u irIdx=%d\n"), id, pe.nodeIndex);
+            }
+        }
+    }
+
     // Ribbon emitters
     for (auto& rib : model.ribbonEmitters) {
         uint32_t id = assignId(rib.nodeIndex, NT::RibbonEmitter);
@@ -110,16 +122,6 @@ void MdxHierarchyResolver::resolve(const ir::IRModel& model, uint32_t version) {
     for (auto& cs : model.collisionShapes) {
         uint32_t id = assignId(cs.nodeIndex, NT::CollisionShape);
         MDX_LOG(_T("    CLID  objId=%u irIdx=%d\n"), id, cs.nodeIndex);
-    }
-
-    // CornEmitters (v1200 only)
-    if (version >= 1200) {
-        for (auto& pe : model.particleEmitters) {
-            if (pe.variant == 3) {
-                uint32_t id = assignId(pe.nodeIndex, NT::CornEmitter);
-                MDX_LOG(_T("    CORN  objId=%u irIdx=%d\n"), id, pe.nodeIndex);
-            }
-        }
     }
 
     MDX_LOG(_T("  Phase 1 complete: %u total nodes\n"), nextId_);

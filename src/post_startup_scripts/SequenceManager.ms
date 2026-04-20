@@ -70,6 +70,67 @@ struct WdxSequenceManager
         ) catch()
     ),
     
+    -- Scannt ein Material rekursiv (inkl. Sub-Materials in Composite/Multi)
+    -- und sammelt alle Global-Sequence-Durationen.
+    fn checkMaterialForGlobalSeq mat &durations &scannedMaterials =
+    (
+        if mat == undefined then return()
+        if (findItem scannedMaterials mat) != 0 then return()
+        append scannedMaterials mat
+        
+        -- Legacy StandardMaterial alpha (meist undefined bei Wc3Material)
+        try (this.checkControllerForGlobalSeq mat.alpha.controller &durations) catch()
+        
+        -- Wc3Material-eigene Animations-Properties (W_Angle nur hier, nicht auf Bitmap)
+        try (this.checkControllerForGlobalSeq mat.opacity.controller      &durations) catch()
+        try (this.checkControllerForGlobalSeq mat.anim_UOffset.controller &durations) catch()
+        try (this.checkControllerForGlobalSeq mat.anim_VOffset.controller &durations) catch()
+        try (this.checkControllerForGlobalSeq mat.anim_WAngle.controller  &durations) catch()
+        
+        -- Bitmap auflösen: erst .texture (StandardMaterial), dann .diffuseMap (Wc3Material)
+        local bmp = undefined
+        try (if mat.texture != undefined and classOf mat.texture == BitmapTexture then bmp = mat.texture) catch()
+        if bmp == undefined do (
+            try (if mat.diffuseMap != undefined and classOf mat.diffuseMap == BitmapTexture then bmp = mat.diffuseMap) catch()
+        )
+        
+        -- Bitmap UV-Controller
+        if bmp != undefined do
+        (
+            try (
+                local coords = bmp.coords
+                this.checkControllerForGlobalSeq coords.U_offset.controller &durations
+                this.checkControllerForGlobalSeq coords.V_offset.controller &durations
+                this.checkControllerForGlobalSeq coords.W_angle.controller  &durations
+                this.checkControllerForGlobalSeq coords.U_tiling.controller &durations
+                this.checkControllerForGlobalSeq coords.V_tiling.controller &durations
+            ) catch()
+            
+            -- IFL Texture Animation (erzeugt immer eine Global Sequence)
+            try (this.checkIFLForGlobalSeq bmp &durations) catch()
+        )
+        
+        -- REKURSION: MultiMaterial
+        try (
+            if classOf mat == MultiMaterial then (
+                for sm in mat.materialList do
+                    this.checkMaterialForGlobalSeq sm &durations &scannedMaterials
+            )
+        ) catch()
+        
+        -- REKURSION: Composite / Blend / Shellac / Wc3Material-Sub-Slots / ...
+        try (
+            local n = getNumSubMtls mat
+            if n > 0 do (
+                for i = 1 to n do (
+                    local sm = getSubMtl mat i
+                    if sm != undefined do
+                        this.checkMaterialForGlobalSeq sm &durations &scannedMaterials
+                )
+            )
+        ) catch()
+    ),
+    
     fn scanGlobalSequences =
     (
         local durations = #()
@@ -77,44 +138,37 @@ struct WdxSequenceManager
         
         for obj in objects do
         (
-            -- ============================================================
-            -- 1) Object-Level Controller (Transform + Visibility)
-            -- ============================================================
-            try (this.checkControllerForGlobalSeq obj.pos.controller &durations) catch()
-            try (this.checkControllerForGlobalSeq obj.rotation.controller &durations) catch()
-            try (this.checkControllerForGlobalSeq obj.scale.controller &durations) catch()
+            -- Object-Level Controller (Transform + Visibility)
+            try (this.checkControllerForGlobalSeq obj.pos.controller        &durations) catch()
+            try (this.checkControllerForGlobalSeq obj.rotation.controller   &durations) catch()
+            try (this.checkControllerForGlobalSeq obj.scale.controller      &durations) catch()
             try (this.checkControllerForGlobalSeq obj.visibility.controller &durations) catch()
             
-            -- ============================================================
-            -- 2) Material-Level Controller (Alpha, UV, IFL Textures)
-            -- ============================================================
+            -- Modifier-Stack scannen: Wc3VertexMod.VertexColor (KGAC-Tracks)
+            try
+            (
+                for m in obj.modifiers do
+                (
+                    local mClass = (classOf m) as string
+                    if mClass == "Wc3VertexMod" or mClass == "Wdx_Wc3VertexMod" do
+                    (
+                        try (this.checkControllerForGlobalSeq m.VertexColor.controller &durations) catch()
+                    )
+                )
+            ) catch()
+            
+            -- Material rekursiv scannen
             local mat = undefined
             try (mat = obj.material) catch()
-            
-            if mat != undefined and (findItem scannedMaterials mat) == 0 then
-            (
-                append scannedMaterials mat
-                
-                -- Material Alpha
-                try (this.checkControllerForGlobalSeq mat.alpha.controller &durations) catch()
-                
-                -- Texture Coordinate Controller (UV Scroll, Rotation, Scale)
-                try (
-                    if mat.texture != undefined and classOf mat.texture == BitmapTexture then
-                    (
-                        local coords = mat.texture.coords
-                        this.checkControllerForGlobalSeq coords.U_offset.controller &durations
-                        this.checkControllerForGlobalSeq coords.V_offset.controller &durations
-                        this.checkControllerForGlobalSeq coords.W_angle.controller &durations
-                        this.checkControllerForGlobalSeq coords.U_tiling.controller &durations
-                        this.checkControllerForGlobalSeq coords.V_tiling.controller &durations
-                    )
-                ) catch()
-                
-                -- IFL Texture Animation (erzeugt immer eine Global Sequence)
-                try (this.checkIFLForGlobalSeq mat.texture &durations) catch()
-            )
+            if mat != undefined do
+                this.checkMaterialForGlobalSeq mat &durations &scannedMaterials
         )
+        
+        -- Zusätzlich freistehende Scene-Materials abdecken
+        try (
+            for m in sceneMaterials do
+                this.checkMaterialForGlobalSeq m &durations &scannedMaterials
+        ) catch()
         
         sort durations
         this.globalSequences = durations

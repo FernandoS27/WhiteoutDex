@@ -13,8 +13,8 @@ inline void registerMdxNodeTypes(core::NodeClassifier& c) {
     c.registerClassID(mdx_ids::WC3_COLLISION_SPH,  "Wc3CollisionSphere");
     c.registerClassID(mdx_ids::WC3_COLLISION_BOX,  "Wc3CollisionBox");
     c.registerClassID(mdx_ids::WC3_VERTEX_MOD,     "Wc3VertexMod");
-    c.registerClassID(mdx_ids::BLIZZ_POPCORN,      "BlizzPopcorn");
-    c.registerClassID(mdx_ids::BLIZZ_FACEFX,       "BlizzFaceFX");
+    c.registerClassID(mdx_ids::WC3_POPCORN,        "Wc3Popcorn");
+    c.registerClassID(mdx_ids::WC3_FACEFX,         "Wc3FaceFX");
     c.registerClassID(mdx_ids::WC3_PARTICLES1,     "Wc3Particles1");
     c.registerClassID(mdx_ids::WC3_PARTICLES2,     "Wc3Particles2");
     c.registerClassID(mdx_ids::WC3_RIBBON,         "Wc3Ribbon");

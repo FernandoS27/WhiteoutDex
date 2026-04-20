@@ -20,7 +20,7 @@
         <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2018" SeriesMax="2027" />
         <ComponentEntry ModuleName="./pre_startup_scripts/WhiteoutDexGlobals.ms" />
         <ComponentEntry ModuleName="./pre_startup_scripts/WhiteoutDexLocalization.ms" />
-        <ComponentEntry ModuleName="./pre_startup_scripts/WhiteoutDexNativeHelper.ms" />
+        <ComponentEntry ModuleName="./pre_startup_scripts/WhiteoutDexTextureBrowserHelper.ms" />
         <ComponentEntry ModuleName="./pre_startup_scripts/WhiteoutDexUtility.ms" />
     </Components>
 

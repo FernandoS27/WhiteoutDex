@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableDelayedExpansion
-title WhiteoutDexNative - Build
+title WhiteoutDexTextureBrowser - Build
 
 set "PROJECT_DIR=%~dp0"
 set "PROJECT_DIR=%PROJECT_DIR:~0,-1%"
@@ -9,7 +9,7 @@ set "WHITEOUTDEX_DIR=%APPDATA%\Autodesk\ApplicationPlugins\WhiteoutDex\native pl
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 echo ============================================================
-echo  WhiteoutDexNative - Build
+echo  WhiteoutDexTextureBrowser - Build
 echo  Project: %PROJECT_DIR%
 echo ============================================================
 echo.
@@ -98,13 +98,13 @@ REM ============================================================
 REM  Step 3: Managed DLL for Max 2022-2025 (.NET Framework 4.8)
 REM ============================================================
 echo ============================================================
-echo  [3/4] WhiteoutDexNative.dll for Max 2016-2025
+echo  [3/4] WhiteoutDexTextureBrowser.dll for Max 2016-2025
 echo        (.NET Framework 4.8, /clr)
 echo ============================================================
 
 mkdir "%OUTPUT_DIR%\Max2016-2025" >nul 2>&1
 
-"%MSBUILD%" wrapper\WhiteoutDexNative_fw48.vcxproj ^
+"%MSBUILD%" wrapper\WhiteoutDexTextureBrowser_fw48.vcxproj ^
     /p:Configuration=Release ^
     /p:Platform=x64 ^
     /p:PlatformToolset=%PLATFORM_TOOLSET% ^
@@ -125,7 +125,7 @@ if errorlevel 1 (
     REM Install to WhiteoutDex native plugins for each applicable version
     for %%V in (2016 2017 2018 2019 2020 2021 2022 2023 2024 2025) do (
         if not exist "%WHITEOUTDEX_DIR%\Max%%V" mkdir "%WHITEOUTDEX_DIR%\Max%%V"
-        copy /Y "%OUTPUT_DIR%\Max2016-2025\WhiteoutDexNative.dll" "%WHITEOUTDEX_DIR%\Max%%V\WhiteoutDexNative.dll" >nul
+        copy /Y "%OUTPUT_DIR%\Max2016-2025\WhiteoutDexTextureBrowser.dll" "%WHITEOUTDEX_DIR%\Max%%V\WhiteoutDexTextureBrowser.dll" >nul
     )
     echo  Installed to WhiteoutDex native plugins (Max 2016-2025)
 )
@@ -134,7 +134,7 @@ REM ============================================================
 REM  Step 4: Managed DLL for Max 2026+ (.NET 8)
 REM ============================================================
 echo ============================================================
-echo  [4/4] WhiteoutDexNative.dll for Max 2026-2027
+echo  [4/4] WhiteoutDexTextureBrowser.dll for Max 2026-2027
 echo        (.NET 8.0, /clr:netcore)
 echo ============================================================
 
@@ -143,7 +143,7 @@ mkdir "%OUTPUT_DIR%\Max2026-2027" >nul 2>&1
 
 REM NuGet Restore
 if exist "%ProgramFiles%\dotnet\dotnet.exe" (
-    dotnet restore wrapper\WhiteoutDexNative_net8.vcxproj
+    dotnet restore wrapper\WhiteoutDexTextureBrowser_net8.vcxproj
 ) else (
     echo WARNING: dotnet CLI not found, NuGet packages may not resolve.
     echo Install .NET 8 SDK from https://dotnet.microsoft.com
@@ -163,7 +163,7 @@ if not defined MSBuildSDKsPath (
 
 echo  .NET SDK Sdks: %MSBuildSDKsPath%
 
-"%MSBUILD%" wrapper\WhiteoutDexNative_net8.vcxproj ^
+"%MSBUILD%" wrapper\WhiteoutDexTextureBrowser_net8.vcxproj ^
     /p:Configuration=Release ^
     /p:Platform=x64 ^
     /p:PlatformToolset=%PLATFORM_TOOLSET% ^
@@ -187,7 +187,7 @@ if errorlevel 1 (
     REM Install to WhiteoutDex native plugins for each applicable version
     for %%V in (2026 2027) do (
         if not exist "%WHITEOUTDEX_DIR%\Max%%V" mkdir "%WHITEOUTDEX_DIR%\Max%%V"
-        copy /Y "%OUTPUT_DIR%\Max2026-2027\WhiteoutDexNative.dll" "%WHITEOUTDEX_DIR%\Max%%V\WhiteoutDexNative.dll" >nul
+        copy /Y "%OUTPUT_DIR%\Max2026-2027\WhiteoutDexTextureBrowser.dll" "%WHITEOUTDEX_DIR%\Max%%V\WhiteoutDexTextureBrowser.dll" >nul
     )
     echo  Installed to WhiteoutDex native plugins (Max 2026-2027)
 )
@@ -203,14 +203,14 @@ echo  Summary
 echo ============================================================
 echo.
 
-if exist "%OUTPUT_DIR%\Max2016-2025\WhiteoutDexNative.dll" (
-    echo  Max 2016-2025:  OK  -^> output\Max2016-2025\WhiteoutDexNative.dll
+if exist "%OUTPUT_DIR%\Max2016-2025\WhiteoutDexTextureBrowser.dll" (
+    echo  Max 2016-2025:  OK  -^> output\Max2016-2025\WhiteoutDexTextureBrowser.dll
 ) else (
     echo  Max 2016-2025:  MISSING
 )
 
-if exist "%OUTPUT_DIR%\Max2026-2027\WhiteoutDexNative.dll" (
-    echo  Max 2026-2027:  OK  -^> output\Max2026-2027\WhiteoutDexNative.dll
+if exist "%OUTPUT_DIR%\Max2026-2027\WhiteoutDexTextureBrowser.dll" (
+    echo  Max 2026-2027:  OK  -^> output\Max2026-2027\WhiteoutDexTextureBrowser.dll
 ) else (
     echo  Max 2026-2027:  MISSING
 )

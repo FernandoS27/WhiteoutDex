@@ -168,7 +168,7 @@ struct WdxCellShadeOps
     fn resolveTexture texPath =
     (
         if doesFileExist texPath do return texPath
-        local ndx = ::WhiteoutDexNativeDLL
+        local ndx = ::WhiteoutDexTextureBrowserDLL
         if ndx == undefined do return undefined
         ensureArchivesReady()
         local tempDir = (getDir #temp) + "\\CellShade\\"

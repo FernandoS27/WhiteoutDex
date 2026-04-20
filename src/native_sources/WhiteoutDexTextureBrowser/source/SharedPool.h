@@ -4,7 +4,7 @@
 
 /**
  * @file SharedPool.h
- * @brief Single global thread pool shared across all WhiteoutDexNative modules.
+ * @brief Single global thread pool shared across all WhiteoutDexTextureBrowser modules.
  *
  * IMPROVEMENT: Replaces three separate pools (g_mpqPool, g_cascPool, g_pool)
  * that each created hardware_concurrency() threads.  On an 8-core machine

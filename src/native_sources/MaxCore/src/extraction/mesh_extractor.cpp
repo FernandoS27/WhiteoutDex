@@ -42,10 +42,50 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
         result.name.assign(wname.begin(), wname.end());
     }
 
+    // LOD round-trip (v1000+ only, safe no-op on v800):
+    // Read UserProps written by the importer. Defaults (0 / empty string) are
+    // the correct values for newly-created meshes and for v800 round-trips.
+    // Matches the NeoDex behavior (writes lod=0) but additionally preserves
+    // non-zero LOD levels that our importer persisted.
+    {
+        int lodLevel = 0;
+        BOOL hasLodLevel = node->GetUserPropInt(_T("Wc3GeosetLod"), lodLevel);
+        result.lod = lodLevel;
+
+        MSTR lodNameStr;
+        BOOL hasLodName = node->GetUserPropString(_T("Wc3LodName"), lodNameStr);
+        if (hasLodName) {
+            // MSTR -> std::string (ASCII-safe for lodName labels like "head")
+            std::wstring w(lodNameStr.data());
+            result.lodName.assign(w.begin(), w.end());
+        }
+
+        // DEDICATED LOD DEBUG LOG — writes to %TEMP%\mdlx_lod_debug.log so we
+        // can trace exactly which UserProps were found on each mesh.
+        {
+            char tempPath[MAX_PATH];
+            GetTempPathA(MAX_PATH, tempPath);
+            std::string lodLogPath = std::string(tempPath) + "mdlx_lod_debug.log";
+            std::ofstream lodLog(lodLogPath, std::ios::app);
+            if (lodLog.is_open()) {
+                char meshName[256] = {};
+                if (nodeName) WideCharToMultiByte(CP_UTF8, 0, nodeName, -1, meshName, 255, nullptr, nullptr);
+                lodLog << "[MESH EXTRACT] '" << meshName << "'"
+                       << " nodeIdx=" << nodeIndex
+                       << " hasLodProp=" << (hasLodLevel ? "yes" : "NO")
+                       << " hasLodNameProp=" << (hasLodName ? "yes" : "NO")
+                       << " lod=" << result.lod
+                       << " lodName='" << result.lodName << "'"
+                       << "\n";
+            }
+        }
+    }
+
     // Debug: log mesh info
     char nameBuf[256] = {};
     if (nodeName) WideCharToMultiByte(CP_UTF8, 0, nodeName, -1, nameBuf, 255, nullptr, nullptr);
     MLOG << "\n=== MESH '" << nameBuf << "' nodeIdx=" << nodeIndex << " ===\n";
+    MLOG << "  LOD=" << result.lod << " lodName='" << result.lodName << "'\n";
 
     // Log transforms
     {

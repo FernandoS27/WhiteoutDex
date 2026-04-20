@@ -8,15 +8,15 @@ namespace mdx_ids {
     // Scripted plugins
     inline const Class_ID WC3_MATERIAL       (0x4b8e20a3, 0x1f6c3d57);
     inline const Class_ID WC3_BITMAP         (0x3a7c10f1, 0x5e2d4b08);
-    inline const Class_ID WC3_ATTACH_POINT   (0x1136ac20, 0x6f9cfeb7);
-    inline const Class_ID WC3_LIGHT          (0x456E2573, 0x2A456757);
-    inline const Class_ID WC3_EVENT_V2021    (0x189dc89e, 0x2e9f652d);
-    inline const Class_ID WC3_EVENT_V2020    (0x956e6a9b, 0x87f39a9e);
-    inline const Class_ID WC3_COLLISION_SPH  (0x0b945647, 0x61c1bb70);
-    inline const Class_ID WC3_COLLISION_BOX  (0x51e76dc0, 0x471f81a5);
-    inline const Class_ID WC3_VERTEX_MOD     (0x234d68a2, 0x7204a141);
-    inline const Class_ID BLIZZ_POPCORN      (0x6a17b48c, 0x291672fe);
-    inline const Class_ID BLIZZ_FACEFX       (0x1f2f6643, 0x253d2ca1);
+    inline const Class_ID WC3_ATTACH_POINT   (0x7A1B2C01, 0x3D4E5F01);
+    inline const Class_ID WC3_LIGHT          (0x7A1B2C04, 0x3D4E5F04);
+    inline const Class_ID WC3_EVENT_V2021    (0x7A1B2C05, 0x3D4E5F05);
+    inline const Class_ID WC3_EVENT_V2020    (0x7A1B2C06, 0x3D4E5F06);
+    inline const Class_ID WC3_COLLISION_SPH  (0x7A1B2C02, 0x3D4E5F02);
+    inline const Class_ID WC3_COLLISION_BOX  (0x7A1B2C03, 0x3D4E5F03);
+    inline const Class_ID WC3_VERTEX_MOD     (0x7A1B2C07, 0x3D4E5F07);
+    inline const Class_ID BLIZZ_POPCORN      (0x7A1B2C09, 0x3D4E5F09);
+    inline const Class_ID BLIZZ_FACEFX       (0x7A1B2C08, 0x3D4E5F08);
 
     // Native C++ plugins
     inline const Class_ID WC3_PARTICLES1     (0x12E4F5A6, 0x3B7C8D9E);
