@@ -1169,6 +1169,8 @@ void RenderService::ActivateCameraPreset(int idx) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     if (idx < 0 || idx >= (int)cameraPresets_.size()) {
         camera_.SetOrbitalMode();
+        camera_.SetFovDiagonal(Camera::kDefaultFovDiagonal);
+        camera_.SetClip(Camera::kDefaultNearZ, Camera::kDefaultFarZ);
         activeCameraPresetIdx_ = -1;
         return;
     }
@@ -1703,8 +1705,7 @@ bool RenderService::RenderParticlesBls() {
     frame.world      = Matrix44f::identity();
     frame.view       = viewMat;
     const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    frame.projection = Matrix44f::perspective_fov_rh(
-        std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
+    frame.projection = camera_.ProjectionRH(aspect);
     frame.effectTime = animationTimeMs_.load() * 0.001f;
     frame.numLights  = 0;  // particles are unlit via MatParams.disables bit 0
     frame.viewportRect = { (float)width_, (float)height_, 0.0f, 0.0f };
@@ -1845,7 +1846,7 @@ void RenderService::RenderParticles() {
             CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
             cb->world      = Matrix44f::identity().transpose();
             const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-            Matrix44f proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
+            Matrix44f proj = camera_.ProjectionRH(aspect);
             cb->view       = viewMat.transpose();
             cb->projection = proj.transpose();
             Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
@@ -1964,7 +1965,7 @@ void RenderService::RenderRibbons() {
             CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
             cb->world      = Matrix44f::identity().transpose();
             float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-            Matrix44f proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
+            Matrix44f proj = camera_.ProjectionRH(aspect);
             cb->view       = viewMat.transpose();
             cb->projection = proj.transpose();
             Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
@@ -2180,7 +2181,7 @@ void RenderService::RenderCollisions() {
             cb->world = Matrix44f::identity().transpose();
             float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
             cb->view = viewMat.transpose();
-            cb->projection = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f).transpose();
+            cb->projection = camera_.ProjectionRH(aspect).transpose();
             cb->lightDir = {0,0,0,0};
             cb->lightColor = kCollisionLightColor;
             cb->ambientColor = kCollisionAmbientColor;
@@ -2308,8 +2309,7 @@ void RenderService::RenderLightMarkers() {
         cb->world       = Matrix44f::identity().transpose();
         float aspect    = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
         cb->view        = viewMat.transpose();
-        cb->projection  = Matrix44f::perspective_fov_rh(
-            std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f).transpose();
+        cb->projection  = camera_.ProjectionRH(aspect).transpose();
         cb->lightDir     = {0,0,0,0};
         cb->lightColor   = {1,1,1,1};
         cb->ambientColor = {1,1,1,0};
@@ -2880,7 +2880,7 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
         view = camera_.GetViewMatrix();
     }
     float aspect = (target.height > 0) ? (float)target.width / (float)target.height : 1.0f;
-    proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
+    proj = camera_.ProjectionRH(aspect);
 
     // Update constant buffer (via GFX MapBuffer)
     {
@@ -2968,8 +2968,7 @@ bool RenderService::RenderGeosetsBls() {
     Matrix44f view2;
     { std::lock_guard<std::mutex> lock(dataMutex_); view2 = camera_.GetViewMatrix(); }
     const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    const Matrix44f proj = Matrix44f::perspective_fov_rh(
-        std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
+    const Matrix44f proj = camera_.ProjectionRH(aspect);
 
     bls::FrameInputs frame;
     frame.view       = view2;
@@ -3676,7 +3675,7 @@ void RenderService::RenderGeosets() {
     Matrix44f view2;
     { std::lock_guard<std::mutex> lock(dataMutex_); view2 = camera_.GetViewMatrix(); }
     float aspect2 = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    Matrix44f proj2 = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect2, 1.0f, 10000.0f);
+    Matrix44f proj2 = camera_.ProjectionRH(aspect2);
 
     for (auto& ref : refs) {
         auto* mi = ref.mi;
@@ -4037,7 +4036,7 @@ void RenderService::RenderViewCube() {
         view = camera_.GetViewMatrix();
     }
     float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    proj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, aspect, 1.0f, 10000.0f);
+    proj = camera_.ProjectionRH(aspect);
     {
         CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
         cb->world      = Matrix44f::identity().transpose();
