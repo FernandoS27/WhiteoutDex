@@ -1,8 +1,10 @@
 #include "render_service_internal.h"
 #include "render_service.h"  // RenderService::GetRenderOrder / GeosetPassesLod
 #include "constants.h"
+#include "bls/bls_frame.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace WhiteoutDex::render_detail {
 
@@ -64,6 +66,44 @@ void BindLayerAlbedo(gfx::IGFXCommandList*    cmd,
     }
     if (!hasTex) cmd->BindShaderResource(gfx::ShaderStage::Pixel, slot, defaultTex);
     cmd->BindSampler(gfx::ShaderStage::Pixel, slot, samplerWrap[wrapFlags]);
+}
+
+void WriteCbPerFrame(gfx::IGFXDevice*      gfx,
+                     gfx::BufferHandle     cb,
+                     const CbPerFrameDesc& d) {
+    if (!gfx || cb == gfx::BufferHandle::Invalid) return;
+    auto* p = static_cast<CBPerFrame*>(gfx->MapBuffer(cb));
+    if (!p) return;
+    p->world         = d.world.transpose();
+    p->view          = d.view.transpose();
+    p->projection    = d.projection.transpose();
+    p->lightDir      = d.lightDir;
+    p->lightColor    = d.lightColor;
+    p->ambientColor  = d.ambientColor;
+    p->extraParams   = d.extraParams;
+    p->texAnimParams = d.texAnimParams;
+    p->materialFlags = d.materialFlags;
+    gfx->UnmapBuffer(cb);
+}
+
+Vector4f NormalizedLightDir4(const Vector4f& dir) {
+    const float n = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (n <= 1e-6f) return {0.0f, 0.0f, 0.0f, 0.0f};
+    return {dir.x / n, dir.y / n, dir.z / n, 0.0f};
+}
+
+void ApplyTexAnimPaletteToFrame(bls::FrameInputs&    frame,
+                                const ModelInstance& mi,
+                                int                  textureAnimationId) {
+    if (textureAnimationId >= 0 &&
+        textureAnimationId < static_cast<int>(mi.texAnimPalette.size())) {
+        const auto& e = mi.texAnimPalette[textureAnimationId];
+        frame.texMtx0.rows[0] = { e.row0[0], e.row0[1], e.row0[2], e.row0[3] };
+        frame.texMtx0.rows[1] = { e.row1[0], e.row1[1], e.row1[2], e.row1[3] };
+    } else {
+        frame.texMtx0 = bls::IdentityTexMtx();
+    }
+    frame.texMtx1 = bls::IdentityTexMtx();
 }
 
 UnpackedLayer UnpackLayer(const GPUMaterial* mat, int layerIndex) {

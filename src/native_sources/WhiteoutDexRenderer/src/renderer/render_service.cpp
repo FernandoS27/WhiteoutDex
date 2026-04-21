@@ -4,7 +4,8 @@
 
 #include "render_service.h"
 #include "render_service_internal.h"
-#include "geoset_pass.h"
+#include "render_pass.h"
+#include "debug/debug_renderer.h"
 #include "constants.h"
 #include "compiled_shaders.h"
 #include "team_glow_data.h"
@@ -54,11 +55,19 @@ namespace WhiteoutDex {
 // Constructor / Destructor
 // ============================================================================
 
-RenderService::RenderService() {
+RenderService::RenderService()
+    : debug_(std::make_unique<DebugRenderer>(*this)) {
     activeContentProvider_ = &contentProvider_;
     StartTemplateLoader();
 }
 RenderService::~RenderService() { StopTemplateLoader(); }
+
+// ViewCube input queries forward to the DebugRenderer, which owns the cube
+// geometry + hover state. Kept out-of-line so the header doesn't need the
+// full DebugRenderer definition.
+int  RenderService::HitTestViewCube(int mx, int my)      { return debug_->HitTestViewCube(mx, my); }
+Rect RenderService::GetViewCubeRect() const              { return debug_->GetViewCubeRect(); }
+void RenderService::SetViewCubeHovered(bool hovered)     { debug_->SetViewCubeHovered(hovered); }
 
 void RenderService::SetCamera(float pitch, float yaw, float distance,
                          float tx, float ty, float tz) {
@@ -1838,43 +1847,32 @@ void RenderService::RenderParticles() {
 
         {
             const float alphaRef = (legacyFilter == FILTER_TRANSPARENT) ? 0.75f : 0.0f;
-            CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
-            cb->world      = Matrix44f::identity().transpose();
             const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-            Matrix44f proj = camera_.ProjectionRH(aspect);
-            cb->view       = viewMat.transpose();
-            cb->projection = proj.transpose();
-            Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
-            cb->lightDir      = {ldN.x, ldN.y, ldN.z, 0.0f};
-            cb->lightColor    = kParticleLightColor;
-            cb->ambientColor  = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
-            cb->extraParams   = {1.0f, 1.0f, 1.0f, 1.0f};
-            cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
-            cb->materialFlags = {dl.material.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
-            gfx_->UnmapBuffer(cbPerFrame_);
+            render_detail::CbPerFrameDesc d;
+            d.view         = viewMat;
+            d.projection   = camera_.ProjectionRH(aspect);
+            d.lightDir     = render_detail::NormalizedLightDir4(kDefaultLightDir);
+            d.lightColor   = kParticleLightColor;
+            d.ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
+            d.materialFlags = {dl.material.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
+            render_detail::WriteCbPerFrame(gfx_.get(), cbPerFrame_, d);
         }
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
 
-        // Texture lookup — textures are per-ModelInstance.
-        uint32_t wrapFlags  = kWrapFlagsMask;
-        bool     hasModelTex = false;
+        // Texture lookup — textures are per-ModelInstance; the owner lookup
+        // needs the data mutex, but the shader-resource bind that follows
+        // is safe to issue under the lock since it's immediate-context.
         {
             std::lock_guard<std::mutex> lock(dataMutex_);
-            ModelInstance* owner = getModel(dl.model);
-            if (owner && dl.material.textureId >= 0) {
-                auto it = owner->gpuTextures.find(dl.material.textureId);
-                if (it != owner->gpuTextures.end() && it->second.tex != gfx::TextureHandle::Invalid) {
-                    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, it->second.tex);
-                    wrapFlags  = it->second.wrapFlags & kWrapFlagsMask;
-                    hasModelTex = true;
-                }
+            if (ModelInstance* owner = getModel(dl.model)) {
+                render_detail::BindLayerAlbedo(cmd, *owner, dl.material.textureId,
+                                               defaultTex_, samplerWrap_);
+            } else {
+                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
+                cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[kWrapFlagsMask]);
             }
         }
-        if (!hasModelTex) {
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
-        }
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[wrapFlags]);
 
         cmd->Draw(dl.vertexCount, drawOffset);
         drawOffset += dl.vertexCount;
@@ -1957,39 +1955,22 @@ void RenderService::RenderRibbons() {
 
         {
             float alphaRef = (cfg.filterMode == FILTER_TRANSPARENT) ? 0.75f : 0.0f;
-            CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
-            cb->world      = Matrix44f::identity().transpose();
             float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-            Matrix44f proj = camera_.ProjectionRH(aspect);
-            cb->view       = viewMat.transpose();
-            cb->projection = proj.transpose();
-            Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
-            cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
-            cb->lightColor   = kParticleLightColor;
-            cb->ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
-            cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
-            cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
-            cb->materialFlags = {cfg.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
-            gfx_->UnmapBuffer(cbPerFrame_);
+            render_detail::CbPerFrameDesc d;
+            d.view         = viewMat;
+            d.projection   = camera_.ProjectionRH(aspect);
+            d.lightDir     = render_detail::NormalizedLightDir4(kDefaultLightDir);
+            d.lightColor   = kParticleLightColor;
+            d.ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
+            d.materialFlags = {cfg.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
+            render_detail::WriteCbPerFrame(gfx_.get(), cbPerFrame_, d);
         }
 
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
 
-        // Bind texture
-        uint32_t wrapFlags = kWrapFlagsMask;
-        bool hasModelTex = false;
-        if (cfg.textureId >= 0 && mi->gpuTextures.count(cfg.textureId)) {
-            auto& gt = mi->gpuTextures[cfg.textureId];
-            if (gt.tex != gfx::TextureHandle::Invalid) {
-                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, gt.tex);
-                wrapFlags = gt.wrapFlags & kWrapFlagsMask;
-                hasModelTex = true;
-            }
-        }
-        if (!hasModelTex)
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[wrapFlags]);
+        render_detail::BindLayerAlbedo(cmd, *mi, cfg.textureId,
+                                       defaultTex_, samplerWrap_);
 
         cmd->Draw(count, drawOffset);
         drawOffset += count;
@@ -2034,289 +2015,6 @@ int RenderService::ComputeSelectedLod() const {
     do { --selectedLOD; }
     while (selectedLOD > 0 && deviation <= kDeviations[selectedLOD]);
     return std::clamp(selectedLOD, 0, 3);
-}
-
-// ============================================================================
-// Collision Shape Wireframe Rendering
-// ============================================================================
-
-void RenderService::RenderCollisions() {
-    std::vector<CollisionShape> shapes;
-    Matrix44f viewMat;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        for (auto& [h, mi] : models_) {
-            if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
-            shapes.insert(shapes.end(), mi->collisionShapes.begin(), mi->collisionShapes.end());
-        }
-        if (shapes.empty()) return;
-        viewMat = camera_.GetViewMatrix();
-    }
-
-    auto* cmd = gfx_->GetImmediateContext();
-    cmd->BindPipeline(linePSO_);
-
-    // Line color: green for collision shapes
-    Vector4f col = {0.0f, 1.0f, 0.3f, 1.0f};
-
-    for (auto& cs : shapes) {
-        // Build line vertices in local space, then transform
-        struct LV { Vector3f pos; Vector4f col; };
-        std::vector<LV> lines;
-
-        // Previewd COLLIDE_TYPE (from IDA RE of MDL::ReadBinCollisions
-        // @0x1407810f0 / AddCollisionGeometryGeoset @0x1403155b0):
-        //   0 = Box (2 vec3 extents), 1 = Cylinder (2 vec3 endpoints + radius),
-        //   2 = Sphere (vec3 center + radius), 3 = Plane (2 floats width/height).
-        // WhiteoutLib stores the raw u32 in cs.type — labels in its enum
-        // are mis-named but the numeric values match the file.
-        // Previewd geoset layout: corners stored at `pivot + extent` in bind-pose
-        // world space; the bone matrix is a skinning delta (identity at bind).
-        // Reproduce that by adding pivot here before applying cs.transform.
-        const Vector3f& piv = cs.pivot;
-        auto pushLine = [&](const Vector3f& a, const Vector3f& b) {
-            Vector3f ap = {a.x + piv.x, a.y + piv.y, a.z + piv.z};
-            Vector3f bp = {b.x + piv.x, b.y + piv.y, b.z + piv.z};
-            Vector3f pa = whiteout::transform_point(ap, cs.transform);
-            Vector3f pb = whiteout::transform_point(bp, cs.transform);
-            lines.push_back({pa, col});
-            lines.push_back({pb, col});
-        };
-        auto emitCircle = [&](const Vector3f& c, float r, int axis) {
-            const int segs = 24;
-            for (int i = 0; i < segs; i++) {
-                float a0 = (float)i / segs * 6.28318530f;
-                float a1 = (float)(i+1) / segs * 6.28318530f;
-                float c0 = r * cosf(a0), s0 = r * sinf(a0);
-                float c1 = r * cosf(a1), s1 = r * sinf(a1);
-                Vector3f p0, p1;
-                if (axis == 2)      { p0 = {c.x+c0, c.y+s0, c.z}; p1 = {c.x+c1, c.y+s1, c.z}; }
-                else if (axis == 1) { p0 = {c.x+c0, c.y, c.z+s0}; p1 = {c.x+c1, c.y, c.z+s1}; }
-                else                { p0 = {c.x, c.y+c0, c.z+s0}; p1 = {c.x, c.y+c1, c.z+s1}; }
-                pushLine(p0, p1);
-            }
-        };
-
-        if (cs.type == 0) {
-            // Box: 12 edges between (vmin, vmax)
-            Vector3f mn = cs.vmin, mx = cs.vmax;
-            Vector3f corners[8] = {
-                {mn.x,mn.y,mn.z}, {mx.x,mn.y,mn.z}, {mx.x,mx.y,mn.z}, {mn.x,mx.y,mn.z},
-                {mn.x,mn.y,mx.z}, {mx.x,mn.y,mx.z}, {mx.x,mx.y,mx.z}, {mn.x,mx.y,mx.z}
-            };
-            int edges[24] = {0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,5, 2,6, 3,7};
-            for (int i = 0; i < 24; i += 2)
-                pushLine(corners[edges[i]], corners[edges[i+1]]);
-        } else if (cs.type == 2) {
-            // Sphere: center = vertices[0] (stored in vmin), radius
-            emitCircle(cs.vmin, cs.radius, 0);
-            emitCircle(cs.vmin, cs.radius, 1);
-            emitCircle(cs.vmin, cs.radius, 2);
-        } else if (cs.type == 1) {
-            // Cylinder: two endpoints (vmin, vmax) with radius.
-            // Draw end caps + 4 connecting lines along the axis.
-            Vector3f axisVec = { cs.vmax.x - cs.vmin.x, cs.vmax.y - cs.vmin.y, cs.vmax.z - cs.vmin.z };
-            float axisLen = std::sqrt(axisVec.x*axisVec.x + axisVec.y*axisVec.y + axisVec.z*axisVec.z);
-            Vector3f axis = (axisLen > 1e-5f)
-                ? Vector3f{axisVec.x/axisLen, axisVec.y/axisLen, axisVec.z/axisLen}
-                : Vector3f{0, 0, 1};
-            Vector3f tmp = (std::abs(axis.z) < 0.9f) ? Vector3f{0,0,1} : Vector3f{1,0,0};
-            Vector3f u = {
-                axis.y*tmp.z - axis.z*tmp.y,
-                axis.z*tmp.x - axis.x*tmp.z,
-                axis.x*tmp.y - axis.y*tmp.x };
-            float uLen = std::sqrt(u.x*u.x + u.y*u.y + u.z*u.z);
-            if (uLen > 1e-5f) { u.x/=uLen; u.y/=uLen; u.z/=uLen; }
-            Vector3f v = {
-                axis.y*u.z - axis.z*u.y,
-                axis.z*u.x - axis.x*u.z,
-                axis.x*u.y - axis.y*u.x };
-            const int segs = 24;
-            auto ringPt = [&](const Vector3f& c, float a) {
-                float cs_ = cs.radius * cosf(a), sn_ = cs.radius * sinf(a);
-                return Vector3f{ c.x + u.x*cs_ + v.x*sn_,
-                                 c.y + u.y*cs_ + v.y*sn_,
-                                 c.z + u.z*cs_ + v.z*sn_ };
-            };
-            for (int i = 0; i < segs; i++) {
-                float a0 = (float)i / segs * 6.28318530f;
-                float a1 = (float)(i+1) / segs * 6.28318530f;
-                pushLine(ringPt(cs.vmin, a0), ringPt(cs.vmin, a1));
-                pushLine(ringPt(cs.vmax, a0), ringPt(cs.vmax, a1));
-            }
-            for (int i = 0; i < 4; i++) {
-                float a = (float)i / 4 * 6.28318530f;
-                pushLine(ringPt(cs.vmin, a), ringPt(cs.vmax, a));
-            }
-        } else if (cs.type == 3) {
-            // Plane: vmin.x / vmin.y = half-extents in local XY around pivot.
-            float hw = cs.vmin.x, hh = cs.vmin.y;
-            Vector3f p0 = {-hw, -hh, 0}, p1 = {hw, -hh, 0};
-            Vector3f p2 = {hw, hh, 0},   p3 = {-hw, hh, 0};
-            pushLine(p0, p1); pushLine(p1, p2); pushLine(p2, p3); pushLine(p3, p0);
-        }
-
-        if (lines.empty()) continue;
-
-        // Upload to a temp dynamic buffer
-        gfx::BufferDesc bd;
-        bd.size  = (uint32_t)(sizeof(LV) * lines.size());
-        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-        gfx::BufferHandle tempVB = gfx_->CreateBuffer(bd);
-        if (tempVB == gfx::BufferHandle::Invalid) continue;
-
-        void* mapped = gfx_->MapBuffer(tempVB);
-        if (!mapped) { gfx_->Destroy(tempVB); continue; }
-        memcpy(mapped, lines.data(), sizeof(LV) * lines.size());
-        gfx_->UnmapBuffer(tempVB);
-
-        // Update CB with identity world
-        {
-            CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
-            cb->world = Matrix44f::identity().transpose();
-            float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-            cb->view = viewMat.transpose();
-            cb->projection = camera_.ProjectionRH(aspect).transpose();
-            cb->lightDir = {0,0,0,0};
-            cb->lightColor = kCollisionLightColor;
-            cb->ambientColor = kCollisionAmbientColor;
-            cb->extraParams = {1,1,1,1};
-            cb->texAnimParams = {0,0,1,1};
-            cb->materialFlags = {0,0,0,0};
-            gfx_->UnmapBuffer(cbPerFrame_);
-        }
-
-        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
-
-        cmd->BindVertexBuffer(0, tempVB, sizeof(LV));
-        cmd->Draw((uint32_t)lines.size(), 0);
-        gfx_->Destroy(tempVB);
-    }
-}
-
-// ============================================================================
-// Light markers (debug: one wireframe sphere per evaluated light)
-// ============================================================================
-//
-// Shows where `FrameState::LightState` ends up in world space AFTER the
-// adapter's node-world resolution. We draw the EXACT `L.worldPos` (omni)
-// or a short ray from origin along `-L.worldDir` (directional), tinted by
-// the light's own diffuse colour so markers line up with the shading
-// each light produces in-scene.
-void RenderService::RenderLightMarkers() {
-    struct MarkerLight {
-        Vector3f worldPos;
-        Vector3f worldDir;
-        Vector3f diffuse;
-        bool     isDirectional;
-        bool     enabled;
-    };
-    std::vector<MarkerLight> lights;
-    int totalAuthored = 0;
-    Matrix44f viewMat;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        for (auto& [h, mi] : models_) {
-            if (mi->parentVisibility <= 0.02f) continue;
-            totalAuthored += (int)mi->activeLights.size();
-            for (const auto& L : mi->activeLights) {
-                const bool dir = (L.kind == FrameState::LightKind::Directional);
-                lights.push_back({
-                    dir ? whiteout::transform_point(Vector3f{0,0,0}, mi->worldTransform)
-                        : L.worldPos,
-                    L.worldDir,
-                    L.diffuse,
-                    dir,
-                    L.enabled
-                });
-            }
-        }
-        if (lights.empty()) return;
-        viewMat = camera_.GetViewMatrix();
-    }
-
-    auto* cmd = gfx_->GetImmediateContext();
-    cmd->BindPipeline(linePSO_);
-
-    struct LV { Vector3f pos; Vector4f col; };
-    std::vector<LV> verts;
-    verts.reserve(lights.size() * 3 * 24 * 2 + lights.size() * 2);
-
-    const float kMarkerRadius = 20.0f;  // world units -- tuned for typical WC3 scale
-    const int   kSegs         = 24;
-    for (const auto& m : lights) {
-        // Enabled lights: bright + tinted by their diffuse (so each marker
-        // matches the colour it should cast). Disabled (KLAV-gated) lights:
-        // dim gray so you can still see they exist and where, but can't
-        // confuse them with a contributing light.
-        Vector4f col = m.enabled
-            ? Vector4f{ std::max(m.diffuse.x, 0.2f),
-                        std::max(m.diffuse.y, 0.2f),
-                        std::max(m.diffuse.z, 0.2f),
-                        1.0f }
-            : Vector4f{ 0.25f, 0.25f, 0.25f, 1.0f };
-
-        // 3 great circles around the light centre -- instantly readable as a sphere.
-        const Vector3f c = m.worldPos;
-        for (int plane = 0; plane < 3; ++plane) {
-            for (int i = 0; i < kSegs; ++i) {
-                float a0 = (float)i       / kSegs * 6.28318530f;
-                float a1 = (float)(i + 1) / kSegs * 6.28318530f;
-                float c0 = kMarkerRadius * std::cos(a0), s0 = kMarkerRadius * std::sin(a0);
-                float c1 = kMarkerRadius * std::cos(a1), s1 = kMarkerRadius * std::sin(a1);
-                Vector3f p0, p1;
-                if      (plane == 0) { p0 = {c.x + c0, c.y + s0, c.z      }; p1 = {c.x + c1, c.y + s1, c.z      }; }
-                else if (plane == 1) { p0 = {c.x + c0, c.y,      c.z + s0 }; p1 = {c.x + c1, c.y,      c.z + s1 }; }
-                else                 { p0 = {c.x,      c.y + c0, c.z + s0 }; p1 = {c.x,      c.y + c1, c.z + s1 }; }
-                verts.push_back({p0, col});
-                verts.push_back({p1, col});
-            }
-        }
-
-        // Directional: add a ray from the centre along -worldDir (i.e. toward the
-        // source), length = 4x the marker radius, so you can read its orientation.
-        if (m.isDirectional) {
-            Vector3f d = m.worldDir;
-            float    n = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
-            if (n > 1e-6f) { d = { d.x/n, d.y/n, d.z/n }; } else { d = {0,0,1}; }
-            const float L = kMarkerRadius * 4.0f;
-            Vector3f tip = { c.x - d.x * L, c.y - d.y * L, c.z - d.z * L };
-            verts.push_back({c,   col});
-            verts.push_back({tip, col});
-        }
-    }
-
-    if (verts.empty()) return;
-
-    gfx::BufferDesc bd;
-    bd.size  = (uint32_t)(sizeof(LV) * verts.size());
-    bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-    gfx::BufferHandle tempVB = gfx_->CreateBuffer(bd);
-    if (tempVB == gfx::BufferHandle::Invalid) return;
-
-    void* mapped = gfx_->MapBuffer(tempVB);
-    if (!mapped) { gfx_->Destroy(tempVB); return; }
-    std::memcpy(mapped, verts.data(), sizeof(LV) * verts.size());
-    gfx_->UnmapBuffer(tempVB);
-
-    {
-        CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
-        cb->world       = Matrix44f::identity().transpose();
-        float aspect    = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-        cb->view        = viewMat.transpose();
-        cb->projection  = camera_.ProjectionRH(aspect).transpose();
-        cb->lightDir     = {0,0,0,0};
-        cb->lightColor   = {1,1,1,1};
-        cb->ambientColor = {1,1,1,0};
-        cb->extraParams  = {1,1,1,1};
-        cb->texAnimParams = {0,0,1,1};
-        cb->materialFlags = {0,0,0,0};
-        gfx_->UnmapBuffer(cbPerFrame_);
-    }
-    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
-    cmd->BindVertexBuffer(0, tempVB, sizeof(LV));
-    cmd->Draw((uint32_t)verts.size(), 0);
-    gfx_->Destroy(tempVB);
 }
 
 // ============================================================================
@@ -2638,11 +2336,8 @@ void RenderService::CleanupD3D() {
         gfx_->Destroy(defaultOrm_);
         gfx_->Destroy(teamColorTex_); teamColorTex_ = gfx::TextureHandle::Invalid;
 
-        // Grid + ViewCube
-        gfx_->Destroy(gridVB_);
-        gfx_->Destroy(vcCubeVB_);  gfx_->Destroy(vcCubeIB_);
-        gfx_->Destroy(vcOutlineVB_); gfx_->Destroy(vcFaceTex_);
-        gfx_->Destroy(vcHomeVB_);
+        // Grid + ViewCube (owned by DebugRenderer)
+        debug_->DestroyResources();
 
         // PE2 service VB
         gfx_->Destroy(particleServiceVB_);
@@ -2799,33 +2494,7 @@ gfx::PipelineHandle RenderService::LookupMeshPSO(int filterMode, bool twoSided,
 // ============================================================================
 
 bool RenderService::CreateDefaultResources() {
-    std::vector<LineVertex> lines;
-    const float extent = 500.0f;
-    const float step   = 50.0f;
-    Vector4f gridColor  = {0.45f, 0.45f, 0.46f, 1.0f};  // subtle, close to background
-    Vector4f axisColorX = {0.75f, 0.2f,  0.2f,  1.0f};
-    Vector4f axisColorY = {0.2f,  0.75f, 0.2f,  1.0f};
-    Vector4f axisColorZ = {0.2f,  0.2f,  0.75f, 1.0f};
-
-    for (float v = -extent; v <= extent; v += step) {
-        Vector4f c = (v == 0.0f) ? axisColorY : gridColor;
-        lines.push_back({{v, -extent, 0.0f}, c});
-        lines.push_back({{v,  extent, 0.0f}, c});
-        c = (v == 0.0f) ? axisColorX : gridColor;
-        lines.push_back({{-extent, v, 0.0f}, c});
-        lines.push_back({{ extent, v, 0.0f}, c});
-    }
-    lines.push_back({{0.0f, 0.0f, 0.0f},   axisColorZ});
-    lines.push_back({{0.0f, 0.0f, extent},  axisColorZ});
-    gridVertCount_ = (int)lines.size();
-
-    gridVB_ = gfx_->CreateBuffer({
-        .size  = sizeof(LineVertex) * lines.size(),
-        .usage = gfx::BufferUsage::Vertex,
-    }, lines.data());
-
-    CreateViewCube();
-    return true;
+    return debug_->CreateResources();
 }
 
 // ============================================================================
@@ -2879,27 +2548,22 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
 
     // Update constant buffer (via GFX MapBuffer)
     {
-        CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
-        cb->world      = Matrix44f::identity().transpose();
-        cb->view       = view.transpose();
-        cb->projection = proj.transpose();
-        Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
-        cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
-        cb->lightColor   = kGeosetLightColor;
-        cb->ambientColor = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, 0.0f};  // .a=0 no alpha test
-        cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
-        cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};     // .x=geosetAlpha (1=visible)
-        cb->materialFlags = {0.0f, 0.0f, 0.0f, 0.0f};
-        gfx_->UnmapBuffer(cbPerFrame_);
+        render_detail::CbPerFrameDesc d;
+        d.view         = view;
+        d.projection   = proj;
+        d.lightDir     = render_detail::NormalizedLightDir4(kDefaultLightDir);
+        d.lightColor   = kGeosetLightColor;
+        d.ambientColor = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, 0.0f};
+        render_detail::WriteCbPerFrame(gfx_.get(), cbPerFrame_, d);
     }
 
-    if (showGrid_) RenderGrid();
+    if (showGrid_) debug_->RenderGrid();
     RenderGeosets();
     if (showParticles_) RenderParticles();
     if (showRibbons_) RenderRibbons();
-    if (showCollisions_) RenderCollisions();
-    if (showLights_)     RenderLightMarkers();
-    RenderViewCube();
+    if (showCollisions_) debug_->RenderCollisions();
+    if (showLights_)     debug_->RenderLightMarkers();
+    debug_->RenderViewCube();
 }
 
 void RenderService::Present(RenderTargetId targetId) {
@@ -2908,14 +2572,6 @@ void RenderService::Present(RenderTargetId targetId) {
         gfx_->Present(it->second.swap);
 }
 
-void RenderService::RenderGrid() {
-    if (gridVB_ == gfx::BufferHandle::Invalid) return;
-    auto* cmd = gfx_->GetImmediateContext();
-    cmd->BindPipeline(linePSO_);
-    cmd->BindVertexBuffer(0, gridVB_, sizeof(LineVertex));
-    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
-    cmd->Draw(gridVertCount_, 0);
-}
 
 // ============================================================================
 // Geoset Rendering (4-bucket sort by FilterMode, like Magos Model::Render)
@@ -2980,16 +2636,7 @@ public:
         for (int li = 0; li < numLayers; ++li) {
             const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
 
-            // Resolve the per-layer UV matrix: palette lookup, or identity.
-            if (layer.textureAnimationId >= 0 &&
-                layer.textureAnimationId < (int)mi->texAnimPalette.size()) {
-                const auto& e = mi->texAnimPalette[layer.textureAnimationId];
-                frame.texMtx0.rows[0] = { e.row0[0], e.row0[1], e.row0[2], e.row0[3] };
-                frame.texMtx0.rows[1] = { e.row1[0], e.row1[1], e.row1[2], e.row1[3] };
-            } else {
-                frame.texMtx0 = bls::IdentityTexMtx();
-            }
-            frame.texMtx1 = bls::IdentityTexMtx();
+            render_detail::ApplyTexAnimPaletteToFrame(frame, *mi, layer.textureAnimationId);
 
             const float combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f) continue;
@@ -3171,15 +2818,7 @@ public:
         for (int li = 0; li < numLayers; ++li) {
             const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
 
-            if (layer.textureAnimationId >= 0 &&
-                layer.textureAnimationId < (int)mi->texAnimPalette.size()) {
-                const auto& e = mi->texAnimPalette[layer.textureAnimationId];
-                frame.texMtx0.rows[0] = { e.row0[0], e.row0[1], e.row0[2], e.row0[3] };
-                frame.texMtx0.rows[1] = { e.row1[0], e.row1[1], e.row1[2], e.row1[3] };
-            } else {
-                frame.texMtx0 = bls::IdentityTexMtx();
-            }
-            frame.texMtx1 = bls::IdentityTexMtx();
+            render_detail::ApplyTexAnimPaletteToFrame(frame, *mi, layer.textureAnimationId);
 
             float combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f) continue;
@@ -3486,24 +3125,21 @@ void RenderService::RenderGeosets() {
             }
 
             {
-                CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
-                Matrix44f world = mi->worldTransform;
-                cb->world      = world.transpose();
-                cb->view       = view2.transpose();
-                cb->projection = proj2.transpose();
-
-                Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
-                cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
-                cb->lightColor    = kGeosetLightColor;
-                cb->ambientColor  = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, alphaRef};
-                cb->extraParams   = {combinedAlpha, geoColor.x, geoColor.y, geoColor.z};
-                cb->texAnimParams = {uOff, vOff, uTile, vTile};
-                cb->materialFlags = {
+                render_detail::CbPerFrameDesc d;
+                d.world         = mi->worldTransform;
+                d.view          = view2;
+                d.projection    = proj2;
+                d.lightDir      = render_detail::NormalizedLightDir4(kDefaultLightDir);
+                d.lightColor    = kGeosetLightColor;
+                d.ambientColor  = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, alphaRef};
+                d.extraParams   = {combinedAlpha, geoColor.x, geoColor.y, geoColor.z};
+                d.texAnimParams = {uOff, vOff, uTile, vTile};
+                d.materialFlags = {
                     (layer.flags & MAT_UNSHADED)       ? 1.0f : 0.0f,
                     (layer.flags & MAT_CONSTANT_COLOR) ? 1.0f : 0.0f,
                     texRot, 0.0f
                 };
-                gfx_->UnmapBuffer(cbPerFrame_);
+                render_detail::WriteCbPerFrame(gfx_.get(), cbPerFrame_, d);
             }
 
             render_detail::BindLayerAlbedo(cmd, *mi, layer.textureId,
@@ -3512,342 +3148,6 @@ void RenderService::RenderGeosets() {
             cmd->DrawIndexed(geo.indexCount, 0, 0);
         }
     }
-}
-
-// ============================================================================
-// ViewCube — 3D orientation cube in top-right corner with Home button
-// ============================================================================
-
-Rect RenderService::GetViewCubeRect() const {
-    int s = kViewCubeSize;
-    int margin = 10;
-    int cubeTop = margin + 28;
-    return { width_ - s - margin, margin, width_ - margin, cubeTop + s };
-}
-
-bool RenderService::CreateViewCube() {
-    // Generate face label atlas procedurally (platform-neutral)
-    {
-        int tw, th;
-        auto pixels = GenerateViewCubeAtlas(tw, th);
-        vcFaceTex_ = gfx_->CreateTexture({
-            .width  = tw,
-            .height = th,
-            .format = gfx::Format::R8G8B8A8_UNORM,
-            .usage  = gfx::TextureUsage::ShaderResource,
-        }, pixels.data());
-    }
-
-    // Cube geometry: 24 vertices (4 per face), 36 indices
-    // Face order: Front(+Y), Back(-Y), Left(-X), Right(+X), Top(+Z), Bottom(-Z)
-    float s = 0.5f;
-    struct VCVert { float x,y,z, nx,ny,nz, cr,cg,cb,ca, u,v; };
-
-    // UV: each face maps to column i/6 in the texture atlas
-    auto uv = [](int face, int corner) -> std::pair<float,float> {
-        float u0 = face / 6.0f, u1 = (face + 1) / 6.0f;
-        switch(corner) {
-            case 0: return {u0, 1.0f}; // BL
-            case 1: return {u1, 1.0f}; // BR
-            case 2: return {u1, 0.0f}; // TR
-            case 3: return {u0, 0.0f}; // TL
-        }
-        return {0,0};
-    };
-
-    std::vector<Vertex> verts;
-    auto addFace = [&](int face, Vector3f p0, Vector3f p1, Vector3f p2, Vector3f p3, Vector3f n) {
-        for (int c = 0; c < 4; c++) {
-            auto [u, v] = uv(face, c);
-            Vector3f p = (c==0) ? p0 : (c==1) ? p1 : (c==2) ? p2 : p3;
-            verts.push_back({p, n, {1,1,1,1}, {u, v}});
-        }
-    };
-
-    // Face geometry authored directly in the renderer-native default space.
-    // "Front" is the face on the +forward side of the model (Blz +X, Max -Y).
-    // Top/Bottom are always along +Z/-Z (Z-up is shared across supported spaces).
-    struct FaceSpec {
-        Vector3f p0, p1, p2, p3, n;
-    };
-    FaceSpec faces[6];
-    if constexpr (kDefaultCoordSpace == CoordSpace::Blizzard) {
-        // Blizzard: +X forward, +Y left, +Z up
-        faces[0] = {{ s, s, s}, { s,-s, s}, { s,-s,-s}, { s, s,-s}, { 1, 0, 0}}; // Front (+X)
-        faces[1] = {{-s,-s, s}, {-s, s, s}, {-s, s,-s}, {-s,-s,-s}, {-1, 0, 0}}; // Back (-X)
-        faces[2] = {{ s, s, s}, {-s, s, s}, {-s, s,-s}, { s, s,-s}, { 0, 1, 0}}; // Left (+Y)
-        faces[3] = {{-s,-s, s}, { s,-s, s}, { s,-s,-s}, {-s,-s,-s}, { 0,-1, 0}}; // Right (-Y)
-        faces[4] = {{-s, s, s}, { s, s, s}, { s,-s, s}, {-s,-s, s}, { 0, 0, 1}}; // Top (+Z)
-        faces[5] = {{-s,-s,-s}, { s,-s,-s}, { s, s,-s}, {-s, s,-s}, { 0, 0,-1}}; // Bottom (-Z)
-    } else {
-        // Max: +X right, +Y back, +Z up — model forward is -Y.
-        faces[0] = {{ s,-s,-s}, {-s,-s,-s}, {-s,-s, s}, { s,-s, s}, { 0,-1, 0}}; // Front (-Y)
-        faces[1] = {{-s, s,-s}, { s, s,-s}, { s, s, s}, {-s, s, s}, { 0, 1, 0}}; // Back (+Y)
-        faces[2] = {{ s, s,-s}, { s,-s,-s}, { s,-s, s}, { s, s, s}, { 1, 0, 0}}; // Left (+X in Max — viewer-left of the facing model)
-        faces[3] = {{-s,-s,-s}, {-s, s,-s}, {-s, s, s}, {-s,-s, s}, {-1, 0, 0}}; // Right (-X)
-        faces[4] = {{-s, s, s}, { s, s, s}, { s,-s, s}, {-s,-s, s}, { 0, 0, 1}}; // Top (+Z)
-        faces[5] = {{-s,-s,-s}, { s,-s,-s}, { s, s,-s}, {-s, s,-s}, { 0, 0,-1}}; // Bottom (-Z)
-    }
-    for (int i = 0; i < 6; ++i) {
-        const auto& f = faces[i];
-        addFace(i, f.p0, f.p1, f.p2, f.p3, f.n);
-    }
-
-    vcCubeVB_ = gfx_->CreateBuffer({
-        .size  = sizeof(Vertex) * verts.size(),
-        .usage = gfx::BufferUsage::Vertex,
-    }, verts.data());
-
-    // Index buffer: 2 triangles per face
-    std::vector<uint32_t> idx;
-    for (int f = 0; f < 6; f++) {
-        uint32_t base = f * 4;
-        idx.insert(idx.end(), {base, base+1, base+2, base, base+2, base+3});
-    }
-    vcCubeIB_ = gfx_->CreateBuffer({
-        .size  = sizeof(uint32_t) * idx.size(),
-        .usage = gfx::BufferUsage::Index,
-    }, idx.data());
-
-    // Edge lines (12 edges of the cube)
-    std::vector<LineVertex> edges;
-    Vector4f ec = {0.2f, 0.2f, 0.2f, 1.0f};
-    float e = s * 1.001f; // slight offset to draw over faces
-    // Bottom square
-    edges.push_back({{-e,-e,-e}, ec}); edges.push_back({{ e,-e,-e}, ec});
-    edges.push_back({{ e,-e,-e}, ec}); edges.push_back({{ e, e,-e}, ec});
-    edges.push_back({{ e, e,-e}, ec}); edges.push_back({{-e, e,-e}, ec});
-    edges.push_back({{-e, e,-e}, ec}); edges.push_back({{-e,-e,-e}, ec});
-    // Top square
-    edges.push_back({{-e,-e, e}, ec}); edges.push_back({{ e,-e, e}, ec});
-    edges.push_back({{ e,-e, e}, ec}); edges.push_back({{ e, e, e}, ec});
-    edges.push_back({{ e, e, e}, ec}); edges.push_back({{-e, e, e}, ec});
-    edges.push_back({{-e, e, e}, ec}); edges.push_back({{-e,-e, e}, ec});
-    // Verticals
-    edges.push_back({{-e,-e,-e}, ec}); edges.push_back({{-e,-e, e}, ec});
-    edges.push_back({{ e,-e,-e}, ec}); edges.push_back({{ e,-e, e}, ec});
-    edges.push_back({{ e, e,-e}, ec}); edges.push_back({{ e, e, e}, ec});
-    edges.push_back({{-e, e,-e}, ec}); edges.push_back({{-e, e, e}, ec});
-
-    vcOutlineVB_ = gfx_->CreateBuffer({
-        .size  = sizeof(LineVertex) * edges.size(),
-        .usage = gfx::BufferUsage::Vertex,
-    }, edges.data());
-
-    return true;
-}
-
-void RenderService::RenderViewCube() {
-    if (vcCubeVB_ == gfx::BufferHandle::Invalid ||
-        vcCubeIB_ == gfx::BufferHandle::Invalid) return;
-
-    auto* cmd = gfx_->GetImmediateContext();
-
-    // Save main viewport, set ViewCube viewport (top-right corner)
-    int s = kViewCubeSize;
-    int margin = 10;
-    gfx::Viewport vp = {
-        (float)(width_ - s - margin),
-        (float)(margin + 28),  // leave room for Home button above
-        (float)s, (float)s,
-        0.0f, 1.0f
-    };
-    cmd->SetViewport(vp);
-
-    // Clear depth only in this viewport area
-    auto* pt = primaryTarget();
-    if (!pt) return;
-    cmd->ClearDepth(pt->depth, 1.0f, 0);
-
-    // Build view matrix: same rotation as camera, but fixed distance, looking at origin
-    Matrix44f vcView;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        float dist = 3.5f;
-        float cosP = cosf(camera_.GetPitch()), sinP = sinf(camera_.GetPitch());
-        float cosY = cosf(camera_.GetYaw()),   sinY = sinf(camera_.GetYaw());
-        Vector3f eye = { dist * cosP * cosY, dist * cosP * sinY, dist * sinP };
-        Vector3f tgt = { 0, 0, 0 };
-        Vector3f up  = { 0, 0, 1 };
-        vcView = Matrix44f::look_at_rh(eye, tgt, up);
-    }
-    Matrix44f vcProj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, 1.0f, 0.1f, 100.0f);
-
-    // Update constant buffer for ViewCube
-    {
-        CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
-        cb->world      = Matrix44f::identity().transpose();
-        cb->view       = vcView.transpose();
-        cb->projection = vcProj.transpose();
-        Vector3f ldN = Vector3f{kViewCubeLightDir.x, kViewCubeLightDir.y, kViewCubeLightDir.z}.normalized();
-        cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
-        cb->lightColor   = kViewCubeLightColor;
-        cb->ambientColor = kViewCubeAmbientColor;
-        cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
-        cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
-        cb->materialFlags = {0.0f, 0.0f, 0.0f, 0.0f};
-        gfx_->UnmapBuffer(cbPerFrame_);
-    }
-
-    // Draw cube faces (textured): opaque + noCull + default depth
-    cmd->BindPipeline(meshPSO_[FILTER_NONE][1][0]);
-    cmd->BindVertexBuffer(0, vcCubeVB_, sizeof(Vertex));
-    cmd->BindIndexBuffer(vcCubeIB_, gfx::Format::R32_UINT);
-    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
-    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
-    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerLinear_);
-    if (vcFaceTex_ != gfx::TextureHandle::Invalid)
-        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, vcFaceTex_);
-    else
-        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
-    cmd->DrawIndexed(36, 0, 0);
-
-    // Draw edges
-    cmd->BindPipeline(linePSO_);
-    cmd->BindVertexBuffer(0, vcOutlineVB_, sizeof(LineVertex));
-    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
-    cmd->Draw(24, 0); // 12 edges × 2 verts
-
-    // --- Home button icon (above cube, only on hover) ---
-    if (vcHovered_) {
-        gfx::Viewport homeVp = {
-            vp.x + (float)s * kViewCubeHomeOffset,
-            vp.y - 24.0f,
-            (float)s * 0.3f, 20.0f,
-            0.0f, 1.0f
-        };
-        cmd->SetViewport(homeVp);
-
-        // Orthographic view for 2D drawing
-        {
-            CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
-            cb->world = Matrix44f::identity().transpose();
-            cb->view = Matrix44f::identity().transpose();
-            cb->projection = Matrix44f::orthographic_rh(2.0f, 2.0f, -1.0f, 1.0f).transpose();
-            cb->lightDir = {0,0,0,0};
-            cb->lightColor = {1,1,1,1};
-            cb->ambientColor = {1,1,1,1};
-            cb->extraParams  = {1,0,0,0};
-            cb->materialFlags = {0,0,0,0};
-            gfx_->UnmapBuffer(cbPerFrame_);
-        }
-
-        // House icon (persistent VB, created once)
-        if (vcHomeVB_ == gfx::BufferHandle::Invalid) {
-            Vector4f hc = {0.7f, 0.7f, 0.7f, 1.0f};
-            LineVertex house[] = {
-                {{-0.4f, -0.6f, 0}, hc}, {{ 0.4f, -0.6f, 0}, hc}, // bottom
-                {{-0.4f, -0.6f, 0}, hc}, {{-0.4f,  0.0f, 0}, hc}, // left wall
-                {{ 0.4f, -0.6f, 0}, hc}, {{ 0.4f,  0.0f, 0}, hc}, // right wall
-                {{-0.5f,  0.0f, 0}, hc}, {{ 0.0f,  0.6f, 0}, hc}, // roof left
-                {{ 0.5f,  0.0f, 0}, hc}, {{ 0.0f,  0.6f, 0}, hc}, // roof right
-                {{-0.5f,  0.0f, 0}, hc}, {{ 0.5f,  0.0f, 0}, hc}, // roof base
-            };
-            vcHomeVB_ = gfx_->CreateBuffer({
-                .size  = sizeof(house),
-                .usage = gfx::BufferUsage::Vertex,
-            }, house);
-        }
-        if (vcHomeVB_ != gfx::BufferHandle::Invalid) {
-            cmd->BindVertexBuffer(0, vcHomeVB_, sizeof(LineVertex));
-            cmd->Draw(12, 0);
-        }
-    }
-
-    // Restore main viewport
-    cmd->SetViewport({0, 0, (float)width_, (float)height_, 0.0f, 1.0f});
-
-    // Restore main scene constant buffer
-    Matrix44f view, proj;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        view = camera_.GetViewMatrix();
-    }
-    float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    proj = camera_.ProjectionRH(aspect);
-    {
-        CBPerFrame* cb = (CBPerFrame*)gfx_->MapBuffer(cbPerFrame_);
-        cb->world      = Matrix44f::identity().transpose();
-        cb->view       = view.transpose();
-        cb->projection = proj.transpose();
-        Vector3f ldN = Vector3f{kDefaultLightDir.x, kDefaultLightDir.y, kDefaultLightDir.z}.normalized();
-        cb->lightDir = {ldN.x, ldN.y, ldN.z, 0.0f};
-        cb->lightColor   = kGeosetLightColor;
-        cb->ambientColor = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, 0.0f};
-        cb->extraParams  = {1.0f, 1.0f, 1.0f, 1.0f};
-        cb->texAnimParams = {0.0f, 0.0f, 1.0f, 1.0f};
-        cb->materialFlags = {0.0f, 0.0f, 0.0f, 0.0f};
-        gfx_->UnmapBuffer(cbPerFrame_);
-    }
-}
-
-// Hit test: returns face index 0-5, 6=Home, -1=none
-int RenderService::HitTestViewCube(int mx, int my) {
-    Rect r = GetViewCubeRect();
-
-    // Home button area (above the cube, only when hovering)
-    int cubeTop = r.top + 28;
-    if (vcHovered_ && mx >= r.left && mx <= r.right && my >= r.top && my <= cubeTop)
-        return 6;
-
-    // Cube area
-    if (mx < r.left || mx > r.right || my < cubeTop || my > r.bottom)
-        return -1;
-
-    // Ray-pick: project the 6 face centers to screen, find closest to click
-    int s = kViewCubeSize;
-    float vcX = (float)(width_ - s - 10);
-    float vcY = 10.0f + 28.0f;  // matches cube viewport offset
-
-    Matrix44f vcView;
-    {
-        float dist = 3.5f;
-        float cosP = cosf(camera_.GetPitch()), sinP = sinf(camera_.GetPitch());
-        float cosY = cosf(camera_.GetYaw()),   sinY = sinf(camera_.GetYaw());
-        Vector3f eye = { dist*cosP*cosY, dist*cosP*sinY, dist*sinP };
-        Vector3f up  = { 0, 0, 1 };
-        vcView = Matrix44f::look_at_rh(eye, {0,0,0}, up);
-    }
-    Matrix44f vcProj = Matrix44f::perspective_fov_rh(std::numbers::pi_v<float> / 4.0f, 1.0f, 0.1f, 100.0f);
-    Matrix44f vp_mat = vcView * vcProj;
-
-    // Face centers and normals
-    Vector3f centers[] = {{0,.5f,0},{0,-.5f,0},{-.5f,0,0},{.5f,0,0},{0,0,.5f},{0,0,-.5f}};
-    Vector3f normals[] = {{0,1,0},{0,-1,0},{-1,0,0},{1,0,0},{0,0,1},{0,0,-1}};
-
-    // Camera direction for backface culling
-    float cosP = cosf(camera_.GetPitch()), sinP = sinf(camera_.GetPitch());
-    float cosY = cosf(camera_.GetYaw()),   sinY = sinf(camera_.GetYaw());
-    Vector3f camDir = { -cosP*cosY, -cosP*sinY, -sinP }; // toward target
-
-    int bestFace = -1;
-    float bestDist = 1e9f;
-
-    for (int i = 0; i < 6; i++) {
-        // Backface cull: skip faces pointing AWAY from camera
-        float dot = normals[i].x*camDir.x + normals[i].y*camDir.y + normals[i].z*camDir.z;
-        if (dot > -0.05f) continue;
-
-        // Project center through View*Proj, perspective divide, viewport remap
-        Vector3f c = centers[i];
-        float cx = c.x*vp_mat.data[0][0] + c.y*vp_mat.data[1][0] + c.z*vp_mat.data[2][0] + vp_mat.data[3][0];
-        float cy = c.x*vp_mat.data[0][1] + c.y*vp_mat.data[1][1] + c.z*vp_mat.data[2][1] + vp_mat.data[3][1];
-        float cw = c.x*vp_mat.data[0][3] + c.y*vp_mat.data[1][3] + c.z*vp_mat.data[2][3] + vp_mat.data[3][3];
-        if (fabsf(cw) < 1e-6f) continue;
-        float ndcX = cx / cw;
-        float ndcY = cy / cw;
-        float spx = vcX + (float)s * (1.0f + ndcX) * 0.5f;
-        float spy = vcY + (float)s * (1.0f - ndcY) * 0.5f;
-
-        float dx = spx - mx;
-        float dy = spy - my;
-        float d = dx*dx + dy*dy;
-        if (d < bestDist && d < (s*s*0.06f)) { // tighter radius — only on the cube itself
-            bestDist = d;
-            bestFace = i;
-        }
-    }
-    return bestFace;
 }
 
 void RenderService::SnapCameraToFace(int faceIndex) {

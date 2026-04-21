@@ -47,18 +47,20 @@ struct LineVertex {
 // Render Service — synchronous rendering API
 // ============================================================================
 
-// Forward declarations for the Phase 2 CRTP pass classes (geoset_pass.h).
+// Forward declarations for the CRTP pass classes (render_pass.h).
 // The base reads RenderService members directly via friendship; the two
 // derived classes live in render_service.cpp where the concrete bodies
 // need to sit next to ApplyBoneMatrices et al.
 template <class> class BlsGeosetPass;
 class GeosetPassBls;
 class GeosetPassHd;
+class DebugRenderer;  // debug/debug_renderer.h — overlay passes (grid, collisions, light markers, ViewCube)
 
 class RenderService {
     template <class> friend class BlsGeosetPass;
     friend class GeosetPassBls;
     friend class GeosetPassHd;
+    friend class DebugRenderer;
 public:
     RenderService();
     ~RenderService();
@@ -158,10 +160,11 @@ public:
     void ResetCamera();
     void SnapCameraToFace(int faceIndex);   // applies preset camera angle
 
-    // ViewCube queries (called from RenderWindow message handlers)
+    // ViewCube queries (called from RenderWindow message handlers).
+    // Implemented in render_service.cpp — they forward to debug_.
     int  HitTestViewCube(int mx, int my);
     Rect GetViewCubeRect() const;
-    void SetViewCubeHovered(bool hovered) { vcHovered_ = hovered; }
+    void SetViewCubeHovered(bool hovered);
 
     // Display flags
     void SetDisplayFlags(const DisplayFlags& flags);
@@ -267,18 +270,11 @@ private:
     void UpdateRibbons(float dt);
     void RenderRibbons();
 
-    // Collision shape wireframes
-    void RenderCollisions();
-
     // LOD selection: -1 override -> screen-size computation (mirrors
     // Previewd CalculateLOD @0x140305ae0). Returns 0..3. Models without
     // LOD data always get 0 — caller checks mi.hasLods to decide which
     // to use, then tests each geoset with GeosetPassesLod.
     int  ComputeSelectedLod() const;
-
-    // Debug light markers (one wireframe sphere per evaluated light at its
-    // final world-space position; tinted by the light's diffuse colour).
-    void RenderLightMarkers();
 
     // ApplyFrameState helpers
     void ApplyBoneMatrices(ModelInstance& mi, const FrameState& state);
@@ -296,14 +292,9 @@ private:
     void UpdateTeamColorSwatch();
 
     // Rendering
-    void RenderGrid();
     void RenderGeosets();
     gfx::PipelineHandle LookupMeshPSO(int filterMode, bool twoSided,
                                        bool noDepthTest, bool noDepthSet) const;
-
-    // ViewCube (creation + rendering stay private; hit-test/snap/rect are public)
-    bool CreateViewCube();
-    void RenderViewCube();
 
     // PE2 service — centralised registry for the new particle path. Coexists
     // with the legacy per-ModelInstance ParticleSystem until Phase 6 cut-over.
@@ -443,23 +434,15 @@ private:
     gfx::TextureHandle teamColorTex_   = gfx::TextureHandle::Invalid;
     uint32_t           teamColorTexColor_ = 0xFFFFFFFFu;
 
-    // Grid
-    gfx::BufferHandle gridVB_ = gfx::BufferHandle::Invalid;
-    int               gridVertCount_ = 0;
+    // Debug-overlay passes (grid, collision wireframes, light markers,
+    // ViewCube). Owns its own GPU resources; accesses shared RenderService
+    // state (cbPerFrame_, samplers, linePSO_, ...) via friendship.
+    std::unique_ptr<DebugRenderer> debug_;
 
     // Global particle VB — used by the PE2 service's draw path.
     // Grows on demand; sized in Vertex units.
     gfx::BufferHandle particleServiceVB_     = gfx::BufferHandle::Invalid;
     int               particleServiceVBSize_ = 0;
-
-    // ViewCube
-    gfx::BufferHandle  vcCubeVB_     = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle  vcCubeIB_     = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle  vcOutlineVB_  = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle  vcHomeVB_     = gfx::BufferHandle::Invalid;
-    gfx::TextureHandle vcFaceTex_    = gfx::TextureHandle::Invalid;
-    static constexpr int kViewCubeSize = 120;
-    bool               vcHovered_    = false;
 
     // Animation time (set from API thread via SetAnimationTime / ApplyFrameState,
     //                  read from render thread in Tick / EvaluatePE1Children)

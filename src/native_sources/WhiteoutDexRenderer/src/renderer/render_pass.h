@@ -1,6 +1,8 @@
 #pragma once
 // ============================================================================
-// BlsGeosetPass<Derived> — CRTP base for the BLS-family mesh render paths
+// render_pass.h — home for CRTP render-pass shells.
+//
+// BlsGeosetPass<Derived> is the shell for the BLS-family mesh render paths
 // (RenderGeosetsBls / RenderGeosetsHd). Shares the outer shell: availability
 // check, geoset collection + sort, view/proj resolve, FrameInputs init, and
 // the per-geoset light palette. Per-path divergence goes into derived hooks:
