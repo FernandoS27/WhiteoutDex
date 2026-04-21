@@ -3,6 +3,8 @@
 // ============================================================================
 
 #include "render_service.h"
+#include "render_service_internal.h"
+#include "geoset_pass.h"
 #include "constants.h"
 #include "compiled_shaders.h"
 #include "team_glow_data.h"
@@ -15,6 +17,8 @@
 #include "bls/bls_mat_params.h"
 #include "bls/bls_cb_layout.h"
 #include "bls/bls_frame.h"
+#include "bls/bls_draw_helpers.h"
+#include "bls/scoped_cb.h"
 #include "ibl/split_sum.h"
 #include "ibl/env_probe.h"
 #include <whiteout/models/mdx/parser.h>
@@ -1590,10 +1594,9 @@ void RenderService::UpdateAnimation() {
         // matrices into ShaderBone (3 rows of 4 floats) via BuildBonePalette;
         // the HD VS reads vsCB3.matrices[i] to skin vertices in the VS.
         if (mi->bonePaletteCb != gfx::BufferHandle::Invalid) {
-            if (auto* bp = (bls::BonePaletteCb*)gfx_->MapBuffer(mi->bonePaletteCb)) {
+            if (auto bp = bls::ScopedCb<bls::BonePaletteCb>(gfx_.get(), mi->bonePaletteCb)) {
                 bls::BuildBonePalette(*bp, mi->skinning.OffsetMatrices(),
                                       mi->skinning.NodeCount());
-                gfx_->UnmapBuffer(mi->bonePaletteCb);
             }
         }
 
@@ -1740,28 +1743,20 @@ bool RenderService::RenderParticlesBls() {
         auto perm = bls::SelectPermutes(rs);
 
         // Build + bind PSO.
-        bls::PsoRequest req{};
-        req.program   = blsSdProgram_;
-        req.vsIndex   = perm.vs;
-        req.psIndex   = perm.ps;
-        req.material  = mp;
-        req.layout    = bls::VertexLayoutKind::ParticleSD;
-        req.topology  = gfx::PrimitiveTopology::TriangleList;
-        req.rtvFormat = gfx::Format::R8G8B8A8_UNORM;
-        req.dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
+        const auto req = bls::MakePsoRequest(blsSdProgram_,
+                                             bls::VertexLayoutKind::ParticleSD,
+                                             mp, perm);
         auto pso = blsPsoBuilder_->GetOrBuild(req);
         if (pso == gfx::PipelineHandle::Invalid) { drawOffset += dl.vertexCount; continue; }
         cmd->BindPipeline(pso);
 
         // VS CB (208 B fixed + 64 B per light; unlit → 208 B).
         // PS CB (48 B: alphaRef + fog).
-        if (auto* vs = (bls::SdVsCbA*)gfx_->MapBuffer(blsSdVsCb_)) {
+        if (auto vs = bls::ScopedCb<bls::SdVsCbA>(gfx_.get(), blsSdVsCb_)) {
             bls::BuildSdVsCbA(*vs, frame, mp);
-            gfx_->UnmapBuffer(blsSdVsCb_);
         }
-        if (auto* ps = (bls::SdPsCbA*)gfx_->MapBuffer(blsSdPsCb_)) {
+        if (auto ps = bls::ScopedCb<bls::SdPsCbA>(gfx_.get(), blsSdPsCb_)) {
             bls::BuildSdPsCbA(*ps, frame, mp);
-            gfx_->UnmapBuffer(blsSdPsCb_);
         }
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, blsSdVsCb_);
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, blsSdPsCb_);
@@ -2926,142 +2921,69 @@ void RenderService::RenderGrid() {
 // Geoset Rendering (4-bucket sort by FilterMode, like Magos Model::Render)
 // ============================================================================
 
-bool RenderService::RenderGeosetsBls() {
-    // Replace the Slang mesh shader with Blizzard's SD VS + SD PS. Skinning
-    // stays on the compute pass for now -- we draw from geo.vb which the
-    // compute shader writes skinned vertices into, so using weightIndex=0
-    // (no VS-side skinning) produces correct animated output.
-    if (!blsSdProgram_ || !blsPsoBuilder_) return false;
-    if (models_.empty()) return true;
+// ============================================================================
+// GeosetPassBls — SD-path mesh draw. Reuses Blizzard's SD VS + SD PS with
+// compute-skinned geometry (geo.vb already carries animated vertices, so
+// the VS picks the numWeights=0 permute). Legacy Slang mesh shader is the
+// fallback when blsSdProgram_ failed to load.
+// ============================================================================
+class GeosetPassBls : public BlsGeosetPass<GeosetPassBls> {
+public:
+    using BlsGeosetPass::BlsGeosetPass;
 
-    auto* cmd = gfx_->GetImmediateContext();
-
-    struct GeosetRef {
-        ModelInstance* mi;
-        int idx;
-        int renderOrder, priorityPlane, geosetId;
-    };
-    const int selectedLod = ComputeSelectedLod();
-    std::vector<GeosetRef> refs;
-    for (auto& [h, miPtr] : models_) {
-        auto* mi = miPtr.get();
-        if (mi->parentVisibility <= 0.02f) continue;
-        const int modelLod = mi->hasLods ? selectedLod : 0;
-        for (int i = 0; i < (int)mi->gpuGeosets.size(); i++) {
-            auto& geo = mi->gpuGeosets[i];
-            if (!GeosetPassesLod(geo.lod, modelLod)) continue;
-            int ro = 1;
-            int matId = geo.materialId;
-            if (matId >= 0 && matId < (int)mi->gpuMaterials.size() && !mi->gpuMaterials[matId].cpu.layers.empty())
-                ro = GetRenderOrder(mi->gpuMaterials[matId].cpu.layers[0].filterMode);
-            refs.push_back({mi, i, ro, geo.priorityPlane, geo.geosetId});
-        }
+    bool IsAvailable() const {
+        return rs_.blsSdProgram_ && rs_.blsPsoBuilder_;
     }
-    if (refs.empty()) return true;
 
-    std::sort(refs.begin(), refs.end(), [](const GeosetRef& a, const GeosetRef& b) {
-        if (a.renderOrder != b.renderOrder) return a.renderOrder < b.renderOrder;
-        if (a.priorityPlane != b.priorityPlane) return a.priorityPlane < b.priorityPlane;
-        return a.geosetId < b.geosetId;
-    });
+    void ComputeViewProj(Matrix44f& view, Matrix44f& proj) const {
+        std::lock_guard<std::mutex> lock(rs_.dataMutex_);
+        view = rs_.camera_.GetViewMatrix();
+        const float aspect = (rs_.height_ > 0)
+            ? static_cast<float>(rs_.width_) / static_cast<float>(rs_.height_) : 1.0f;
+        proj = rs_.camera_.ProjectionRH(aspect);
+    }
 
-    Matrix44f view2;
-    { std::lock_guard<std::mutex> lock(dataMutex_); view2 = camera_.GetViewMatrix(); }
-    const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    const Matrix44f proj = camera_.ProjectionRH(aspect);
+    void BindPassResources(gfx::IGFXCommandList*, bls::FrameInputs&) const {
+        // SD path uses only the base t0 sampler the CRTP driver already bound.
+    }
 
-    bls::FrameInputs frame;
-    frame.view       = view2;
-    frame.projection = proj;
-    frame.effectTime = animationTimeMs_.load() * 0.001f;
-    frame.numLights  = 0;
-    frame.viewportRect = { (float)width_, (float)height_, 0.0f, 0.0f };
+    bls::BaselineLights Baseline() const {
+        // RH view: forward = -Z, so direction-to-source for a camera-attached
+        // headlight is a constant +Z in view space (no per-pose transform).
+        return {
+            /*ambient*/       { kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z },
+            /*diffuse*/       { kGeosetLightColor.x,   kGeosetLightColor.y,   kGeosetLightColor.z },
+            /*dirToSourceVS*/ { 0.0f, 0.0f, 1.0f },
+        };
+    }
 
-    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerLinear_);
+    void DrawGeoset(const render_detail::GeosetRef& ref,
+                    bls::FrameInputs&               frame,
+                    const Matrix44f&                /*view*/,
+                    gfx::IGFXCommandList*           cmd,
+                    int                             lightCountForGeoset) {
+        ModelInstance* mi  = ref.mi;
+        auto&          geo = mi->gpuGeosets[ref.idx];
 
-    // Fallback "baseline" directional so MDX models without authored
-    // lights still look lit. Camera-attached headlight: light ray
-    // goes along view-forward, so `direction TO source` is constant
-    // in view space (camera at origin). RH view has forward = -Z, so
-    // from any fragment in front of the camera, the light source
-    // sits along +Z. No per-camera-pose transform needed.
-    const auto kBaselineDirToSourceVS = Vector3f{0.0f, 0.0f, 1.0f};
-    const auto kBaselineDiffuse       = Vector3f{kGeosetLightColor.x, kGeosetLightColor.y, kGeosetLightColor.z};
-    const auto kBaselineAmbient       = Vector3f{kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z};
-
-    for (auto& ref : refs) {
-        auto* mi  = ref.mi;
-        auto& geo = mi->gpuGeosets[ref.idx];
-        if (geo.vb == gfx::BufferHandle::Invalid || geo.ib == gfx::BufferHandle::Invalid || geo.indexCount == 0)
-            continue;
-
-        int matId = geo.materialId;
         GPUMaterial* mat = nullptr;
+        const int matId = geo.materialId;
         if (matId >= 0 && matId < (int)mi->gpuMaterials.size()) mat = &mi->gpuMaterials[matId];
 
-        float geoAlpha = geo.geosetAlpha * mi->parentVisibility;
-        if (geoAlpha < 0.01f) continue;
+        const float geoAlpha = geo.geosetAlpha * mi->parentVisibility;
+        if (geoAlpha < 0.01f) return;
 
         int numLayers = mat ? (int)mat->cpu.layers.size() : 0;
         if (numLayers <= 0) numLayers = 1;
 
-        cmd->BindVertexBuffer(0, geo.vb, sizeof(Vertex));
-        cmd->BindIndexBuffer(geo.ib, gfx::Format::R32_UINT);
-
-        // --- Build per-geoset ShaderLight palette (up to 8) --------------
-        // Use the hardcoded baseline key light ONLY when the model has no
-        // authored MDX lights. When lights are present, the shader's
-        // saturate(diffAccum + ambAccum) clamp turns an extra always-on key
-        // light into oversaturation (the symptom: bright blue flood across
-        // the whole scene). Previewd does not add a fallback when the model
-        // ships its own lights, so we mirror that.
-        int lightCountForGeoset = 0;
-        bool anyEnabled = false;
-        for (const auto& L : mi->activeLights) { if (L.enabled) { anyEnabled = true; break; } }
-        if (!anyEnabled) {
-            bls::ShaderLight& sl = frame.lights[lightCountForGeoset++];
-            sl.ambient  = { kBaselineAmbient.x, kBaselineAmbient.y, kBaselineAmbient.z, 0.0f };
-            sl.diffuse  = { kBaselineDiffuse.x, kBaselineDiffuse.y, kBaselineDiffuse.z, 0.0f };
-            sl.position = { kBaselineDirToSourceVS.x, kBaselineDirToSourceVS.y, kBaselineDirToSourceVS.z, 0.0f };
-        }
-        for (const auto& L : mi->activeLights) {
-            if (!L.enabled) continue;
-            if (lightCountForGeoset >= bls::kMaxLights) break;
-            bls::ShaderLight& sl = frame.lights[lightCountForGeoset++];
-            sl.ambient = { L.ambient.x, L.ambient.y, L.ambient.z, 0.0f };
-            sl.diffuse = { L.diffuse.x, L.diffuse.y, L.diffuse.z, 0.0f };
-            if (L.kind == FrameState::LightKind::Directional) {
-                // Engine stores -normalize(m_dir) as the shader light vector.
-                Vector3f d = L.worldDir;
-                float    n = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
-                if (n > 1e-6f) { d.x /= n; d.y /= n; d.z /= n; }
-                Vector3f lv = whiteout::transform_normal(Vector3f{-d.x, -d.y, -d.z}, view2);
-                sl.position = { lv.x, lv.y, lv.z, 0.0f };   // type=0
-            } else {   // Omni or Ambient -- place at world position
-                Vector3f p = whiteout::transform_point(L.worldPos, view2);
-                sl.position = { p.x, p.y, p.z, 1.0f };     // type=1 (omni)
-            }
-        }
-        for (int i = lightCountForGeoset; i < bls::kMaxLights; ++i) frame.lights[i] = {};
+        render_detail::BindSdMeshGeometry(cmd, geo);
 
         for (int li = 0; li < numLayers; ++li) {
-            int   layerFilter = FILTER_NONE;
-            int   layerFlags  = 0;
-            float layerAlpha  = 1.0f;
-            int   layerTexId  = -1;
-            int   texAnimId   = -1;
-            if (mat && li < (int)mat->cpu.layers.size()) {
-                const auto& L = mat->cpu.layers[li];
-                layerFilter = L.filterMode;
-                layerFlags  = L.flags;
-                layerAlpha  = L.alpha;
-                layerTexId  = L.textureId;
-                texAnimId   = L.textureAnimationId;
-            }
+            const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
 
             // Resolve the per-layer UV matrix: palette lookup, or identity.
-            if (texAnimId >= 0 && texAnimId < (int)mi->texAnimPalette.size()) {
-                const auto& e = mi->texAnimPalette[texAnimId];
+            if (layer.textureAnimationId >= 0 &&
+                layer.textureAnimationId < (int)mi->texAnimPalette.size()) {
+                const auto& e = mi->texAnimPalette[layer.textureAnimationId];
                 frame.texMtx0.rows[0] = { e.row0[0], e.row0[1], e.row0[2], e.row0[3] };
                 frame.texMtx0.rows[1] = { e.row1[0], e.row1[1], e.row1[2], e.row1[3] };
             } else {
@@ -3069,85 +2991,60 @@ bool RenderService::RenderGeosetsBls() {
             }
             frame.texMtx1 = bls::IdentityTexMtx();
 
-            float combinedAlpha = geoAlpha * layerAlpha;
+            const float combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f) continue;
-            int effectiveFilter = layerFilter;
-            if (combinedAlpha < 0.99f && layerFilter <= FILTER_TRANSPARENT)
+            int effectiveFilter = layer.filterMode;
+            if (combinedAlpha < 0.99f && layer.filterMode <= FILTER_TRANSPARENT)
                 effectiveFilter = FILTER_BLEND;
 
-            bls::MatParams mp = bls::FromMdxLayer(effectiveFilter, layerFlags, bls::GxShaderID::SD);
+            bls::MatParams mp = bls::FromMdxLayer(effectiveFilter, layer.flags, bls::GxShaderID::SD);
             // SelectModelMaterial mirror: diffuseColor = geoColor * combinedAlpha.
-            // Modulate takes the alpha-into-RGB trick; our geo color stays
-            // white for now since per-vertex color already carries the tint.
+            // Modulate takes the alpha-into-RGB trick; per-vertex color already
+            // carries the model tint so geoColor stays white by default.
             if (mp.alpha == bls::GxMatAlpha::Modulate) {
                 mp.diffuseColor = {combinedAlpha, 1, 1, 1};
             } else {
                 mp.diffuseColor = {geo.geosetColor.x, geo.geosetColor.y, geo.geosetColor.z, combinedAlpha};
             }
 
-            // Unshaded layers (MAT_UNSHADED / kDisableLighting) skip the
-            // lighting loop in the VS. Permute count must agree with what
-            // we upload: numLights=0 picks the "no lights" VS, otherwise
-            // we use all N lights in frame.lights[].
-            const bool  unlit    = (mp.disables & bls::kDisableLighting) != 0;
-            const int   activeN  = unlit ? 0 : lightCountForGeoset;
+            // Unshaded layers (MAT_UNSHADED / kDisableLighting) skip the VS
+            // lighting loop. Permute count must agree with the upload: the
+            // "no lights" VS is picked when numLights=0.
+            const bool unlit   = (mp.disables & bls::kDisableLighting) != 0;
+            const int  activeN = unlit ? 0 : lightCountForGeoset;
             frame.numLights = activeN;
 
-            bls::RenderState rs;
-            rs.shaderId       = bls::GxShaderID::SD;
-            rs.alphaMode      = static_cast<uint8_t>(mp.alpha);
-            rs.numColors      = 1;   // Vertex has per-vertex color set to white
-            rs.numTexCoords   = 1;
-            rs.numWeights     = 0;   // compute pass already baked skinning into geo.vb
-            rs.numLights      = static_cast<uint8_t>(activeN);
-            rs.fogEnabled     = false;
-            rs.depthWrite     = mp.DepthWriteEnabled();
-            rs.lightingEnabled= !unlit && activeN > 0;
-            auto perm = bls::SelectPermutes(rs);
-
-            bls::PsoRequest req{};
-            req.program   = blsSdProgram_;
-            req.vsIndex   = perm.vs;
-            req.psIndex   = perm.ps;
-            req.material  = mp;
-            req.layout    = bls::VertexLayoutKind::ParticleSD;  // reuse our 48B Vertex
-            req.topology  = gfx::PrimitiveTopology::TriangleList;
-            req.rtvFormat = gfx::Format::R8G8B8A8_UNORM;
-            req.dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
-            auto pso = blsPsoBuilder_->GetOrBuild(req);
+            const auto rs   = bls::MakeSdMeshRenderState(mp, activeN, unlit);
+            const auto perm = bls::SelectPermutes(rs);
+            // VertexLayoutKind::ParticleSD reuses our 48 B Vertex struct.
+            const auto req  = bls::MakePsoRequest(rs_.blsSdProgram_,
+                                                  bls::VertexLayoutKind::ParticleSD,
+                                                  mp, perm);
+            auto pso = rs_.blsPsoBuilder_->GetOrBuild(req);
             if (pso == gfx::PipelineHandle::Invalid) continue;
             cmd->BindPipeline(pso);
 
             frame.world = mi->worldTransform;
 
-            if (auto* vs = (bls::SdVsCbA*)gfx_->MapBuffer(blsSdVsCb_)) {
+            if (auto vs = bls::ScopedCb<bls::SdVsCbA>(rs_.gfx_.get(), rs_.blsSdVsCb_)) {
                 bls::BuildSdVsCbA(*vs, frame, mp);
-                gfx_->UnmapBuffer(blsSdVsCb_);
             }
-            if (auto* ps = (bls::SdPsCbA*)gfx_->MapBuffer(blsSdPsCb_)) {
+            if (auto ps = bls::ScopedCb<bls::SdPsCbA>(rs_.gfx_.get(), rs_.blsSdPsCb_)) {
                 bls::BuildSdPsCbA(*ps, frame, mp);
-                gfx_->UnmapBuffer(blsSdPsCb_);
             }
-            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, blsSdVsCb_);
-            cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, blsSdPsCb_);
+            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.blsSdVsCb_);
+            cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, rs_.blsSdPsCb_);
 
-            uint32_t wrapFlags = kWrapFlagsMask;
-            bool     hasTex    = false;
-            if (layerTexId >= 0 && mi->gpuTextures.count(layerTexId)) {
-                auto& gt = mi->gpuTextures[layerTexId];
-                if (gt.tex != gfx::TextureHandle::Invalid) {
-                    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, gt.tex);
-                    wrapFlags = gt.wrapFlags & kWrapFlagsMask;
-                    hasTex    = true;
-                }
-            }
-            if (!hasTex) cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
-            cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[wrapFlags]);
+            render_detail::BindLayerAlbedo(cmd, *mi, layer.textureId,
+                                           rs_.defaultTex_, rs_.samplerWrap_);
 
             cmd->DrawIndexed(geo.indexCount);
         }
     }
-    return true;
+};
+
+bool RenderService::RenderGeosetsBls() {
+    return GeosetPassBls{*this}.Run();
 }
 
 // HD-path mesh draw. Runs only when renderMode_ == HD. For Phase 2 this is a
@@ -3160,151 +3057,96 @@ bool RenderService::RenderGeosetsBls() {
 // materials route through blsSdOnHdProgram_ once that program's CB build is
 // in place (Phase 4). Until then we also draw those via the HD program;
 // visual parity with SD mode will come in later phases.
-bool RenderService::RenderGeosetsHd() {
-    if (!blsHdProgram_ || !blsPsoBuilder_) return false;
-    if (models_.empty()) return true;
+// ============================================================================
+// GeosetPassHd — HD-path mesh draw. Runs only when renderMode_ == HD.
+// Drives the HD / SD_on_HD BLS programs with LH view+proj, the full PBR
+// texture stack (albedo/normal/ORM/emissive/team-color), IBL env probes +
+// split-sum LUT, and the optional debug-vis CB. Falls through to SD when
+// the HD program failed to load.
+// ============================================================================
+class GeosetPassHd : public BlsGeosetPass<GeosetPassHd> {
+public:
+    using BlsGeosetPass::BlsGeosetPass;
 
-    // Ensure the team-colour swatch matches the current UI picker. Cheap
-    // (no-op when colour is unchanged) and safe on the render thread.
-    UpdateTeamColorSwatch();
-
-    auto* cmd = gfx_->GetImmediateContext();
-
-    struct GeosetRef {
-        ModelInstance* mi;
-        int idx;
-        int renderOrder, priorityPlane, geosetId;
-    };
-    const int selectedLod = ComputeSelectedLod();
-    std::vector<GeosetRef> refs;
-    for (auto& [h, miPtr] : models_) {
-        auto* mi = miPtr.get();
-        if (mi->parentVisibility <= 0.02f) continue;
-        const int modelLod = mi->hasLods ? selectedLod : 0;
-        for (int i = 0; i < (int)mi->gpuGeosets.size(); i++) {
-            auto& geo = mi->gpuGeosets[i];
-            if (!GeosetPassesLod(geo.lod, modelLod)) continue;
-            int ro = 1;
-            int matId = geo.materialId;
-            if (matId >= 0 && matId < (int)mi->gpuMaterials.size() && !mi->gpuMaterials[matId].cpu.layers.empty())
-                ro = GetRenderOrder(mi->gpuMaterials[matId].cpu.layers[0].filterMode);
-            refs.push_back({mi, i, ro, geo.priorityPlane, geo.geosetId});
-        }
-    }
-    if (refs.empty()) return true;
-
-    std::sort(refs.begin(), refs.end(), [](const GeosetRef& a, const GeosetRef& b) {
-        if (a.renderOrder != b.renderOrder) return a.renderOrder < b.renderOrder;
-        if (a.priorityPlane != b.priorityPlane) return a.priorityPlane < b.priorityPlane;
-        return a.geosetId < b.geosetId;
-    });
-
-    // HD / SD_on_HD require the LH view + diagonal-FOV projection —
-    // see docs/CAMERA_PLAN.md.
-    const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    Matrix44f view2, proj;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        view2 = camera_.ViewLH();
-        proj  = camera_.ProjectionLH(aspect);
+    bool IsAvailable() const {
+        return rs_.blsHdProgram_ && rs_.blsPsoBuilder_;
     }
 
-    bls::FrameInputs frame;
-    frame.view       = view2;
-    frame.projection = proj;
-    frame.effectTime = animationTimeMs_.load() * 0.001f;
-    frame.numLights  = 0;
-    frame.viewportRect = { (float)width_, (float)height_, 0.0f, 0.0f };
-
-    // Day at t13, Night at t14. envTransitionT=0 picks day; once we wire
-    // day-night cycle state we'll lerp this. envMipEnd is the highest
-    // valid mip index of each probe's chain -- the shader's
-    // roughness -> mip remap clamps against these, and a non-zero product
-    // also keeps sampleIBL off the "probe disabled" fast-out path.
-    //
-    // Sweeping envTransitionT across [0, 1] during testing confirmed the
-    // shader's scalar day/night blend works as expected; the "one half
-    // brighter than the other" look that appeared once we swapped the
-    // procedural grey probe for real Lordaeron DDS comes from each
-    // probe being independently asymmetric (sun on one horizon, shadow
-    // on the other), which every blend between two asymmetric probes
-    // preserves. Mirrored normals on a symmetric character sample
-    // opposite faces of the cube, so the two halves legitimately reflect
-    // different content. A symmetric (averaged) probe or runtime yaw
-    // alignment would flatten the seam but would no longer be the
-    // scene's actual lighting.
-    frame.envFromMipEnd  = iblProbeMipEnd_;
-    frame.envToMipEnd    = iblProbeMipEnd_;
-    frame.envTransitionT = 0.75f;
-
-    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerLinear_);
-
-    // HD PS perms declare (t0 albedo, t1 normal, t3 emissive) and the
-    // HAS_IBL perms additionally declare (t13/t14 env cube arrays, t15
-    // split-sum LUT). Every declared slot needs a bound resource or we
-    // hit validation errors on DX12 / black reads on DX11. defaultTex_
-    // is a 1x1 white Texture2D -- neutral enough for albedo/normal/emissive
-    // fallbacks; env slots get the procedural grey probe, LUT gets the
-    // real split-sum.
-    // Dynamic sampler table covers s0..s3 (kSamplersPerStage=4). Bind
-    // linear to every slot; per-layer BindSampler(0, ...) overrides s0
-    // with the wrap-appropriate variant at draw time. s13..s15 are static
-    // samplers baked into the root signature (see d3d12_device.cpp root
-    // signature setup).
-    cmd->BindSampler(gfx::ShaderStage::Pixel, 1, samplerLinear_);
-    cmd->BindSampler(gfx::ShaderStage::Pixel, 2, samplerLinear_);
-    cmd->BindSampler(gfx::ShaderStage::Pixel, 3, samplerLinear_);
-
-    // Samplers at s13/s14/s15 are STATIC in the root signature (linear /
-    // clamp, baked at root-sig creation time) so we only need to bind the
-    // texture SRVs here. Keeping them off the dynamic sampler heap is
-    // essential: D3D12's sampler heap is capped at 2048 entries, and with
-    // ~100 HD draws per frame across 2 frames-in-flight a 16-slot range
-    // would overflow the ring and corrupt in-flight bindings (-> TDR).
-    if (iblFromProbe_ != gfx::TextureHandle::Invalid) {
-        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 13, iblFromProbe_);
-    }
-    if (iblToProbe_ != gfx::TextureHandle::Invalid) {
-        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 14, iblToProbe_);
-    }
-    if (iblSplitSumLut_ != gfx::TextureHandle::Invalid) {
-        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 15, iblSplitSumLut_);
+    void ComputeViewProj(Matrix44f& view, Matrix44f& proj) const {
+        // HD / SD_on_HD require the LH view + diagonal-FOV projection —
+        // see docs/CAMERA_PLAN.md.
+        const float aspect = (rs_.height_ > 0)
+            ? static_cast<float>(rs_.width_) / static_cast<float>(rs_.height_) : 1.0f;
+        std::lock_guard<std::mutex> lock(rs_.dataMutex_);
+        view = rs_.camera_.ViewLH();
+        proj = rs_.camera_.ProjectionLH(aspect);
     }
 
-    // HD baseline key (used ONLY when the model has no authored MDX
-    // lights). Camera-attached headlight: LH view has forward = +Z,
-    // so direction-to-source is -Z in view space regardless of
-    // camera pose. Tune intensity via constants.h.
-    const auto kBaselineDirToSourceVS = Vector3f{0.0f, 0.0f, -1.0f};
-    const auto kBaselineDiffuse       = Vector3f{kHdBaselineLightColor.x,   kHdBaselineLightColor.y,   kHdBaselineLightColor.z};
-    const auto kBaselineAmbient       = Vector3f{kHdBaselineAmbientColor.x, kHdBaselineAmbientColor.y, kHdBaselineAmbientColor.z};
+    void BindPassResources(gfx::IGFXCommandList* cmd, bls::FrameInputs& frame) {
+        // Refresh the team-colour swatch once per pass (matches the UI picker).
+        rs_.UpdateTeamColorSwatch();
 
-    for (auto& ref : refs) {
-        auto* mi  = ref.mi;
-        auto& geo = mi->gpuGeosets[ref.idx];
-        if (geo.vb == gfx::BufferHandle::Invalid || geo.ib == gfx::BufferHandle::Invalid || geo.indexCount == 0)
-            continue;
+        // Day at t13 / Night at t14 — envTransitionT=0.75 picks mostly day.
+        // envMipEnd clamps the roughness→mip remap; nonzero keeps sampleIBL
+        // off the "probe disabled" fast-out path.
+        frame.envFromMipEnd  = rs_.iblProbeMipEnd_;
+        frame.envToMipEnd    = rs_.iblProbeMipEnd_;
+        frame.envTransitionT = 0.75f;
 
-        int matId = geo.materialId;
+        // Dynamic sampler table covers s0..s3. Per-layer BindSampler(0, ...)
+        // overrides s0 with the wrap-appropriate variant at draw time.
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 1, rs_.samplerLinear_);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 2, rs_.samplerLinear_);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 3, rs_.samplerLinear_);
+
+        // s13..s15 are STATIC samplers baked into the root signature, so
+        // we only bind the SRVs here. Binding them via the dynamic heap
+        // would overflow D3D12's 2048-entry sampler cap and TDR.
+        if (rs_.iblFromProbe_ != gfx::TextureHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 13, rs_.iblFromProbe_);
+        if (rs_.iblToProbe_ != gfx::TextureHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 14, rs_.iblToProbe_);
+        if (rs_.iblSplitSumLut_ != gfx::TextureHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 15, rs_.iblSplitSumLut_);
+    }
+
+    bls::BaselineLights Baseline() const {
+        // HD baseline key (used ONLY when the model has no authored MDX
+        // lights). Camera-attached headlight: LH view has forward = +Z so
+        // direction-to-source is -Z in view space regardless of camera pose.
+        return {
+            /*ambient*/       { kHdBaselineAmbientColor.x, kHdBaselineAmbientColor.y, kHdBaselineAmbientColor.z },
+            /*diffuse*/       { kHdBaselineLightColor.x,   kHdBaselineLightColor.y,   kHdBaselineLightColor.z },
+            /*dirToSourceVS*/ { 0.0f, 0.0f, -1.0f },
+        };
+    }
+
+    void DrawGeoset(const render_detail::GeosetRef& ref,
+                    bls::FrameInputs&               frame,
+                    const Matrix44f&                /*view*/,
+                    gfx::IGFXCommandList*           cmd,
+                    int                             lightCountForGeoset) {
+        ModelInstance* mi  = ref.mi;
+        auto&          geo = mi->gpuGeosets[ref.idx];
+
         GPUMaterial* mat = nullptr;
+        const int matId = geo.materialId;
         if (matId >= 0 && matId < (int)mi->gpuMaterials.size()) mat = &mi->gpuMaterials[matId];
 
-        float geoAlpha = geo.geosetAlpha * mi->parentVisibility;
-        if (geoAlpha < 0.01f) continue;
+        const float geoAlpha = geo.geosetAlpha * mi->parentVisibility;
+        if (geoAlpha < 0.01f) return;
 
         int numLayers = mat ? (int)mat->cpu.layers.size() : 0;
         if (numLayers <= 0) numLayers = 1;
 
-        // HD path uses vs/hd.bls with FourBoneSkinning -- bind rest-pose
-        // data from unskinnedVb, not the compute-skinned gg.vb. Dedicated
-        // rest-pose vertex buffer (separate from baseVertBuf which stays
-        // as a structured SRV for the SD compute skinner) avoids the
-        // cross-frame SRV<->Vertex state transition churn on a shared
-        // resource. Falls back to gg.vb if the side stream didn't get
-        // created (shouldn't happen for MDX models).
+        // HD path uses vs/hd.bls with FourBoneSkinning — bind rest-pose data
+        // from unskinnedVb, not the compute-skinned gg.vb. Dedicated rest-
+        // pose VB (separate from baseVertBuf, which stays as a structured
+        // SRV for the SD compute skinner) avoids cross-frame SRV<->Vertex
+        // state churn on a shared resource. Falls back to gg.vb when the
+        // side stream wasn't created (shouldn't happen for MDX models).
         const gfx::BufferHandle vb0 =
-            (geo.unskinnedVb != gfx::BufferHandle::Invalid) ? geo.unskinnedVb
-                                                            : geo.vb;
+            (geo.unskinnedVb != gfx::BufferHandle::Invalid) ? geo.unskinnedVb : geo.vb;
         cmd->BindVertexBuffer(0, vb0, sizeof(Vertex));
         cmd->BindIndexBuffer(geo.ib, gfx::Format::R32_UINT);
 
@@ -3314,13 +3156,9 @@ bool RenderService::RenderGeosetsHd() {
         if (hasTangents)
             cmd->BindVertexBuffer(1, geo.tangentVb, sizeof(Vector4f));
 
-        // Bone weights+indices feeding FourBoneSkinning in vs/hd.bls +
-        // bone palette CB (vsCB3). Bone stream binds to slot 2 when a
-        // tangent stream lives on slot 1 (MeshHDSkinned layout), else
-        // collapses onto slot 1 directly (MeshHDSkinnedNoTangent).
-        // Skinning is independent of tangent availability — a mesh can
-        // carry bones without authored tangents (rare for v1200 HD,
-        // common otherwise) and should still animate.
+        // Bone weights+indices feeding FourBoneSkinning (ATTR5/ATTR6) +
+        // bone palette CB (vsCB3). Bone slot collapses onto slot 1 when
+        // no tangents are present.
         const bool hasBones =
             (geo.boneVb != gfx::BufferHandle::Invalid) &&
             (mi->bonePaletteCb != gfx::BufferHandle::Invalid);
@@ -3330,70 +3168,12 @@ bool RenderService::RenderGeosetsHd() {
             cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, mi->bonePaletteCb);
         }
 
-        // --- Per-geoset HD ShaderLight palette -----------------------------
-        int lightCountForGeoset = 0;
-        bool anyEnabled = false;
-        for (const auto& L : mi->activeLights) { if (L.enabled) { anyEnabled = true; break; } }
-        if (!anyEnabled) {
-            bls::ShaderLight& sl = frame.lights[lightCountForGeoset++];
-            sl.ambient  = { kBaselineAmbient.x, kBaselineAmbient.y, kBaselineAmbient.z, 0.0f };
-            sl.diffuse  = { kBaselineDiffuse.x, kBaselineDiffuse.y, kBaselineDiffuse.z, 0.0f };
-            sl.position = { kBaselineDirToSourceVS.x, kBaselineDirToSourceVS.y, kBaselineDirToSourceVS.z, 0.0f };
-        }
-        for (const auto& L : mi->activeLights) {
-            if (!L.enabled) continue;
-            if (lightCountForGeoset >= bls::kMaxLights) break;
-            bls::ShaderLight& sl = frame.lights[lightCountForGeoset++];
-            sl.ambient = { L.ambient.x, L.ambient.y, L.ambient.z, 0.0f };
-            sl.diffuse = { L.diffuse.x, L.diffuse.y, L.diffuse.z, 0.0f };
-            if (L.kind == FrameState::LightKind::Directional) {
-                Vector3f d = L.worldDir;
-                float    n = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
-                if (n > 1e-6f) { d.x /= n; d.y /= n; d.z /= n; }
-                Vector3f lv = whiteout::transform_normal(Vector3f{-d.x, -d.y, -d.z}, view2);
-                sl.position = { lv.x, lv.y, lv.z, 0.0f };
-            } else {
-                Vector3f p = whiteout::transform_point(L.worldPos, view2);
-                sl.position = { p.x, p.y, p.z, 1.0f };
-            }
-        }
-        for (int i = lightCountForGeoset; i < bls::kMaxLights; ++i) frame.lights[i] = {};
-
         for (int li = 0; li < numLayers; ++li) {
-            int   layerFilter   = FILTER_NONE;
-            int   layerFlags    = 0;
-            float layerAlpha    = 1.0f;
-            int   layerTexId    = -1;
-            int   texAnimId     = -1;
-            int   layerShaderId = 0;
-            int   layerNormalId    = -1;
-            int   layerOrmId       = -1;
-            int   layerEmissiveId  = -1;
-            int   layerTeamColorId = -1;
-            float layerEmissiveGain    = 0.0f;
-            float layerFresnelOpacity  = 0.0f;
-            float layerFresnelTeamColor = 0.0f;
-            Vector3f layerFresnelColor = {0.0f, 0.0f, 0.0f};
-            if (mat && li < (int)mat->cpu.layers.size()) {
-                const auto& L = mat->cpu.layers[li];
-                layerFilter       = L.filterMode;
-                layerFlags        = L.flags;
-                layerAlpha        = L.alpha;
-                layerTexId        = L.textureId;
-                texAnimId         = L.textureAnimationId;
-                layerShaderId     = L.shaderId;
-                layerNormalId     = L.normalMapId;
-                layerOrmId        = L.ormMapId;
-                layerEmissiveId   = L.emissiveMapId;
-                layerTeamColorId  = L.teamColorMapId;
-                layerEmissiveGain    = L.emissiveGain;
-                layerFresnelOpacity  = L.fresnelOpacity;
-                layerFresnelTeamColor = L.fresnelTeamColor;
-                layerFresnelColor    = L.fresnelColor;
-            }
+            const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
 
-            if (texAnimId >= 0 && texAnimId < (int)mi->texAnimPalette.size()) {
-                const auto& e = mi->texAnimPalette[texAnimId];
+            if (layer.textureAnimationId >= 0 &&
+                layer.textureAnimationId < (int)mi->texAnimPalette.size()) {
+                const auto& e = mi->texAnimPalette[layer.textureAnimationId];
                 frame.texMtx0.rows[0] = { e.row0[0], e.row0[1], e.row0[2], e.row0[3] };
                 frame.texMtx0.rows[1] = { e.row1[0], e.row1[1], e.row1[2], e.row1[3] };
             } else {
@@ -3401,10 +3181,10 @@ bool RenderService::RenderGeosetsHd() {
             }
             frame.texMtx1 = bls::IdentityTexMtx();
 
-            float combinedAlpha = geoAlpha * layerAlpha;
+            float combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f) continue;
-            int effectiveFilter = layerFilter;
-            if (combinedAlpha < 0.99f && layerFilter <= FILTER_TRANSPARENT)
+            int effectiveFilter = layer.filterMode;
+            if (combinedAlpha < 0.99f && layer.filterMode <= FILTER_TRANSPARENT)
                 effectiveFilter = FILTER_BLEND;
 
             // Route program + permute family based on the MDX layer's
@@ -3413,17 +3193,17 @@ bool RenderService::RenderGeosetsHd() {
             // variant goes through hd.bls; SD-authored or unknown layers use
             // sd_on_hd.bls (which is the HD-mode fallback for legacy assets).
             const bool isHdMaterial =
-                (layerShaderId == 1) /* HD */ || (layerShaderId == 24) /* Crystal */;
+                (layer.shaderId == 1) /* HD */ || (layer.shaderId == 24) /* Crystal */;
             const bls::GxShaderID programShaderId =
                 isHdMaterial ? bls::GxShaderID::HD : bls::GxShaderID::SD_on_HD;
             const bls::BlsProgram* program =
-                isHdMaterial ? blsHdProgram_ : blsSdOnHdProgram_;
+                isHdMaterial ? rs_.blsHdProgram_ : rs_.blsSdOnHdProgram_;
             // Fall back to whichever program is available if the selected
             // one failed to load; keeps draws alive instead of going black.
-            if (!program) program = blsHdProgram_ ? blsHdProgram_ : blsSdOnHdProgram_;
+            if (!program) program = rs_.blsHdProgram_ ? rs_.blsHdProgram_ : rs_.blsSdOnHdProgram_;
             if (!program) continue;
 
-            bls::MatParams mp = bls::FromMdxLayer(effectiveFilter, layerFlags, programShaderId);
+            bls::MatParams mp = bls::FromMdxLayer(effectiveFilter, layer.flags, programShaderId);
             if (mp.alpha == bls::GxMatAlpha::Modulate) {
                 mp.diffuseColor = {combinedAlpha, 1, 1, 1};
             } else {
@@ -3433,10 +3213,10 @@ bool RenderService::RenderGeosetsHd() {
             // Engine layout per CGxMatParams::PixelParams (IDA):
             //   pixelParams1 = {inverseSoftness, cloak, fresnelTeamColor, 0}
             //   fresnelColor = {fresnelR, fresnelG, fresnelB, fresnelOpacity}
-            mp.emissiveGain     = layerEmissiveGain;
-            mp.fresnelTeamColor = layerFresnelTeamColor;
-            mp.fresnelOpacity   = layerFresnelOpacity;
-            mp.fresnelColor     = layerFresnelColor;
+            mp.emissiveGain     = layer.emissiveGain;
+            mp.fresnelTeamColor = layer.fresnelTeamColor;
+            mp.fresnelOpacity   = layer.fresnelOpacity;
+            mp.fresnelColor     = layer.fresnelColor;
 
             // Phase 6: GFX supports TextureCubeArray now (kSrvsPerStage=16,
             // TextureDesc::isCube), so we can legally pick lights>0
@@ -3478,8 +3258,8 @@ bool RenderService::RenderGeosetsHd() {
             // RenderDoc. Only enable when the layer actually authored
             // a TeamColor subtexture — the standard perm is what
             // every other HD draw wants.
-            rs.teamColor      = (layerTeamColorId >= 0);
-            const int  dbgMode     = hdDebugMode_.load();
+            rs.teamColor      = (layer.teamColorMapId >= 0);
+            const int  dbgMode     = rs_.hdDebugMode_.load();
             const bool debugActive = (dbgMode > 0);
             rs.debugShader = debugActive;
             auto perm = bls::SelectPermutes(rs);
@@ -3507,34 +3287,32 @@ bool RenderService::RenderGeosetsHd() {
             req.rtvFormat = gfx::Format::R8G8B8A8_UNORM;
             req.dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
             req.lhClipSpace = true;  // HD/SD_on_HD stack (distinct PSO hash)
-            auto pso = blsPsoBuilder_->GetOrBuild(req);
+            auto pso = rs_.blsPsoBuilder_->GetOrBuild(req);
             if (pso == gfx::PipelineHandle::Invalid) continue;
             cmd->BindPipeline(pso);
 
             frame.world = mi->worldTransform;
 
             // VS CB layout is shared between HD and SD_on_HD programs.
-            if (auto* vs = (bls::HdVsCb*)gfx_->MapBuffer(blsHdVsCb_)) {
+            if (auto vs = bls::ScopedCb<bls::HdVsCb>(rs_.gfx_.get(), rs_.blsHdVsCb_)) {
                 bls::BuildHdVsCb(*vs, frame, mp);
-                gfx_->UnmapBuffer(blsHdVsCb_);
             }
-            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, blsHdVsCb_);
+            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, rs_.blsHdVsCb_);
 
             // PS CB layout diverges by program: hd_ps.slang reads PBR
             // fields directly (HdPsCb) while sd_on_hd_ps.slang reads a
             // padded legacy layout (SdOnHdPsCb) with invViewRow rows and
             // lightCountSlot.z bit-reinterpret.
-            if (program == blsHdProgram_) {
-                if (auto* ps = (bls::HdPsCb*)gfx_->MapBuffer(blsHdPsCb_)) {
+            if (program == rs_.blsHdProgram_) {
+                if (auto ps = bls::ScopedCb<bls::HdPsCb>(rs_.gfx_.get(), rs_.blsHdPsCb_)) {
                     bls::BuildHdPsCb(*ps, frame, mp);
-                    gfx_->UnmapBuffer(blsHdPsCb_);
                 }
-                cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, blsHdPsCb_);
+                cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, rs_.blsHdPsCb_);
                 // b3 DebugVisCB. Only meaningful when the HAS_DEBUG_VIS
                 // permute is picked (rs.debugShader); bound
                 // unconditionally so the shader slot is always live
                 // even in "mode 0 = normal render" — cheap no-op bind.
-                if (auto* dbg = (bls::DebugVisCb*)gfx_->MapBuffer(blsHdDebugVisCb_)) {
+                if (auto dbg = bls::ScopedCb<bls::DebugVisCb>(rs_.gfx_.get(), rs_.blsHdDebugVisCb_)) {
                     // UI combo index → shader state:
                     //   0..4: psCB3.debugMode, enabledShaders = 0
                     //   5: albedo override WHITE (shading only)
@@ -3557,15 +3335,13 @@ bool RenderService::RenderGeosetsHd() {
                     dbg->_p0[0] = dbg->_p0[1] = 0.0f;
                     dbg->overrideAlbedo = overrideA; dbg->_p1 = 0.0f;
                     dbg->overrideOrm    = {0, 0, 0}; dbg->_p2 = 0.0f;
-                    gfx_->UnmapBuffer(blsHdDebugVisCb_);
                 }
-                cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, blsHdDebugVisCb_);
+                cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, rs_.blsHdDebugVisCb_);
             } else {
-                if (auto* ps = (bls::SdOnHdPsCb*)gfx_->MapBuffer(blsSdOnHdPsCb_)) {
+                if (auto ps = bls::ScopedCb<bls::SdOnHdPsCb>(rs_.gfx_.get(), rs_.blsSdOnHdPsCb_)) {
                     bls::BuildSdOnHdPsCb(*ps, frame, mp);
-                    gfx_->UnmapBuffer(blsSdOnHdPsCb_);
                 }
-                cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, blsSdOnHdPsCb_);
+                cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, rs_.blsSdOnHdPsCb_);
             }
 
             // Bind the HD PBR texture stack. Slots:
@@ -3602,10 +3378,10 @@ bool RenderService::RenderGeosetsHd() {
             };
 
             uint32_t wrapFlags = kWrapFlagsMask;
-            bindMaterialTex(0, layerTexId,       defaultTex_,    &wrapFlags); // t0 albedo (white)
-            bindMaterialTex(1, layerNormalId,    defaultNormal_, nullptr);    // t1 normal (flat)
-            bindMaterialTex(2, layerOrmId,       defaultOrm_,    nullptr);    // t2 ORM (occlusion=1, roughness=1, metal=0, teamBlend=0)
-            bindMaterialTex(3, layerEmissiveId,  defaultBlack_,  nullptr);    // t3 emissive (no glow)
+            bindMaterialTex(0, layer.textureId,      rs_.defaultTex_,    &wrapFlags); // t0 albedo (white)
+            bindMaterialTex(1, layer.normalMapId,    rs_.defaultNormal_, nullptr);    // t1 normal (flat)
+            bindMaterialTex(2, layer.ormMapId,       rs_.defaultOrm_,    nullptr);    // t2 ORM (occlusion=1, roughness=1, metal=0, teamBlend=0)
+            bindMaterialTex(3, layer.emissiveMapId,  rs_.defaultBlack_,  nullptr);    // t3 emissive (no glow)
             // t4 team colour: when the MDX layer authors a TeamColor
             // subtexture (or the model carries a replaceableId=1 slot at
             // any point), bind the live UI swatch — the engine itself
@@ -3613,17 +3389,20 @@ bool RenderService::RenderGeosetsHd() {
             // swaps in the per-player tint at draw time. Without an
             // authored slot, fall back to black so ORM.w-driven blends
             // on unrelated materials stay neutral.
-            if (layerTeamColorId >= 0 && teamColorTex_ != gfx::TextureHandle::Invalid) {
-                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4, teamColorTex_);
+            if (layer.teamColorMapId >= 0 && rs_.teamColorTex_ != gfx::TextureHandle::Invalid) {
+                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4, rs_.teamColorTex_);
             } else {
-                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4, defaultBlack_);
+                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4, rs_.defaultBlack_);
             }
-            cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[wrapFlags]);
+            cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplerWrap_[wrapFlags]);
 
             cmd->DrawIndexed(geo.indexCount);
         }
     }
-    return true;
+};
+
+bool RenderService::RenderGeosetsHd() {
+    return GeosetPassHd{*this}.Run();
 }
 
 void RenderService::RenderGeosets() {
@@ -3642,35 +3421,8 @@ void RenderService::RenderGeosets() {
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
     cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerLinear_);
 
-    // Collect geoset draw refs from all models for global sort
-    struct GeosetRef {
-        ModelInstance* mi;
-        int idx;
-        int renderOrder, priorityPlane, geosetId;
-    };
-    const int selectedLod = ComputeSelectedLod();
-    std::vector<GeosetRef> refs;
-    for (auto& [h, miPtr] : models_) {
-        auto* mi = miPtr.get();
-        if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
-        const int modelLod = mi->hasLods ? selectedLod : 0;
-        for (int i = 0; i < (int)mi->gpuGeosets.size(); i++) {
-            auto& geo = mi->gpuGeosets[i];
-            if (!GeosetPassesLod(geo.lod, modelLod)) continue;
-            int ro = 1;
-            int matId = geo.materialId;
-            if (matId >= 0 && matId < (int)mi->gpuMaterials.size() && !mi->gpuMaterials[matId].cpu.layers.empty())
-                ro = GetRenderOrder(mi->gpuMaterials[matId].cpu.layers[0].filterMode);
-            refs.push_back({mi, i, ro, geo.priorityPlane, geo.geosetId});
-        }
-    }
+    auto refs = render_detail::CollectSortedGeosetRefs(models_, ComputeSelectedLod());
     if (refs.empty()) return;
-
-    std::sort(refs.begin(), refs.end(), [](const GeosetRef& a, const GeosetRef& b) {
-        if (a.renderOrder != b.renderOrder) return a.renderOrder < b.renderOrder;
-        if (a.priorityPlane != b.priorityPlane) return a.priorityPlane < b.priorityPlane;
-        return a.geosetId < b.geosetId;
-    });
 
     Matrix44f view2;
     { std::lock_guard<std::mutex> lock(dataMutex_); view2 = camera_.GetViewMatrix(); }
@@ -3696,42 +3448,30 @@ void RenderService::RenderGeosets() {
 
         bool anyLayerThisPass = false;
         for (int li = 0; li < numLayers; ++li) {
-            int layerFilter = FILTER_NONE;
-            int layerFlags  = 0;
-            float layerAlpha = 1.0f;
-            int layerTexId  = -1;
-
-            if (mat && li < (int)mat->cpu.layers.size()) {
-                const auto& L = mat->cpu.layers[li];
-                layerFilter = L.filterMode;
-                layerFlags  = L.flags;
-                layerAlpha  = L.alpha;
-                layerTexId  = L.textureId;
-            }
+            const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
 
             if (!anyLayerThisPass) {
-                cmd->BindVertexBuffer(0, geo.vb, sizeof(Vertex));
-                cmd->BindIndexBuffer(geo.ib, gfx::Format::R32_UINT);
+                render_detail::BindSdMeshGeometry(cmd, geo);
                 anyLayerThisPass = true;
             }
 
-            bool twoSided    = (layerFlags & MAT_TWO_SIDED) != 0;
-            bool noDepthTest = (layerFlags & MAT_NO_DEPTH_TEST) != 0;
-            bool noDepthSet  = (layerFlags & MAT_NO_DEPTH_SET) != 0;
+            bool twoSided    = (layer.flags & MAT_TWO_SIDED) != 0;
+            bool noDepthTest = (layer.flags & MAT_NO_DEPTH_TEST) != 0;
+            bool noDepthSet  = (layer.flags & MAT_NO_DEPTH_SET) != 0;
 
-            float combinedAlpha = geoAlpha * layerAlpha;
+            float combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f) continue;
 
             // For semi-transparent opaque/alpha-test layers, override to alpha-blend + noWrite
-            int effectiveFilter = layerFilter;
-            if (combinedAlpha < 0.99f && layerFilter <= FILTER_TRANSPARENT)
+            int effectiveFilter = layer.filterMode;
+            if (combinedAlpha < 0.99f && layer.filterMode <= FILTER_TRANSPARENT)
                 effectiveFilter = FILTER_BLEND;
 
             cmd->BindPipeline(LookupMeshPSO(effectiveFilter, twoSided, noDepthTest, noDepthSet));
 
             float alphaRef = 0.0f;
-            if (layerFilter == FILTER_TRANSPARENT) alphaRef = 0.75f;
-            else if (layerFilter >= FILTER_MODULATE) alphaRef = 0.02f;
+            if (layer.filterMode == FILTER_TRANSPARENT) alphaRef = 0.75f;
+            else if (layer.filterMode >= FILTER_MODULATE) alphaRef = 0.02f;
 
             // Texture animation (per-layer, per-model)
             float uOff=0, vOff=0, uTile=1, vTile=1, texRot=0;
@@ -3759,27 +3499,15 @@ void RenderService::RenderGeosets() {
                 cb->extraParams   = {combinedAlpha, geoColor.x, geoColor.y, geoColor.z};
                 cb->texAnimParams = {uOff, vOff, uTile, vTile};
                 cb->materialFlags = {
-                    (layerFlags & MAT_UNSHADED)       ? 1.0f : 0.0f,
-                    (layerFlags & MAT_CONSTANT_COLOR) ? 1.0f : 0.0f,
+                    (layer.flags & MAT_UNSHADED)       ? 1.0f : 0.0f,
+                    (layer.flags & MAT_CONSTANT_COLOR) ? 1.0f : 0.0f,
                     texRot, 0.0f
                 };
                 gfx_->UnmapBuffer(cbPerFrame_);
             }
 
-            // Per-model texture
-            uint32_t wrapFlags = kWrapFlagsMask; // default: wrap both
-            bool hasModelTex = false;
-            if (layerTexId >= 0 && mi->gpuTextures.count(layerTexId)) {
-                auto& gt = mi->gpuTextures[layerTexId];
-                if (gt.tex != gfx::TextureHandle::Invalid) {
-                    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, gt.tex);
-                    wrapFlags = gt.wrapFlags & kWrapFlagsMask;
-                    hasModelTex = true;
-                }
-            }
-            if (!hasModelTex)
-                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
-            cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[wrapFlags]);
+            render_detail::BindLayerAlbedo(cmd, *mi, layer.textureId,
+                                           defaultTex_, samplerWrap_);
 
             cmd->DrawIndexed(geo.indexCount, 0, 0);
         }

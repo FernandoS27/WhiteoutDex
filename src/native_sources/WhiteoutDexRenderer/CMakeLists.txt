@@ -122,6 +122,7 @@ set_property(CACHE WDX_DEFAULT_COORD_SPACE PROPERTY STRINGS "Blizzard" "Max")
 # ---- Static library: standalone renderer + MDX adapter ----
 add_library(WhiteoutDexRendererLib STATIC
     src/renderer/render_service.cpp
+    src/renderer/render_service_internal.cpp
     src/renderer/render_target.cpp
     src/renderer/viewcube_atlas.cpp
     src/renderer/coordinate_system.cpp
@@ -142,6 +143,7 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/bls/bls_pso_builder.cpp
     src/renderer/bls/bls_mat_params.cpp
     src/renderer/bls/bls_frame.cpp
+    src/renderer/bls/bls_draw_helpers.cpp
     src/renderer/ibl/split_sum.cpp
     src/renderer/ibl/env_probe.cpp
     src/io/mdx_animation.cpp

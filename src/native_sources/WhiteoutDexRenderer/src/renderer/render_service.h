@@ -47,7 +47,18 @@ struct LineVertex {
 // Render Service — synchronous rendering API
 // ============================================================================
 
+// Forward declarations for the Phase 2 CRTP pass classes (geoset_pass.h).
+// The base reads RenderService members directly via friendship; the two
+// derived classes live in render_service.cpp where the concrete bodies
+// need to sit next to ApplyBoneMatrices et al.
+template <class> class BlsGeosetPass;
+class GeosetPassBls;
+class GeosetPassHd;
+
 class RenderService {
+    template <class> friend class BlsGeosetPass;
+    friend class GeosetPassBls;
+    friend class GeosetPassHd;
 public:
     RenderService();
     ~RenderService();
@@ -209,6 +220,22 @@ public:
     // Set the primary render target (used by ResizePrimaryTarget / RenderViewCube)
     void SetPrimaryTarget(RenderTargetId id) { primaryTargetId_ = id; }
 
+    // ---- Static helpers (public so free-function render helpers can reuse) ----
+    // LOD test: geosets flagged with the always-draw sentinel pass every level;
+    // otherwise only the geoset whose lod matches the currently selected level.
+    static bool GeosetPassesLod(uint32_t geosetLod, int selectedLod) {
+        return geosetLod == 0xFFFFFFFFu || (int)geosetLod == selectedLod;
+    }
+    // Render-order bucket for the global sort: opaque → masked → blend → other.
+    static int GetRenderOrder(int filterMode) {
+        switch (filterMode) {
+            case FILTER_NONE:        return 1;
+            case FILTER_TRANSPARENT: return 2;
+            case FILTER_BLEND:       return 3;
+            default:                 return 4;
+        }
+    }
+
 private:
     void CleanupD3D();
     bool CreateShaders();
@@ -248,9 +275,6 @@ private:
     // LOD data always get 0 — caller checks mi.hasLods to decide which
     // to use, then tests each geoset with GeosetPassesLod.
     int  ComputeSelectedLod() const;
-    static bool GeosetPassesLod(uint32_t geosetLod, int selectedLod) {
-        return geosetLod == 0xFFFFFFFFu || (int)geosetLod == selectedLod;
-    }
 
     // Debug light markers (one wireframe sphere per evaluated light at its
     // final world-space position; tinted by the light's diffuse colour).
@@ -280,15 +304,6 @@ private:
     // ViewCube (creation + rendering stay private; hit-test/snap/rect are public)
     bool CreateViewCube();
     void RenderViewCube();
-
-    static int GetRenderOrder(int filterMode) {
-        switch (filterMode) {
-            case FILTER_NONE:        return 1;
-            case FILTER_TRANSPARENT: return 2;
-            case FILTER_BLEND:       return 3;
-            default:                 return 4;
-        }
-    }
 
     // PE2 service — centralised registry for the new particle path. Coexists
     // with the legacy per-ModelInstance ParticleSystem until Phase 6 cut-over.
