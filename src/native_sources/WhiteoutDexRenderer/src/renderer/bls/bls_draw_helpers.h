@@ -43,11 +43,19 @@ int BuildLightPalette(FrameInputs&                                      frame,
 
 // Canonical BLS (SD-in-SD-mode) mesh RenderState. Mirrors the inline fill
 // that was duplicated across RenderGeosetsBls / RenderParticlesBls:
-//   shaderId=SD, numColors=1, numTexCoords=1, numWeights=0,
+//   shaderId=SD, numColors=1, numTexCoords=1,
+//   numWeights = hasBones ? 4 : 0,
 //   fogEnabled=false, lightingEnabled=(!unlit && activeLights > 0).
-// Compute-pass skinning already bakes world-space vertices into geo.vb so
-// numWeights stays 0; the VS picks the "no skinning" permute.
-RenderState MakeSdMeshRenderState(const MatParams& mat, int activeLights, bool unlit);
+// Callers pass hasBones=true only when the geoset has a populated
+// boneVb + bonePaletteCb; in that case the VS selects the native
+// FourBoneSkinning permute and skins from slot-1 BoneVertex data. When
+// hasBones=false the shader picks the "no skinning" permute and slot 0
+// must carry already-rigid geometry (unskinnedVb for static geosets,
+// or billboard geometry for particles/ribbons).
+RenderState MakeSdMeshRenderState(const MatParams& mat,
+                                  int              activeLights,
+                                  bool             unlit,
+                                  bool             hasBones = false);
 
 // Assembles a PsoRequest from the pieces every BLS draw call has in hand.
 // rtvFormat / dsvFormat / topology keep their struct defaults so callers

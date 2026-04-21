@@ -53,13 +53,21 @@ int BuildLightPalette(FrameInputs&                                     frame,
     return count;
 }
 
-RenderState MakeSdMeshRenderState(const MatParams& mat, int activeLights, bool unlit) {
+RenderState MakeSdMeshRenderState(const MatParams& mat,
+                                  int              activeLights,
+                                  bool             unlit,
+                                  bool             hasBones) {
     RenderState rs;
     rs.shaderId        = GxShaderID::SD;
     rs.alphaMode       = static_cast<uint8_t>(mat.alpha);
     rs.numColors       = 1;
     rs.numTexCoords    = 1;
-    rs.numWeights      = 0;                 // compute pass has already baked skinning
+    // numWeights=4 selects the FourBoneSkinning permute — the SD VS will
+    // pull ATTR5/ATTR6 from the slot-1 BoneVertex stream and blend
+    // against vsCB3's bone palette. For unskinned draws (particles,
+    // ribbons, static geosets) hasBones=false drops numWeights to 0
+    // and the VS picks the rigid-geometry permute.
+    rs.numWeights      = static_cast<uint8_t>(hasBones ? 4 : 0);
     rs.numLights       = static_cast<uint8_t>(activeLights);
     rs.fogEnabled      = false;
     rs.depthWrite      = mat.DepthWriteEnabled();

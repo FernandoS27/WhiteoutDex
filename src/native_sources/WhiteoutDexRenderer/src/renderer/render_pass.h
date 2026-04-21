@@ -62,7 +62,7 @@ public:
         for (auto& ref : refs) {
             auto* mi  = ref.mi;
             auto& geo = mi->gpuGeosets[ref.idx];
-            if (geo.vb == gfx::BufferHandle::Invalid ||
+            if (geo.unskinnedVb == gfx::BufferHandle::Invalid ||
                 geo.ib == gfx::BufferHandle::Invalid ||
                 geo.indexCount == 0) continue;
 

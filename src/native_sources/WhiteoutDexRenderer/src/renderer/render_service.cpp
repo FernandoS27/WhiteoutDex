@@ -1375,68 +1375,23 @@ void RenderService::UploadStagedGeosets(ModelInstance& mi) {
         if (sg.materialId >= 0 && sg.materialId < (int)mi.gpuMaterials.size())
             gg.priorityPlane = mi.gpuMaterials[sg.materialId].cpu.priorityPlane;
 
-        uint32_t vbBytes = (uint32_t)(sizeof(Vertex) * sg.vertices.size());
-
-        // 1. Base vertex buffer (immutable structured SRV for compute skinning)
-        gg.baseVertBuf = gfx_->CreateBuffer({
-            .size          = vbBytes,
-            .elementStride = sizeof(Vertex),
-            .usage         = gfx::BufferUsage::ShaderResource,
-        }, sg.vertices.data());
-
-        // 2. Weight buffer (immutable structured SRV) — pack VertexInfluence into uint4 + float4
-        struct GPUWeight { uint32_t boneIdx[4]; float weight[4]; };
-        static_assert(sizeof(GPUWeight) == 32, "GPUWeight must be 32 bytes");
-        std::vector<GPUWeight> gpuWeights(gg.vertexCount);
+        const uint32_t vbBytes = (uint32_t)(sizeof(Vertex) * sg.vertices.size());
         const GeosetSkinInfo* skinInfo = mi.skinning.GetGeosetWeights(id);
-        if (skinInfo && (int)skinInfo->vertices.size() == gg.vertexCount) {
-            for (int v = 0; v < gg.vertexCount; v++) {
-                const auto& inf = skinInfo->vertices[v];
-                for (int j = 0; j < 4; j++) {
-                    gpuWeights[v].boneIdx[j] = (uint32_t)inf.boneIdx[j];
-                    gpuWeights[v].weight[j]  = inf.weight[j];
-                }
-            }
-        }
 
-        gg.weightBuf = gfx_->CreateBuffer({
-            .size          = (uint32_t)(sizeof(GPUWeight) * gg.vertexCount),
-            .elementStride = sizeof(GPUWeight),
-            .usage         = gfx::BufferUsage::ShaderResource,
-        }, gpuWeights.data());
-
-        // 3. Skinned output buffer (structured UAV for compute output)
-        gg.skinnedBuf = gfx_->CreateBuffer({
-            .size          = vbBytes,
-            .elementStride = sizeof(Vertex),
-            .usage         = gfx::BufferUsage::UnorderedAccess,
-        });
-
-        // 4. Vertex buffer for drawing (DEFAULT — CopyBuffer target from skinned output)
-        gg.vb = gfx_->CreateBuffer({
-            .size  = vbBytes,
-            .usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::GpuWritable,
-        }, sg.vertices.data());
-
-        // Index buffer (immutable)
-        gg.ib = gfx_->CreateBuffer({
-            .size  = (uint32_t)(sizeof(uint32_t) * sg.indices.size()),
-            .usage = gfx::BufferUsage::Index,
-        }, sg.indices.data());
-
-        // HD-path vertex buffers: vs/hd.bls performs FourBoneSkinning in
-        // the VS itself, so the HD draw binds rest-pose data directly and
-        // does not use geo.vb (which holds the compute-skinned output for
-        // the SD paths). Three dedicated side streams so the compute's
-        // SRV state on baseVertBuf doesn't collide with a Vertex-state
-        // binding on the same resource mid-frame:
-        //   unskinnedVb : ATTR0..ATTR3 (slot 0, same Vertex layout as vb)
-        //   tangentVb   : ATTR7        (slot 1, float4 -- xyz dir, w handedness)
-        //   boneVb      : ATTR5/ATTR6  (slot 2, 4-bone weights + indices)
+        // Slot-0 stream: rest-pose Vertex data (PNCT0, 48 B). Both SD and
+        // HD VS consume this directly; the VS runs FourBoneSkinning
+        // against vsCB3 when numWeights>0, or passes through for static
+        // geosets. No separate compute-output buffer is needed -- all
+        // bone blending happens in the vertex shader.
         gg.unskinnedVb = gfx_->CreateBuffer({
             .size  = vbBytes,
             .usage = gfx::BufferUsage::Vertex,
         }, sg.vertices.data());
+
+        gg.ib = gfx_->CreateBuffer({
+            .size  = (uint32_t)(sizeof(uint32_t) * sg.indices.size()),
+            .usage = gfx::BufferUsage::Index,
+        }, sg.indices.data());
 
         if ((int)sg.tangents.size() == gg.vertexCount) {
             gg.tangentVb = gfx_->CreateBuffer({
@@ -1445,11 +1400,10 @@ void RenderService::UploadStagedGeosets(ModelInstance& mi) {
             }, sg.tangents.data());
         }
 
-        // Pack VertexInfluence into MeshVertexSD-style BoneVertex: the
-        // first 4 bytes are weights as R8G8B8A8_UNORM (quantised to
-        // /255 and normalised to sum to 255), the next 4 are bone
-        // indices as R8G8B8A8_UINT. Exactly matches the ATTR5/ATTR6
-        // layout in kMeshSDSkinned (see bls_pso_builder.cpp:39-40).
+        // Pack VertexInfluence into BoneVertex: weights R8G8B8A8_UNORM
+        // (normalised to sum to 255) + indices R8G8B8A8_UINT, 8 B total.
+        // Matches the ATTR5/ATTR6 layout in kParticleSDSkinned /
+        // kMeshHDSkinned so the same buffer feeds both SD and HD draws.
         if (skinInfo && (int)skinInfo->vertices.size() == gg.vertexCount) {
             std::vector<BoneVertex> bv(gg.vertexCount);
             for (int v = 0; v < gg.vertexCount; v++) {
@@ -1483,19 +1437,10 @@ void RenderService::CreateNodePalette(ModelInstance& mi) {
     for (auto& geo : mi.gpuGeosets)
         geo.hasSkinning = true;
 
-    int nodeCount = mi.skinning.NodeCount();
-    if (nodeCount > 0 && mi.nodePalette == gfx::BufferHandle::Invalid) {
-        mi.nodePalette = gfx_->CreateBuffer({
-            .size          = (uint32_t)(sizeof(Matrix44f) * nodeCount),
-            .elementStride = sizeof(Matrix44f),
-            .usage         = gfx::BufferUsage::ShaderResource | gfx::BufferUsage::CpuWritable,
-        });
-    }
-    // Companion constant buffer consumed by vs/hd.bls's FourBoneSkinning
-    // policy. Same bone data as nodePalette, packed as BonePaletteCb
-    // (256 entries of 3 float4 rows = 12288 B) so the HD VS can read
-    // vsCB3.matrices[i] directly via its `mul(row-vec, matrix)`
-    // convention in bls_frame.cpp::PackBone.
+    // Bone palette constant buffer consumed by vs/sd.bls and vs/hd.bls's
+    // FourBoneSkinning. BonePaletteCb is 256 entries * 3 float4 rows =
+    // 12288 B; UpdateAnimation refreshes it per-frame via BuildBonePalette.
+    const int nodeCount = mi.skinning.NodeCount();
     if (nodeCount > 0 && mi.bonePaletteCb == gfx::BufferHandle::Invalid) {
         mi.bonePaletteCb = gfx_->CreateBuffer({
             .size  = sizeof(bls::BonePaletteCb),
@@ -1557,89 +1502,25 @@ void RenderService::ReleaseModelGPU() {
 // ============================================================================
 
 void RenderService::UpdateAnimation() {
-    // GPU compute skinning: upload bone palette, dispatch per geoset
+    // Evaluate skinning on CPU once per frame and push the bone palette
+    // to the GPU constant buffer (vsCB3) that both SD and HD VS consume
+    // for FourBoneSkinning. Actual vertex blending now happens inside
+    // the VS -- no compute pass, no geo.vb writeback.
     std::lock_guard<std::mutex> lock(dataMutex_);
-
-    // Quick check: any model needs skinning?
-    bool anySkinned = false;
-    for (auto& [h, miPtr] : models_) {
-        if (miPtr->skinning.HasSkeleton() && miPtr->skinning.IsReady()
-            && miPtr->nodePalette != gfx::BufferHandle::Invalid) {
-            anySkinned = true;
-            break;
-        }
-    }
-    if (!anySkinned) return;
-
-    auto* cmd = gfx_->GetImmediateContext();
-
-    // Compute skinning writes into gg.vb for the SD / SD_on_HD draw paths
-    // that bind gg.vb at slot 0. The HD path reads rest-pose vertices from
-    // unskinnedVb and has the VS perform FourBoneSkinning in vs/hd.bls, so
-    // gg.vb is never touched there -- skip the dispatch entirely when the
-    // active mode is HD. The bone palette CB upload above still runs so
-    // vsCB3 is populated for the HD draws further down the frame.
-    const bool skipComputeSkin = (renderMode_ == RenderMode::HD);
-    if (!skipComputeSkin)
-        cmd->BindPipeline(skinPSO_);
 
     for (auto& [h, miPtr] : models_) {
         auto* mi = miPtr.get();
         if (!mi->skinning.HasSkeleton() || !mi->skinning.IsReady()) continue;
-        if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent — skip skinning
-        if (mi->nodePalette == gfx::BufferHandle::Invalid) continue;
+        if (mi->parentVisibility <= 0.02f) continue;
+        if (mi->bonePaletteCb == gfx::BufferHandle::Invalid) continue;
 
         mi->skinning.ComputeOffsetMatrices();
 
-        // Upload offset matrices to the node palette buffer (SRV, used by
-        // the legacy csSkin compute path)
-        void* mapped = gfx_->MapBuffer(mi->nodePalette);
-        if (!mapped) continue;
-        memcpy(mapped, mi->skinning.OffsetMatrices(),
-               sizeof(Matrix44f) * mi->skinning.NodeCount());
-        gfx_->UnmapBuffer(mi->nodePalette);
-
-        // Companion CB (b3) consumed by vs/hd.bls. Pack the same offset
-        // matrices into ShaderBone (3 rows of 4 floats) via BuildBonePalette;
-        // the HD VS reads vsCB3.matrices[i] to skin vertices in the VS.
-        if (mi->bonePaletteCb != gfx::BufferHandle::Invalid) {
-            if (auto bp = bls::ScopedCb<bls::BonePaletteCb>(gfx_.get(), mi->bonePaletteCb)) {
-                bls::BuildBonePalette(*bp, mi->skinning.OffsetMatrices(),
-                                      mi->skinning.NodeCount());
-            }
-        }
-
-        // Bind node palette SRV (slot 0) — shared across all geosets of this model
-        cmd->BindShaderResource(gfx::ShaderStage::Compute, 0, mi->nodePalette);
-
-        if (skipComputeSkin) continue;
-
-        for (auto& geo : mi->gpuGeosets) {
-            if (geo.skinnedBuf == gfx::BufferHandle::Invalid) continue;
-
-            // Slots: t0 = BonePalette, t1 = BaseVerts, t2 = Weights
-            cmd->BindShaderResource(gfx::ShaderStage::Compute, 1, geo.baseVertBuf);
-            cmd->BindShaderResource(gfx::ShaderStage::Compute, 2, geo.weightBuf);
-
-            // UAV: u0 = OutVerts
-            cmd->BindUnorderedAccess(0, geo.skinnedBuf);
-
-            // Dispatch: one thread per vertex, ceil(vertCount / 256)
-            uint32_t groups = (geo.vertexCount + 255) / 256;
-            cmd->Dispatch(groups, 1, 1);
-
-            // Unbind UAV before CopyBuffer (avoid resource hazard)
-            cmd->BindUnorderedAccess(0, gfx::BufferHandle::Invalid);
-
-            // Copy structured output to plain vertex buffer for drawing
-            cmd->CopyBuffer(geo.vb, geo.skinnedBuf);
+        if (auto bp = bls::ScopedCb<bls::BonePaletteCb>(gfx_.get(), mi->bonePaletteCb)) {
+            bls::BuildBonePalette(*bp, mi->skinning.OffsetMatrices(),
+                                  mi->skinning.NodeCount());
         }
     }
-
-    // Unbind compute resources to avoid hazards with vertex/pixel stages
-    cmd->BindShaderResource(gfx::ShaderStage::Compute, 0, gfx::BufferHandle::Invalid);
-    cmd->BindShaderResource(gfx::ShaderStage::Compute, 1, gfx::BufferHandle::Invalid);
-    cmd->BindShaderResource(gfx::ShaderStage::Compute, 2, gfx::BufferHandle::Invalid);
 }
 
 // ============================================================================
@@ -1653,29 +1534,11 @@ void RenderService::UpdateParticles(float dt) {
     particleService_.Simulate(dt);
 }
 
-namespace {
-
-// Map the PE2 service's material FilterMode enum to the renderer's legacy
-// FILTER_* integer constants used by LookupMeshPSO. The two enums line up
-// with the MDX FilterMode byte (docs/PARTICLEEMITTERS2.md §3.9 table), we
-// just spell out the conversion because they're independent types.
-int ServiceFilterToLegacy(particle::FilterMode fm) {
-    switch (fm) {
-        case particle::FilterMode::Blend:      return FILTER_BLEND;
-        case particle::FilterMode::Additive:   return FILTER_ADDITIVE;
-        case particle::FilterMode::Modulate:   return FILTER_MODULATE;
-        case particle::FilterMode::Modulate2X: return FILTER_MODULATE_2X;
-        case particle::FilterMode::AlphaKey:   return FILTER_TRANSPARENT;
-    }
-    return FILTER_BLEND;
-}
-
-} // namespace
-
 bool RenderService::RenderParticlesBls() {
-    // Route PE2 particles through the stock Blizzard SD VS + SD PS instead of
-    // our Slang mesh shader. Returns true if the BLS path ran (success or
-    // benignly skipped); false only if the program failed to load.
+    // Route PE2 particles through the stock Blizzard SD VS + SD PS. Returns
+    // true if the BLS path ran (success or benignly skipped); false only
+    // if the program failed to load (InitDevice bails on that path now so
+    // this effectively always returns true once a device is alive).
     if (!blsSdProgram_ || !blsPsoBuilder_) return false;
 
     auto* cmd = gfx_->GetImmediateContext();
@@ -1798,87 +1661,6 @@ bool RenderService::RenderParticlesBls() {
     return true;
 }
 
-void RenderService::RenderParticles() {
-    if (RenderParticlesBls()) return;   // BLS path took over
-    // Legacy Slang fallback -- Single service-driven path. Snapshot geometry +
-    // view matrix under the data lock, upload and issue draws without the lock held.
-    auto* cmd = gfx_->GetImmediateContext();
-
-    std::vector<Vertex> verts;
-    std::vector<particle::EmitterDrawList> drawLists;
-    Matrix44f viewMat;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        if (particleService_.EmitterCount() == 0) return;
-        viewMat = camera_.GetViewMatrix();
-        particleService_.BuildGeometry(viewMat, verts, drawLists);
-    }
-    if (verts.empty()) return;
-
-    const int vertCount = (int)verts.size();
-
-    // Grow the global particle VB if needed.
-    if (particleServiceVB_ == gfx::BufferHandle::Invalid || vertCount > particleServiceVBSize_) {
-        gfx_->Destroy(particleServiceVB_);
-        int newSize = (std::max)(vertCount, 4096);
-        gfx::BufferDesc bd;
-        bd.size  = (uint32_t)(sizeof(Vertex) * newSize);
-        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-        particleServiceVB_     = gfx_->CreateBuffer(bd);
-        particleServiceVBSize_ = newSize;
-    }
-
-    // Upload.
-    if (void* mapped = gfx_->MapBuffer(particleServiceVB_)) {
-        memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
-        gfx_->UnmapBuffer(particleServiceVB_);
-    }
-
-    cmd->BindVertexBuffer(0, particleServiceVB_, sizeof(Vertex));
-
-    // Render each emitter's slice.
-    int drawOffset = 0;
-    for (const auto& dl : drawLists) {
-        if (dl.vertexCount <= 0) continue;
-
-        const int legacyFilter = ServiceFilterToLegacy(dl.material.filterMode);
-        cmd->BindPipeline(LookupMeshPSO(legacyFilter, /*twoSided*/true,
-                                        /*noDepthTest*/false, /*noDepthSet*/true));
-
-        {
-            const float alphaRef = (legacyFilter == FILTER_TRANSPARENT) ? 0.75f : 0.0f;
-            const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-            render_detail::CbPerFrameDesc d;
-            d.view         = viewMat;
-            d.projection   = camera_.ProjectionRH(aspect);
-            d.lightDir     = render_detail::NormalizedLightDir4(kDefaultLightDir);
-            d.lightColor   = kParticleLightColor;
-            d.ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
-            d.materialFlags = {dl.material.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
-            render_detail::WriteCbPerFrame(gfx_.get(), cbPerFrame_, d);
-        }
-        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
-        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
-
-        // Texture lookup — textures are per-ModelInstance; the owner lookup
-        // needs the data mutex, but the shader-resource bind that follows
-        // is safe to issue under the lock since it's immediate-context.
-        {
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            if (ModelInstance* owner = getModel(dl.model)) {
-                render_detail::BindLayerAlbedo(cmd, *owner, dl.material.textureId,
-                                               defaultTex_, samplerWrap_);
-            } else {
-                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
-                cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[kWrapFlagsMask]);
-            }
-        }
-
-        cmd->Draw(dl.vertexCount, drawOffset);
-        drawOffset += dl.vertexCount;
-    }
-}
-
 // ============================================================================
 // Ribbon Simulation + Rendering (render thread)
 // ============================================================================
@@ -1892,7 +1674,20 @@ void RenderService::UpdateRibbons(float dt) {
 }
 
 void RenderService::RenderRibbons() {
+    if (!blsSdProgram_ || !blsPsoBuilder_) return;
     auto* cmd = gfx_->GetImmediateContext();
+
+    // Shared FrameInputs skeleton -- ribbon vertices are emitted in world
+    // space, so world stays identity and the VS takes them straight to
+    // clip space through view*proj. numLights=0 pairs with the kDisable-
+    // Lighting flag we set on MatParams below (SD VS picks the 0-lights
+    // permute).
+    bls::FrameInputs frame;
+    frame.world        = Matrix44f::identity();
+    const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
+    frame.numLights    = 0;
+    frame.viewportRect = { (float)width_, (float)height_, 0.0f, 0.0f };
+    frame.effectTime   = animationTimeMs_.load() * 0.001f;
 
     for (auto& [_mh, _mi] : models_) {
     auto* mi = _mi.get();
@@ -1937,6 +1732,9 @@ void RenderService::RenderRibbons() {
     // Bind ribbon VB
     cmd->BindVertexBuffer(0, mi->ribbonVB, sizeof(Vertex));
 
+    frame.view       = viewMat;
+    frame.projection = camera_.ProjectionRH(aspect);
+
     int drawOffset = 0;
     std::vector<int> vertCounts;
     {
@@ -1950,24 +1748,33 @@ void RenderService::RenderRibbons() {
         int count = vertCounts[ei];
         if (count <= 0) { continue; }
 
-        // Ribbons: use cfg.twoSided, always noWrite depth
-        cmd->BindPipeline(LookupMeshPSO(cfg.filterMode, cfg.twoSided, false, true));
+        // MatParams from filter mode + cfg flags. Force lighting off —
+        // ribbons are always unshaded in classic MDX — so the VS picks
+        // the 0-light permute regardless of scene lights.
+        int matFlags = 0;
+        if (cfg.twoSided) matFlags |= MAT_TWO_SIDED;
+        if (cfg.unshaded) matFlags |= MAT_UNSHADED;
+        bls::MatParams mp = bls::FromMdxLayer(cfg.filterMode, matFlags, bls::GxShaderID::SD);
+        mp.disables |= bls::kDisableLighting;
+        mp.diffuseColor = {1, 1, 1, 1};
 
-        {
-            float alphaRef = (cfg.filterMode == FILTER_TRANSPARENT) ? 0.75f : 0.0f;
-            float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-            render_detail::CbPerFrameDesc d;
-            d.view         = viewMat;
-            d.projection   = camera_.ProjectionRH(aspect);
-            d.lightDir     = render_detail::NormalizedLightDir4(kDefaultLightDir);
-            d.lightColor   = kParticleLightColor;
-            d.ambientColor = {kParticleAmbientBase.x, kParticleAmbientBase.y, kParticleAmbientBase.z, alphaRef};
-            d.materialFlags = {cfg.unshaded ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
-            render_detail::WriteCbPerFrame(gfx_.get(), cbPerFrame_, d);
+        bls::RenderState rs = bls::MakeSdMeshRenderState(mp, 0, /*unlit*/true, /*hasBones*/false);
+        auto perm = bls::SelectPermutes(rs);
+        const auto req = bls::MakePsoRequest(blsSdProgram_,
+                                             bls::VertexLayoutKind::ParticleSD,
+                                             mp, perm);
+        auto pso = blsPsoBuilder_->GetOrBuild(req);
+        if (pso == gfx::PipelineHandle::Invalid) { drawOffset += count; continue; }
+        cmd->BindPipeline(pso);
+
+        if (auto vs = bls::ScopedCb<bls::SdVsCbA>(gfx_.get(), blsSdVsCb_)) {
+            bls::BuildSdVsCbA(*vs, frame, mp);
         }
-
-        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
-        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
+        if (auto ps = bls::ScopedCb<bls::SdPsCbA>(gfx_.get(), blsSdPsCb_)) {
+            bls::BuildSdPsCbA(*ps, frame, mp);
+        }
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, blsSdVsCb_);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, blsSdPsCb_);
 
         render_detail::BindLayerAlbedo(cmd, *mi, cfg.textureId,
                                        defaultTex_, samplerWrap_);
@@ -2105,8 +1912,11 @@ bool RenderService::InitDevice(gfx::GfxApi api) {
     if (!CreatePipelines())        { CleanupD3D(); return false; }
     if (!CreateDefaultResources()) { CleanupD3D(); return false; }
 
-    // BLS shaders live alongside Slang shaders. Missing .bls files are tolerated.
-    InitBlsShaders();
+    // BLS programs are mandatory -- SD, HD, and SD_on_HD all drive through
+    // BLS now that the legacy Slang mesh/skin family is gone. Bail with a
+    // clean false if any of the three fails to load so callers see a
+    // proper error instead of a silently broken scene.
+    if (!InitBlsShaders()) { CleanupD3D(); return false; }
 
     return true;
 }
@@ -2170,7 +1980,13 @@ bool RenderService::InitBlsShaders() {
     // swaps at runtime via the UI combo.
     SetEnvProbe(ibl::kPortraitIblPath);
 
-    return blsSdProgram_ != nullptr;
+    // All three BLS programs are required -- SD mesh draws route through
+    // blsSdProgram_; HD-mode mesh draws pick blsHdProgram_ (pure HD/
+    // Crystal materials) or blsSdOnHdProgram_ (legacy SD assets rendered
+    // under HD mode).
+    return blsSdProgram_     != nullptr
+        && blsSdOnHdProgram_ != nullptr
+        && blsHdProgram_     != nullptr;
 }
 
 void RenderService::SetEnvProbe(const std::string& relPath) {
@@ -2313,18 +2129,11 @@ void RenderService::CleanupD3D() {
 
     // Destroy GFX resources
     if (gfx_) {
-        // Shaders
-        gfx_->Destroy(meshVS_);  gfx_->Destroy(meshPS_);
+        // Shaders + pipelines. Only line.slang lives here; the BLS stack
+        // owns its own shader cache (released in ShutdownBlsShaders above)
+        // and DebugRenderer owns the viewcube.slang pair.
         gfx_->Destroy(lineVS_);  gfx_->Destroy(linePS_);
-        gfx_->Destroy(skinCS_);
-
-        // Pipelines
-        for (auto& fm : meshPSO_)
-            for (auto& cu : fm)
-                for (auto& dp : cu)
-                    gfx_->Destroy(dp);
         gfx_->Destroy(linePSO_);
-        gfx_->Destroy(skinPSO_);
 
         // Resources
         gfx_->Destroy(cbPerFrame_);
@@ -2366,127 +2175,43 @@ void RenderService::CleanupD3D() {
 bool RenderService::CreateShaders() {
     using namespace WhiteoutDex::Shaders;
 
-    meshVS_ = gfx_->CreateShader(gfx::ShaderStage::Vertex,  kMeshVS, sizeof(kMeshVS));
-    meshPS_ = gfx_->CreateShader(gfx::ShaderStage::Pixel,   kMeshPS, sizeof(kMeshPS));
-    lineVS_ = gfx_->CreateShader(gfx::ShaderStage::Vertex,  kLineVS, sizeof(kLineVS));
-    linePS_ = gfx_->CreateShader(gfx::ShaderStage::Pixel,   kLinePS, sizeof(kLinePS));
-    skinCS_ = gfx_->CreateShader(gfx::ShaderStage::Compute, kSkinCS, sizeof(kSkinCS));
+    // Only line.slang ships as a Slang-compiled asset on the RenderService
+    // side. viewcube.slang is loaded by DebugRenderer; BLS programs
+    // (sd/sd_on_hd/hd.bls) replace the former mesh/skin Slang family.
+    lineVS_ = gfx_->CreateShader(gfx::ShaderStage::Vertex, kLineVS, sizeof(kLineVS));
+    linePS_ = gfx_->CreateShader(gfx::ShaderStage::Pixel,  kLinePS, sizeof(kLinePS));
 
-    return meshVS_ != gfx::ShaderHandle::Invalid
-        && meshPS_ != gfx::ShaderHandle::Invalid
-        && lineVS_ != gfx::ShaderHandle::Invalid
-        && linePS_ != gfx::ShaderHandle::Invalid
-        && skinCS_ != gfx::ShaderHandle::Invalid;
+    return lineVS_ != gfx::ShaderHandle::Invalid
+        && linePS_ != gfx::ShaderHandle::Invalid;
 }
 
 // ============================================================================
 // Pipeline (PSO) Creation
 // ============================================================================
 
-// Blend desc per FilterMode (exact Magos mapping)
-static gfx::BlendDesc FilterBlend(int filterMode) {
-    using BF = gfx::BlendFactor;
-    gfx::BlendDesc b;
-    switch (filterMode) {
-    case FILTER_NONE:
-        b.enable = false;
-        break;
-    case FILTER_TRANSPARENT: case FILTER_BLEND:
-        b.enable = true;
-        b.srcColor = BF::SrcAlpha; b.dstColor = BF::InvSrcAlpha;
-        break;
-    case FILTER_ADDITIVE: case FILTER_ADD_ALPHA:
-        b.enable = true;
-        b.srcColor = BF::SrcAlpha; b.dstColor = BF::One;
-        break;
-    case FILTER_MODULATE:
-        b.enable = true;
-        b.srcColor = BF::Zero; b.dstColor = BF::SrcColor;
-        break;
-    case FILTER_MODULATE_2X:
-        b.enable = true;
-        b.srcColor = BF::DstColor; b.dstColor = BF::SrcColor;
-        break;
-    }
-    return b;
-}
-
-// Depth desc: 0 = default (write+test), 1 = noWrite, 2 = disabled
-static gfx::DepthStencilDesc MakeDepth(int depthKey) {
-    gfx::DepthStencilDesc d;
-    d.depthCompare = gfx::CompareOp::LessEqual;
-    switch (depthKey) {
-    case 0: d.depthTest = true;  d.depthWrite = true;  break;
-    case 1: d.depthTest = true;  d.depthWrite = false; break;
-    case 2: d.depthTest = false; d.depthWrite = false; break;
-    }
-    return d;
-}
-
 bool RenderService::CreatePipelines() {
     using namespace gfx;
 
-    // Input layouts
-    InputElement meshInput[] = {
-        {"POSITION", 0, Format::R32G32B32_FLOAT,    0},
-        {"NORMAL",   0, Format::R32G32B32_FLOAT,   12},
-        {"COLOR",    0, Format::R32G32B32A32_FLOAT, 24},
-        {"TEXCOORD", 0, Format::R32G32_FLOAT,       40},
-    };
     InputElement lineInput[] = {
         {"POSITION", 0, Format::R32G32B32_FLOAT,    0},
         {"COLOR",    0, Format::R32G32B32A32_FLOAT, 12},
     };
 
-    // Build all mesh PSOs: [7 filters][2 cull][3 depth]
-    for (int f = 0; f < 7; f++) {
-        BlendDesc blend = FilterBlend(f);
-        for (int c = 0; c < 2; c++) {
-            for (int d = 0; d < 3; d++) {
-                GraphicsPipelineDesc desc;
-                desc.vs          = meshVS_;
-                desc.ps          = meshPS_;
-                desc.inputLayout = meshInput;
-                desc.topology    = PrimitiveTopology::TriangleList;
-                desc.blend       = blend;
-                desc.depthStencil = MakeDepth(d);
-                desc.rasterizer.cull     = (c == 0) ? CullMode::Back : CullMode::None;
-                desc.rasterizer.frontCCW = true;
-                meshPSO_[f][c][d] = gfx_->CreateGraphicsPipeline(desc);
-            }
-        }
-    }
+    // Line PSO (grid, collision wireframes, light markers, ViewCube edges).
+    // Opaque + default depth + no cull + LineList. Textured mesh work all
+    // flows through BLS — this is the one non-BLS pipeline left.
+    GraphicsPipelineDesc desc;
+    desc.vs          = lineVS_;
+    desc.ps          = linePS_;
+    desc.inputLayout = lineInput;
+    desc.topology    = PrimitiveTopology::LineList;
+    desc.blend.enable = false;
+    desc.depthStencil = {};  // defaults: test+write, LessEqual
+    desc.rasterizer.cull     = CullMode::None;
+    desc.rasterizer.frontCCW = true;
+    linePSO_ = gfx_->CreateGraphicsPipeline(desc);
 
-    // Line PSO (grid, collision, viewcube edges): opaque + default depth + noCull + LineList
-    {
-        GraphicsPipelineDesc desc;
-        desc.vs          = lineVS_;
-        desc.ps          = linePS_;
-        desc.inputLayout = lineInput;
-        desc.topology    = PrimitiveTopology::LineList;
-        desc.blend.enable = false;
-        desc.depthStencil = MakeDepth(0);
-        desc.rasterizer.cull     = CullMode::None;
-        desc.rasterizer.frontCCW = true;
-        linePSO_ = gfx_->CreateGraphicsPipeline(desc);
-    }
-
-    // Skin compute PSO
-    skinPSO_ = gfx_->CreateComputePipeline({skinCS_});
-
-    return linePSO_ != PipelineHandle::Invalid
-        && skinPSO_ != PipelineHandle::Invalid;
-}
-
-gfx::PipelineHandle RenderService::LookupMeshPSO(int filterMode, bool twoSided,
-                                                   bool noDepthTest, bool noDepthSet) const {
-    int f = (filterMode >= 0 && filterMode < 7) ? filterMode : 0;
-    int c = twoSided ? 1 : 0;
-    int d;
-    if (noDepthTest) d = 2;
-    else if (noDepthSet) d = 1;
-    else d = (f <= 1) ? 0 : 1; // NONE/TRANSPARENT default to write, rest to noWrite
-    return meshPSO_[f][c][d];
+    return linePSO_ != PipelineHandle::Invalid;
 }
 
 // ============================================================================
@@ -2559,7 +2284,7 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
 
     if (showGrid_) debug_->RenderGrid();
     RenderGeosets();
-    if (showParticles_) RenderParticles();
+    if (showParticles_) RenderParticlesBls();
     if (showRibbons_) RenderRibbons();
     if (showCollisions_) debug_->RenderCollisions();
     if (showLights_)     debug_->RenderLightMarkers();
@@ -2631,7 +2356,11 @@ public:
         int numLayers = mat ? (int)mat->cpu.layers.size() : 0;
         if (numLayers <= 0) numLayers = 1;
 
-        render_detail::BindSdMeshGeometry(cmd, geo);
+        // Bind slot 0 = unskinnedVb + index buffer, plus the bone stream
+        // and palette CB when this geoset has skinning data. The returned
+        // hasBones flag drives the permute + input layout below so the VS
+        // picks FourBoneSkinning vs the pass-through permute consistently.
+        const bool hasBones = render_detail::BindSdMeshGeometry(cmd, geo, *mi);
 
         for (int li = 0; li < numLayers; ++li) {
             const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
@@ -2661,11 +2390,13 @@ public:
             const int  activeN = unlit ? 0 : lightCountForGeoset;
             frame.numLights = activeN;
 
-            const auto rs   = bls::MakeSdMeshRenderState(mp, activeN, unlit);
+            const auto rs   = bls::MakeSdMeshRenderState(mp, activeN, unlit, hasBones);
             const auto perm = bls::SelectPermutes(rs);
-            // VertexLayoutKind::ParticleSD reuses our 48 B Vertex struct.
+            const auto layout = hasBones
+                ? bls::VertexLayoutKind::ParticleSDSkinned
+                : bls::VertexLayoutKind::ParticleSD;
             const auto req  = bls::MakePsoRequest(rs_.blsSdProgram_,
-                                                  bls::VertexLayoutKind::ParticleSD,
+                                                  layout,
                                                   mp, perm);
             auto pso = rs_.blsPsoBuilder_->GetOrBuild(req);
             if (pso == gfx::PipelineHandle::Invalid) continue;
@@ -2786,15 +2517,11 @@ public:
         int numLayers = mat ? (int)mat->cpu.layers.size() : 0;
         if (numLayers <= 0) numLayers = 1;
 
-        // HD path uses vs/hd.bls with FourBoneSkinning — bind rest-pose data
-        // from unskinnedVb, not the compute-skinned gg.vb. Dedicated rest-
-        // pose VB (separate from baseVertBuf, which stays as a structured
-        // SRV for the SD compute skinner) avoids cross-frame SRV<->Vertex
-        // state churn on a shared resource. Falls back to gg.vb when the
-        // side stream wasn't created (shouldn't happen for MDX models).
-        const gfx::BufferHandle vb0 =
-            (geo.unskinnedVb != gfx::BufferHandle::Invalid) ? geo.unskinnedVb : geo.vb;
-        cmd->BindVertexBuffer(0, vb0, sizeof(Vertex));
+        // HD path uses vs/hd.bls with FourBoneSkinning — bind the rest-pose
+        // vertex stream on slot 0. The VS blends against vsCB3's bone
+        // palette when numWeights>0, or passes geometry through unchanged
+        // for static geosets.
+        cmd->BindVertexBuffer(0, geo.unskinnedVb, sizeof(Vertex));
         cmd->BindIndexBuffer(geo.ib, gfx::Format::R32_UINT);
 
         // Tangent side-stream (ATTR7 on slot 1). Required by the HD VS
@@ -2837,10 +2564,8 @@ public:
                 isHdMaterial ? bls::GxShaderID::HD : bls::GxShaderID::SD_on_HD;
             const bls::BlsProgram* program =
                 isHdMaterial ? rs_.blsHdProgram_ : rs_.blsSdOnHdProgram_;
-            // Fall back to whichever program is available if the selected
-            // one failed to load; keeps draws alive instead of going black.
-            if (!program) program = rs_.blsHdProgram_ ? rs_.blsHdProgram_ : rs_.blsSdOnHdProgram_;
-            if (!program) continue;
+            // InitDevice guarantees both HD programs are loaded, so no
+            // availability fallback is needed here.
 
             bls::MatParams mp = bls::FromMdxLayer(effectiveFilter, layer.flags, programShaderId);
             if (mp.alpha == bls::GxMatAlpha::Modulate) {
@@ -3045,108 +2770,14 @@ bool RenderService::RenderGeosetsHd() {
 }
 
 void RenderService::RenderGeosets() {
-    // Route to HD-path when render mode is HD and the HD program loaded.
-    // Otherwise fall through to the SD path (which itself falls through to
-    // the legacy Slang path if its BLS program failed to load).
+    // HD mode routes through hd.bls / sd_on_hd.bls; SD mode through sd.bls.
+    // InitDevice guarantees both programs are loaded -- there is no legacy
+    // Slang fallback any more, so Run() on either pass either draws or
+    // returns early (empty scene). No visible failure mode here.
     if (renderMode_ == RenderMode::HD) {
-        if (RenderGeosetsHd()) return;
-        // HD program unavailable -- fall back to SD so we still render.
-    }
-    if (RenderGeosetsBls()) return;  // BLS path took over
-    if (models_.empty()) return;
-
-    auto* cmd = gfx_->GetImmediateContext();
-    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, cbPerFrame_);
-    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, cbPerFrame_);
-    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerLinear_);
-
-    auto refs = render_detail::CollectSortedGeosetRefs(models_, ComputeSelectedLod());
-    if (refs.empty()) return;
-
-    Matrix44f view2;
-    { std::lock_guard<std::mutex> lock(dataMutex_); view2 = camera_.GetViewMatrix(); }
-    float aspect2 = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    Matrix44f proj2 = camera_.ProjectionRH(aspect2);
-
-    for (auto& ref : refs) {
-        auto* mi = ref.mi;
-        auto& geo = mi->gpuGeosets[ref.idx];
-        if (geo.vb == gfx::BufferHandle::Invalid || geo.ib == gfx::BufferHandle::Invalid || geo.indexCount == 0) continue;
-
-        int matId = geo.materialId;
-        GPUMaterial* mat = nullptr;
-        if (matId >= 0 && matId < (int)mi->gpuMaterials.size())
-            mat = &mi->gpuMaterials[matId];
-
-        float geoAlpha = geo.geosetAlpha * mi->parentVisibility;
-        if (geoAlpha < 0.01f) continue;
-        Vector3f geoColor = geo.geosetColor;
-
-        int numLayers = mat ? (int)mat->cpu.layers.size() : 0;
-        if (numLayers <= 0) numLayers = 1;
-
-        bool anyLayerThisPass = false;
-        for (int li = 0; li < numLayers; ++li) {
-            const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
-
-            if (!anyLayerThisPass) {
-                render_detail::BindSdMeshGeometry(cmd, geo);
-                anyLayerThisPass = true;
-            }
-
-            bool twoSided    = (layer.flags & MAT_TWO_SIDED) != 0;
-            bool noDepthTest = (layer.flags & MAT_NO_DEPTH_TEST) != 0;
-            bool noDepthSet  = (layer.flags & MAT_NO_DEPTH_SET) != 0;
-
-            float combinedAlpha = geoAlpha * layer.alpha;
-            if (combinedAlpha < 0.004f) continue;
-
-            // For semi-transparent opaque/alpha-test layers, override to alpha-blend + noWrite
-            int effectiveFilter = layer.filterMode;
-            if (combinedAlpha < 0.99f && layer.filterMode <= FILTER_TRANSPARENT)
-                effectiveFilter = FILTER_BLEND;
-
-            cmd->BindPipeline(LookupMeshPSO(effectiveFilter, twoSided, noDepthTest, noDepthSet));
-
-            float alphaRef = 0.0f;
-            if (layer.filterMode == FILTER_TRANSPARENT) alphaRef = 0.75f;
-            else if (layer.filterMode >= FILTER_MODULATE) alphaRef = 0.02f;
-
-            // Texture animation (per-layer, per-model)
-            float uOff=0, vOff=0, uTile=1, vTile=1, texRot=0;
-            {
-                int key = matId * 1000 + li;
-                auto it = mi->matTexAnim.find(key);
-                if (it != mi->matTexAnim.end()) {
-                    uOff = it->second.uOff; vOff = it->second.vOff;
-                    uTile = it->second.uTile; vTile = it->second.vTile;
-                    texRot = it->second.rotation;
-                }
-            }
-
-            {
-                render_detail::CbPerFrameDesc d;
-                d.world         = mi->worldTransform;
-                d.view          = view2;
-                d.projection    = proj2;
-                d.lightDir      = render_detail::NormalizedLightDir4(kDefaultLightDir);
-                d.lightColor    = kGeosetLightColor;
-                d.ambientColor  = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, alphaRef};
-                d.extraParams   = {combinedAlpha, geoColor.x, geoColor.y, geoColor.z};
-                d.texAnimParams = {uOff, vOff, uTile, vTile};
-                d.materialFlags = {
-                    (layer.flags & MAT_UNSHADED)       ? 1.0f : 0.0f,
-                    (layer.flags & MAT_CONSTANT_COLOR) ? 1.0f : 0.0f,
-                    texRot, 0.0f
-                };
-                render_detail::WriteCbPerFrame(gfx_.get(), cbPerFrame_, d);
-            }
-
-            render_detail::BindLayerAlbedo(cmd, *mi, layer.textureId,
-                                           defaultTex_, samplerWrap_);
-
-            cmd->DrawIndexed(geo.indexCount, 0, 0);
-        }
+        RenderGeosetsHd();
+    } else {
+        RenderGeosetsBls();
     }
 }
 

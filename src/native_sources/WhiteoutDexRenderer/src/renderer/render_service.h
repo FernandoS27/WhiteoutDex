@@ -257,7 +257,6 @@ private:
 
     // Particle simulation + rendering
     void UpdateParticles(float dt);
-    void RenderParticles();
 
     // Attachment model lifecycle
     void UpdateAttachments();
@@ -291,10 +290,10 @@ private:
     // Called lazily on the render thread whenever the picker changes.
     void UpdateTeamColorSwatch();
 
-    // Rendering
+    // Rendering. SD mesh draws flow through BLS (blsSdProgram_ / blsHdProgram_
+    // / blsSdOnHdProgram_); particles and ribbons do the same; no legacy
+    // Slang mesh PSO exists any more.
     void RenderGeosets();
-    gfx::PipelineHandle LookupMeshPSO(int filterMode, bool twoSided,
-                                       bool noDepthTest, bool noDepthSet) const;
 
     // PE2 service — centralised registry for the new particle path. Coexists
     // with the legacy per-ModelInstance ParticleSystem until Phase 6 cut-over.
@@ -405,17 +404,13 @@ private:
     }
 
     // ---- GFX Shaders ----
-    gfx::ShaderHandle meshVS_  = gfx::ShaderHandle::Invalid;
-    gfx::ShaderHandle meshPS_  = gfx::ShaderHandle::Invalid;
+    // Only line.slang (debug overlay) and viewcube.slang (DebugRenderer-owned)
+    // Slang shaders survive; SD mesh rendering is entirely BLS now.
     gfx::ShaderHandle lineVS_  = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle linePS_  = gfx::ShaderHandle::Invalid;
-    gfx::ShaderHandle skinCS_  = gfx::ShaderHandle::Invalid;
 
     // ---- GFX Pipelines ----
-    // Mesh: [7 filterModes][2 cull: 0=back, 1=none][3 depth: 0=default, 1=noWrite, 2=disabled]
-    gfx::PipelineHandle meshPSO_[7][2][3] = {};
     gfx::PipelineHandle linePSO_  = gfx::PipelineHandle::Invalid;
-    gfx::PipelineHandle skinPSO_  = gfx::PipelineHandle::Invalid;
 
     // ---- GFX Resources ----
     gfx::BufferHandle  cbPerFrame_     = gfx::BufferHandle::Invalid;

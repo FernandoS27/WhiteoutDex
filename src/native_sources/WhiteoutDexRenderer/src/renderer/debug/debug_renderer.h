@@ -104,12 +104,18 @@ private:
     int               gridVertCount_ = 0;
 
     // ---- ViewCube ----
-    gfx::BufferHandle  vcCubeVB_    = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle  vcCubeIB_    = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle  vcOutlineVB_ = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle  vcHomeVB_    = gfx::BufferHandle::Invalid;
-    gfx::TextureHandle vcFaceTex_   = gfx::TextureHandle::Invalid;
-    bool               vcHovered_   = false;
+    gfx::BufferHandle   vcCubeVB_    = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle   vcCubeIB_    = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle   vcOutlineVB_ = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle   vcHomeVB_    = gfx::BufferHandle::Invalid;
+    gfx::TextureHandle  vcFaceTex_   = gfx::TextureHandle::Invalid;
+    // Dedicated viewcube.slang shader pair + PSO. Kept here rather than
+    // on RenderService because the ViewCube is the only consumer -- no
+    // other code in the renderer should ever reach for these.
+    gfx::ShaderHandle   viewCubeVS_  = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle   viewCubePS_  = gfx::ShaderHandle::Invalid;
+    gfx::PipelineHandle viewCubePSO_ = gfx::PipelineHandle::Invalid;
+    bool                vcHovered_   = false;
 };
 
 } // namespace WhiteoutDex

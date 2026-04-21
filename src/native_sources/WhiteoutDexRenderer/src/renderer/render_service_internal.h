@@ -69,10 +69,16 @@ std::vector<GeosetRef> CollectSortedGeosetRefs(
     const std::unordered_map<uint32_t, std::unique_ptr<ModelInstance>>& models,
     int selectedLod);
 
-// Binds the SD-mesh input layout: slot 0 = geo.vb at Vertex stride, plus
-// the R32_UINT index buffer. The compute-skin pass has already written
-// skinned positions into geo.vb, so no bone stream is needed on this path.
-void BindSdMeshGeometry(gfx::IGFXCommandList* cmd, const GPUGeoset& geo);
+// Binds the SD-mesh input for native VS skinning:
+//   slot 0 = geo.unskinnedVb (rest-pose Vertex, 48 B stride)
+//   slot 1 = geo.boneVb      (BoneVertex, 8 B) -- iff bones are present
+//   vsCB3  = mi.bonePaletteCb                   -- iff bones are present
+// Plus the R32_UINT index buffer. Returns true when the bone stream
+// was bound; caller then picks numWeights=4 + ParticleSDSkinned layout
+// so the SD VS selects the FourBoneSkinning permute.
+bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
+                        const GPUGeoset&      geo,
+                        const ModelInstance&  mi);
 
 // Binds `textureId`'s GPU texture to pixel-stage slot `slot` with the
 // matching wrap sampler from `samplerWrap[0..3]`. Falls back to

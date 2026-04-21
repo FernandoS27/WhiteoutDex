@@ -5,6 +5,7 @@
 #include "debug_renderer.h"
 #include "render_service.h"
 #include "render_service_internal.h"
+#include "compiled_shaders.h"
 #include "constants.h"
 #include "viewcube_atlas.h"
 #include "coordinate_system.h"
@@ -35,6 +36,9 @@ void DebugRenderer::DestroyResources() {
     rs_.gfx_->Destroy(vcOutlineVB_);   vcOutlineVB_ = gfx::BufferHandle::Invalid;
     rs_.gfx_->Destroy(vcHomeVB_);      vcHomeVB_    = gfx::BufferHandle::Invalid;
     rs_.gfx_->Destroy(vcFaceTex_);     vcFaceTex_   = gfx::TextureHandle::Invalid;
+    rs_.gfx_->Destroy(viewCubePSO_);   viewCubePSO_ = gfx::PipelineHandle::Invalid;
+    rs_.gfx_->Destroy(viewCubeVS_);    viewCubeVS_  = gfx::ShaderHandle::Invalid;
+    rs_.gfx_->Destroy(viewCubePS_);    viewCubePS_  = gfx::ShaderHandle::Invalid;
     gridVertCount_ = 0;
 }
 
@@ -163,9 +167,41 @@ bool DebugRenderer::CreateViewCubeResources() {
         .usage = gfx::BufferUsage::Vertex,
     }, edges.data());
 
+    // Dedicated viewcube.slang shader + PSO. Reuses the same 48 B Vertex
+    // layout the cube VB was uploaded with (pos/normal/color/uv), with
+    // opaque blend + default depth + no culling so the inside of the
+    // cube silhouette stays visible from any camera angle.
+    using namespace WhiteoutDex::Shaders;
+    viewCubeVS_ = rs_.gfx_->CreateShader(gfx::ShaderStage::Vertex, kViewCubeVS, sizeof(kViewCubeVS));
+    viewCubePS_ = rs_.gfx_->CreateShader(gfx::ShaderStage::Pixel,  kViewCubePS, sizeof(kViewCubePS));
+    if (viewCubeVS_ == gfx::ShaderHandle::Invalid ||
+        viewCubePS_ == gfx::ShaderHandle::Invalid) {
+        return false;
+    }
+
+    gfx::InputElement vcInput[] = {
+        {"POSITION", 0, gfx::Format::R32G32B32_FLOAT,    0},
+        {"NORMAL",   0, gfx::Format::R32G32B32_FLOAT,   12},
+        {"COLOR",    0, gfx::Format::R32G32B32A32_FLOAT, 24},
+        {"TEXCOORD", 0, gfx::Format::R32G32_FLOAT,       40},
+    };
+    gfx::GraphicsPipelineDesc vcDesc;
+    vcDesc.vs          = viewCubeVS_;
+    vcDesc.ps          = viewCubePS_;
+    vcDesc.inputLayout = vcInput;
+    vcDesc.topology    = gfx::PrimitiveTopology::TriangleList;
+    vcDesc.blend.enable = false;
+    // depthStencil + rasterizer default to {depthTest=true, depthWrite=true,
+    // LessEqual} / {Back, Solid, frontCCW=false} — we only override cull
+    // (None so the cube is drawable from any angle) and the CCW convention.
+    vcDesc.rasterizer.cull     = gfx::CullMode::None;
+    vcDesc.rasterizer.frontCCW = true;
+    viewCubePSO_ = rs_.gfx_->CreateGraphicsPipeline(vcDesc);
+
     return vcCubeVB_    != gfx::BufferHandle::Invalid &&
            vcCubeIB_    != gfx::BufferHandle::Invalid &&
-           vcOutlineVB_ != gfx::BufferHandle::Invalid;
+           vcOutlineVB_ != gfx::BufferHandle::Invalid &&
+           viewCubePSO_ != gfx::PipelineHandle::Invalid;
 }
 
 // ============================================================================
@@ -452,7 +488,7 @@ void DebugRenderer::RenderViewCube() {
         render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
     }
 
-    cmd->BindPipeline(rs_.meshPSO_[FILTER_NONE][1][0]);
+    cmd->BindPipeline(viewCubePSO_);
     cmd->BindVertexBuffer(0, vcCubeVB_, sizeof(Vertex));
     cmd->BindIndexBuffer(vcCubeIB_, gfx::Format::R32_UINT);
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.cbPerFrame_);

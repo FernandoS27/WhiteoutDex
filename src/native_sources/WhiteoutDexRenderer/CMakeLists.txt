@@ -30,12 +30,13 @@ set(SLANG_COMMON_FLAGS -matrix-layout-column-major -I "${SHADER_SRC_DIR}"
     -default-downstream-compiler hlsl dxc)
 
 # Shader entry points: <slang_file>  <entry>  <stage>  <output_name>
+# Only line.slang (debug wires) and viewcube.slang (debug orientation cube)
+# remain as Slang sources; every MDX-material draw goes through BLS.
 set(SHADER_ENTRIES
-    "mesh.slang|vsMain|vertex|kMeshVS"
-    "mesh.slang|psMain|fragment|kMeshPS"
     "line.slang|vsLine|vertex|kLineVS"
     "line.slang|psLine|fragment|kLinePS"
-    "skin.slang|csSkin|compute|kSkinCS"
+    "viewcube.slang|vsViewCube|vertex|kViewCubeVS"
+    "viewcube.slang|psViewCube|fragment|kViewCubePS"
 )
 
 set(SHADER_DXBC_FILES "")

@@ -78,13 +78,20 @@ struct StagedGeoset {
 
 struct GPUGeoset {
     int geosetId       = -1;
-    gfx::BufferHandle vb = gfx::BufferHandle::Invalid;
     gfx::BufferHandle ib = gfx::BufferHandle::Invalid;
-    // Side-stream tangent buffer (ATTR7 in HD VS input layout). Bound to
-    // vertex buffer slot 1 for HD draws when the source geoset had
-    // tangents; left Invalid otherwise and the HD draw picks the
-    // no-tangent permute so it doesn't read from slot 1.
+    // Slot-0 vertex stream (PNCT0 48 B, rest pose). Both SD and HD VS
+    // consume this; FourBoneSkinning happens in the VS when a bone
+    // stream is bound on slot 1 and vsCB3 is populated.
+    gfx::BufferHandle unskinnedVb = gfx::BufferHandle::Invalid;
+    // Side-stream tangent buffer (ATTR7). Bound to slot 1 for HD draws
+    // whose source geoset authored tangents; left Invalid otherwise so
+    // the HD VS picks the no-tangent permute.
     gfx::BufferHandle tangentVb = gfx::BufferHandle::Invalid;
+    // Per-vertex bone weights (ATTR5, R8G8B8A8_UNORM) + indices
+    // (ATTR6, R8G8B8A8_UINT), 8 bytes per vertex. Bound on the slot
+    // expected by the selected VS permute (SD: slot 1; HD with tangent:
+    // slot 2; HD without tangent: slot 1).
+    gfx::BufferHandle boneVb      = gfx::BufferHandle::Invalid;
     int indexCount      = 0;
     int vertexCount     = 0;
     int materialId      = -1;
@@ -93,45 +100,19 @@ struct GPUGeoset {
     std::vector<Vertex> baseVertices;
     bool hasSkinning    = false;
 
-    // GPU compute skinning resources (structured buffers with auto-SRV/UAV).
-    // These feed the legacy Slang/SD path via skin.slang -- the HD path
-    // skins in the VS directly (vs/hd.bls uses FourBoneSkinning), so it
-    // binds the unskinned buffers instead and never touches skinnedBuf.
-    gfx::BufferHandle baseVertBuf  = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle weightBuf    = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle skinnedBuf   = gfx::BufferHandle::Invalid;
-
-    // HD VS-time skinning side-streams.
-    //   unskinnedVb : rest-pose ATTR0..ATTR3 stream (slot 0). Dedicated
-    //                 VB rather than reusing baseVertBuf so the SRV
-    //                 state of the compute pipeline doesn't fight the
-    //                 Vertex state we'd need for a draw.
-    //   boneVb      : packs per-vertex bone weights (ATTR5, R8G8B8A8_UNORM)
-    //                 and indices (ATTR6, R8G8B8A8_UINT) into 8 bytes
-    //                 matching MeshVertexSDSkinned's slot-1 layout.
-    gfx::BufferHandle unskinnedVb = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle boneVb      = gfx::BufferHandle::Invalid;
-
     float geosetAlpha   = 1.0f;
     Vector3f geosetColor = {1,1,1};
     Matrix44f worldMatrix = Matrix44f::identity();
     int priorityPlane   = 0;
 
     void Release(gfx::IGFXDevice& gfx) {
-        gfx.Destroy(vb);  gfx.Destroy(ib);
-        gfx.Destroy(tangentVb);
-        gfx.Destroy(baseVertBuf);
-        gfx.Destroy(weightBuf);
-        gfx.Destroy(skinnedBuf);
+        gfx.Destroy(ib);
         gfx.Destroy(unskinnedVb);
+        gfx.Destroy(tangentVb);
         gfx.Destroy(boneVb);
-        vb = gfx::BufferHandle::Invalid;
         ib = gfx::BufferHandle::Invalid;
-        tangentVb = gfx::BufferHandle::Invalid;
-        baseVertBuf = gfx::BufferHandle::Invalid;
-        weightBuf = gfx::BufferHandle::Invalid;
-        skinnedBuf = gfx::BufferHandle::Invalid;
         unskinnedVb = gfx::BufferHandle::Invalid;
+        tangentVb = gfx::BufferHandle::Invalid;
         boneVb = gfx::BufferHandle::Invalid;
         indexCount = 0; vertexCount = 0;
         baseVertices.clear(); baseVertices.shrink_to_fit();
@@ -201,14 +182,12 @@ struct ModelInstance {
     std::vector<Vector3f> nodePivots;     // per-node rest pivots (for billboard rotation center)
     std::vector<int>      nodeParents;    // per-node parent indices (-1 = root), needed for CameraAnchored
 
-    // GPU node palette (StructuredBuffer of offset matrices, one per model)
-    gfx::BufferHandle nodePalette = gfx::BufferHandle::Invalid;
-
-    // Per-frame bone palette CB consumed by vs/hd.bls (declared as
-    // `ConstantBuffer<BonePalette> vsCB3 : register(b3)` in
+    // Per-frame bone palette CB consumed by both vs/sd.bls and vs/hd.bls
+    // (declared as `ConstantBuffer<BonePalette> vsCB3 : register(b3)` in
     // wc3_shaders/types/cb_structs.slang). Sized for 256 bones worth of
     // float4x3 offset matrices (12288 B -- see bls_cb_layout.h
     // BonePaletteCb). Only populated when the model has a skeleton.
+    // UpdateAnimation refreshes this each frame via BuildBonePalette.
     gfx::BufferHandle bonePaletteCb = gfx::BufferHandle::Invalid;
 
     // ---- Particle system ----
@@ -280,7 +259,6 @@ struct ModelInstance {
         for (auto& [id, t] : gpuTextures) t.Release(gfx);
         gpuTextures.clear();
         gpuMaterials.clear();
-        gfx.Destroy(nodePalette); nodePalette = gfx::BufferHandle::Invalid;
         gfx.Destroy(bonePaletteCb); bonePaletteCb = gfx::BufferHandle::Invalid;
         gfx.Destroy(ribbonVB); ribbonVB = gfx::BufferHandle::Invalid; ribbonVBSize = 0;
     }
