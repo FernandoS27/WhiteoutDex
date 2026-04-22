@@ -33,8 +33,8 @@ constexpr Vector4f kGeosetAmbientColor  = {0.22f, 0.24f, 0.30f, 0.0f};
 // brightness for MDX models that don't ship authored lights.
 // `kHdBaselineLightColor` is the directional diffuse; `kHdBaselineAmbientColor`
 // is the ambient fill. Alpha channels are unused.
-constexpr Vector4f kHdBaselineLightColor   = {0.15f, 0.15f, 0.15f, 1.0f};
-constexpr Vector4f kHdBaselineAmbientColor = {0.55f, 0.55f, 0.55f, 0.0f};
+constexpr Vector4f kHdBaselineLightColor   = {0.9f, 0.9f, 0.9f, 1.0f};
+constexpr Vector4f kHdBaselineAmbientColor = {0.3f, 0.3f, 0.3f, 0.0f};
 
 // --- Lighting: particle & ribbon pass ---
 constexpr Vector4f kParticleLightColor   = {0.85f, 0.85f, 0.80f, 1.0f};
