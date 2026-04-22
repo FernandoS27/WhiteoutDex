@@ -88,10 +88,14 @@ struct GPUGeoset {
     // the HD VS picks the no-tangent permute.
     gfx::BufferHandle tangentVb = gfx::BufferHandle::Invalid;
     // Per-vertex bone weights (ATTR5, R8G8B8A8_UNORM) + indices
-    // (ATTR6, R8G8B8A8_UINT), 8 bytes per vertex. Bound on the slot
-    // expected by the selected VS permute (SD: slot 1; HD with tangent:
-    // slot 2; HD without tangent: slot 1).
+    // (ATTR6, R8G8B8A8_UINT, LOCAL slots into this geoset's palette),
+    // 8 bytes per vertex.
     gfx::BufferHandle boneVb      = gfx::BufferHandle::Invalid;
+    // Per-geoset bone palette CB (vsCB3). Sized for up to kMaxBones (256)
+    // ShaderBone entries — matches Previewd's usedBonesPerPrimitive.
+    // Only valid when boneVb is valid; rebuilt each frame from
+    // SkinningSystem's global offsetMatrices via the geoset's subset list.
+    gfx::BufferHandle bonePaletteCb = gfx::BufferHandle::Invalid;
     int indexCount      = 0;
     int vertexCount     = 0;
     int materialId      = -1;
@@ -110,10 +114,12 @@ struct GPUGeoset {
         gfx.Destroy(unskinnedVb);
         gfx.Destroy(tangentVb);
         gfx.Destroy(boneVb);
+        gfx.Destroy(bonePaletteCb);
         ib = gfx::BufferHandle::Invalid;
         unskinnedVb = gfx::BufferHandle::Invalid;
         tangentVb = gfx::BufferHandle::Invalid;
         boneVb = gfx::BufferHandle::Invalid;
+        bonePaletteCb = gfx::BufferHandle::Invalid;
         indexCount = 0; vertexCount = 0;
         baseVertices.clear(); baseVertices.shrink_to_fit();
     }
@@ -182,13 +188,10 @@ struct ModelInstance {
     std::vector<Vector3f> nodePivots;     // per-node rest pivots (for billboard rotation center)
     std::vector<int>      nodeParents;    // per-node parent indices (-1 = root), needed for CameraAnchored
 
-    // Per-frame bone palette CB consumed by both vs/sd.bls and vs/hd.bls
-    // (declared as `ConstantBuffer<BonePalette> vsCB3 : register(b3)` in
-    // wc3_shaders/types/cb_structs.slang). Sized for 256 bones worth of
-    // float4x3 offset matrices (12288 B -- see bls_cb_layout.h
-    // BonePaletteCb). Only populated when the model has a skeleton.
-    // UpdateAnimation refreshes this each frame via BuildBonePalette.
-    gfx::BufferHandle bonePaletteCb = gfx::BufferHandle::Invalid;
+    // Per-geoset bone palette CBs live on GPUGeoset (see struct above). The
+    // model-wide palette was removed when we switched to per-geoset subsets:
+    // nightelf_exp has 650+ bones, more than the 256-cap on uint8 ATTR6
+    // indices, so each geoset now gets a compact subset instead.
 
     // ---- Particle system ----
     // PE2 particles are owned by RenderService::particleService_, keyed on
@@ -259,7 +262,6 @@ struct ModelInstance {
         for (auto& [id, t] : gpuTextures) t.Release(gfx);
         gpuTextures.clear();
         gpuMaterials.clear();
-        gfx.Destroy(bonePaletteCb); bonePaletteCb = gfx::BufferHandle::Invalid;
         gfx.Destroy(ribbonVB); ribbonVB = gfx::BufferHandle::Invalid; ribbonVBSize = 0;
     }
 };

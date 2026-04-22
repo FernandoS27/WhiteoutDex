@@ -205,10 +205,27 @@ struct SkeletonData {
 };
 
 // GroupAverageRecord is defined in animation.h alongside VertexInfluence.
+//
+// PER-GEOSET BONE PALETTE DESIGN (matches Previewd's `usedBonesPerPrimitive`):
+// The SD/HD BLS shaders read bone indices as uint8 (ATTR6 = R8G8B8A8_UINT), so
+// `boneIdx[k]` must fit in 0..255. Models like nightelf_exp have 650+ bones in
+// the hierarchy, well beyond that cap. Instead of a single global palette, each
+// geoset carries its own compact subset of the bones it actually references.
+//
+//   subsetNodeIndices[local] = global hierarchy position
+//
+// `influences[v].boneIdx[k]` is written as a LOCAL slot index (0..subset.size()
+// - 1, plus pseudo slots for groupAverages beyond that).
+// `groupAverages[g].pseudoSlot`   is a LOCAL slot index >= subsetNodeIndices.size()
+// `groupAverages[g].nodeIndices`  are GLOBAL hierarchy positions — the source
+// nodes whose offsetMatrices get averaged each frame into `pseudoSlot`.
+// The per-geoset palette CB is rebuilt each frame: local slot i copies
+// offsetMatrices_[subsetNodeIndices[i]], group slots get the running average.
 struct SkinWeightData {
     int geosetId;
     std::vector<VertexInfluence> influences;
     std::vector<GroupAverageRecord> groupAverages;
+    std::vector<int> subsetNodeIndices;
 };
 
 struct CollisionShapeData {

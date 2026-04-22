@@ -381,8 +381,9 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
         mi->nodeParents        = tmpl.skeleton.nodeParents;
         mi->skinDirty = true;
     }
-    // Skin weights
-    std::vector<GroupAverageRecord> allGroupAverages;
+    // Skin weights (per-geoset: boneIdx are LOCAL palette slots, paired with
+    // a per-geoset palette layout that maps local→global node + per-frame
+    // group averages).
     for (auto& sw : tmpl.skinWeights) {
         int vc = (int)sw.influences.size();
         std::vector<int> bIdx(vc * 4); std::vector<float> wts(vc * 4);
@@ -392,10 +393,11 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
                 wts[v*4+j] = sw.influences[v].weight[j];
             }
         mi->skinning.SetGeosetWeights(sw.geosetId, vc, bIdx.data(), wts.data());
-        for (auto& rec : sw.groupAverages) allGroupAverages.push_back(rec);
+        GeosetPaletteLayout layout;
+        layout.subsetNodeIndices = sw.subsetNodeIndices;
+        layout.groupAverages     = sw.groupAverages;
+        mi->skinning.SetGeosetLayout(sw.geosetId, std::move(layout));
     }
-    if (!allGroupAverages.empty())
-        mi->skinning.SetGroupAverages(std::move(allGroupAverages));
     // PE2 particles — registered directly with the service (no legacy path).
     for (int i = 0; i < (int)tmpl.pe2Configs.size(); i++) {
         auto em = std::make_unique<particle::PlaneEmitter>();
@@ -657,8 +659,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
         mi->skinDirty = true;
     }
 
-    // Skin weights
-    std::vector<GroupAverageRecord> allGroupAverages;
+    // Skin weights (per-geoset: boneIdx are LOCAL palette slots).
     for (auto& sw : skinWeights) {
         int vc = (int)sw.influences.size();
         std::vector<int>   boneIdx(vc * 4);
@@ -670,10 +671,11 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
             }
         }
         mi->skinning.SetGeosetWeights(sw.geosetId, vc, boneIdx.data(), weights.data());
-        for (auto& rec : sw.groupAverages) allGroupAverages.push_back(rec);
+        GeosetPaletteLayout layout;
+        layout.subsetNodeIndices = sw.subsetNodeIndices;
+        layout.groupAverages     = sw.groupAverages;
+        mi->skinning.SetGeosetLayout(sw.geosetId, std::move(layout));
     }
-    if (!allGroupAverages.empty())
-        mi->skinning.SetGroupAverages(std::move(allGroupAverages));
     if (!skinWeights.empty()) mi->skinDirty = true;
 
     // Particles — register with the PE2 service. The legacy ParticleEmitterConfig
@@ -1442,18 +1444,20 @@ void RenderService::UploadStagedGeosets(ModelInstance& mi) {
 }
 
 void RenderService::CreateNodePalette(ModelInstance& mi) {
-    for (auto& geo : mi.gpuGeosets)
-        geo.hasSkinning = true;
-
-    // Bone palette constant buffer consumed by vs/sd.bls and vs/hd.bls's
-    // FourBoneSkinning. BonePaletteCb is 256 entries * 3 float4 rows =
-    // 12288 B; UpdateAnimation refreshes it per-frame via BuildBonePalette.
-    const int nodeCount = mi.skinning.NodeCount();
-    if (nodeCount > 0 && mi.bonePaletteCb == gfx::BufferHandle::Invalid) {
-        mi.bonePaletteCb = gfx_->CreateBuffer({
+    // Each skinned geoset gets its OWN bone palette CB (vsCB3), sized for
+    // kMaxBones=256 entries even when the geoset only uses a few slots —
+    // matches the BLS cb_structs.slang ConstantBuffer layout. Per-geoset
+    // subsets keep the uint8 ATTR6 indices in range for models with >256
+    // bones total (e.g. nightelf_exp with 650+).
+    for (auto& geo : mi.gpuGeosets) {
+        if (geo.boneVb == gfx::BufferHandle::Invalid) continue;
+        if (geo.bonePaletteCb != gfx::BufferHandle::Invalid) continue;
+        if (mi.skinning.GeosetPaletteSize(geo.geosetId) <= 0) continue;
+        geo.bonePaletteCb = gfx_->CreateBuffer({
             .size  = sizeof(bls::BonePaletteCb),
             .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
         });
+        geo.hasSkinning = true;
     }
 }
 
@@ -1510,24 +1514,31 @@ void RenderService::ReleaseModelGPU() {
 // ============================================================================
 
 void RenderService::UpdateAnimation() {
-    // Evaluate skinning on CPU once per frame and push the bone palette
-    // to the GPU constant buffer (vsCB3) that both SD and HD VS consume
-    // for FourBoneSkinning. Actual vertex blending now happens inside
-    // the VS -- no compute pass, no geo.vb writeback.
+    // Evaluate skinning on CPU once per frame. Each geoset owns its own
+    // palette CB (vsCB3) holding a compact subset of bones — we fill it
+    // from SkinningSystem's global offsetMatrices through the geoset's
+    // subsetNodeIndices + groupAverages layout.
     std::lock_guard<std::mutex> lock(dataMutex_);
 
     for (auto& [h, miPtr] : models_) {
         auto* mi = miPtr.get();
         if (!mi->skinning.HasSkeleton() || !mi->skinning.IsReady()) continue;
         if (mi->parentVisibility <= 0.02f) continue;
-        if (mi->bonePaletteCb == gfx::BufferHandle::Invalid) continue;
 
         mi->skinning.ComputeOffsetMatrices();
 
-        if (auto bp = bls::ScopedCb<bls::BonePaletteCb>(gfx_.get(), mi->bonePaletteCb)) {
-            // PaletteSize() = NodeCount() + pseudo slots for v800 group averages.
-            bls::BuildBonePalette(*bp, mi->skinning.OffsetMatrices(),
-                                  mi->skinning.PaletteSize());
+        for (auto& geo : mi->gpuGeosets) {
+            if (geo.bonePaletteCb == gfx::BufferHandle::Invalid) continue;
+            if (auto bp = bls::ScopedCb<bls::BonePaletteCb>(gfx_.get(), geo.bonePaletteCb)) {
+                // Fill the geoset's compact palette: subset bones by local
+                // slot, group averages at their pseudo slots, rest identity.
+                // `bp->bones` is an array of ShaderBone; we write via a
+                // staging array of Matrix44f and then pack to shader format.
+                constexpr int kSlots = bls::kMaxBones;
+                static thread_local Matrix44f staging[kSlots];
+                mi->skinning.ComputeGeosetPalette(geo.geosetId, staging, kSlots);
+                bls::BuildBonePalette(*bp, staging, kSlots);
+            }
         }
     }
 }
@@ -2540,15 +2551,15 @@ public:
             cmd->BindVertexBuffer(1, geo.tangentVb, sizeof(Vector4f));
 
         // Bone weights+indices feeding FourBoneSkinning (ATTR5/ATTR6) +
-        // bone palette CB (vsCB3). Bone slot collapses onto slot 1 when
-        // no tangents are present.
+        // per-geoset bone palette CB (vsCB3). Bone slot collapses onto
+        // slot 1 when no tangents are present.
         const bool hasBones =
             (geo.boneVb != gfx::BufferHandle::Invalid) &&
-            (mi->bonePaletteCb != gfx::BufferHandle::Invalid);
+            (geo.bonePaletteCb != gfx::BufferHandle::Invalid);
         if (hasBones) {
             const uint32_t boneSlot = hasTangents ? 2u : 1u;
             cmd->BindVertexBuffer(boneSlot, geo.boneVb, sizeof(BoneVertex));
-            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, mi->bonePaletteCb);
+            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, geo.bonePaletteCb);
         }
 
         for (int li = 0; li < numLayers; ++li) {

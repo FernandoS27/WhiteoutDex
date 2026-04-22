@@ -586,27 +586,27 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
     // objectIds. Matches Previewd's BuildPrimBone @0x1402cf5e0:
     //     qmemcpy(bone, &boneMatrices[*matrix], sizeof(C34Matrix));
     // where `boneMatrices` is the dense `data->boneMtx[0..numBones-1]` array.
-    // For Blizzard models (bones densely numbered 0..numBones-1 at the start
-    // of objectId space) this coincides with objectId-based lookup; for
-    // models where bones aren't densely numbered first, splitIndex resolution
-    // picks the correct bone whereas objectId resolution would miss.
     // Fallback to ObjectIdToNodeIndex when splitIndex is out of range so
     // third-party exporters that stuff objectIds into MATS still work.
     //
-    // v800 matrix-groups with count > 4 get a pseudo palette slot holding the
-    // per-frame average of the group's bone matrices (mirrors BuildPrimBone's
-    // fallback `sum / N` for N > 3). Pseudo slots live at [nodeCount, 256),
-    // numbered globally across all geosets. Count <= 4 keeps the uniform 1/N
-    // per-vertex weights path (mathematically equivalent to matrix averaging).
+    // Each geoset emits a COMPACT PALETTE SUBSET of just the bones it uses.
+    // VertexInfluence::boneIdx is written as a LOCAL slot index into this
+    // subset so it fits in uint8 (the BLS shaders read ATTR6 as R8G8B8A8
+    // — only 256 distinct indices addressable). This mirrors Previewd's
+    // `usedBonesPerPrimitive` mechanism. The model-wide bone palette would
+    // fail for models like nightelf_exp (650 bones).
+    //
+    // v800 matrix-groups with count > 4 get a pseudo slot appended AFTER the
+    // subset bones (mirrors BuildPrimBone's `sum / N` for N > 3). Count <= 4
+    // groups keep the uniform 1/N per-vertex weights path (mathematically
+    // equivalent to matrix averaging).
     auto resolveBoneIdx = [&](int matsValue) -> int {
         int nodeIdx = hierarchy_.BoneIndexToNodeIndex(matsValue);
         if (nodeIdx < 0) nodeIdx = hierarchy_.ObjectIdToNodeIndex(matsValue);
         return (nodeIdx >= 0) ? nodeIdx : 0;
     };
 
-    const int nodeCount = hierarchy_.NodeCount();
-    constexpr int kMaxPaletteSlots = 256;  // matches bls::kMaxBones
-    int nextPseudoSlot = nodeCount;
+    constexpr int kMaxPaletteSlots = 256;  // matches bls::kMaxBones / uint8 index cap
 
     for (int gi = 0; gi < (int)model_.geosets.size(); gi++) {
         const auto& gs = model_.geosets[gi];
@@ -614,6 +614,19 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
         SkinWeightData sw;
         sw.geosetId = gi;
         sw.influences.resize(vc);
+
+        // Build a stable, deduplicated subset of global node indices referenced
+        // by this geoset's skin. Insertion order = slot order.
+        std::vector<int> subset;
+        std::unordered_map<int, int> globalToLocal;
+        auto addToSubset = [&](int globalIdx) -> int {
+            auto it = globalToLocal.find(globalIdx);
+            if (it != globalToLocal.end()) return it->second;
+            int local = (int)subset.size();
+            subset.push_back(globalIdx);
+            globalToLocal.emplace(globalIdx, local);
+            return local;
+        };
 
         if (!gs.skinData.empty()) {
             // v1200: packed u8 per vertex, 4 bone-palette indices + 4 weights.
@@ -629,7 +642,9 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
                             matsValue = (int)gs.matrixIndices[raw];
                         else
                             matsValue = (int)raw;
-                        sw.influences[v].boneIdx[k] = resolveBoneIdx(matsValue);
+                        int globalNode = resolveBoneIdx(matsValue);
+                        int localSlot  = addToSubset(globalNode);
+                        sw.influences[v].boneIdx[k] = localSlot;
                         sw.influences[v].weight[k]  = gs.skinData[base + 4 + k] / 255.0f;
                     }
                 }
@@ -640,37 +655,55 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
             for (int g = 0; g < (int)gs.matrixGroups.size(); g++)
                 groupStart[g + 1] = groupStart[g] + gs.matrixGroups[g];
 
-            // Pre-pass: reserve pseudo slots for groups with count > 4.
-            std::vector<int> groupPseudoSlot(gs.matrixGroups.size(), -1);
+            // First pre-populate subset with every bone referenced by any
+            // N<=4 group, so local slots for direct references stay low and
+            // pseudo slots for N>4 groups cleanly follow them at the end.
+            std::vector<int> groupPseudoSlotGlobal(gs.matrixGroups.size(), -1);
+            for (int g = 0; g < (int)gs.matrixGroups.size(); g++) {
+                u32 count = gs.matrixGroups[g];
+                if (count > 4) continue;  // deferred to the pseudo-slot pass
+                u32 start = groupStart[g];
+                u32 clamp = count > 4 ? 4 : count;
+                for (u32 k = 0; k < clamp && (start + k) < gs.matrixIndices.size(); k++) {
+                    int globalNode = resolveBoneIdx((int)gs.matrixIndices[start + k]);
+                    addToSubset(globalNode);
+                }
+            }
+
+            // Now assign pseudo slots (AFTER the subset bones). nodeIndices
+            // stay in GLOBAL positions — they're the source for per-frame
+            // averaging against SkinningSystem::OffsetMatrices().
             for (int g = 0; g < (int)gs.matrixGroups.size(); g++) {
                 u32 count = gs.matrixGroups[g];
                 if (count <= 4) continue;
-                if (nextPseudoSlot >= kMaxPaletteSlots) {
+                int pseudoLocal = (int)subset.size() + (int)sw.groupAverages.size();
+                if (pseudoLocal >= kMaxPaletteSlots) {
                     std::fprintf(stderr,
-                        "[GetSkinWeights] palette exhausted at slot %d; geoset %d group %d (N=%u) "
-                        "falls back to 4-bone clamp (will lose influences)\n",
-                        nextPseudoSlot, gi, g, count);
+                        "[GetSkinWeights] geoset %d group %d (N=%u) exceeds per-geoset"
+                        " palette cap (%d); falling back to 4-bone clamp\n",
+                        gi, g, count, kMaxPaletteSlots);
                     continue;
                 }
                 GroupAverageRecord rec;
-                rec.pseudoSlot = nextPseudoSlot++;
+                rec.pseudoSlot = pseudoLocal;
                 rec.nodeIndices.reserve(count);
                 u32 start = groupStart[g];
                 for (u32 k = 0; k < count && (start + k) < gs.matrixIndices.size(); k++) {
                     int nodeIdx = resolveBoneIdx((int)gs.matrixIndices[start + k]);
                     rec.nodeIndices.push_back(nodeIdx);
                 }
-                groupPseudoSlot[g] = rec.pseudoSlot;
+                groupPseudoSlotGlobal[g] = pseudoLocal;
                 sw.groupAverages.push_back(std::move(rec));
             }
 
+            // Per-vertex: write local slot indices.
             for (int v = 0; v < vc && v < (int)gs.vertexGroups.size(); v++) {
                 int groupId = gs.vertexGroups[v];
                 if (groupId >= (int)gs.matrixGroups.size()) continue;
 
-                int pseudoSlot = groupPseudoSlot[groupId];
-                if (pseudoSlot >= 0) {
-                    sw.influences[v].boneIdx[0] = pseudoSlot;
+                int pseudoLocal = groupPseudoSlotGlobal[groupId];
+                if (pseudoLocal >= 0) {
+                    sw.influences[v].boneIdx[0] = pseudoLocal;
                     sw.influences[v].weight[0]  = 1.0f;
                 } else {
                     u32 start = groupStart[groupId];
@@ -678,12 +711,26 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
                     if (count > 4) count = 4;
                     float w = (count > 0) ? 1.0f / (float)count : 0.0f;
                     for (u32 k = 0; k < count && (start + k) < gs.matrixIndices.size(); k++) {
-                        sw.influences[v].boneIdx[k] = resolveBoneIdx((int)gs.matrixIndices[start + k]);
+                        int globalNode = resolveBoneIdx((int)gs.matrixIndices[start + k]);
+                        auto it = globalToLocal.find(globalNode);
+                        int localSlot = (it != globalToLocal.end()) ? it->second
+                                                                    : addToSubset(globalNode);
+                        sw.influences[v].boneIdx[k] = localSlot;
                         sw.influences[v].weight[k]  = w;
                     }
                 }
             }
         }
+
+        // Check final cap including pseudo slots.
+        const int paletteSlotsUsed = (int)subset.size() + (int)sw.groupAverages.size();
+        if (paletteSlotsUsed > kMaxPaletteSlots) {
+            std::fprintf(stderr,
+                "[GetSkinWeights] geoset %d needs %d palette slots (>%d)\n",
+                gi, paletteSlotsUsed, kMaxPaletteSlots);
+        }
+
+        sw.subsetNodeIndices = std::move(subset);
         result.push_back(std::move(sw));
     }
     return result;

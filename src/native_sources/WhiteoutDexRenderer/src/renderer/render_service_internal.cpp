@@ -45,7 +45,7 @@ std::vector<GeosetRef> CollectSortedGeosetRefs(
 
 bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
                         const GPUGeoset&      geo,
-                        const ModelInstance&  mi) {
+                        const ModelInstance&  /*mi*/) {
     // Slot 0 always carries the rest-pose Vertex stream -- the SD VS
     // blends against the bone palette when the FourBoneSkinning permute
     // is active, or passes through unchanged when numWeights=0.
@@ -53,10 +53,10 @@ bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
     cmd->BindIndexBuffer(geo.ib, gfx::Format::R32_UINT);
 
     const bool hasBones = (geo.boneVb != gfx::BufferHandle::Invalid)
-                       && (mi.bonePaletteCb != gfx::BufferHandle::Invalid);
+                       && (geo.bonePaletteCb != gfx::BufferHandle::Invalid);
     if (hasBones) {
         cmd->BindVertexBuffer(1, geo.boneVb, sizeof(BoneVertex));
-        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, mi.bonePaletteCb);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, geo.bonePaletteCb);
     }
     return hasBones;
 }

@@ -70,9 +70,9 @@ std::vector<GeosetRef> CollectSortedGeosetRefs(
     int selectedLod);
 
 // Binds the SD-mesh input for native VS skinning:
-//   slot 0 = geo.unskinnedVb (rest-pose Vertex, 48 B stride)
-//   slot 1 = geo.boneVb      (BoneVertex, 8 B) -- iff bones are present
-//   vsCB3  = mi.bonePaletteCb                   -- iff bones are present
+//   slot 0 = geo.unskinnedVb  (rest-pose Vertex, 48 B stride)
+//   slot 1 = geo.boneVb       (BoneVertex, 8 B) -- iff bones are present
+//   vsCB3  = geo.bonePaletteCb                   -- iff bones are present
 // Plus the R32_UINT index buffer. Returns true when the bone stream
 // was bound; caller then picks numWeights=4 + ParticleSDSkinned layout
 // so the SD VS selects the FourBoneSkinning permute.

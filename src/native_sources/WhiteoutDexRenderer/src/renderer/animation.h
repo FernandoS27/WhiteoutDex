@@ -24,21 +24,27 @@ struct VertexInfluence {
 // ============================================================================
 // v800 matrix-groups with > 4 bones cannot fit in a single VertexInfluence.
 // Mirrors Previewd's BuildPrimBone (@0x1402cf5e0) which averages ALL N bones
-// of a group into one per-group matrix. For each such group we reserve a
-// palette slot beyond the hierarchy nodes and rewrite it each frame as the
-// average of the listed node matrices. Vertices in the group reference this
-// slot with weight 1.0.
+// of a group into one per-group matrix. The pseudo-slot lives at the END of
+// the geoset's LOCAL palette subset (after the directly-referenced bones),
+// rewritten each frame as the average of the listed GLOBAL node matrices.
+// Vertices in the group reference this slot with weight 1.0.
 // ============================================================================
 struct GroupAverageRecord {
-    int              pseudoSlot;   // palette index (>= nodeCount) for avg matrix
-    std::vector<int> nodeIndices;  // hierarchy indices to average each frame
+    int              pseudoSlot;   // LOCAL palette slot (>= subsetNodeIndices.size())
+    std::vector<int> nodeIndices;  // GLOBAL hierarchy indices to average
 };
 
 // ============================================================================
-// Per-geoset skin weight data
+// Per-geoset skin layout (local subset palette + group averages).
+// Vertex-level weights live in GeosetSkinInfo.
 // ============================================================================
 struct GeosetSkinInfo {
-    std::vector<VertexInfluence> vertices;
+    std::vector<VertexInfluence> vertices;  // boneIdx are LOCAL subset slots
+};
+
+struct GeosetPaletteLayout {
+    std::vector<int>                subsetNodeIndices;  // local → global node
+    std::vector<GroupAverageRecord> groupAverages;
 };
 
 // ============================================================================
@@ -51,9 +57,8 @@ public:
         currentMatrices_.clear();
         offsetMatrices_.clear();
         geosetWeights_.clear();
-        groupAverages_.clear();
+        geosetLayouts_.clear();
         nodeCount_ = 0;
-        paletteSize_ = 0;
         matricesDirty_ = false;
         nodesReady_ = false;
     }
@@ -61,8 +66,7 @@ public:
     // ---- Setup (called once from API thread) ----
 
     void SetSkeleton(int nodeCount, const float* inverseBindData) {
-        nodeCount_   = nodeCount;
-        paletteSize_ = nodeCount;  // may grow later via SetGroupAverages
+        nodeCount_ = nodeCount;
         inverseBindMatrices_.resize(nodeCount);
         currentMatrices_.resize(nodeCount);
         offsetMatrices_.resize(nodeCount);
@@ -81,20 +85,11 @@ public:
         }
     }
 
-    // Reserve extra palette slots for v800 group averages. Call AFTER
-    // SetSkeleton; every pseudoSlot must satisfy
-    //   nodeCount <= pseudoSlot < nodeCount + records.size()
-    // (enforced by the adapter's numbering scheme). Pseudo slots are
-    // rewritten every frame from the listed node matrices — see
-    // ComputeOffsetMatrices below.
-    void SetGroupAverages(std::vector<GroupAverageRecord> records) {
-        groupAverages_ = std::move(records);
-        int maxSlot = nodeCount_;
-        for (const auto& r : groupAverages_) {
-            if (r.pseudoSlot + 1 > maxSlot) maxSlot = r.pseudoSlot + 1;
-        }
-        paletteSize_ = maxSlot;
-        offsetMatrices_.resize(paletteSize_, Matrix44f::identity());
+    // Register a geoset's palette layout (local-subset + group averages).
+    // Called once at model load, after SetSkeleton. Used by
+    // ComputeGeosetPalette below to fill the per-geoset BonePaletteCb.
+    void SetGeosetLayout(int geosetId, GeosetPaletteLayout layout) {
+        geosetLayouts_[geosetId] = std::move(layout);
     }
 
     void SetGeosetWeights(int geosetId, int vertCount,
@@ -130,7 +125,6 @@ public:
     bool HasSkeleton()              const { return nodeCount_ > 0; }
     bool IsReady()                  const { return nodesReady_; }
     int  NodeCount()                const { return nodeCount_; }
-    int  PaletteSize()              const { return paletteSize_; }  // nodeCount + pseudo slots
     bool HasWeights(int geosetId)   const { return geosetWeights_.count(geosetId) > 0; }
     bool NeedsUpdate()              const { return matricesDirty_; }
 
@@ -139,7 +133,30 @@ public:
         return (it != geosetWeights_.end()) ? &it->second : nullptr;
     }
 
+    const GeosetPaletteLayout* GetGeosetLayout(int geosetId) const {
+        auto it = geosetLayouts_.find(geosetId);
+        return (it != geosetLayouts_.end()) ? &it->second : nullptr;
+    }
+
+    // Palette slot count for geoset: subset + group averages.
+    int GeosetPaletteSize(int geosetId) const {
+        auto* layout = GetGeosetLayout(geosetId);
+        if (!layout) return 0;
+        return (int)layout->subsetNodeIndices.size() + (int)layout->groupAverages.size();
+    }
+
     const Matrix44f* OffsetMatrices() const { return offsetMatrices_.data(); }
+
+    // Resolve a local subset slot to its global hierarchy position. Slots
+    // beyond subsetNodeIndices (group-average pseudo slots) return -1 since
+    // they don't correspond to a single source node.
+    int LocalSlotToNodeIndex(int geosetId, int localSlot) const {
+        auto* layout = GetGeosetLayout(geosetId);
+        if (!layout) return -1;
+        if (localSlot < 0 || localSlot >= (int)layout->subsetNodeIndices.size())
+            return -1;
+        return layout->subsetNodeIndices[localSlot];
+    }
 
     // ---- Compute offset matrices (render thread, call once per frame) ----
 
@@ -150,17 +167,42 @@ public:
             // This transforms: bindPoseWorld → nodeLocal → currentWorld
             offsetMatrices_[i] = inverseBindMatrices_[i] * currentMatrices_[i];
         }
-        // v800 N>4 matrix-groups: write the average of each group's node
-        // matrices into its pseudo slot. Mirrors Previewd's BuildPrimBone
-        // (@0x1402cf5e0) which averages all N bones of a matrix-group into one
-        // matrix uploaded to the draw. Since our inverseBindMatrices are all
-        // identity for MDX models (bone world = identity at bind pose), the
-        // offsetMatrix is just the node world matrix, so averaging offsets is
-        // equivalent to averaging world matrices.
-        for (const auto& rec : groupAverages_) {
-            if (rec.pseudoSlot < 0 || rec.pseudoSlot >= paletteSize_) continue;
+        matricesDirty_ = false;
+    }
+
+    // Fill a per-geoset palette (subset bones + group-average pseudo slots)
+    // into `out` (must hold at least `capacity` Matrix44f entries). Entries
+    // past the geoset's layout count are filled with identity. Returns the
+    // number of real slots written (= GeosetPaletteSize).
+    int ComputeGeosetPalette(int geosetId, Matrix44f* out, int capacity) const {
+        auto* layout = GetGeosetLayout(geosetId);
+        if (!layout || !out || capacity <= 0) {
+            if (out && capacity > 0) {
+                for (int i = 0; i < capacity; ++i) out[i] = Matrix44f::identity();
+            }
+            return 0;
+        }
+        const int subsetN = (int)layout->subsetNodeIndices.size();
+        const int groupN  = (int)layout->groupAverages.size();
+        const int total   = subsetN + groupN;
+        const int n       = total < capacity ? total : capacity;
+
+        // Subset bones: direct copy of the global offset matrix.
+        for (int i = 0; i < subsetN && i < capacity; ++i) {
+            int g = layout->subsetNodeIndices[i];
+            if (g >= 0 && g < nodeCount_) out[i] = offsetMatrices_[g];
+            else                          out[i] = Matrix44f::identity();
+        }
+        // Group-average pseudo slots: average of listed global offsets.
+        // Mirrors Previewd's BuildPrimBone (@0x1402cf5e0) `sum / N`. Since
+        // inverseBindMatrices are all identity for MDX, averaging offsets
+        // is equivalent to averaging world matrices.
+        for (int g = 0; g < groupN; ++g) {
+            const int slot = layout->groupAverages[g].pseudoSlot;
+            if (slot < 0 || slot >= capacity) continue;
+            const auto& rec = layout->groupAverages[g];
             if (rec.nodeIndices.empty()) {
-                offsetMatrices_[rec.pseudoSlot] = Matrix44f::identity();
+                out[slot] = Matrix44f::identity();
                 continue;
             }
             Matrix44f sum = Matrix44f::zero();
@@ -178,12 +220,15 @@ public:
                 for (int r = 0; r < 4; r++)
                     for (int c = 0; c < 4; c++)
                         sum.data[r][c] *= inv;
-                offsetMatrices_[rec.pseudoSlot] = sum;
+                out[slot] = sum;
             } else {
-                offsetMatrices_[rec.pseudoSlot] = Matrix44f::identity();
+                out[slot] = Matrix44f::identity();
             }
         }
-        matricesDirty_ = false;
+        // Pad remaining with identity so stale memory doesn't leak into
+        // shader reads if a PSO's permute references higher slots.
+        for (int i = n; i < capacity; ++i) out[i] = Matrix44f::identity();
+        return n;
     }
 
     // ---- CPU vertex skinning (legacy, kept for reference) ----
@@ -245,13 +290,11 @@ public:
 
 private:
     int nodeCount_ = 0;
-    int paletteSize_ = 0;  // nodeCount_ + pseudo slots (for v800 group averages)
     std::vector<Matrix44f> inverseBindMatrices_;  // set once at setup
     std::vector<Matrix44f> currentMatrices_;      // updated per frame
-    std::vector<Matrix44f> offsetMatrices_;       // = invBind * current (precomputed)
-                                                  // extra trailing entries hold group averages
+    std::vector<Matrix44f> offsetMatrices_;       // = invBind * current, per node
     std::unordered_map<int, GeosetSkinInfo> geosetWeights_;
-    std::vector<GroupAverageRecord> groupAverages_;
+    std::unordered_map<int, GeosetPaletteLayout> geosetLayouts_;
     bool matricesDirty_ = false;
     bool nodesReady_ = false;   // true after first UpdateNodeMatrices call
 };
