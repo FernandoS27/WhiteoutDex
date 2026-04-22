@@ -407,6 +407,19 @@ void MdxHierarchy::Build(const whiteout::mdx::Model& model) {
         for (int i = 0; i < (int)nodes_.size(); i++)
             objectIdToIdx_[nodes_[i].objectId] = i;
     }
+
+    // Build dense bone-index → hierarchy-position table. Bones are tagged at
+    // Build time with (source=Bone, sourceIndex = position in model.bones).
+    // MATS/SKIN values in Previewd are dense bone indices; we resolve them
+    // through this table to our palette position.
+    boneIdxToNodeIdx_.assign(boneCount_, -1);
+    for (int i = 0; i < (int)nodes_.size(); i++) {
+        const auto& n = nodes_[i];
+        if (n.source == HierarchyNode::Source::Bone &&
+            n.sourceIndex >= 0 && n.sourceIndex < boneCount_) {
+            boneIdxToNodeIdx_[n.sourceIndex] = i;
+        }
+    }
 }
 
 // ============================================================================
@@ -426,13 +439,11 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
     static const Quaternion defaultR = {0, 0, 0, 1};  // identity
     static const Vector3f defaultS = {1, 1, 1};
 
-    // Cache each node's evaluated local TRS so children with DontInherit flags
-    // can rebuild their parent's contribution selectively without having to
-    // decompose a delta matrix (decompose can't cleanly separate rotation from
-    // the pivot-offset encoded in the delta's translation column).
-    std::vector<Vector3f>   localTs(nc);
-    std::vector<Quaternion> localRs(nc);
-    std::vector<Vector3f>   localSs(nc);
+    // Cache each node's post-TRS stack state (the world-matrix stack top at
+    // the point Previewd would push a CHILD onto the stack — i.e. BEFORE
+    // PlaceObjectSimple's T(-pivot) is applied). Children read this to rebuild
+    // their parent's contribution as Previewd's WorldMatrixPush does.
+    std::vector<Matrix44f> stackM(nc, Matrix44f::identity());
 
     for (int i = 0; i < nc; i++) {
         const auto& n = nodes_[i];
@@ -472,50 +483,127 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
             ? EvaluateTrackVec3(*n.scaling, sTime, sStart, sEnd, defaultS)
             : defaultS;
 
-        localTs[i] = localT;
-        localRs[i] = localR;
-        localSs[i] = localS;
+        // Replicate Previewd's per-bone world-matrix-stack pipeline. Strips
+        // are dispatched from the specific view that owns each flag combo —
+        // summarized below (flags bit 0/1/2 = rmT/rmR/rmS in our MDX enum):
+        //   001 rmT only      → TranslateView : RemoveTranslation
+        //   010 rmS only      → ScaleView     : RemoveScale (before local S)
+        //   011 rmT+rmS       → TranslateView : RemoveTranslation + RemoveScale
+        //   100 rmR only      → RotateView    : RemoveRotation (before local R)
+        //   101 rmT+rmR       → TranslateView : RemoveTranslation + RemoveRotation
+        //   110 rmR+rmS       → ScaleView     : RemoveRotationAndScaling (before local S)
+        //   111 all           → TranslateView : RemoveTranslation + RemoveRotationAndScaling
+        // The model basis is identity (model-to-world is applied outside the
+        // bone chain), so Previewd's WorldMatrixBasis / WorldMatrixScale
+        // (basisScale) / WorldMatrixTranslate(basisPosition) restore calls
+        // are all no-ops here.
+        //
+        // Note: in rmR+rmS (no rmT), the rotation+scale strip in ScaleView
+        // happens AFTER RotateView applied the local rotation, so the strip
+        // wipes both the accumulated and just-applied local rotation,
+        // leaving only the local scale. This is Previewd's actual behaviour.
+        uint32_t flags = n.flags;
+        using NF = Node::NodeFlag;
+        const bool rmT = flags & (uint32_t)NF::DontInheritTranslation;
+        const bool rmR = flags & (uint32_t)NF::DontInheritRotation;
+        const bool rmS = flags & (uint32_t)NF::DontInheritScaling;
 
-        Matrix44f localM = Vec3QuatScaleToMatrix44f(localT, localR, localS, n.pivot);
-
-        // Parent composition
-        Matrix44f parentWorld = Matrix44f::identity();
+        const Vector3f& currPivot = n.pivot;
+        Vector3f parentPivot = {0, 0, 0};
+        Matrix44f M = Matrix44f::identity();
         if (n.parentIdx >= 0 && n.parentIdx < nc) {
-            parentWorld = allNodeMatrices[n.parentIdx];
-
-            // DontInherit flags: rebuild the direct parent's contribution with
-            // the flagged TRS components zeroed out, using the parent's cached
-            // local TRS (NOT its delta matrix, which encodes rotation effect
-            // on pivot inseparably from translation). Ancestors above the
-            // parent are unaffected — only the direct parent's contribution is
-            // filtered, matching typical Wc3 usage where the flag decouples a
-            // node (e.g. a billboard emitter) from its direct parent bone.
-            uint32_t flags = n.flags;
-            using NF = Node::NodeFlag;
-            if (flags & ((uint32_t)NF::DontInheritTranslation |
-                         (uint32_t)NF::DontInheritRotation |
-                         (uint32_t)NF::DontInheritScaling)) {
-                const auto& parent = nodes_[n.parentIdx];
-                Vector3f   pT = localTs[n.parentIdx];
-                Quaternion pR = localRs[n.parentIdx];
-                Vector3f   pS = localSs[n.parentIdx];
-
-                if (flags & (uint32_t)NF::DontInheritTranslation) pT = {0, 0, 0};
-                if (flags & (uint32_t)NF::DontInheritRotation)    pR = {0, 0, 0, 1};
-                if (flags & (uint32_t)NF::DontInheritScaling)     pS = {1, 1, 1};
-
-                Matrix44f filteredParentLocal =
-                    Vec3QuatScaleToMatrix44f(pT, pR, pS, parent.pivot);
-
-                Matrix44f grandparentWorld = Matrix44f::identity();
-                if (parent.parentIdx >= 0 && parent.parentIdx < nc)
-                    grandparentWorld = allNodeMatrices[parent.parentIdx];
-
-                parentWorld = filteredParentLocal * grandparentWorld;
-            }
+            M = stackM[n.parentIdx];
+            parentPivot = nodes_[n.parentIdx].pivot;
         }
 
-        Matrix44f worldM = localM * parentWorld;
+
+        auto stripTranslation = [&]() {
+            M.data[3][0] = 0; M.data[3][1] = 0; M.data[3][2] = 0;
+        };
+        auto stripRotationKeepScale = [&]() {
+            // MatrixRemove flag 4: axis-align rows, preserving magnitudes
+            // (which are the accumulated scale factors).
+            for (int r = 0; r < 3; ++r) {
+                float mx = M.data[r][0], my = M.data[r][1], mz = M.data[r][2];
+                float mag = std::sqrt(mx*mx + my*my + mz*mz);
+                M.data[r][0] = 0; M.data[r][1] = 0; M.data[r][2] = 0;
+                M.data[r][r] = mag;
+            }
+        };
+        auto stripScaleKeepRotation = [&]() {
+            // MatrixRemove flag 2: normalize rows (preserve rotation direction).
+            for (int r = 0; r < 3; ++r) {
+                float mx = M.data[r][0], my = M.data[r][1], mz = M.data[r][2];
+                float mag = std::sqrt(mx*mx + my*my + mz*mz);
+                if (mag > 1e-8f) {
+                    float inv = 1.0f / mag;
+                    M.data[r][0] = mx * inv;
+                    M.data[r][1] = my * inv;
+                    M.data[r][2] = mz * inv;
+                }
+            }
+        };
+        auto stripRotationAndScale = [&]() {
+            // MatrixRemove flag 6: rows become pure identity basis.
+            for (int r = 0; r < 3; ++r) {
+                M.data[r][0] = 0; M.data[r][1] = 0; M.data[r][2] = 0;
+                M.data[r][r] = 1.0f;
+            }
+        };
+
+        // TranslateView — strips when rmT is set (handles all combos with T).
+        Vector3f tTrans = localT;
+        if (rmT) {
+            stripTranslation();
+            if (rmR && rmS)       stripRotationAndScale();
+            else if (rmR)         stripRotationKeepScale();
+            else if (rmS)         stripScaleKeepRotation();
+            tTrans.x += parentPivot.x;
+            tTrans.y += parentPivot.y;
+            tTrans.z += parentPivot.z;
+        }
+        tTrans.x += currPivot.x - parentPivot.x;
+        tTrans.y += currPivot.y - parentPivot.y;
+        tTrans.z += currPivot.z - parentPivot.z;
+        // M := T(tTrans) * M (left-multiply). row3 += tTrans expressed in M's
+        // basis. This is the WorldMatrixTranslate formula verbatim:
+        //   d0 += move.x * a0 + move.y * b0 + move.z * c0
+        M.data[3][0] += tTrans.x * M.data[0][0] + tTrans.y * M.data[1][0] + tTrans.z * M.data[2][0];
+        M.data[3][1] += tTrans.x * M.data[0][1] + tTrans.y * M.data[1][1] + tTrans.z * M.data[2][1];
+        M.data[3][2] += tTrans.x * M.data[0][2] + tTrans.y * M.data[1][2] + tTrans.z * M.data[2][2];
+
+        // RotateView — strips only when rmR is set alone (flags == 0b100).
+        if (rmR && !rmT && !rmS) {
+            stripRotationKeepScale();
+        }
+        if (localR.x != 0.0f || localR.y != 0.0f || localR.z != 0.0f ||
+            localR.w != 1.0f) {
+            // M := R * M. Matrix44f::rotation(q) is column-vector convention;
+            // transpose for row-vector (our matrix mul / transform_point).
+            Matrix44f R = Matrix44f::rotation(localR).transpose();
+            M = R * M;
+        }
+
+        // ScaleView — strips when (flags & 3) == 2, i.e. rmS set AND rmT unset.
+        if (rmS && !rmT) {
+            if (rmR) stripRotationAndScale();
+            else     stripScaleKeepRotation();
+        }
+        if (localS.x != 1.0f || localS.y != 1.0f || localS.z != 1.0f) {
+            for (int c = 0; c < 4; ++c) M.data[0][c] *= localS.x;
+            for (int c = 0; c < 4; ++c) M.data[1][c] *= localS.y;
+            for (int c = 0; c < 4; ++c) M.data[2][c] *= localS.z;
+        }
+
+        // Cache post-TRS stack for children (Previewd's world-matrix-stack
+        // top at the moment a child's WorldMatrixPush would duplicate it).
+        stackM[i] = M;
+
+        // PlaceObjectSimple: final bone matrix = T(-currPivot) * M.
+        Matrix44f worldM = M;
+        worldM.data[3][0] -= currPivot.x * worldM.data[0][0] + currPivot.y * worldM.data[1][0] + currPivot.z * worldM.data[2][0];
+        worldM.data[3][1] -= currPivot.x * worldM.data[0][1] + currPivot.y * worldM.data[1][1] + currPivot.z * worldM.data[2][1];
+        worldM.data[3][2] -= currPivot.x * worldM.data[0][2] + currPivot.y * worldM.data[1][2] + currPivot.z * worldM.data[2][2];
 
         // NOTE: Billboard rotation is applied in Renderer::ApplyFrameState()
         // using billboardFlags, NOT here. This ensures billboarding works
@@ -541,6 +629,11 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
 int MdxHierarchy::ObjectIdToNodeIndex(int objectId) const {
     auto it = objectIdToIdx_.find(objectId);
     return it != objectIdToIdx_.end() ? it->second : -1;
+}
+
+int MdxHierarchy::BoneIndexToNodeIndex(int boneIdx) const {
+    if (boneIdx < 0 || boneIdx >= (int)boneIdxToNodeIdx_.size()) return -1;
+    return boneIdxToNodeIdx_[boneIdx];
 }
 
 } // namespace WhiteoutDex

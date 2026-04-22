@@ -382,6 +382,7 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
         mi->skinDirty = true;
     }
     // Skin weights
+    std::vector<GroupAverageRecord> allGroupAverages;
     for (auto& sw : tmpl.skinWeights) {
         int vc = (int)sw.influences.size();
         std::vector<int> bIdx(vc * 4); std::vector<float> wts(vc * 4);
@@ -391,7 +392,10 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
                 wts[v*4+j] = sw.influences[v].weight[j];
             }
         mi->skinning.SetGeosetWeights(sw.geosetId, vc, bIdx.data(), wts.data());
+        for (auto& rec : sw.groupAverages) allGroupAverages.push_back(rec);
     }
+    if (!allGroupAverages.empty())
+        mi->skinning.SetGroupAverages(std::move(allGroupAverages));
     // PE2 particles — registered directly with the service (no legacy path).
     for (int i = 0; i < (int)tmpl.pe2Configs.size(); i++) {
         auto em = std::make_unique<particle::PlaneEmitter>();
@@ -654,6 +658,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
     }
 
     // Skin weights
+    std::vector<GroupAverageRecord> allGroupAverages;
     for (auto& sw : skinWeights) {
         int vc = (int)sw.influences.size();
         std::vector<int>   boneIdx(vc * 4);
@@ -665,7 +670,10 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
             }
         }
         mi->skinning.SetGeosetWeights(sw.geosetId, vc, boneIdx.data(), weights.data());
+        for (auto& rec : sw.groupAverages) allGroupAverages.push_back(rec);
     }
+    if (!allGroupAverages.empty())
+        mi->skinning.SetGroupAverages(std::move(allGroupAverages));
     if (!skinWeights.empty()) mi->skinDirty = true;
 
     // Particles — register with the PE2 service. The legacy ParticleEmitterConfig
@@ -1517,8 +1525,9 @@ void RenderService::UpdateAnimation() {
         mi->skinning.ComputeOffsetMatrices();
 
         if (auto bp = bls::ScopedCb<bls::BonePaletteCb>(gfx_.get(), mi->bonePaletteCb)) {
+            // PaletteSize() = NodeCount() + pseudo slots for v800 group averages.
             bls::BuildBonePalette(*bp, mi->skinning.OffsetMatrices(),
-                                  mi->skinning.NodeCount());
+                                  mi->skinning.PaletteSize());
         }
     }
 }

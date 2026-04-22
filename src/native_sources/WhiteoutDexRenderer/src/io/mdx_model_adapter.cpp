@@ -582,9 +582,31 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
     std::vector<SkinWeightData> result;
     result.reserve(model_.geosets.size());
 
-    // MDX matrixIndices reference nodes by objectId. Map to the node's position
-    // in the topologically-sorted hierarchy (same index space as allNodeMatrices
-    // and the GPU bone palette). Any node type (bone, helper, etc.) is valid.
+    // MATS (matrixIndices) stores dense BONE indices (0..numBones-1), NOT
+    // objectIds. Matches Previewd's BuildPrimBone @0x1402cf5e0:
+    //     qmemcpy(bone, &boneMatrices[*matrix], sizeof(C34Matrix));
+    // where `boneMatrices` is the dense `data->boneMtx[0..numBones-1]` array.
+    // For Blizzard models (bones densely numbered 0..numBones-1 at the start
+    // of objectId space) this coincides with objectId-based lookup; for
+    // models where bones aren't densely numbered first, splitIndex resolution
+    // picks the correct bone whereas objectId resolution would miss.
+    // Fallback to ObjectIdToNodeIndex when splitIndex is out of range so
+    // third-party exporters that stuff objectIds into MATS still work.
+    //
+    // v800 matrix-groups with count > 4 get a pseudo palette slot holding the
+    // per-frame average of the group's bone matrices (mirrors BuildPrimBone's
+    // fallback `sum / N` for N > 3). Pseudo slots live at [nodeCount, 256),
+    // numbered globally across all geosets. Count <= 4 keeps the uniform 1/N
+    // per-vertex weights path (mathematically equivalent to matrix averaging).
+    auto resolveBoneIdx = [&](int matsValue) -> int {
+        int nodeIdx = hierarchy_.BoneIndexToNodeIndex(matsValue);
+        if (nodeIdx < 0) nodeIdx = hierarchy_.ObjectIdToNodeIndex(matsValue);
+        return (nodeIdx >= 0) ? nodeIdx : 0;
+    };
+
+    const int nodeCount = hierarchy_.NodeCount();
+    constexpr int kMaxPaletteSlots = 256;  // matches bls::kMaxBones
+    int nextPseudoSlot = nodeCount;
 
     for (int gi = 0; gi < (int)model_.geosets.size(); gi++) {
         const auto& gs = model_.geosets[gi];
@@ -594,45 +616,69 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
         sw.influences.resize(vc);
 
         if (!gs.skinData.empty()) {
-            // v1200: packed u8: 4 bone indices + 4 weights per vertex (8 bytes each)
-            // SKIN bytes are indices into the geoset's local matrixIndices (MATS) table,
-            // which stores objectIds. If MATS is empty, treat as direct objectId.
+            // v1200: packed u8 per vertex, 4 bone-palette indices + 4 weights.
+            // SKIN bytes index the geoset's MATS table (which stores dense
+            // bone indices). Empty MATS ⇒ direct bone index.
             for (int v = 0; v < vc; v++) {
                 int base = v * 8;
                 if (base + 7 < (int)gs.skinData.size()) {
                     for (int k = 0; k < 4; k++) {
                         uint8_t raw = gs.skinData[base + k];
-                        // Resolve to objectId via matrixIndices (if available)
-                        int objectId;
+                        int matsValue;
                         if (!gs.matrixIndices.empty() && raw < gs.matrixIndices.size())
-                            objectId = (int)gs.matrixIndices[raw];
+                            matsValue = (int)gs.matrixIndices[raw];
                         else
-                            objectId = (int)raw;
-                        // Map objectId → node position in hierarchy
-                        int nodeIdx = hierarchy_.ObjectIdToNodeIndex(objectId);
-                        sw.influences[v].boneIdx[k] = (nodeIdx >= 0) ? nodeIdx : 0;
+                            matsValue = (int)raw;
+                        sw.influences[v].boneIdx[k] = resolveBoneIdx(matsValue);
                         sw.influences[v].weight[k]  = gs.skinData[base + 4 + k] / 255.0f;
                     }
                 }
             }
         } else if (!gs.vertexGroups.empty() && !gs.matrixGroups.empty()) {
-            // v800: vertexGroups + matrixGroups + matrixIndices indirection
-            // Build prefix sums for matrixGroups
+            // v800: vertexGroups + matrixGroups + matrixIndices indirection.
             std::vector<u32> groupStart(gs.matrixGroups.size() + 1, 0);
             for (int g = 0; g < (int)gs.matrixGroups.size(); g++)
                 groupStart[g + 1] = groupStart[g] + gs.matrixGroups[g];
 
+            // Pre-pass: reserve pseudo slots for groups with count > 4.
+            std::vector<int> groupPseudoSlot(gs.matrixGroups.size(), -1);
+            for (int g = 0; g < (int)gs.matrixGroups.size(); g++) {
+                u32 count = gs.matrixGroups[g];
+                if (count <= 4) continue;
+                if (nextPseudoSlot >= kMaxPaletteSlots) {
+                    std::fprintf(stderr,
+                        "[GetSkinWeights] palette exhausted at slot %d; geoset %d group %d (N=%u) "
+                        "falls back to 4-bone clamp (will lose influences)\n",
+                        nextPseudoSlot, gi, g, count);
+                    continue;
+                }
+                GroupAverageRecord rec;
+                rec.pseudoSlot = nextPseudoSlot++;
+                rec.nodeIndices.reserve(count);
+                u32 start = groupStart[g];
+                for (u32 k = 0; k < count && (start + k) < gs.matrixIndices.size(); k++) {
+                    int nodeIdx = resolveBoneIdx((int)gs.matrixIndices[start + k]);
+                    rec.nodeIndices.push_back(nodeIdx);
+                }
+                groupPseudoSlot[g] = rec.pseudoSlot;
+                sw.groupAverages.push_back(std::move(rec));
+            }
+
             for (int v = 0; v < vc && v < (int)gs.vertexGroups.size(); v++) {
                 int groupId = gs.vertexGroups[v];
-                if (groupId < (int)gs.matrixGroups.size()) {
+                if (groupId >= (int)gs.matrixGroups.size()) continue;
+
+                int pseudoSlot = groupPseudoSlot[groupId];
+                if (pseudoSlot >= 0) {
+                    sw.influences[v].boneIdx[0] = pseudoSlot;
+                    sw.influences[v].weight[0]  = 1.0f;
+                } else {
                     u32 start = groupStart[groupId];
                     u32 count = gs.matrixGroups[groupId];
-                    if (count > 4) count = 4;  // clamp to 4 influences
+                    if (count > 4) count = 4;
                     float w = (count > 0) ? 1.0f / (float)count : 0.0f;
                     for (u32 k = 0; k < count && (start + k) < gs.matrixIndices.size(); k++) {
-                        int objectId = (int)gs.matrixIndices[start + k];
-                        int nodeIdx = hierarchy_.ObjectIdToNodeIndex(objectId);
-                        sw.influences[v].boneIdx[k] = (nodeIdx >= 0) ? nodeIdx : 0;
+                        sw.influences[v].boneIdx[k] = resolveBoneIdx((int)gs.matrixIndices[start + k]);
                         sw.influences[v].weight[k]  = w;
                     }
                 }

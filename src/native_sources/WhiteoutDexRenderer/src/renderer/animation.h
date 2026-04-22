@@ -22,6 +22,19 @@ struct VertexInfluence {
 };
 
 // ============================================================================
+// v800 matrix-groups with > 4 bones cannot fit in a single VertexInfluence.
+// Mirrors Previewd's BuildPrimBone (@0x1402cf5e0) which averages ALL N bones
+// of a group into one per-group matrix. For each such group we reserve a
+// palette slot beyond the hierarchy nodes and rewrite it each frame as the
+// average of the listed node matrices. Vertices in the group reference this
+// slot with weight 1.0.
+// ============================================================================
+struct GroupAverageRecord {
+    int              pseudoSlot;   // palette index (>= nodeCount) for avg matrix
+    std::vector<int> nodeIndices;  // hierarchy indices to average each frame
+};
+
+// ============================================================================
 // Per-geoset skin weight data
 // ============================================================================
 struct GeosetSkinInfo {
@@ -38,7 +51,9 @@ public:
         currentMatrices_.clear();
         offsetMatrices_.clear();
         geosetWeights_.clear();
+        groupAverages_.clear();
         nodeCount_ = 0;
+        paletteSize_ = 0;
         matricesDirty_ = false;
         nodesReady_ = false;
     }
@@ -46,7 +61,8 @@ public:
     // ---- Setup (called once from API thread) ----
 
     void SetSkeleton(int nodeCount, const float* inverseBindData) {
-        nodeCount_ = nodeCount;
+        nodeCount_   = nodeCount;
+        paletteSize_ = nodeCount;  // may grow later via SetGroupAverages
         inverseBindMatrices_.resize(nodeCount);
         currentMatrices_.resize(nodeCount);
         offsetMatrices_.resize(nodeCount);
@@ -63,6 +79,22 @@ public:
             currentMatrices_[i]  = Matrix44f::identity();
             offsetMatrices_[i]   = Matrix44f::identity(); // Safe default until nodes arrive
         }
+    }
+
+    // Reserve extra palette slots for v800 group averages. Call AFTER
+    // SetSkeleton; every pseudoSlot must satisfy
+    //   nodeCount <= pseudoSlot < nodeCount + records.size()
+    // (enforced by the adapter's numbering scheme). Pseudo slots are
+    // rewritten every frame from the listed node matrices — see
+    // ComputeOffsetMatrices below.
+    void SetGroupAverages(std::vector<GroupAverageRecord> records) {
+        groupAverages_ = std::move(records);
+        int maxSlot = nodeCount_;
+        for (const auto& r : groupAverages_) {
+            if (r.pseudoSlot + 1 > maxSlot) maxSlot = r.pseudoSlot + 1;
+        }
+        paletteSize_ = maxSlot;
+        offsetMatrices_.resize(paletteSize_, Matrix44f::identity());
     }
 
     void SetGeosetWeights(int geosetId, int vertCount,
@@ -98,6 +130,7 @@ public:
     bool HasSkeleton()              const { return nodeCount_ > 0; }
     bool IsReady()                  const { return nodesReady_; }
     int  NodeCount()                const { return nodeCount_; }
+    int  PaletteSize()              const { return paletteSize_; }  // nodeCount + pseudo slots
     bool HasWeights(int geosetId)   const { return geosetWeights_.count(geosetId) > 0; }
     bool NeedsUpdate()              const { return matricesDirty_; }
 
@@ -116,6 +149,39 @@ public:
             // offset = inverseBind * current
             // This transforms: bindPoseWorld → nodeLocal → currentWorld
             offsetMatrices_[i] = inverseBindMatrices_[i] * currentMatrices_[i];
+        }
+        // v800 N>4 matrix-groups: write the average of each group's node
+        // matrices into its pseudo slot. Mirrors Previewd's BuildPrimBone
+        // (@0x1402cf5e0) which averages all N bones of a matrix-group into one
+        // matrix uploaded to the draw. Since our inverseBindMatrices are all
+        // identity for MDX models (bone world = identity at bind pose), the
+        // offsetMatrix is just the node world matrix, so averaging offsets is
+        // equivalent to averaging world matrices.
+        for (const auto& rec : groupAverages_) {
+            if (rec.pseudoSlot < 0 || rec.pseudoSlot >= paletteSize_) continue;
+            if (rec.nodeIndices.empty()) {
+                offsetMatrices_[rec.pseudoSlot] = Matrix44f::identity();
+                continue;
+            }
+            Matrix44f sum = Matrix44f::zero();
+            int cnt = 0;
+            for (int nodeIdx : rec.nodeIndices) {
+                if (nodeIdx < 0 || nodeIdx >= nodeCount_) continue;
+                const Matrix44f& m = offsetMatrices_[nodeIdx];
+                for (int r = 0; r < 4; r++)
+                    for (int c = 0; c < 4; c++)
+                        sum.data[r][c] += m.data[r][c];
+                ++cnt;
+            }
+            if (cnt > 0) {
+                float inv = 1.0f / (float)cnt;
+                for (int r = 0; r < 4; r++)
+                    for (int c = 0; c < 4; c++)
+                        sum.data[r][c] *= inv;
+                offsetMatrices_[rec.pseudoSlot] = sum;
+            } else {
+                offsetMatrices_[rec.pseudoSlot] = Matrix44f::identity();
+            }
         }
         matricesDirty_ = false;
     }
@@ -179,10 +245,13 @@ public:
 
 private:
     int nodeCount_ = 0;
+    int paletteSize_ = 0;  // nodeCount_ + pseudo slots (for v800 group averages)
     std::vector<Matrix44f> inverseBindMatrices_;  // set once at setup
     std::vector<Matrix44f> currentMatrices_;      // updated per frame
     std::vector<Matrix44f> offsetMatrices_;       // = invBind * current (precomputed)
+                                                  // extra trailing entries hold group averages
     std::unordered_map<int, GeosetSkinInfo> geosetWeights_;
+    std::vector<GroupAverageRecord> groupAverages_;
     bool matricesDirty_ = false;
     bool nodesReady_ = false;   // true after first UpdateNodeMatrices call
 };

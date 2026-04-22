@@ -204,9 +204,11 @@ struct SkeletonData {
     std::vector<int>      nodeParents;           // nodeCount entries; -1 = root. Needed for CameraAnchored.
 };
 
+// GroupAverageRecord is defined in animation.h alongside VertexInfluence.
 struct SkinWeightData {
     int geosetId;
     std::vector<VertexInfluence> influences;
+    std::vector<GroupAverageRecord> groupAverages;
 };
 
 struct CollisionShapeData {
