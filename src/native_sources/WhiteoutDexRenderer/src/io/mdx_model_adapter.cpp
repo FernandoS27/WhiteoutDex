@@ -1240,8 +1240,12 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
 
         ps.transform = kPE2SpawnFrameRotation * worldOf(nodeIdx);
 
-        { auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
-          ps.emissionRate = EvaluateTrackF32(pe.emissionRateTracks, t, s, e, pe.emissionRate); }
+        {
+            bool squirting = (pe.squirt != 0);
+            auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
+            ps.emissionRate = EvaluateTrackF32(pe.emissionRateTracks, t, s, e, pe.emissionRate, squirting);
+            ps.squirting = squirting;
+        }
         { auto [t,s,e] = effectiveTime(pe.speedTracks.globalSequenceId);
           ps.speed        = EvaluateTrackF32(pe.speedTracks, t, s, e, pe.speed); }
         { auto [t,s,e] = effectiveTime(pe.variationTracks.globalSequenceId);

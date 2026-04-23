@@ -247,6 +247,7 @@ struct FrameState {
         Matrix44f transform;
         float emissionRate, speed, variation, coneAngle;
         float gravity, width, length, visibility;
+        bool squirting; // true if the emitter is in burst mode.
     };
     std::vector<ParticleFrameState> particleStates;
 

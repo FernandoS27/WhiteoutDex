@@ -158,6 +158,12 @@ struct TexAnimData {
     float uOff=0, vOff=0, uTile=1, vTile=1, rotation=0;
 };
 
+
+struct PE2State {
+    float lastEmissionRate = 0.0f;
+    bool  emissionValid    = false;
+};
+
 // ============================================================================
 // ModelInstance — all state for a single renderable model
 // ============================================================================
@@ -196,6 +202,7 @@ struct ModelInstance {
     // ---- Particle system ----
     // PE2 particles are owned by RenderService::particleService_, keyed on
     // the model's handle. No per-instance state lives here any more.
+    std::vector<PE2State> pe2State;  // one entry per PE2 emitter in the model
 
     // ---- Ribbon system ----
     RibbonSystem ribbons;

@@ -19,7 +19,7 @@ namespace WhiteoutDex {
 // ============================================================================
 
 float EvaluateTrackF32(const whiteout::mdx::Track<whiteout::f32>& track,
-                       int timeMs, int seqStart, int seqEnd, float defaultVal);
+                       int timeMs, int seqStart, int seqEnd, float defaultVal, bool forceNoInterp = false);
 
 whiteout::u32 EvaluateTrackU32(const whiteout::mdx::Track<whiteout::u32>& track,
                                int timeMs, int seqStart, int seqEnd, whiteout::u32 defaultVal);

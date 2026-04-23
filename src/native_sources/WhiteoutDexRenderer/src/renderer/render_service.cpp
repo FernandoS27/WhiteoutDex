@@ -404,6 +404,7 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
         particle::ApplyInit(*em, particle::InitFromLegacyConfig(tmpl.pe2Configs[i]));
         particleService_.AddPlaneEmitter(mi->handle, i, std::move(em));
     }
+    mi->pe2State.resize(tmpl.pe2Configs.size());
     // Ribbons
     for (int i = 0; i < (int)tmpl.ribbonConfigs.size(); i++)
         mi->ribbons.AddEmitter(i, tmpl.ribbonConfigs[i]);
@@ -686,6 +687,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
         particle::ApplyInit(*em, particle::InitFromLegacyConfig(particleConfigs[i]));
         particleService_.AddPlaneEmitter(handle, (int)i, std::move(em));
     }
+    mi->pe2State.resize(particleConfigs.size());
 
     // Ribbons
     for (size_t i = 0; i < ribbonConfigs.size(); i++) {
@@ -993,9 +995,13 @@ void RenderService::ApplyParticleFrameStates(ModelInstance& mi, const FrameState
     // PlaneEmitter and push the evaluated animation state into it. Transform
     // is conjugated for Blizzard-space sim (not the default — see §3.8
     // retrospective in docs/PARTICLEEMITTERS2.md).
-    for (const auto& ps : state.particleStates) {
+    
+    for (size_t i = 0; i < state.particleStates.size(); ++i) {
+        const auto& ps = state.particleStates[i];
         auto* em = particleService_.GetEmitter(mi.handle, ps.emitterId);
         if (!em) continue;
+
+        
 
         em->SetEmissionRate(ps.emissionRate);
         em->SetVelocity(ps.speed);
@@ -1005,6 +1011,16 @@ void RenderService::ApplyParticleFrameStates(ModelInstance& mi, const FrameState
         em->SetWidth(ps.width);
         em->SetHeight(ps.length);
         em->SetVisible(ps.visibility > 0.02f);
+        if (ps.squirting) {
+            auto& st = mi.pe2State[i];
+            if (st.emissionValid) {
+                if (ps.emissionRate > 0.02f && st.lastEmissionRate <= 0.02f)
+                    em->SetSquirtPending(true);
+            }
+            st.lastEmissionRate = ps.emissionRate;
+            st.emissionValid = true;
+        }
+        
         // ps.transform arrives in the renderer-native default space. If the
         // emitter simulates in a different space, conjugate into it.
         em->SetModelToWorld(CoordinateSystem::ConvertTransform(

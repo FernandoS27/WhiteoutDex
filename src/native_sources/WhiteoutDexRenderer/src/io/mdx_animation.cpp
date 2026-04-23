@@ -131,7 +131,7 @@ static Vector3f BezierInterpV3(const Vector3f& a, const Vector3f& ota,
 // EvaluateTrackF32
 // ============================================================================
 
-float EvaluateTrackF32(const Track<f32>& track, int timeMs, int seqStart, int seqEnd, float defaultVal) {
+float EvaluateTrackF32(const Track<f32>& track, int timeMs, int seqStart, int seqEnd, float defaultVal, bool forceNoInterp) {
     if (!track.isUsed || track.keyCount == 0) return defaultVal;
 
     auto interp = track.interpolationType;
@@ -141,6 +141,7 @@ float EvaluateTrackF32(const Track<f32>& track, int timeMs, int seqStart, int se
         auto br = FindBracket(keys.data(), count, timeMs, seqStart, seqEnd);
         if (br.lo < 0) return defaultVal;
         if (br.lo == br.hi) return keys[br.lo].value;
+        if (forceNoInterp) return keys[br.lo].value;
         if (interp == InterpolationType::None) return keys[br.lo].value;
         return keys[br.lo].value + (keys[br.hi].value - keys[br.lo].value) * br.t;
     } else {
@@ -149,6 +150,7 @@ float EvaluateTrackF32(const Track<f32>& track, int timeMs, int seqStart, int se
         auto br = FindBracket(keys.data(), count, timeMs, seqStart, seqEnd);
         if (br.lo < 0) return defaultVal;
         if (br.lo == br.hi) return keys[br.lo].value;
+        if (forceNoInterp) return keys[br.lo].value;
         if (interp == InterpolationType::Hermite)
             return HermiteInterp(keys[br.lo].value, keys[br.lo].outTan, keys[br.hi].inTan, keys[br.hi].value, br.t);
         else // Bezier

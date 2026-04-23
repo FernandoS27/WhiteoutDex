@@ -70,6 +70,7 @@ public:
     void SetSortZ(bool v)               { SetFlag(kFlagSortZ, v); }
     void SetUseModelSpace(bool v)       { SetFlag(kFlagUseModelSpace, v); }
     void SetXYQuads(bool v)             { SetFlag(kFlagXYQuads, v); }
+    void SetSquirtPending(bool v)       { SetFlag(kFlagNeedSquirt, v); }
 
     void SetEmissionRate(float v)       { emissionRate_ = v; }
     void SetLifeSpan(float v)           { lifeSpan_ = v; }
