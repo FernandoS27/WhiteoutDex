@@ -66,6 +66,18 @@ struct MaterialLayerInfo {
     float alpha = 1.0f;
     int replaceableTexture = 0;
     int flags = 0;
+    // Shader type: 0=SD, 1=HD, 2=SDOnHD, 24=Crystal (from Wc3Material shaderType dropdown)
+    int shaderId = 0;
+    // HD subtexture slot IDs (-1 = not present)
+    int normalMapId    = -1;
+    int ormMapId       = -1;
+    int emissiveMapId  = -1;
+    int teamColorMapId = -1;
+    // Reforged PBR knobs (from Wc3Material reforged rollout)
+    float emissiveGain     = 0.0f;
+    float fresnelOpacity   = 0.0f;
+    float fresnelTeamColor = 0.0f;
+    Vector3f fresnelColor  = {0.0f, 0.0f, 0.0f};
 };
 
 struct MaterialInfo {
@@ -213,7 +225,12 @@ private:
         int priorityPlane = 0;
         int sortOrder = 0;
         int replaceableTexture = 0;
+        int shaderId = 0;
         std::wstring texturePath;
+        std::wstring normalTexPath;
+        std::wstring ormTexPath;
+        std::wstring emissiveTexPath;
+        std::wstring teamColorTexPath;
     };
     std::unordered_map<int, MaterialSnapshot> matSnapshots_;  // materialId → snapshot
 };

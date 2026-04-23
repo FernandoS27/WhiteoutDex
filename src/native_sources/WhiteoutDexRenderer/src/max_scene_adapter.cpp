@@ -401,28 +401,35 @@ void MaxSceneAdapter::CollectScene() {
         if (PB2Bool(mtl, L"noDepthSet", 0, flag) && flag)    flags |= 16;
         if (PB2Bool(mtl, L"constantColor", 0, flag) && flag) flags |= 32;
         snap.flags = flags;
-        Texmap* texmap = nullptr;
-        PB2Texmap(mtl, L"diffuseMap", texmap);
-        int retex = 0;
-        if (texmap && texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-            int replId = 1; PB2Int(texmap, L"replaceableId", 0, replId);
-            retex = std::max(0, replId - 1);
-        }
-        snap.replaceableTexture = retex;
-        // Get texture path
-        BitmapTex* bmt = nullptr;
-        if (texmap) {
-            if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-                for (int r = 0; r < texmap->NumRefs(); r++) {
-                    ReferenceTarget* ref = texmap->GetReference(r);
+        // replaceableId is on the material (v12+)
+        int replId = 1; PB2Int(mtl, L"replaceableId", 0, replId);
+        snap.replaceableTexture = std::max(0, replId - 1);
+        // shaderId
+        int shaderType = 1; PB2Int(mtl, L"shaderType", 0, shaderType);
+        snap.shaderId = (shaderType == 4) ? 24 : std::max(0, shaderType - 1);
+        // Helper to get BitmapTex path from any texmap slot
+        auto getSlotPath = [&](const wchar_t* paramName) -> std::wstring {
+            Texmap* tex = nullptr;
+            if (!PB2Texmap(mtl, paramName, tex) || !tex) return {};
+            BitmapTex* bmt = nullptr;
+            if (tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+                bmt = static_cast<BitmapTex*>(tex);
+            } else if (tex->ClassID() == WC3_BITMAP_CLASS_ID) {
+                for (int r = 0; r < tex->NumRefs(); r++) {
+                    ReferenceTarget* ref = tex->GetReference(r);
                     if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
                         { bmt = static_cast<BitmapTex*>(ref); break; }
                 }
-            } else if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
-                bmt = static_cast<BitmapTex*>(texmap);
             }
-        }
-        if (bmt) { const MCHAR* fn = bmt->GetMapName(); if (fn && fn[0]) snap.texturePath = fn; }
+            if (!bmt) return {};
+            const MCHAR* fn = bmt->GetMapName();
+            return (fn && fn[0]) ? std::wstring(fn) : std::wstring{};
+        };
+        snap.texturePath      = getSlotPath(L"diffuseMap");
+        snap.normalTexPath    = getSlotPath(L"normalMap");
+        snap.ormTexPath       = getSlotPath(L"ormMap");
+        snap.emissiveTexPath  = getSlotPath(L"emissiveMap");
+        snap.teamColorTexPath = getSlotPath(L"teamColorMap");
         int sortOrd = 1; PB2Int(mtl, L"sortOrder", 0, sortOrd);
         snap.sortOrder = std::max(0, sortOrd - 1);
         int priPlane = 0; PB2Int(mtl, L"priorityPlane", 0, priPlane);
@@ -506,14 +513,19 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     float opacity = 100; PB2Float(mtl, L"opacity", 0, opacity);
     layer.alpha = std::min(opacity / 100.0f, 1.0f);
 
-    Texmap* texmap = nullptr;
-    PB2Texmap(mtl, L"diffuseMap", texmap);
-    int retex = 0;
-    if (texmap && texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-        int replId = 1; PB2Int(texmap, L"replaceableId", 0, replId);
-        retex = std::max(0, replId - 1);
+    // replaceableId lives on the Wc3Material (v12+). The old Wc3Bitmap path
+    // is kept as a dead fallback since native BitmapTexture is now the default.
+    {
+        int replId = 1; PB2Int(mtl, L"replaceableId", 0, replId);
+        layer.replaceableTexture = std::max(0, replId - 1);
     }
-    layer.replaceableTexture = retex;
+
+    // Shader type: Wc3Material dropdown is 1-based (1=SD,2=HD,3=SDOnHD,4=Crystal).
+    // Map to renderer shaderId: 0=SD,1=HD,2=SDOnHD,24=Crystal.
+    {
+        int shaderType = 1; PB2Int(mtl, L"shaderType", 0, shaderType);
+        layer.shaderId = (shaderType == 4) ? 24 : std::max(0, shaderType - 1);
+    }
 
     BOOL flag = FALSE; int flags = 0;
     if (PB2Bool(mtl,L"twoSided",0,flag) && flag)    flags|=1;
@@ -524,37 +536,63 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     if (PB2Bool(mtl,L"constantColor",0,flag) && flag) flags|=32;
     layer.flags = flags;
 
+    // Reforged PBR knobs
+    {
+        float fv = 0;
+        if (PB2Float(mtl, L"emissiveGain",    0, fv)) layer.emissiveGain    = fv;
+        if (PB2Float(mtl, L"fresnelOpacity",  0, fv)) layer.fresnelOpacity  = fv;
+        if (PB2Float(mtl, L"fresnelTeamCol",  0, fv)) layer.fresnelTeamColor = fv;
+        float fr = 0, fg = 0, fb = 0;
+        bool hasR = PB2Float(mtl, L"fresnelR", 0, fr);
+        bool hasG = PB2Float(mtl, L"fresnelG", 0, fg);
+        bool hasB = PB2Float(mtl, L"fresnelB", 0, fb);
+        if (hasR || hasG || hasB) layer.fresnelColor = {fr, fg, fb};
+    }
+
+    // Helper: resolve a BitmapTex from a texmap slot (native BitmapTex or legacy Wc3Bitmap wrapper)
+    auto getBitmapPath = [&](const wchar_t* paramName) -> std::wstring {
+        Texmap* tex = nullptr;
+        if (!PB2Texmap(mtl, paramName, tex) || !tex) return {};
+        BitmapTex* bmt = nullptr;
+        if (tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+            bmt = static_cast<BitmapTex*>(tex);
+        } else if (tex->ClassID() == WC3_BITMAP_CLASS_ID) {
+            for (int r = 0; r < tex->NumRefs(); r++) {
+                ReferenceTarget* ref = tex->GetReference(r);
+                if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+                    { bmt = static_cast<BitmapTex*>(ref); break; }
+            }
+        }
+        if (!bmt) return {};
+        const MCHAR* fn = bmt->GetMapName();
+        return (fn && fn[0]) ? std::wstring(fn) : std::wstring{};
+    };
+
+    // HD subtexture slots
+    {
+        auto loadSlot = [&](const wchar_t* paramName) -> int {
+            std::wstring path = getBitmapPath(paramName);
+            return path.empty() ? -1 : LoadTexture(path, 0);
+        };
+        layer.normalMapId    = loadSlot(L"normalMap");
+        layer.ormMapId       = loadSlot(L"ormMap");
+        layer.emissiveMapId  = loadSlot(L"emissiveMap");
+        layer.teamColorMapId = loadSlot(L"teamColorMap");
+    }
+
     int baseTexId = -1;
     std::wstring baseTexPath;
-    if (texmap) {
-        mprintf(_M("    \x2192 texmap found, ClassID=0x%x,0x%x\n"),
-                texmap->ClassID().PartA(), texmap->ClassID().PartB());
-        BitmapTex* bmtex = nullptr;
-        if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
-            bmtex = static_cast<BitmapTex*>(texmap);
-        } else if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-            for (int ri = 0; ri < texmap->NumRefs(); ri++) {
-                ReferenceTarget* ref = texmap->GetReference(ri);
-                if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
-                    bmtex = static_cast<BitmapTex*>(ref);
-                    break;
-                }
-            }
-        }
-        if (bmtex) {
-            const MCHAR* fname = bmtex->GetMapName();
-            if (fname && fname[0]) {
-                baseTexPath = std::wstring(fname);
-                mprintf(_M("    \x2192 texture path: '%s'\n"), baseTexPath.c_str());
-                baseTexId = LoadTexture(baseTexPath, 0);
-            } else {
-                mprintf(_M("    \x2192 texture has no filename!\n"));
-            }
-        } else {
-            mprintf(_M("    \x2192 texmap is NOT a BitmapTexture (e.g. Mix/Composite)\n"));
-        }
+    baseTexPath = getBitmapPath(L"diffuseMap");
+    if (!baseTexPath.empty()) {
+        mprintf(_M("    \x2192 diffuse path: '%s'\n"), baseTexPath.c_str());
+        baseTexId = LoadTexture(baseTexPath, 0);
     } else {
-        mprintf(_M("    \x2192 NO texmap found for 'diffuseMap' property\n"));
+        // Still log if there is a texmap that wasn't a BitmapTex
+        Texmap* texmap = nullptr;
+        if (PB2Texmap(mtl, L"diffuseMap", texmap) && texmap)
+            mprintf(_M("    \x2192 diffuseMap texmap is NOT a BitmapTexture (e.g. Mix/Composite)\n"));
+        else
+            mprintf(_M("    \x2192 NO texmap found for 'diffuseMap' property\n"));
     }
 
     if (layer.replaceableTexture == 1 && !baseTexPath.empty()) {
@@ -1050,10 +1088,19 @@ std::vector<MaterialData> MaxSceneAdapter::GetMaterials() {
         md.sortOrder     = mi.sortOrder;
         for (auto& li : mi.layers) {
             MaterialLayerData ld;
-            ld.filterMode = li.filterMode;
-            ld.textureId  = li.textureId;
-            ld.alpha      = li.alpha;
-            ld.flags      = li.flags;
+            ld.filterMode      = li.filterMode;
+            ld.textureId       = li.textureId;
+            ld.alpha           = li.alpha;
+            ld.flags           = li.flags;
+            ld.shaderId        = li.shaderId;
+            ld.normalMapId     = li.normalMapId;
+            ld.ormMapId        = li.ormMapId;
+            ld.emissiveMapId   = li.emissiveMapId;
+            ld.teamColorMapId  = li.teamColorMapId;
+            ld.emissiveGain    = li.emissiveGain;
+            ld.fresnelOpacity  = li.fresnelOpacity;
+            ld.fresnelTeamColor = li.fresnelTeamColor;
+            ld.fresnelColor    = li.fresnelColor;
             md.layers.push_back(ld);
         }
         result.push_back(std::move(md));
@@ -1585,10 +1632,10 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
     MaterialRefreshResult result;
     result.changed = false;
 
-    // Helper: get current texture file path from a Wc3Material
-    auto getTexturePath = [&](Mtl* mtl) -> std::wstring {
+    // Helper: get BitmapTex file path from any named texmap slot on a Wc3Material
+    auto getTexturePath = [&](Mtl* mtl, const wchar_t* paramName) -> std::wstring {
         Texmap* texmap = nullptr;
-        if (!PB2Texmap(mtl, L"diffuseMap", texmap) || !texmap) return {};
+        if (!PB2Texmap(mtl, paramName, texmap) || !texmap) return {};
         BitmapTex* bmt = nullptr;
         if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
             for (int r = 0; r < texmap->NumRefs(); r++) {
@@ -1619,15 +1666,19 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
         if (PB2Bool(mtl, L"constantColor", 0, flag) && flag) flags |= 32;
         snap.flags = flags;
 
-        Texmap* texmap = nullptr;
-        PB2Texmap(mtl, L"diffuseMap", texmap);
-        int retex = 0;
-        if (texmap && texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-            int replId = 1; PB2Int(texmap, L"replaceableId", 0, replId);
-            retex = std::max(0, replId - 1);
-        }
-        snap.replaceableTexture = retex;
-        snap.texturePath = getTexturePath(mtl);
+        // replaceableId is on the material (v12+)
+        int replId = 1; PB2Int(mtl, L"replaceableId", 0, replId);
+        snap.replaceableTexture = std::max(0, replId - 1);
+
+        // shaderId
+        int shaderType = 1; PB2Int(mtl, L"shaderType", 0, shaderType);
+        snap.shaderId = (shaderType == 4) ? 24 : std::max(0, shaderType - 1);
+
+        snap.texturePath      = getTexturePath(mtl, L"diffuseMap");
+        snap.normalTexPath    = getTexturePath(mtl, L"normalMap");
+        snap.ormTexPath       = getTexturePath(mtl, L"ormMap");
+        snap.emissiveTexPath  = getTexturePath(mtl, L"emissiveMap");
+        snap.teamColorTexPath = getTexturePath(mtl, L"teamColorMap");
 
         int sortOrd = 1; PB2Int(mtl, L"sortOrder", 0, sortOrd);
         snap.sortOrder = std::max(0, sortOrd - 1);
@@ -1651,7 +1702,12 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
                 it->second.priorityPlane != cur.priorityPlane ||
                 it->second.sortOrder != cur.sortOrder ||
                 it->second.replaceableTexture != cur.replaceableTexture ||
-                it->second.texturePath != cur.texturePath)
+                it->second.shaderId != cur.shaderId ||
+                it->second.texturePath != cur.texturePath ||
+                it->second.normalTexPath != cur.normalTexPath ||
+                it->second.ormTexPath != cur.ormTexPath ||
+                it->second.emissiveTexPath != cur.emissiveTexPath ||
+                it->second.teamColorTexPath != cur.teamColorTexPath)
             {
                 anyChanged = true;
                 break;
@@ -1668,7 +1724,12 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
                     it->second.filterMode != cur.filterMode ||
                     it->second.flags != cur.flags ||
                     it->second.replaceableTexture != cur.replaceableTexture ||
-                    it->second.texturePath != cur.texturePath)
+                    it->second.shaderId != cur.shaderId ||
+                    it->second.texturePath != cur.texturePath ||
+                    it->second.normalTexPath != cur.normalTexPath ||
+                    it->second.ormTexPath != cur.ormTexPath ||
+                    it->second.emissiveTexPath != cur.emissiveTexPath ||
+                    it->second.teamColorTexPath != cur.teamColorTexPath)
                 {
                     anyChanged = true;
                     break;
