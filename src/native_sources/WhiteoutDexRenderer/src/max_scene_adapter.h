@@ -25,6 +25,7 @@
 
 #include "renderer/model_source.h"
 #include "renderer/model_types.h"
+#include "io/file_content_provider.h"
 
 // ============================================================================
 // Known ClassIDs for WhiteoutDex custom MaxScript plugins
@@ -173,6 +174,7 @@ private:
     void CollectGeometry();
     void CollectMaterials();
     int  LoadTexture(const std::wstring& filePath, int replaceableId);
+    int  LoadTextureFromContentProvider(const std::string& archivePath, int replaceableId);
     int  LoadTextureWithTeamColor(const std::wstring& filePath, int tcR, int tcG, int tcB);
     int  GenerateTeamGlowTexture(int tcR, int tcG, int tcB);
     void CollectBones();
@@ -218,6 +220,8 @@ private:
     std::unordered_map<Mtl*, int>         mtlToId_;
     int nextTexId_ = 0;
     int nextMatId_ = 0;
+
+    FileContentProvider contentProvider_;
 
     // Material change detection: snapshot of per-material properties
     struct MaterialSnapshot {
