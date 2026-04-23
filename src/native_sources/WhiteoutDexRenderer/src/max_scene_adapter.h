@@ -98,6 +98,7 @@ struct ParticleEmitterInfo {
     int emitterId = 0;
     INode* node = nullptr;
     int textureId = -1;
+    int replaceableId = 0;
 };
 
 struct PE1EmitterInfo {

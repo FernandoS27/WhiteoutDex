@@ -84,15 +84,15 @@ PlaneEmitterInit InitFromLegacyConfig(const ParticleEmitterConfig& cfg) {
     // Longitude default per plan §3.8: 2π when LineEmitter clear, 0 when set.
     init.longitude = cfg.lineEmitter ? 0.0f : 6.2831853071795864769f;
 
-    init.angularVelocity = 0.0f;    // not in the legacy config
+    init.angularVelocity = 0.0f;
     init.priorityPlane   = cfg.priorityPlane;
-    init.replaceableId   = 0;       // not in the legacy config
+    init.replaceableId   = cfg.replaceableId;
 
     init.material.textureId     = cfg.textureId;
     init.material.filterMode    = LegacyFilterToService(cfg.filterMode);
     init.material.unshaded      = cfg.unshaded;
     init.material.unfogged      = cfg.unfogged;
-    init.material.replaceableId = 0;
+    init.material.replaceableId = cfg.replaceableId;
 
     init.squirtAtStart = cfg.squirt;
 

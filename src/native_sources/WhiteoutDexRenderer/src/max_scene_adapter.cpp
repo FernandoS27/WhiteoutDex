@@ -830,12 +830,14 @@ void MaxSceneAdapter::CollectParticleEmitters() {
                 }
                 int replId = 0; PB2Int(baseObj, L"ReplaceableId", 0, replId);
                 pi.textureId = LoadTexture(fp, replId);
+                pi.replaceableId = replId;
                 mprintf(_M("    \x2192 texId=%d\n"), pi.textureId);
             } else {
                 // Check for replaceable texture (TeamColor/TeamGlow)
                 int replId = 0; PB2Int(baseObj, L"ReplaceableId", 0, replId);
                 if (replId > 0) {
                     pi.textureId = LoadTexture(L"", replId);
+                    pi.replaceableId = replId;
                 } else {
                     mprintf(_M("  [Particle '%s'] NO texture file set!\n"), node->GetName());
                 }
@@ -1211,6 +1213,7 @@ std::vector<ParticleEmitterConfig> MaxSceneAdapter::GetParticleConfigs() {
         int iv = 0; float fv = 0; BOOL bv = FALSE;
 
         cfg.textureId = pi.textureId >= 0 ? pi.textureId : 0;
+        cfg.replaceableId = pi.replaceableId;
 
         // Wc3Particles2 PB2 param names (from Particles.h enum)
         int blendMode = 0; PB2Int(obj, L"BlendMode", 0, blendMode);
@@ -1486,6 +1489,7 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
         PB2Float(obj,L"Width",t,fv);        ps.width=fv;
         PB2Float(obj,L"Height",t,fv);       ps.length=fv;
         ps.visibility = pi.node->GetVisibility(t);
+        ps.squirting = PB2Bool(obj,L"Squirt",t,fv);
         state.particleStates.push_back(ps);
     }
 

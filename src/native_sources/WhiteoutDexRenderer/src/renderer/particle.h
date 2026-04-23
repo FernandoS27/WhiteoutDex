@@ -61,6 +61,7 @@ struct ParticleEmitterConfig {
     // Misc
     int  count         = 0;   // legacy cap (unused by the service)
     int  priorityPlane = 0;
+    int  replaceableId = 0;   // 0=none, 1=TeamColor, 2=TeamGlow
 };
 
 // Per-frame emitter state (animatable values + transform).

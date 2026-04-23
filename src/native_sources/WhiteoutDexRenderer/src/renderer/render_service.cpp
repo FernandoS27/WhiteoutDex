@@ -109,6 +109,8 @@ void RenderService::RemoveModel(uint32_t handle) {
 
 void RenderService::AddPlaneEmitters(uint32_t modelHandle,
                                      const std::vector<particle::PlaneEmitterInit>& inits) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    auto* mi = getModel(modelHandle);
     for (size_t i = 0; i < inits.size(); ++i) {
         auto emitter = std::make_unique<particle::PlaneEmitter>();
         particle::ApplyInit(*emitter, inits[i]);
@@ -116,6 +118,8 @@ void RenderService::AddPlaneEmitters(uint32_t modelHandle,
         // per-frame state (keyed on emitterId) targets the same logical emitter
         // through both paths while the legacy system is still live.
         particleService_.AddPlaneEmitter(modelHandle, static_cast<int>(i), std::move(emitter));
+        if (mi)
+            RegisterReplaceableEmitterTex(mi, inits[i].material.textureId, inits[i].material.replaceableId);
     }
 }
 
@@ -400,9 +404,11 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
     }
     // PE2 particles — registered directly with the service (no legacy path).
     for (int i = 0; i < (int)tmpl.pe2Configs.size(); i++) {
+        const auto& pcfg = tmpl.pe2Configs[i];
         auto em = std::make_unique<particle::PlaneEmitter>();
-        particle::ApplyInit(*em, particle::InitFromLegacyConfig(tmpl.pe2Configs[i]));
+        particle::ApplyInit(*em, particle::InitFromLegacyConfig(pcfg));
         particleService_.AddPlaneEmitter(mi->handle, i, std::move(em));
+        RegisterReplaceableEmitterTex(mi, pcfg.textureId, pcfg.replaceableId);
     }
     mi->pe2State.resize(tmpl.pe2Configs.size());
     // Ribbons
@@ -683,9 +689,11 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
     // boundary type stays (external API), but it's translated to the service's
     // PlaneEmitterInit on the way in. All downstream simulation/render is service.
     for (size_t i = 0; i < particleConfigs.size(); i++) {
+        const auto& pcfg = particleConfigs[i];
         auto em = std::make_unique<particle::PlaneEmitter>();
-        particle::ApplyInit(*em, particle::InitFromLegacyConfig(particleConfigs[i]));
+        particle::ApplyInit(*em, particle::InitFromLegacyConfig(pcfg));
         particleService_.AddPlaneEmitter(handle, (int)i, std::move(em));
+        RegisterReplaceableEmitterTex(mi.get(), pcfg.textureId, pcfg.replaceableId);
     }
     mi->pe2State.resize(particleConfigs.size());
 
@@ -1120,6 +1128,31 @@ void RenderService::ApplyFrameState(const FrameState& state, int timeMs) {
 // ============================================================================
 // Team Color Texture Update
 // ============================================================================
+
+void RenderService::RegisterReplaceableEmitterTex(ModelInstance* mi, int textureId, int replaceableId) {
+    if (replaceableId != 1 && replaceableId != 2) return;
+    auto [it, inserted] = mi->replaceableTexMap.try_emplace(textureId, replaceableId);
+    if (!inserted) return;
+    const uint8_t r = (uint8_t)(teamColor_ & 0xFF);
+    const uint8_t g = (uint8_t)((teamColor_ >> 8)  & 0xFF);
+    const uint8_t b = (uint8_t)((teamColor_ >> 16) & 0xFF);
+    StagedTexture& st = mi->stagedTextures[textureId];
+    st.format    = gfx::Format::R8G8B8A8_UNORM;
+    st.mipLevels = 1;
+    if (replaceableId == 2) {
+        st.pixels = DecodeTeamGlow(r, g, b, st.width, st.height);
+    } else {
+        st.width = 4; st.height = 4;
+        st.pixels.resize(64);
+        for (int j = 0; j < 16; j++) {
+            st.pixels[j*4+0] = r;
+            st.pixels[j*4+1] = g;
+            st.pixels[j*4+2] = b;
+            st.pixels[j*4+3] = 255;
+        }
+    }
+    mi->stagedDirty = true;
+}
 
 void RenderService::UpdateTeamColorTextures() {
     std::lock_guard<std::mutex> lock(dataMutex_);

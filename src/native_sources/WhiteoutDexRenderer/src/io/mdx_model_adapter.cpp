@@ -813,7 +813,8 @@ std::vector<ParticleEmitterConfig> MdxModelAdapter::GetParticleConfigs() {
         cfg.lineEmitter = (nf & (u32)Node::NodeFlag::LineEmitter) != 0;
         cfg.unfogged    = (nf & (u32)Node::NodeFlag::Unfogged)   != 0;
 
-        cfg.priorityPlane = (int)pe.priorityPlane;
+        cfg.priorityPlane  = (int)pe.priorityPlane;
+        cfg.replaceableId  = (int)pe.replaceableId;
         // MDX has no per-emitter Count cap; leave at default (0 = unlimited)
 
         result.push_back(cfg);

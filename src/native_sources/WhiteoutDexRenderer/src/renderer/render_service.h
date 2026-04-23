@@ -356,6 +356,9 @@ private:
     std::shared_ptr<PE1ModelTemplate> getOrLoadTemplate(const std::string& modelPath);
     std::shared_ptr<PE1ModelTemplate> loadTemplateSync(const std::string& modelPath);
     void stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl);
+    // Register a replaceable-texture slot used by an emitter and immediately
+    // bake the current team color into it. Requires dataMutex_ to be held.
+    void RegisterReplaceableEmitterTex(ModelInstance* mi, int textureId, int replaceableId);
 
     // ---- Async PE1 template loader ----
     void StartTemplateLoader();
