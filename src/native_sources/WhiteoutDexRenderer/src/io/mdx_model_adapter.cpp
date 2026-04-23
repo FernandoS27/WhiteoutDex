@@ -1080,6 +1080,11 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
                 int gsTime = (globalTimeMs >= 0) ? globalTimeMs : timeMs;
                 int t = (int)std::fmod((float)gsTime, (float)duration);
                 return {t, 0, (int)duration};
+            } else {
+                // duration==0: static global sequence — hold the single key permanently.
+                // The key may be at any frame (e.g. 65667), so use a wide range
+                // to ensure FindBracket finds it.
+                return {0, 0, 0x3FFFFFFF};
             }
         }
         return {timeMs, seqStart_, seqEnd_};

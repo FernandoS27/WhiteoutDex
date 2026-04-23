@@ -462,6 +462,12 @@ void MdxHierarchy::Evaluate(int timeMs, int seqStart, int seqEnd,
                         ee = (int)duration;
                         int gsTime = (globalTimeMs >= 0) ? globalTimeMs : timeMs;
                         et = (int)std::fmod((float)gsTime, (float)duration);
+                    } else {
+                        // duration==0: static global sequence — hold the single key permanently.
+                        // The key may be at any frame (e.g. 65667), so use a wide range
+                        // to ensure FindBracket finds it. et=0 is arbitrary since there's
+                        // only one key and rangeLo==rangeHi returns early.
+                        es = 0; ee = 0x3FFFFFFF; et = 0;
                     }
                 }
             }

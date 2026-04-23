@@ -188,12 +188,14 @@ int wmain(int argc, wchar_t* argv[]) {
 
     // Main loop
     auto startTime = std::chrono::steady_clock::now();
+    auto globalStartTime = startTime; // never reset — drives global sequences
     int currentSeq = 0;
     std::cout << "Renderer open. Close the window to exit.\n";
 
     while (renderWindow.IsOpen()) {
         auto now = std::chrono::steady_clock::now();
         int elapsed = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+        int globalTimeMs = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - globalStartTime).count();
 
         // React to sequence picker changes
         if (!sequences.empty()) {
@@ -217,7 +219,7 @@ int wmain(int argc, wchar_t* argv[]) {
 
         auto camPos = renderer.GetCameraPosition();
         adapter.SetCameraPosition(camPos.x, camPos.y, camPos.z);
-        auto frameState = adapter.Evaluate(timeMs, elapsed);
+        auto frameState = adapter.Evaluate(timeMs, globalTimeMs);
         renderer.ApplyFrameState(frameState, timeMs);
 
         Sleep(16); // ~60 FPS
