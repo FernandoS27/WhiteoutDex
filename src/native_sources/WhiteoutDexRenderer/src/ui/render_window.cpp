@@ -250,7 +250,7 @@ bool RenderWindow::Create(int w, int h) {
     // Create parent window (menu bar adds its own height — pass TRUE).
     RECT adj = {0, 0, w, h + kToolbarH};
     AdjustWindowRect(&adj, WS_OVERLAPPEDWINDOW, TRUE);
-    hwnd_ = CreateWindowExW(WS_EX_TOPMOST, WINDOW_CLASS, WINDOW_TITLE, WS_OVERLAPPEDWINDOW,
+    hwnd_ = CreateWindowExW(0, WINDOW_CLASS, WINDOW_TITLE, WS_OVERLAPPEDWINDOW,
                             CW_USEDEFAULT, CW_USEDEFAULT,
                             adj.right - adj.left, adj.bottom - adj.top,
                             nullptr, hMenuBar_, hInst, this);
