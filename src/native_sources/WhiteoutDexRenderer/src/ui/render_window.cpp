@@ -16,7 +16,7 @@ namespace WhiteoutDex {
 
 static const wchar_t* WINDOW_CLASS  = L"WhiteoutDexRendererClass";
 static const wchar_t* RENDER_CLASS  = L"WhiteoutDexRenderSurface";
-static const wchar_t* WINDOW_TITLE  = L"Whiteout Renderer";
+static const wchar_t* WINDOW_TITLE  = L"WhiteoutFlakes";
 
 // ============================================================================
 // Construction / Destruction
@@ -115,7 +115,7 @@ void RenderWindow::ThreadFunc(int w, int h, gfx::GfxApi api) {
             service_.GetFrameStats(nGeo, nTex, nNodes, nParts, nSegs);
             wchar_t title[300];
             swprintf_s(title,
-                L"Whiteout Renderer \u2014 %d FPS | %d geo, %d tex, %d nodes, %d parts, %d segs",
+                L"WhiteoutFlakes \u2014 %d FPS | %d geo, %d tex, %d nodes, %d parts, %d segs",
                 frameCount, nGeo, nTex, nNodes, nParts, nSegs
             );
             SetTitle(title);

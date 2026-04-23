@@ -27,6 +27,7 @@ namespace WhiteoutDex::bls {
 }
 #include <unordered_map>
 #include <unordered_set>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -85,7 +86,7 @@ public:
     void RemoveModel(uint32_t handle);
     void SetAttachmentConfigs(uint32_t handle, const std::vector<AttachmentConfig>& configs);
     void SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig>& configs);
-    void SetPE1BasePath(const std::string& basePath);
+    void SetPE1BasePath(const std::filesystem::path& basePath);
     uint32_t GetFocusModelHandle() const { return focusModelHandle_; }
 
     // Access the unified file content provider (disk + CASC + MPQ)
@@ -349,7 +350,7 @@ private:
     static constexpr int kMaxPE1Instances = 256;
     int pe1InstanceCount_ = 0;
 
-    std::string pe1BasePath_;  // root directory for resolving PE1 model + texture paths
+    std::filesystem::path pe1BasePath_;  // root directory for resolving PE1 model + texture paths
     FileContentProvider contentProvider_; // unified file resolution (disk + CASC + MPQ)
     std::shared_ptr<IContentProvider> externalContentProvider_; // optional injected provider
     IContentProvider* activeContentProvider_ = nullptr;         // points to external or built-in

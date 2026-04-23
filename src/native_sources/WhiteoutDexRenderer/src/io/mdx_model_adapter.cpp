@@ -297,20 +297,26 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
         std::string ext = p.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
+        // path::string() uses the ANSI code page on Windows, which corrupts
+        // non-ASCII characters (e.g. CJK). path::u8string() gives correct
+        // UTF-8 bytes that WhiteoutLib parsers accept.
+        auto u8 = p.u8string();
+        std::string pathStr(reinterpret_cast<const char*>(u8.data()), u8.size());
+
         std::optional<whiteout::textures::Texture> result;
 
         if (ext == ".blp") {
             whiteout::textures::blp::Parser parser;
-            result = parser.parse(p.string());
+            result = parser.parse(pathStr);
         } else if (ext == ".dds") {
             whiteout::textures::dds::Parser parser;
-            result = parser.parse(p.string());
+            result = parser.parse(pathStr);
         } else if (ext == ".tga") {
             whiteout::textures::tga::Parser parser;
-            result = parser.parse(p.string());
+            result = parser.parse(pathStr);
         } else if (ext == ".png") {
             whiteout::textures::png::Parser parser;
-            result = parser.parse(p.string());
+            result = parser.parse(pathStr);
         }
 
         if (result) { applyResult(*result); return true; }
@@ -342,7 +348,9 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     // 1. Try local disk via FileResolver.
     fs::path resolved = resolver_.ResolveTexture(path);
     if (!resolved.empty() && tryParsePath(resolved)) {
-        std::fprintf(stdout, "  [tex %d] loaded %s\n", textureId, resolved.string().c_str());
+        auto u8resolved = resolved.u8string();
+        std::fprintf(stdout, "  [tex %d] loaded %s\n", textureId,
+                     reinterpret_cast<const char*>(u8resolved.data()));
         return td;
     }
 
@@ -363,8 +371,9 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
         }
     }
 
+    auto u8base = resolver_.BasePath().u8string();
     std::fprintf(stderr, "  [tex %d] NOT FOUND: '%s' (base: %s)\n",
-                 textureId, path.c_str(), resolver_.BasePath().string().c_str());
+                 textureId, path.c_str(), reinterpret_cast<const char*>(u8base.data()));
 
     // Fallback: 4x4 magenta checkerboard
     td.width  = 4;

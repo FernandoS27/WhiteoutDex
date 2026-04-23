@@ -209,7 +209,7 @@ set_target_properties(WhiteoutDexExtractor PROPERTIES
     CXX_STANDARD          20
     CXX_STANDARD_REQUIRED ON
     SUFFIX                ".dlx"
-    OUTPUT_NAME           "WhiteoutDexExtractor"
+    OUTPUT_NAME           "WhiteoutFlakes"
 )
 
 target_include_directories(WhiteoutDexExtractor PRIVATE
@@ -273,7 +273,7 @@ add_executable(WhiteoutDexRendererStandalone
 set_target_properties(WhiteoutDexRendererStandalone PROPERTIES
     CXX_STANDARD          20
     CXX_STANDARD_REQUIRED ON
-    OUTPUT_NAME           "WhiteoutDexRenderer"
+    OUTPUT_NAME           "WhiteoutFlakes"
     RUNTIME_OUTPUT_DIRECTORY         "${CMAKE_BINARY_DIR}/standalone"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_BINARY_DIR}/standalone"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/standalone"

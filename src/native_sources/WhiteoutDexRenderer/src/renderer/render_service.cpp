@@ -145,7 +145,7 @@ void RenderService::SetContentProvider(std::shared_ptr<IContentProvider> provide
                                  : static_cast<IContentProvider*>(&contentProvider_);
 }
 
-void RenderService::SetPE1BasePath(const std::string& basePath) {
+void RenderService::SetPE1BasePath(const std::filesystem::path& basePath) {
     pe1BasePath_ = basePath;
     contentProvider_.SetBasePath(basePath);
 }
@@ -246,7 +246,7 @@ std::shared_ptr<RenderService::PE1ModelTemplate> RenderService::loadTemplateSync
     // basePath for texture resolution: use pe1BasePath_ (war3 data root)
     // so textures like "Textures\Footprint00.blp" resolve correctly
     namespace fs = std::filesystem;
-    fs::path texBasePath = pe1BasePath_.empty() ? fs::path(modelPath).parent_path() : fs::path(pe1BasePath_);
+    fs::path texBasePath = pe1BasePath_.empty() ? fs::path(modelPath).parent_path() : pe1BasePath_;
 
     auto tmpl = std::make_shared<PE1ModelTemplate>();
     auto adapter = std::make_shared<MdxModelAdapter>(
