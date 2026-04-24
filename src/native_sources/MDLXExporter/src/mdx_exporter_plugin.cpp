@@ -16,6 +16,8 @@
 #include <optimization/vertex_optimizer.h>
 #include <optimization/keyframe_optimizer.h>
 #include <optimization/bone_optimizer.h>
+
+#include <unordered_set>
 #include <util/error_reporter.h>
 
 #include "extraction/wc3_material_extractor.h"
@@ -318,7 +320,48 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
 
     // Optimize
     if(opts.optimizeVertices){core::VertexOptimizer vo; for(auto& m:irModel.meshes) vo.optimize(m,opts.vertexMergeThreshold);}
-    if(opts.optimizeKeyframes){core::KeyframeOptimizer ko; for(auto& na:irModel.nodeAnimations){ko.optimize(na.translation);ko.optimize(na.rotation);ko.optimize(na.scale);} for(auto& ft:irModel.floatTracks)ko.optimize(ft); for(auto& vt:irModel.vec3Tracks)ko.optimize(vt);}
+    if(opts.optimizeKeyframes){
+        // Collect floatTrack indices that are visibility/alpha tracks.
+        // These have DontInterp/step semantics and must NOT be reduced —
+        // the boundary-stub keys (same value at every sequence start) are
+        // intentional and required for round-trip with Blizzard tooling.
+        // Without this exempt, the Saurus export went 43 → 6 keys.
+        std::unordered_set<int32_t> visibilityTrackIndices;
+        auto addIfValid = [&](int32_t idx){ if (idx >= 0) visibilityTrackIndices.insert(idx); };
+
+        for (const auto& ga   : irModel.geosetAnims)      addIfValid(ga.alphaTrackIndex);
+        for (const auto& lite : irModel.lights)           addIfValid(lite.visibilityTrackIndex);
+        for (const auto& at   : irModel.attachments)      addIfValid(at.visibilityTrackIndex);
+        for (const auto& pe   : irModel.particleEmitters) addIfValid(pe.visibilityTrackIndex); // PE1+PE2+Corn
+        for (const auto& rib  : irModel.ribbonEmitters)   addIfValid(rib.visibilityTrackIndex);
+
+        ELOG << "Keyframe optimizer: exempting " << visibilityTrackIndices.size()
+             << " visibility floatTrack(s) from reduction\n";
+
+        core::KeyframeOptimizer ko;
+
+        // Node animations: full optimization
+        for (auto& na : irModel.nodeAnimations) {
+            ko.optimize(na.translation);
+            ko.optimize(na.rotation);
+            ko.optimize(na.scale);
+        }
+
+        // Float tracks: skip visibility tracks
+        for (size_t i = 0; i < irModel.floatTracks.size(); ++i) {
+            if (visibilityTrackIndices.count(static_cast<int32_t>(i))) {
+                ELOG << "  skip floatTrack[" << i << "] (visibility, "
+                     << irModel.floatTracks[i].keys.size() << " keys preserved)\n";
+                continue;
+            }
+            ko.optimize(irModel.floatTracks[i]);
+        }
+
+        // Vec3 tracks
+        for (auto& vt : irModel.vec3Tracks) ko.optimize(vt);
+
+        EFLUSH;
+    }
 
     // Build
     ELOG << "\n==== Model Build ====\n"; EFLUSH;

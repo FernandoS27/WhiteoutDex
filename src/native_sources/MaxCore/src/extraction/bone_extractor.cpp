@@ -5,6 +5,24 @@
 
 #include <CS/BIPEXP.H>
 #include <algorithm>
+#include <fstream>
+#include <string>
+#include <windows.h>
+
+// Bone_Main focused log — writes to %TEMP%\mdlx_bone_main.log in APPEND mode.
+// Each TU has its own static ofstream; file is truncated at export start.
+static std::ofstream& bmLog() {
+    static std::ofstream log;
+    if (!log.is_open()) {
+        char tmp[MAX_PATH];
+        GetTempPathA(MAX_PATH, tmp);
+        std::string path = std::string(tmp) + "mdlx_bone_main.log";
+        log.open(path, std::ios::app);
+    }
+    return log;
+}
+#define BMLOG   bmLog()
+#define BMFLUSH bmLog().flush()
 
 namespace core {
 
@@ -50,6 +68,63 @@ BoneExtractor::BoneResult BoneExtractor::extract(
 
             bone.pivotPoint = sn.maxNode->GetNodeTM(0).GetTrans();
             bone.bindPose = sn.maxNode->GetNodeTM(0);
+
+            // ── BONE_MAIN focused debug ───────────────────────────
+            if (bone.name == "Bone_Main") {
+                BMLOG << "====================================\n";
+                BMLOG << "[bone_extractor] Bone_Main extraction\n";
+                BMLOG << "====================================\n";
+                BMLOG << "  nodeIndex=" << bone.nodeIndex << "\n";
+                BMLOG << "  isHelper=" << bone.isHelper << "\n";
+                BMLOG << "  GetNodeTM(0).GetTrans() (Max-space) = ("
+                     << bone.pivotPoint.x << ", "
+                     << bone.pivotPoint.y << ", "
+                     << bone.pivotPoint.z << ")\n";
+
+                // Also read the position controller directly to see what
+                // the key value is. If ORT=constant with 1 key, Max's
+                // GetNodeTM at t=0 returns the key value, not a 'rest pose'.
+                Control* tmCtrl = sn.maxNode->GetTMController();
+                if (tmCtrl) {
+                    Control* posCtrl = tmCtrl->GetPositionController();
+                    Control* rotCtrl = tmCtrl->GetRotationController();
+                    if (posCtrl) {
+                        int npk = posCtrl->NumKeys();
+                        BMLOG << "  posCtrl class=0x" << std::hex
+                             << posCtrl->ClassID().PartA() << std::dec
+                             << " numKeys=" << npk
+                             << " before=" << posCtrl->GetORT(ORT_BEFORE)
+                             << " after=" << posCtrl->GetORT(ORT_AFTER) << "\n";
+                        for (int i = 0; i < npk && i < 5; ++i) {
+                            TimeValue t = posCtrl->GetKeyTime(i);
+                            Point3 v(0.0f, 0.0f, 0.0f);
+                            Interval iv = FOREVER;
+                            posCtrl->GetValue(t, &v, iv);
+                            BMLOG << "    posKey[" << i << "] t=" << t
+                                 << " val=(" << v.x << ", " << v.y << ", " << v.z << ")\n";
+                        }
+                    }
+                    if (rotCtrl) {
+                        int nrk = rotCtrl->NumKeys();
+                        BMLOG << "  rotCtrl class=0x" << std::hex
+                             << rotCtrl->ClassID().PartA() << std::dec
+                             << " numKeys=" << nrk
+                             << " before=" << rotCtrl->GetORT(ORT_BEFORE)
+                             << " after=" << rotCtrl->GetORT(ORT_AFTER) << "\n";
+                        for (int i = 0; i < nrk && i < 5; ++i) {
+                            TimeValue t = rotCtrl->GetKeyTime(i);
+                            Quat q(0.0f, 0.0f, 0.0f, 1.0f);
+                            Interval iv = FOREVER;
+                            rotCtrl->GetValue(t, &q, iv);
+                            BMLOG << "    rotKey[" << i << "] t=" << t
+                                 << " quat=(" << q.x << ", " << q.y << ", "
+                                 << q.z << ", " << q.w << ")\n";
+                        }
+                    }
+                }
+                BMLOG << "  Recorded as pivotPoint (Max-space), will be transformed later\n\n";
+                BMFLUSH;
+            }
 
             int32_t boneIdx = static_cast<int32_t>(result.bones.size());
             result.nodeToIndex[sn.maxNode] = boneIdx;

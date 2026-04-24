@@ -775,7 +775,11 @@ void insertTranslationKeys(INode* node, const ir::Vec3Track& track,
     ILOG.flush();
 
     int numKeys = static_cast<int>(track.keys.size());
-    bool needStub = (numKeys == 0 || track.keys[0].time > 0);
+    // Stub rule: sequence-driven tracks get a Frame-0 stub to anchor the
+    // rest pose; global-sequence tracks DO NOT (NeoDex-compatible behavior).
+    // See insertRotationKeys for the full rationale.
+    bool isGlobalSeq = (track.globalSequenceIndex >= 0);
+    bool needStub = !isGlobalSeq && (numKeys == 0 || track.keys[0].time > 0);
     float bezConst = getBezierConstant();
 
     switch (track.interpolation) {
@@ -935,9 +939,14 @@ void insertTranslationKeys(INode* node, const ir::Vec3Track& track,
 
     ikc->SortKeys();
 
-    // ORT cycle for global sequences
-    if (track.globalSequenceIndex >= 0) {
-        posCtrl->SetORT(ORT_CYCLE, ORT_AFTER);
+    // ORT for global sequences: constant before (hold first key), cycle after.
+    // Matches NeoDex setup. Without the before=constant, Max would extrapolate
+    // backwards from the first key, giving wrong values at Frame 0 for models
+    // whose global-seq keys live at high tick values (e.g., Undead3D_Exp
+    // Bone_Main's gseq key at Frame 1970).
+    if (isGlobalSeq) {
+        posCtrl->SetORT(ORT_CONSTANT, ORT_BEFORE);
+        posCtrl->SetORT(ORT_CYCLE,    ORT_AFTER);
         posCtrl->EnableORTs(TRUE);
     }
 }
@@ -949,12 +958,56 @@ void insertRotationKeys(INode* node, const ir::QuatTrack& track,
     Control* tmCtrl = node->GetTMController();
     if (!tmCtrl) return;
 
+    // ── DEBUG: log for Bone_Main ──
+    bool debugThis = false;
+    {
+        std::wstring wn = node->GetName();
+        std::string nn(wn.begin(), wn.end());
+        if (nn.find("Bone_Main") != std::string::npos) {
+            debugThis = true;
+            ILOG << "  *** insertRotationKeys for '" << nn << "' ***\n";
+            ILOG << "    track.keys=" << track.keys.size()
+                 << " gseq=" << track.globalSequenceIndex << "\n";
+            ILOG << "    stubVal=(" << stubVal.x << "," << stubVal.y
+                 << "," << stubVal.z << "," << stubVal.w << ")\n";
+            for (size_t i = 0; i < track.keys.size() && i < 5; ++i) {
+                const auto& k = track.keys[i];
+                ILOG << "    in key[" << i << "] time=" << k.time
+                     << " (frame=" << (k.time / GetTicksPerFrame()) << ")"
+                     << " quat=(" << k.value.x << "," << k.value.y
+                     << "," << k.value.z << "," << k.value.w << ")\n";
+            }
+        }
+    }
+
     // Replace rotation controller with linear_rotation for quaternion SLERP.
     // Unlike position, we MUST replace because Euler XYZ can't do quaternion interpolation.
     Control* rotCtrl = static_cast<Control*>(
         CreateInstance(CTRL_ROTATION_CLASS_ID, Class_ID(LININTERP_ROTATION_CLASS_ID, 0)));
     if (!rotCtrl) return;
     tmCtrl->SetRotationController(rotCtrl);
+
+    // Clear any pre-existing keys inherited from SetNodeTM(0, identity+pivot).
+    // When SetRotationController replaces the controller, Max may seed the new
+    // linear_rotation with an identity key at Frame 0. We always clear to
+    // guarantee a clean slate — writing our own keys on top of unknown
+    // pre-existing keys risks "undefined behavior" per SDK docs
+    // ("setting two keys to the same time value is undefined, and should be
+    // avoided"). For gseq tracks this removes the phantom that was causing
+    // the Undead3D Bone_Main bug; for non-gseq tracks it just ensures our
+    // Frame-0 stub lands on an empty track as intended.
+    bool isGlobalSeq = (track.globalSequenceIndex >= 0);
+    {
+        IKeyControl* ikcPre = GetKeyControlInterface(rotCtrl);
+        if (ikcPre && ikcPre->GetNumKeys() > 0) {
+            int preExisting = ikcPre->GetNumKeys();
+            ikcPre->SetNumKeys(0);
+            if (debugThis) {
+                ILOG << "    cleared " << preExisting
+                     << " pre-existing keys on new linear_rotation controller\n";
+            }
+        }
+    }
 
     int numRotKeys = static_cast<int>(track.keys.size());
 
@@ -973,20 +1026,101 @@ void insertRotationKeys(INode* node, const ir::QuatTrack& track,
     // Use SetValue for key creation — SDK-recommended approach
     // SetValue for rotation expects CONJUGATE quaternion compared to ILinRotKey.val
     // Conjugate: negate x,y,z; keep w
-    bool needRotStub = (numRotKeys == 0 || track.keys[0].time > 0);
+    //
+    // Stub rule:
+    //   * Sequence-driven tracks (globalSequenceIndex < 0):
+    //       Insert identity stub at Frame 0 if first real key isn't at 0.
+    //       This anchors the rest pose for Linear/Bezier interpolation from
+    //       "before the animation starts" to the first key.
+    //   * Global-sequence tracks (globalSequenceIndex >= 0):
+    //       NO stub. NeoDex writes exactly the track's keys as-is, then relies
+    //       on ORT_BEFORE=constant to hold the first real key's value for all
+    //       frames before it. Adding an identity stub would cause Max to SLERP
+    //       from identity to the actual rotation between Frame 0 and the first
+    //       key — which is wrong (see Undead3D_Exp Bone_Main: 65.67s key at
+    //       Frame 1970 was being SLERPed against an identity stub at Frame 0,
+    //       so Arthas appeared nearly unrotated in the sequence window).
+    // (isGlobalSeq already declared above, after SetRotationController.)
+    bool needRotStub = !isGlobalSeq && (numRotKeys == 0 || track.keys[0].time > 0);
+
+    // Use IKeyControl::AppendKey instead of SetValue — bypasses the
+    // Animate-button gate (SetValue with Animate off applies to frame 0
+    // per Autodesk docs, not to the specified time; that's the Undead3D
+    // Bone_Main bug). Position already uses this approach.
+    //
+    // Quaternion convention:
+    //   SetValue(CTRL_ABSOLUTE) expects left-hand (SDK) convention — we
+    //   had to pass conjugate(q) to match Max's internal storage.
+    //   IKeyControl stores keys in the SAME internal storage, so the
+    //   same conjugate applies to ILinRotKey.val.
+    IKeyControl* ikc = GetKeyControlInterface(rotCtrl);
+    if (!ikc) return;
+
     if (needRotStub) {
-        Quat sv(-stubVal.x, -stubVal.y, -stubVal.z, stubVal.w);
-        rotCtrl->SetValue(0, &sv, 1, CTRL_ABSOLUTE);
+        ILinRotKey k;
+        memset(&k, 0, sizeof(k));
+        k.time = 0;
+        k.val = Quat(-stubVal.x, -stubVal.y, -stubVal.z, stubVal.w);
+        ikc->AppendKey(&k);
+        if (debugThis) {
+            ILOG << "    STUB at time=0 value=(" << k.val.x << "," << k.val.y
+                 << "," << k.val.z << "," << k.val.w << ")\n";
+        }
+    } else if (debugThis && isGlobalSeq) {
+        ILOG << "    STUB skipped (globalSequence track)\n";
     }
 
     for (int i = 0; i < numRotKeys; ++i) {
-        Quat q(-fixedKeys[i].x, -fixedKeys[i].y, -fixedKeys[i].z, fixedKeys[i].w);
-        rotCtrl->SetValue(track.keys[i].time, &q, 1, CTRL_ABSOLUTE);
+        ILinRotKey k;
+        memset(&k, 0, sizeof(k));
+        k.time = track.keys[i].time;
+        k.val = Quat(-fixedKeys[i].x, -fixedKeys[i].y, -fixedKeys[i].z, fixedKeys[i].w);
+        ikc->AppendKey(&k);
+        if (debugThis) {
+            ILOG << "    WROTE time=" << track.keys[i].time
+                 << " (frame=" << (track.keys[i].time / GetTicksPerFrame()) << ")"
+                 << " value=(" << k.val.x << "," << k.val.y
+                 << "," << k.val.z << "," << k.val.w << ")\n";
+        }
     }
 
-    if (track.globalSequenceIndex >= 0) {
+    // Sort keys by time. AppendKey doesn't enforce ordering, and SDK docs
+    // warn that out-of-order keys produce undefined behavior. Matches the
+    // pattern used by insertTranslationKeys.
+    ikc->SortKeys();
+
+    if (isGlobalSeq) {
+        // Before = constant (hold first key's value for frames before it).
+        // After  = cycle (loop the sequence).  Matches NeoDex setup.
+        rotCtrl->SetORT(ORT_CONSTANT, ORT_BEFORE);
         rotCtrl->SetORT(ORT_CYCLE, ORT_AFTER);
         rotCtrl->EnableORTs(TRUE);
+        if (debugThis) {
+            ILOG << "    ORT: before=CONSTANT, after=CYCLE (gseq)\n";
+            // Verify ORT was actually set
+            int gotBefore = rotCtrl->GetORT(ORT_BEFORE);
+            int gotAfter = rotCtrl->GetORT(ORT_AFTER);
+            ILOG << "    GetORT readback: before=" << gotBefore
+                 << " after=" << gotAfter
+                 << " (ORT_CONSTANT=" << ORT_CONSTANT
+                 << " ORT_CYCLE=" << ORT_CYCLE << ")\n";
+        }
+    }
+
+    if (debugThis) {
+        // Read back what Max currently has at time 0
+        Quat readBack;
+        Interval iv = FOREVER;
+        rotCtrl->GetValue(0, &readBack, iv, CTRL_ABSOLUTE);
+        ILOG << "    READBACK at time=0: (" << readBack.x << "," << readBack.y
+             << "," << readBack.z << "," << readBack.w << ")\n";
+        // Also readback at key time to confirm key is stored correctly
+        Quat readBackKey;
+        Interval iv2 = FOREVER;
+        rotCtrl->GetValue(track.keys[0].time, &readBackKey, iv2, CTRL_ABSOLUTE);
+        ILOG << "    READBACK at keytime=" << track.keys[0].time
+             << ": (" << readBackKey.x << "," << readBackKey.y
+             << "," << readBackKey.z << "," << readBackKey.w << ")\n";
     }
 }
 
@@ -1004,8 +1138,23 @@ void insertScaleKeys(INode* node, const ir::Vec3Track& track,
 
     int numKeys = static_cast<int>(track.keys.size());
 
-    // Set bind-pose scale at frame 0
-    bool needStub = (numKeys == 0 || track.keys[0].time > 0);
+    // Stub rule: sequence-driven tracks get a Frame-0 stub (bind-pose scale);
+    // global-sequence tracks DO NOT (matches NeoDex behavior, prevents
+    // unwanted interpolation from stub scale to first real key).
+    bool isGlobalSeq = (track.globalSequenceIndex >= 0);
+    bool needStub = !isGlobalSeq && (numKeys == 0 || track.keys[0].time > 0);
+
+    // For gseq tracks: clear any pre-existing keys on the existing scale
+    // controller (matches rotation handling — the default scale controller
+    // may have a Frame-0 key inherited from SetNodeTM(0) that would alongside
+    // our real key cause unwanted interpolation).
+    if (isGlobalSeq) {
+        IKeyControl* ikc = GetKeyControlInterface(scaleCtrl);
+        if (ikc && ikc->GetNumKeys() > 0) {
+            ikc->SetNumKeys(0);
+        }
+    }
+
     if (needStub) {
         ScaleValue sv(stubVal);
         scaleCtrl->SetValue(0, &sv, 1, CTRL_ABSOLUTE);
@@ -1017,8 +1166,9 @@ void insertScaleKeys(INode* node, const ir::Vec3Track& track,
         scaleCtrl->SetValue(track.keys[i].time, &sv, 1, CTRL_ABSOLUTE);
     }
 
-    if (track.globalSequenceIndex >= 0) {
-        scaleCtrl->SetORT(ORT_CYCLE, ORT_AFTER);
+    if (isGlobalSeq) {
+        scaleCtrl->SetORT(ORT_CONSTANT, ORT_BEFORE);
+        scaleCtrl->SetORT(ORT_CYCLE,    ORT_AFTER);
         scaleCtrl->EnableORTs(TRUE);
     }
 }
@@ -1457,7 +1607,7 @@ enum RibbonParams : ParamID {
 
 // ── Visibility key insertion ────────────────────────────────
 // Matches MaxScript applyVisibilityAnimations:
-//   None (DontInterp) → On_Off (boolean toggle) controller
+//   None (DontInterp) → boolean_float (absolute 0/1 per key, via MaxScript)
 //   Linear            → linear_float
 //   Hermite           → tcb_float
 //   Bezier            → bezier_float with custom tangents
@@ -1478,86 +1628,65 @@ void insertVisibilityKeys(INode* node, const ir::FloatTrack& track,
 
     switch (track.interpolation) {
     case ir::InterpolationType::None: {
-        // DontInterp → On/Off toggle controller (BOOL_CONTROL_CLASS_ID).
-        // On/Off default state is ON (visible=1.0). Each key toggles state.
-        // Output is 1.0 (visible) or -1.0 (hidden).
+        // DontInterp → boolean_float controller (BoolController).
         //
-        // Critical: MDX sequences are independent — visibility resets to ON
-        // at the start of every sequence UNLESS there's an explicit 0 key
-        // at that time. Since On/Off accumulates toggles across the whole
-        // timeline, we must insert correction toggles at sequence boundaries.
-        static const Class_ID ON_OFF_CLASS_ID(0x984b8d27, 0x938f3e43);
-        visCtrl = static_cast<Control*>(
-            CreateInstance(CTRL_FLOAT_CLASS_ID, ON_OFF_CLASS_ID));
-        if (!visCtrl) return;
-        node->SetVisController(visCtrl);
+        // Why boolean_float and NOT On_Off:
+        //   * On_Off treats each key as a TOGGLE relative to current state.
+        //     Consecutive 0-value keys would cancel each other out, and
+        //     state-compression eliminates sequence-boundary stubs so that
+        //     idle sequences (no MDX visibility keys) end up with NO keys
+        //     in Max's Track View. That makes per-sequence editing
+        //     impossible and breaks round-trip to MDX (Blizzard exporters
+        //     expect explicit visibility keys at every sequence boundary).
+        //   * boolean_float stores ABSOLUTE 1.0/0.0 per key. Every stub
+        //     produced by remapVisibilityTrack survives as an explicit
+        //     key, matching NeoDex output.
+        //
+        // Native SDK has no publicly exposed Class_ID for boolean_float
+        // (BOOLCNTRL_CLASS_ID is not in maxsdk/control.h). We create the
+        // controller via MaxScript where it's a first-class named type,
+        // then walk the remapped keys and set each one explicitly.
+        //
+        // The sequence-boundary / per-sequence-reset semantics (NeoDex
+        // preProcessVisibility: reset to 1.0 at every sequence start)
+        // are handled upstream in remapVisibilityTrack. By the time we
+        // get here, the key list already contains the proper per-sequence
+        // boundary stubs with correct hold values.
 
-        // Build ordered lookup: time → MDX value
-        std::map<TimeValue, float> keyMap;
-        for (const auto& k : track.keys)
-            keyMap[k.time] = k.value;
+        std::wstring nodeName(node->GetName());
+        std::wstringstream ss;
+        ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
+           << L"if n != undefined do ("
+           << L"n.visibility = bezier_float();"    // create the visibility track
+           << L"n.visibility.controller = boolean_float();"
+           << L"local c = n.visibility.controller;";
 
-        // On/Off starts ON. Track accumulated state.
-        bool state = true;
+        // Add one key per remapped key — boolean_float stores 0.0/1.0 absolutely
+        for (const auto& kf : track.keys) {
+            float v = (kf.value >= 0.5f) ? 1.0f : 0.0f;
+            ss << L"addNewKey c " << kf.time << L"t;";
+            // The newly added key is the last one. Set its value.
+            ss << L"c.keys[c.keys.count].value = " << v << L";";
+        }
 
-        // AddNewKey inserts a toggle point at time t.
-        auto emitToggle = [&](TimeValue t) {
-            visCtrl->AddNewKey(t, 0);
-            state = !state;
-        };
-
-        // ── GLOBAL SEQUENCE PATH ────────────────────────────────
-        // Global-sequence tracks live on [0, globalSeqDuration] and don't
-        // honor named-sequence boundaries (remapTrackKeys skips them, so
-        // track.keys are still in their original MDX-local times).
-        // Named-sequence boundary toggling would drop keys outside those
-        // windows and misplace the ones that fall inside — for a globalSeq
-        // track the authoritative toggle points ARE track.keys in order.
         if (track.globalSequenceIndex >= 0) {
-            for (const auto& [t, v] : keyMap) {
-                bool desired = (v >= 0.5f);
-                if (state != desired)
-                    emitToggle(t);
-            }
-            break;
+            ss << L"setAfterORT c #cycle;"
+               << L"enableORTs c true;";
         }
 
-        if (!sequences.empty()) {
-            // Process sequence by sequence.
-            for (const auto& seq : sequences) {
-                // Expected state at sequence start: ON unless explicit 0 key
-                bool startVis = true;
-                auto it = keyMap.find(seq.startTime);
-                if (it != keyMap.end() && it->second < 0.5f)
-                    startVis = false;
+        ss << L"))";   // close: if-do, local-block
 
-                // Correct accumulated state if it doesn't match
-                if (state != startVis)
-                    emitToggle(seq.startTime);
+        std::wstring scriptStr = ss.str();
+        ExecuteMAXScriptScript(
+            const_cast<wchar_t*>(scriptStr.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE, nullptr);
 
-                // Process keys within (startTime, endTime]
-                // NOTE: endTime is INCLUSIVE. A key at t == seq.endTime is
-                // the final frame of the sequence and represents a real
-                // alpha transition (e.g. a geoset hidden at the last frame
-                // of a death animation). Skipping it loses toggles — bug
-                // visible on Madara Susanoo geosets 14/16, which drop from
-                // 4 real transitions down to 2 when endTime is exclusive.
-                auto kit = keyMap.upper_bound(seq.startTime);
-                for (; kit != keyMap.end() && kit->first <= seq.endTime; ++kit) {
-                    bool desired = (kit->second >= 0.5f);
-                    if (state != desired)
-                        emitToggle(kit->first);
-                }
-            }
-        } else {
-            // No sequences — process all keys linearly
-            for (const auto& [t, v] : keyMap) {
-                bool desired = (v >= 0.5f);
-                if (state != desired)
-                    emitToggle(t);
-            }
-        }
-        break;
+        // visCtrl stays nullptr here — we don't touch it further, and
+        // the ORT / frame-0 post-processing below is gated by visCtrl.
+        return;
     }
     case ir::InterpolationType::Linear: {
         visCtrl = static_cast<Control*>(
@@ -1694,6 +1823,131 @@ struct SeqRange {
     bool isLooping;
     size_t origIdx;
 };
+
+// ── Visibility-specific remap ───────────────────────────────────
+// Matches NeoDex `preProcessVisibility` semantics:
+//   * The WC3 engine RESETS visibility to 1.0 (visible) at the start of
+//     every sequence. This is confirmed by Taylor_Mouse (NeoDex author):
+//     "Blizzard resetted the visibility back to its original value at
+//      the start of every sequence".
+//   * Unlike `remapTrackKeys` which holds the last value across sequence
+//     gaps, visibility must default to 1.0 in sequences that have no
+//     keys, and re-establish 1.0 as the starting value of each new
+//     sequence unless there's an explicit 0-value key at the start.
+//
+// Algorithm (mirrors NeoDex preProcessVisibility):
+//   1. Insert frame-0 stub key at value 1.0
+//   2. Per sequence:
+//      - If sequence has NO keys in its [oldStart, oldEnd] window:
+//        insert TWO stubs (newStart, newEnd) with value 1.0
+//      - If sequence has keys:
+//        * If no key lands exactly at newStart: insert stub at
+//          newStart with the FIRST in-sequence key's value
+//        * Remap each in-sequence key to newTime = oldTime + offset
+//        * If last key doesn't land at newEnd: insert stub at newEnd
+//          holding the last key's value
+//   3. Sort by time, dedupe same-time keys (keep last)
+void remapVisibilityTrack(ir::FloatTrack& track,
+                          const std::vector<SeqRange>& ranges)
+{
+    if (track.keys.empty() || track.globalSequenceIndex >= 0) return;
+
+    // Pre-sort + dedup (same as remapTrackKeys — handles ms-rounding
+    // collisions at sequence boundaries).
+    if (track.keys.size() > 1) {
+        std::stable_sort(track.keys.begin(), track.keys.end(),
+            [](const ir::Keyframe<float>& a, const ir::Keyframe<float>& b) {
+                return a.time < b.time;
+            });
+        std::vector<ir::Keyframe<float>> deduped;
+        deduped.reserve(track.keys.size());
+        for (const auto& k : track.keys) {
+            if (!deduped.empty() && deduped.back().time == k.time)
+                deduped.back() = k;
+            else
+                deduped.push_back(k);
+        }
+        track.keys = std::move(deduped);
+    }
+
+    const float DEFAULT_VIS = 1.0f;
+    std::vector<ir::Keyframe<float>> newKeys;
+
+    // Frame 0 stub — always visible at the very start of the timeline.
+    ir::Keyframe<float> zeroKey{};
+    zeroKey.time = 0;
+    zeroKey.value = DEFAULT_VIS;
+    newKeys.push_back(zeroKey);
+
+    for (size_t si = 0; si < ranges.size(); ++si) {
+        const auto& r = ranges[si];
+
+        // Collect in-sequence keys in [oldStart, oldEnd].
+        // Back-to-back rule: a key at an exact boundary that is also
+        // the oldStart of the next sequence belongs to the next one.
+        std::vector<size_t> seqKeyIdx;
+        for (size_t ki = 0; ki < track.keys.size(); ++ki) {
+            TimeValue t = track.keys[ki].time;
+            if (t < r.oldStart || t > r.oldEnd) continue;
+            if (t == r.oldEnd && si + 1 < ranges.size()
+                && ranges[si + 1].oldStart == r.oldEnd)
+                continue;
+            seqKeyIdx.push_back(ki);
+        }
+
+        TimeValue offset = r.newStart - r.oldStart;
+
+        if (seqKeyIdx.empty()) {
+            // Sequence has no keys → visible throughout (per NeoDex).
+            ir::Keyframe<float> sk{}; sk.time = r.newStart; sk.value = DEFAULT_VIS;
+            ir::Keyframe<float> ek{}; ek.time = r.newEnd;   ek.value = DEFAULT_VIS;
+            newKeys.push_back(sk);
+            newKeys.push_back(ek);
+        } else {
+            // Start boundary: if no key lands exactly at newStart,
+            // insert a stub with the first in-sequence key's value.
+            TimeValue firstRemapped = track.keys[seqKeyIdx[0]].time + offset;
+            if (firstRemapped != r.newStart) {
+                ir::Keyframe<float> sk{};
+                sk.time = r.newStart;
+                sk.value = track.keys[seqKeyIdx[0]].value;
+                newKeys.push_back(sk);
+            }
+
+            // Remap sequence keys.
+            for (size_t ki : seqKeyIdx) {
+                ir::Keyframe<float> k = track.keys[ki];
+                k.time += offset;
+                newKeys.push_back(k);
+            }
+
+            // End boundary: hold last in-sequence value until end-of-seq.
+            size_t lastKi = seqKeyIdx.back();
+            TimeValue lastRemapped = track.keys[lastKi].time + offset;
+            if (lastRemapped != r.newEnd) {
+                ir::Keyframe<float> ek{};
+                ek.time = r.newEnd;
+                ek.value = track.keys[lastKi].value;
+                newKeys.push_back(ek);
+            }
+        }
+    }
+
+    // Sort + dedup (keep last value at any duplicate tick)
+    std::stable_sort(newKeys.begin(), newKeys.end(),
+        [](const ir::Keyframe<float>& a, const ir::Keyframe<float>& b) {
+            return a.time < b.time;
+        });
+    std::vector<ir::Keyframe<float>> cleanKeys;
+    cleanKeys.reserve(newKeys.size());
+    for (const auto& k : newKeys) {
+        if (!cleanKeys.empty() && cleanKeys.back().time == k.time)
+            cleanKeys.back() = k;
+        else
+            cleanKeys.push_back(k);
+    }
+    track.keys = std::move(cleanKeys);
+}
 
 template <typename T>
 void remapTrackKeys(ir::Track<T>& track,
@@ -1918,9 +2172,37 @@ void remapTimeline(ir::IRModel& irModel) {
         remapTrackKeys(na.scale,       ranges, Point3(1.0f, 1.0f, 1.0f), false);
     }
 
-    // Remap indexed tracks (global-sequence tracks skipped inside remapTrackKeys)
-    for (auto& t : irModel.floatTracks)
-        remapTrackKeys(t, ranges, 1.0f, true);
+    // ── Remap floatTracks, routing visibility through dedicated path ─
+    // Visibility has different semantics: per-sequence reset to 1.0
+    // (visible) rather than "hold last value". Matches NeoDex.
+    //
+    // Identify which floatTrack indices are visibility tracks by
+    // collecting the referenced indices from every object type that
+    // has a visibility track field.
+    std::set<int32_t> visTrackIndices;
+    auto addIfValid = [&](int32_t idx) {
+        if (idx >= 0 && idx < static_cast<int32_t>(irModel.floatTracks.size()))
+            visTrackIndices.insert(idx);
+    };
+    for (const auto& light : irModel.lights)
+        addIfValid(light.visibilityTrackIndex);
+    for (const auto& att : irModel.attachments)
+        addIfValid(att.visibilityTrackIndex);
+    for (const auto& pe : irModel.particleEmitters)
+        addIfValid(pe.visibilityTrackIndex);
+    for (const auto& rib : irModel.ribbonEmitters)
+        addIfValid(rib.visibilityTrackIndex);
+    // GeosetAnim alpha tracks drive mesh visibility — same NeoDex logic.
+    for (const auto& ga : irModel.geosetAnims)
+        addIfValid(ga.alphaTrackIndex);
+
+    for (size_t i = 0; i < irModel.floatTracks.size(); ++i) {
+        if (visTrackIndices.count(static_cast<int32_t>(i))) {
+            remapVisibilityTrack(irModel.floatTracks[i], ranges);
+        } else {
+            remapTrackKeys(irModel.floatTracks[i], ranges, 1.0f, true);
+        }
+    }
     for (auto& t : irModel.vec3Tracks)
         remapTrackKeys(t, ranges, Point3(0.0f, 0.0f, 0.0f), false);
     for (auto& t : irModel.quatTracks)
@@ -2503,6 +2785,48 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                  << ") KGTR=" << na.translation.keys.size()
                  << " KGRT=" << na.rotation.keys.size()
                  << " KGSC=" << na.scale.keys.size() << "\n";
+
+            // ── DEBUG: Bone_Main rotation track inspection ──
+            // Logs the raw rotation keys before any remapping so we can
+            // verify against MDX values. Triggered for any node whose name
+            // contains "Bone_Main" to keep logs focused.
+            {
+                std::string nodeName;
+                if (na.nodeIndex >= 0 && na.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
+                    nodeName = irModel.nodes[na.nodeIndex].name;
+                if (nodeName.find("Bone_Main") != std::string::npos) {
+                    ILOG << "  *** DEBUG Bone_Main ***\n";
+                    ILOG << "    node name: '" << nodeName << "'\n";
+                    ILOG << "    rot track: keys=" << na.rotation.keys.size()
+                         << " gseq=" << na.rotation.globalSequenceIndex << "\n";
+                    for (size_t i = 0; i < na.rotation.keys.size() && i < 5; ++i) {
+                        const auto& k = na.rotation.keys[i];
+                        ILOG << "    rot key[" << i << "] time=" << k.time
+                             << " quat=(" << k.value.x << "," << k.value.y
+                             << "," << k.value.z << "," << k.value.w << ")\n";
+                    }
+                    ILOG << "    pos track: keys=" << na.translation.keys.size()
+                         << " gseq=" << na.translation.globalSequenceIndex << "\n";
+                    for (size_t i = 0; i < na.translation.keys.size() && i < 5; ++i) {
+                        const auto& k = na.translation.keys[i];
+                        ILOG << "    pos key[" << i << "] time=" << k.time
+                             << " vec=(" << k.value.x << "," << k.value.y << "," << k.value.z << ")\n";
+                    }
+                    ILOG << "    localPos=(" << localPos.x << "," << localPos.y << "," << localPos.z << ")\n";
+                    ILOG << "    stubRot=(" << stubRot.x << "," << stubRot.y
+                         << "," << stubRot.z << "," << stubRot.w << ")\n";
+                    if (!irModel.globalSequenceDurations.empty()
+                        && na.rotation.globalSequenceIndex >= 0
+                        && na.rotation.globalSequenceIndex
+                             < static_cast<int32_t>(irModel.globalSequenceDurations.size()))
+                    {
+                        ILOG << "    gseq[" << na.rotation.globalSequenceIndex
+                             << "] duration="
+                             << irModel.globalSequenceDurations[na.rotation.globalSequenceIndex]
+                             << "\n";
+                    }
+                }
+            }
 
             // Rotation: write raw keys (no offset needed)
             if (opts.core.importRotation && !na.rotation.empty()) {
@@ -3256,7 +3580,11 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 }
             }
 
-            // Object visibility: lights, attachments, PE1, PE2, ribbons
+            // Object visibility: lights, attachments, PE1, PE2, Corn, ribbons
+            // Matches NeoDex applyVisibilityAnimations logic per interpolation
+            // type, with the upgrade: NonInterp (MDX DontInterp) uses On_Off
+            // controller instead of bezier_float+step tangents for true instant
+            // on/off behavior matching the WC3 engine.
             auto applyObjVis = [&](int32_t nodeIndex, int32_t trackIndex, const char* type) {
                 if (trackIndex < 0 ||
                     trackIndex >= static_cast<int32_t>(irModel.floatTracks.size()))
@@ -3268,9 +3596,18 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 INode* node = nodeMap[nodeIndex];
                 if (!node) return;
 
+                const char* ctrlName = "?";
+                switch (track.interpolation) {
+                    case ir::InterpolationType::None:    ctrlName = "boolean_float"; break;
+                    case ir::InterpolationType::Linear:  ctrlName = "linear_float";  break;
+                    case ir::InterpolationType::Hermite: ctrlName = "tcb_float";     break;
+                    case ir::InterpolationType::Bezier:  ctrlName = "bezier_float";  break;
+                }
+
                 ILOG << "  " << type << " node[" << nodeIndex << "] '"
                      << narrow(node->GetName()) << "' keys=" << track.keys.size()
-                     << " interp=" << static_cast<int>(track.interpolation) << "\n";
+                     << " interp=" << static_cast<int>(track.interpolation)
+                     << " ctrl=" << ctrlName << "\n";
                 insertVisibilityKeys(node, track, irModel.sequences);
             };
 
@@ -3278,9 +3615,12 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 applyObjVis(light.nodeIndex, light.visibilityTrackIndex, "light");
             for (const auto& att : irModel.attachments)
                 applyObjVis(att.nodeIndex, att.visibilityTrackIndex, "attachment");
-            for (const auto& pe : irModel.particleEmitters)
-                applyObjVis(pe.nodeIndex, pe.visibilityTrackIndex,
-                            pe.variant == 2 ? "pe2" : "pe1");
+            for (const auto& pe : irModel.particleEmitters) {
+                const char* label =
+                    (pe.variant == 2) ? "pe2" :
+                    (pe.variant == 3) ? "corn" : "pe1";
+                applyObjVis(pe.nodeIndex, pe.visibilityTrackIndex, label);
+            }
             for (const auto& rib : irModel.ribbonEmitters)
                 applyObjVis(rib.nodeIndex, rib.visibilityTrackIndex, "ribbon");
 
