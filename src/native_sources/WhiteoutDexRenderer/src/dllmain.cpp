@@ -11,6 +11,7 @@
 #include "renderer/render_service.h"
 #include "ui/render_window.h"
 
+#include <filesystem>
 #include <max.h>
 #include <maxversion.h>
 #include <maxscript/maxscript.h>
@@ -236,7 +237,7 @@ Value* ndxStart_cf(Value** arg_list, int count)
             std::wstring wp(maxFile);
             auto pos = wp.find_last_of(L'\\');
             if (pos != std::wstring::npos) wp = wp.substr(0, pos + 1);
-            g_renderer->SetPE1BasePath(std::string(wp.begin(), wp.end()));
+            g_renderer->SetPE1BasePath(std::filesystem::path(wp));
         }
         g_renderer->SetPE1Configs(g_renderer->GetFocusModelHandle(), pe1Configs);
         mprintf(_M("  %d PE1 emitters registered\n"), (int)pe1Configs.size());

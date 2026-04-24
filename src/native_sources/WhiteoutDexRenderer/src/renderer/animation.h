@@ -22,10 +22,29 @@ struct VertexInfluence {
 };
 
 // ============================================================================
-// Per-geoset skin weight data
+// v800 matrix-groups with > 4 bones cannot fit in a single VertexInfluence.
+// Mirrors Previewd's BuildPrimBone (@0x1402cf5e0) which averages ALL N bones
+// of a group into one per-group matrix. The pseudo-slot lives at the END of
+// the geoset's LOCAL palette subset (after the directly-referenced bones),
+// rewritten each frame as the average of the listed GLOBAL node matrices.
+// Vertices in the group reference this slot with weight 1.0.
+// ============================================================================
+struct GroupAverageRecord {
+    int              pseudoSlot;   // LOCAL palette slot (>= subsetNodeIndices.size())
+    std::vector<int> nodeIndices;  // GLOBAL hierarchy indices to average
+};
+
+// ============================================================================
+// Per-geoset skin layout (local subset palette + group averages).
+// Vertex-level weights live in GeosetSkinInfo.
 // ============================================================================
 struct GeosetSkinInfo {
-    std::vector<VertexInfluence> vertices;
+    std::vector<VertexInfluence> vertices;  // boneIdx are LOCAL subset slots
+};
+
+struct GeosetPaletteLayout {
+    std::vector<int>                subsetNodeIndices;  // local → global node
+    std::vector<GroupAverageRecord> groupAverages;
 };
 
 // ============================================================================
@@ -38,6 +57,7 @@ public:
         currentMatrices_.clear();
         offsetMatrices_.clear();
         geosetWeights_.clear();
+        geosetLayouts_.clear();
         nodeCount_ = 0;
         matricesDirty_ = false;
         nodesReady_ = false;
@@ -63,6 +83,13 @@ public:
             currentMatrices_[i]  = Matrix44f::identity();
             offsetMatrices_[i]   = Matrix44f::identity(); // Safe default until nodes arrive
         }
+    }
+
+    // Register a geoset's palette layout (local-subset + group averages).
+    // Called once at model load, after SetSkeleton. Used by
+    // ComputeGeosetPalette below to fill the per-geoset BonePaletteCb.
+    void SetGeosetLayout(int geosetId, GeosetPaletteLayout layout) {
+        geosetLayouts_[geosetId] = std::move(layout);
     }
 
     void SetGeosetWeights(int geosetId, int vertCount,
@@ -106,7 +133,30 @@ public:
         return (it != geosetWeights_.end()) ? &it->second : nullptr;
     }
 
+    const GeosetPaletteLayout* GetGeosetLayout(int geosetId) const {
+        auto it = geosetLayouts_.find(geosetId);
+        return (it != geosetLayouts_.end()) ? &it->second : nullptr;
+    }
+
+    // Palette slot count for geoset: subset + group averages.
+    int GeosetPaletteSize(int geosetId) const {
+        auto* layout = GetGeosetLayout(geosetId);
+        if (!layout) return 0;
+        return (int)layout->subsetNodeIndices.size() + (int)layout->groupAverages.size();
+    }
+
     const Matrix44f* OffsetMatrices() const { return offsetMatrices_.data(); }
+
+    // Resolve a local subset slot to its global hierarchy position. Slots
+    // beyond subsetNodeIndices (group-average pseudo slots) return -1 since
+    // they don't correspond to a single source node.
+    int LocalSlotToNodeIndex(int geosetId, int localSlot) const {
+        auto* layout = GetGeosetLayout(geosetId);
+        if (!layout) return -1;
+        if (localSlot < 0 || localSlot >= (int)layout->subsetNodeIndices.size())
+            return -1;
+        return layout->subsetNodeIndices[localSlot];
+    }
 
     // ---- Compute offset matrices (render thread, call once per frame) ----
 
@@ -118,6 +168,67 @@ public:
             offsetMatrices_[i] = inverseBindMatrices_[i] * currentMatrices_[i];
         }
         matricesDirty_ = false;
+    }
+
+    // Fill a per-geoset palette (subset bones + group-average pseudo slots)
+    // into `out` (must hold at least `capacity` Matrix44f entries). Entries
+    // past the geoset's layout count are filled with identity. Returns the
+    // number of real slots written (= GeosetPaletteSize).
+    int ComputeGeosetPalette(int geosetId, Matrix44f* out, int capacity) const {
+        auto* layout = GetGeosetLayout(geosetId);
+        if (!layout || !out || capacity <= 0) {
+            if (out && capacity > 0) {
+                for (int i = 0; i < capacity; ++i) out[i] = Matrix44f::identity();
+            }
+            return 0;
+        }
+        const int subsetN = (int)layout->subsetNodeIndices.size();
+        const int groupN  = (int)layout->groupAverages.size();
+        const int total   = subsetN + groupN;
+        const int n       = total < capacity ? total : capacity;
+
+        // Subset bones: direct copy of the global offset matrix.
+        for (int i = 0; i < subsetN && i < capacity; ++i) {
+            int g = layout->subsetNodeIndices[i];
+            if (g >= 0 && g < nodeCount_) out[i] = offsetMatrices_[g];
+            else                          out[i] = Matrix44f::identity();
+        }
+        // Group-average pseudo slots: average of listed global offsets.
+        // Mirrors Previewd's BuildPrimBone (@0x1402cf5e0) `sum / N`. Since
+        // inverseBindMatrices are all identity for MDX, averaging offsets
+        // is equivalent to averaging world matrices.
+        for (int g = 0; g < groupN; ++g) {
+            const int slot = layout->groupAverages[g].pseudoSlot;
+            if (slot < 0 || slot >= capacity) continue;
+            const auto& rec = layout->groupAverages[g];
+            if (rec.nodeIndices.empty()) {
+                out[slot] = Matrix44f::identity();
+                continue;
+            }
+            Matrix44f sum = Matrix44f::zero();
+            int cnt = 0;
+            for (int nodeIdx : rec.nodeIndices) {
+                if (nodeIdx < 0 || nodeIdx >= nodeCount_) continue;
+                const Matrix44f& m = offsetMatrices_[nodeIdx];
+                for (int r = 0; r < 4; r++)
+                    for (int c = 0; c < 4; c++)
+                        sum.data[r][c] += m.data[r][c];
+                ++cnt;
+            }
+            if (cnt > 0) {
+                float inv = 1.0f / (float)cnt;
+                for (int r = 0; r < 4; r++)
+                    for (int c = 0; c < 4; c++)
+                        sum.data[r][c] *= inv;
+                out[slot] = sum;
+            } else {
+                out[slot] = Matrix44f::identity();
+            }
+        }
+        // Pad remaining with identity so stale memory doesn't leak into
+        // shader reads if a PSO's permute references higher slots.
+        for (int i = n; i < capacity; ++i) out[i] = Matrix44f::identity();
+        return n;
     }
 
     // ---- CPU vertex skinning (legacy, kept for reference) ----
@@ -181,8 +292,9 @@ private:
     int nodeCount_ = 0;
     std::vector<Matrix44f> inverseBindMatrices_;  // set once at setup
     std::vector<Matrix44f> currentMatrices_;      // updated per frame
-    std::vector<Matrix44f> offsetMatrices_;       // = invBind * current (precomputed)
+    std::vector<Matrix44f> offsetMatrices_;       // = invBind * current, per node
     std::unordered_map<int, GeosetSkinInfo> geosetWeights_;
+    std::unordered_map<int, GeosetPaletteLayout> geosetLayouts_;
     bool matricesDirty_ = false;
     bool nodesReady_ = false;   // true after first UpdateNodeMatrices call
 };

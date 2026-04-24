@@ -145,7 +145,7 @@ for %%V in (2016 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 2027) do (
                     "plugins\Release\Wc3Particles1.dlo"
                     "plugins\Release\Wc3Particles2.dlo"
                     "plugins\Release\Wc3Ribbon.dlo"
-                    "plugins\Release\WhiteoutDexExtractor.dlx"
+                    "plugins\Release\WhiteoutFlakes.dlx"
                 ) do (
                     if exist "%%~F" (
                         copy /Y "%%~F" "%OUTPUT_DIR%\Max%%V\" >nul
@@ -155,10 +155,10 @@ for %%V in (2016 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 2027) do (
                 )
 
                 REM Standalone renderer (no Max SDK dependency, but built alongside)
-                if exist "standalone\WhiteoutDexRenderer.exe" (
+                if exist "standalone\WhiteoutFlakes.exe" (
                     if not exist "%OUTPUT_DIR%\Standalone" mkdir "%OUTPUT_DIR%\Standalone"
-                    copy /Y "standalone\WhiteoutDexRenderer.exe" "%OUTPUT_DIR%\Standalone\" >nul
-                    echo [%%V]   WhiteoutDexRenderer.exe -^> Standalone\
+                    copy /Y "standalone\WhiteoutFlakes.exe" "%OUTPUT_DIR%\Standalone\" >nul
+                    echo [%%V]   WhiteoutFlakes.exe -^> Standalone\
                 )
                 popd
             )

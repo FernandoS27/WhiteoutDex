@@ -30,12 +30,13 @@ set(SLANG_COMMON_FLAGS -matrix-layout-column-major -I "${SHADER_SRC_DIR}"
     -default-downstream-compiler hlsl dxc)
 
 # Shader entry points: <slang_file>  <entry>  <stage>  <output_name>
+# Only line.slang (debug wires) and viewcube.slang (debug orientation cube)
+# remain as Slang sources; every MDX-material draw goes through BLS.
 set(SHADER_ENTRIES
-    "mesh.slang|vsMain|vertex|kMeshVS"
-    "mesh.slang|psMain|fragment|kMeshPS"
     "line.slang|vsLine|vertex|kLineVS"
     "line.slang|psLine|fragment|kLinePS"
-    "skin.slang|csSkin|compute|kSkinCS"
+    "viewcube.slang|vsViewCube|vertex|kViewCubeVS"
+    "viewcube.slang|psViewCube|fragment|kViewCubePS"
 )
 
 set(SHADER_DXBC_FILES "")
@@ -122,9 +123,11 @@ set_property(CACHE WDX_DEFAULT_COORD_SPACE PROPERTY STRINGS "Blizzard" "Max")
 # ---- Static library: standalone renderer + MDX adapter ----
 add_library(WhiteoutDexRendererLib STATIC
     src/renderer/render_service.cpp
+    src/renderer/render_service_internal.cpp
     src/renderer/render_target.cpp
     src/renderer/viewcube_atlas.cpp
     src/renderer/coordinate_system.cpp
+    src/renderer/debug/debug_renderer.cpp
     src/ui/render_window.cpp
     src/renderer/ribbon.cpp
     src/renderer/pe1_system.cpp
@@ -142,6 +145,7 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/bls/bls_pso_builder.cpp
     src/renderer/bls/bls_mat_params.cpp
     src/renderer/bls/bls_frame.cpp
+    src/renderer/bls/bls_draw_helpers.cpp
     src/renderer/ibl/split_sum.cpp
     src/renderer/ibl/env_probe.cpp
     src/io/mdx_animation.cpp
@@ -205,7 +209,7 @@ set_target_properties(WhiteoutDexExtractor PROPERTIES
     CXX_STANDARD          20
     CXX_STANDARD_REQUIRED ON
     SUFFIX                ".dlx"
-    OUTPUT_NAME           "WhiteoutDexExtractor"
+    OUTPUT_NAME           "WhiteoutFlakes"
 )
 
 target_include_directories(WhiteoutDexExtractor PRIVATE
@@ -269,7 +273,7 @@ add_executable(WhiteoutDexRendererStandalone
 set_target_properties(WhiteoutDexRendererStandalone PROPERTIES
     CXX_STANDARD          20
     CXX_STANDARD_REQUIRED ON
-    OUTPUT_NAME           "WhiteoutDexRenderer"
+    OUTPUT_NAME           "WhiteoutFlakes"
     RUNTIME_OUTPUT_DIRECTORY         "${CMAKE_BINARY_DIR}/standalone"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_BINARY_DIR}/standalone"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/standalone"

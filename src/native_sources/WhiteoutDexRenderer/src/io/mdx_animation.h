@@ -19,7 +19,7 @@ namespace WhiteoutDex {
 // ============================================================================
 
 float EvaluateTrackF32(const whiteout::mdx::Track<whiteout::f32>& track,
-                       int timeMs, int seqStart, int seqEnd, float defaultVal);
+                       int timeMs, int seqStart, int seqEnd, float defaultVal, bool forceNoInterp = false);
 
 whiteout::u32 EvaluateTrackU32(const whiteout::mdx::Track<whiteout::u32>& track,
                                int timeMs, int seqStart, int seqEnd, whiteout::u32 defaultVal);
@@ -75,13 +75,23 @@ public:
     int NodeCount() const { return (int)nodes_.size(); }
     const std::vector<HierarchyNode>& Nodes() const { return nodes_; }
 
-    // Map from objectId → index in nodes_
+    // Map from objectId → index in nodes_ (hierarchy palette position).
     int ObjectIdToNodeIndex(int objectId) const;
+
+    // Map from dense bone index (0..BoneCount()-1, in model.bones order) →
+    // palette position. Mirrors Previewd's `boneMatrices[matsValue]` indexing
+    // (see BuildPrimBone @0x1402cf5e0): MDX MATS/SKIN values index the dense
+    // bone array directly, NOT objectId. For models where bones are densely
+    // numbered 0..numBones-1 at the start of objectId space (the Blizzard
+    // convention) both mappings coincide; they diverge when helpers or other
+    // node types are interleaved in objectId space.
+    int BoneIndexToNodeIndex(int boneIdx) const;
 
 private:
     std::vector<HierarchyNode> nodes_;
     int boneCount_ = 0;
     std::unordered_map<int, int> objectIdToIdx_;
+    std::vector<int> boneIdxToNodeIdx_;  // size = boneCount_; -1 if missing
 };
 
 // ============================================================================

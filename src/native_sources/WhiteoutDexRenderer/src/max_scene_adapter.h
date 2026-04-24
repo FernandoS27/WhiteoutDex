@@ -25,6 +25,7 @@
 
 #include "renderer/model_source.h"
 #include "renderer/model_types.h"
+#include "io/file_content_provider.h"
 
 // ============================================================================
 // Known ClassIDs for WhiteoutDex custom MaxScript plugins
@@ -66,6 +67,18 @@ struct MaterialLayerInfo {
     float alpha = 1.0f;
     int replaceableTexture = 0;
     int flags = 0;
+    // Shader type: 0=SD, 1=HD, 2=SDOnHD, 24=Crystal (from Wc3Material shaderType dropdown)
+    int shaderId = 0;
+    // HD subtexture slot IDs (-1 = not present)
+    int normalMapId    = -1;
+    int ormMapId       = -1;
+    int emissiveMapId  = -1;
+    int teamColorMapId = -1;
+    // Reforged PBR knobs (from Wc3Material reforged rollout)
+    float emissiveGain     = 0.0f;
+    float fresnelOpacity   = 0.0f;
+    float fresnelTeamColor = 0.0f;
+    Vector3f fresnelColor  = {0.0f, 0.0f, 0.0f};
 };
 
 struct MaterialInfo {
@@ -86,6 +99,7 @@ struct ParticleEmitterInfo {
     int emitterId = 0;
     INode* node = nullptr;
     int textureId = -1;
+    int replaceableId = 0;
 };
 
 struct PE1EmitterInfo {
@@ -160,6 +174,7 @@ private:
     void CollectGeometry();
     void CollectMaterials();
     int  LoadTexture(const std::wstring& filePath, int replaceableId);
+    int  LoadTextureFromContentProvider(const std::string& archivePath, int replaceableId);
     int  LoadTextureWithTeamColor(const std::wstring& filePath, int tcR, int tcG, int tcB);
     int  GenerateTeamGlowTexture(int tcR, int tcG, int tcB);
     void CollectBones();
@@ -206,6 +221,8 @@ private:
     int nextTexId_ = 0;
     int nextMatId_ = 0;
 
+    FileContentProvider contentProvider_;
+
     // Material change detection: snapshot of per-material properties
     struct MaterialSnapshot {
         int filterMode = 0;
@@ -213,7 +230,12 @@ private:
         int priorityPlane = 0;
         int sortOrder = 0;
         int replaceableTexture = 0;
+        int shaderId = 0;
         std::wstring texturePath;
+        std::wstring normalTexPath;
+        std::wstring ormTexPath;
+        std::wstring emissiveTexPath;
+        std::wstring teamColorTexPath;
     };
     std::unordered_map<int, MaterialSnapshot> matSnapshots_;  // materialId → snapshot
 };

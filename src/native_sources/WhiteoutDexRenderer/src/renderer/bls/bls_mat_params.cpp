@@ -77,8 +77,7 @@ MatParams FromParticleDesc(const particle::ParticleMaterialDesc& desc,
     if (desc.unfogged) p.disables |= kDisableFog;
     // Billboards have no meaningful back face, and the quads the geometry
     // builder emits don't even wind consistently between head and tail --
-    // always disable culling for PE2 particles. Matches the legacy Slang
-    // path (twoSided=true in LookupMeshPSO).
+    // always disable culling for PE2 particles.
     p.disables |= kDisableCull;
     return p;
 }

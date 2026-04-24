@@ -27,6 +27,7 @@ namespace WhiteoutDex::bls {
 }
 #include <unordered_map>
 #include <unordered_set>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -47,7 +48,20 @@ struct LineVertex {
 // Render Service — synchronous rendering API
 // ============================================================================
 
+// Forward declarations for the CRTP pass classes (render_pass.h).
+// The base reads RenderService members directly via friendship; the two
+// derived classes live in render_service.cpp where the concrete bodies
+// need to sit next to ApplyBoneMatrices et al.
+template <class> class BlsGeosetPass;
+class GeosetPassBls;
+class GeosetPassHd;
+class DebugRenderer;  // debug/debug_renderer.h — overlay passes (grid, collisions, light markers, ViewCube)
+
 class RenderService {
+    template <class> friend class BlsGeosetPass;
+    friend class GeosetPassBls;
+    friend class GeosetPassHd;
+    friend class DebugRenderer;
 public:
     RenderService();
     ~RenderService();
@@ -72,7 +86,7 @@ public:
     void RemoveModel(uint32_t handle);
     void SetAttachmentConfigs(uint32_t handle, const std::vector<AttachmentConfig>& configs);
     void SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig>& configs);
-    void SetPE1BasePath(const std::string& basePath);
+    void SetPE1BasePath(const std::filesystem::path& basePath);
     uint32_t GetFocusModelHandle() const { return focusModelHandle_; }
 
     // Access the unified file content provider (disk + CASC + MPQ)
@@ -147,10 +161,11 @@ public:
     void ResetCamera();
     void SnapCameraToFace(int faceIndex);   // applies preset camera angle
 
-    // ViewCube queries (called from RenderWindow message handlers)
+    // ViewCube queries (called from RenderWindow message handlers).
+    // Implemented in render_service.cpp — they forward to debug_.
     int  HitTestViewCube(int mx, int my);
     Rect GetViewCubeRect() const;
-    void SetViewCubeHovered(bool hovered) { vcHovered_ = hovered; }
+    void SetViewCubeHovered(bool hovered);
 
     // Display flags
     void SetDisplayFlags(const DisplayFlags& flags);
@@ -209,6 +224,22 @@ public:
     // Set the primary render target (used by ResizePrimaryTarget / RenderViewCube)
     void SetPrimaryTarget(RenderTargetId id) { primaryTargetId_ = id; }
 
+    // ---- Static helpers (public so free-function render helpers can reuse) ----
+    // LOD test: geosets flagged with the always-draw sentinel pass every level;
+    // otherwise only the geoset whose lod matches the currently selected level.
+    static bool GeosetPassesLod(uint32_t geosetLod, int selectedLod) {
+        return geosetLod == 0xFFFFFFFFu || (int)geosetLod == selectedLod;
+    }
+    // Render-order bucket for the global sort: opaque → masked → blend → other.
+    static int GetRenderOrder(int filterMode) {
+        switch (filterMode) {
+            case FILTER_NONE:        return 1;
+            case FILTER_TRANSPARENT: return 2;
+            case FILTER_BLEND:       return 3;
+            default:                 return 4;
+        }
+    }
+
 private:
     void CleanupD3D();
     bool CreateShaders();
@@ -227,7 +258,6 @@ private:
 
     // Particle simulation + rendering
     void UpdateParticles(float dt);
-    void RenderParticles();
 
     // Attachment model lifecycle
     void UpdateAttachments();
@@ -240,21 +270,11 @@ private:
     void UpdateRibbons(float dt);
     void RenderRibbons();
 
-    // Collision shape wireframes
-    void RenderCollisions();
-
     // LOD selection: -1 override -> screen-size computation (mirrors
     // Previewd CalculateLOD @0x140305ae0). Returns 0..3. Models without
     // LOD data always get 0 — caller checks mi.hasLods to decide which
     // to use, then tests each geoset with GeosetPassesLod.
     int  ComputeSelectedLod() const;
-    static bool GeosetPassesLod(uint32_t geosetLod, int selectedLod) {
-        return geosetLod == 0xFFFFFFFFu || (int)geosetLod == selectedLod;
-    }
-
-    // Debug light markers (one wireframe sphere per evaluated light at its
-    // final world-space position; tinted by the light's diffuse colour).
-    void RenderLightMarkers();
 
     // ApplyFrameState helpers
     void ApplyBoneMatrices(ModelInstance& mi, const FrameState& state);
@@ -271,24 +291,10 @@ private:
     // Called lazily on the render thread whenever the picker changes.
     void UpdateTeamColorSwatch();
 
-    // Rendering
-    void RenderGrid();
+    // Rendering. SD mesh draws flow through BLS (blsSdProgram_ / blsHdProgram_
+    // / blsSdOnHdProgram_); particles and ribbons do the same; no legacy
+    // Slang mesh PSO exists any more.
     void RenderGeosets();
-    gfx::PipelineHandle LookupMeshPSO(int filterMode, bool twoSided,
-                                       bool noDepthTest, bool noDepthSet) const;
-
-    // ViewCube (creation + rendering stay private; hit-test/snap/rect are public)
-    bool CreateViewCube();
-    void RenderViewCube();
-
-    static int GetRenderOrder(int filterMode) {
-        switch (filterMode) {
-            case FILTER_NONE:        return 1;
-            case FILTER_TRANSPARENT: return 2;
-            case FILTER_BLEND:       return 3;
-            default:                 return 4;
-        }
-    }
 
     // PE2 service — centralised registry for the new particle path. Coexists
     // with the legacy per-ModelInstance ParticleSystem until Phase 6 cut-over.
@@ -344,13 +350,16 @@ private:
     static constexpr int kMaxPE1Instances = 256;
     int pe1InstanceCount_ = 0;
 
-    std::string pe1BasePath_;  // root directory for resolving PE1 model + texture paths
+    std::filesystem::path pe1BasePath_;  // root directory for resolving PE1 model + texture paths
     FileContentProvider contentProvider_; // unified file resolution (disk + CASC + MPQ)
     std::shared_ptr<IContentProvider> externalContentProvider_; // optional injected provider
     IContentProvider* activeContentProvider_ = nullptr;         // points to external or built-in
     std::shared_ptr<PE1ModelTemplate> getOrLoadTemplate(const std::string& modelPath);
     std::shared_ptr<PE1ModelTemplate> loadTemplateSync(const std::string& modelPath);
     void stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl);
+    // Register a replaceable-texture slot used by an emitter and immediately
+    // bake the current team color into it. Requires dataMutex_ to be held.
+    void RegisterReplaceableEmitterTex(ModelInstance* mi, int textureId, int replaceableId);
 
     // ---- Async PE1 template loader ----
     void StartTemplateLoader();
@@ -399,17 +408,13 @@ private:
     }
 
     // ---- GFX Shaders ----
-    gfx::ShaderHandle meshVS_  = gfx::ShaderHandle::Invalid;
-    gfx::ShaderHandle meshPS_  = gfx::ShaderHandle::Invalid;
+    // Only line.slang (debug overlay) and viewcube.slang (DebugRenderer-owned)
+    // Slang shaders survive; SD mesh rendering is entirely BLS now.
     gfx::ShaderHandle lineVS_  = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle linePS_  = gfx::ShaderHandle::Invalid;
-    gfx::ShaderHandle skinCS_  = gfx::ShaderHandle::Invalid;
 
     // ---- GFX Pipelines ----
-    // Mesh: [7 filterModes][2 cull: 0=back, 1=none][3 depth: 0=default, 1=noWrite, 2=disabled]
-    gfx::PipelineHandle meshPSO_[7][2][3] = {};
     gfx::PipelineHandle linePSO_  = gfx::PipelineHandle::Invalid;
-    gfx::PipelineHandle skinPSO_  = gfx::PipelineHandle::Invalid;
 
     // ---- GFX Resources ----
     gfx::BufferHandle  cbPerFrame_     = gfx::BufferHandle::Invalid;
@@ -428,23 +433,15 @@ private:
     gfx::TextureHandle teamColorTex_   = gfx::TextureHandle::Invalid;
     uint32_t           teamColorTexColor_ = 0xFFFFFFFFu;
 
-    // Grid
-    gfx::BufferHandle gridVB_ = gfx::BufferHandle::Invalid;
-    int               gridVertCount_ = 0;
+    // Debug-overlay passes (grid, collision wireframes, light markers,
+    // ViewCube). Owns its own GPU resources; accesses shared RenderService
+    // state (cbPerFrame_, samplers, linePSO_, ...) via friendship.
+    std::unique_ptr<DebugRenderer> debug_;
 
     // Global particle VB — used by the PE2 service's draw path.
     // Grows on demand; sized in Vertex units.
     gfx::BufferHandle particleServiceVB_     = gfx::BufferHandle::Invalid;
     int               particleServiceVBSize_ = 0;
-
-    // ViewCube
-    gfx::BufferHandle  vcCubeVB_     = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle  vcCubeIB_     = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle  vcOutlineVB_  = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle  vcHomeVB_     = gfx::BufferHandle::Invalid;
-    gfx::TextureHandle vcFaceTex_    = gfx::TextureHandle::Invalid;
-    static constexpr int kViewCubeSize = 120;
-    bool               vcHovered_    = false;
 
     // Animation time (set from API thread via SetAnimationTime / ApplyFrameState,
     //                  read from render thread in Tick / EvaluatePE1Children)

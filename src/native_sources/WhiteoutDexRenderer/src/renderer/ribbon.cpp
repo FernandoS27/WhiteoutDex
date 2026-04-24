@@ -201,7 +201,7 @@ RibbonSystem::StripResult RibbonSystem::BuildStrips() const
     StripResult result;
 
     for (auto& [id, em] : emitters_) {
-        if (em.state.visibility < 0.01f) continue;
+        if (em.state.visibility <= 0.0f) continue;
         if (em.segments.size() < 2)      continue;
 
         int  startIdx = (int)result.vertices.size();

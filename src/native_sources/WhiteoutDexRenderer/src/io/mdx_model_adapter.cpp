@@ -187,6 +187,27 @@ MdxModelAdapter::MdxModelAdapter(whiteout::mdx::Model model, fs::path basePath,
     }
 
     hierarchy_.Build(model_);
+
+    // Build the per-hierarchy-node bone-visibility gate table once.
+    // Previewd's CreateBone @0x1404573d0 caches
+    //   CAnimBoneObj::geosetId = (bone.geosetId == -1) ? -1 : bone.geosetAnimId
+    // and CAnimBoneObj::IsVisible queries anim->geosetStatus[geosetAnimId]
+    // (indexed by GeosetAnimation). We translate that to an index into
+    // fs.geosetAlphas (indexed by target Geoset) so the per-frame sweep can
+    // AND against the geoset's animated alpha directly.
+    const auto& nodes = hierarchy_.Nodes();
+    boneGateGeoset_.assign(nodes.size(), -1);
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (nodes[i].source != HierarchyNode::Source::Bone) continue;
+        const auto& bone = model_.bones[nodes[i].sourceIndex];
+        if (bone.geosetId == whiteout::mdx::Bone::MULTIPLE_GEOSETS) continue;
+        const whiteout::u32 gaId = bone.geosetAnimationId;
+        if (gaId == whiteout::mdx::Bone::MULTIPLE_GEOSETS) continue;
+        if (gaId >= model_.geosetAnimations.size()) continue;
+        const whiteout::u32 targetGeoset = model_.geosetAnimations[gaId].geosetId;
+        if (targetGeoset >= model_.geosets.size()) continue;
+        boneGateGeoset_[i] = (int)targetGeoset;
+    }
 }
 
 // ============================================================================
@@ -297,20 +318,26 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
         std::string ext = p.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
+        // path::string() uses the ANSI code page on Windows, which corrupts
+        // non-ASCII characters (e.g. CJK). path::u8string() gives correct
+        // UTF-8 bytes that WhiteoutLib parsers accept.
+        auto u8 = p.u8string();
+        std::string pathStr(reinterpret_cast<const char*>(u8.data()), u8.size());
+
         std::optional<whiteout::textures::Texture> result;
 
         if (ext == ".blp") {
             whiteout::textures::blp::Parser parser;
-            result = parser.parse(p.string());
+            result = parser.parse(pathStr);
         } else if (ext == ".dds") {
             whiteout::textures::dds::Parser parser;
-            result = parser.parse(p.string());
+            result = parser.parse(pathStr);
         } else if (ext == ".tga") {
             whiteout::textures::tga::Parser parser;
-            result = parser.parse(p.string());
+            result = parser.parse(pathStr);
         } else if (ext == ".png") {
             whiteout::textures::png::Parser parser;
-            result = parser.parse(p.string());
+            result = parser.parse(pathStr);
         }
 
         if (result) { applyResult(*result); return true; }
@@ -342,7 +369,9 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     // 1. Try local disk via FileResolver.
     fs::path resolved = resolver_.ResolveTexture(path);
     if (!resolved.empty() && tryParsePath(resolved)) {
-        std::fprintf(stdout, "  [tex %d] loaded %s\n", textureId, resolved.string().c_str());
+        auto u8resolved = resolved.u8string();
+        std::fprintf(stdout, "  [tex %d] loaded %s\n", textureId,
+                     reinterpret_cast<const char*>(u8resolved.data()));
         return td;
     }
 
@@ -363,8 +392,9 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
         }
     }
 
+    auto u8base = resolver_.BasePath().u8string();
     std::fprintf(stderr, "  [tex %d] NOT FOUND: '%s' (base: %s)\n",
-                 textureId, path.c_str(), resolver_.BasePath().string().c_str());
+                 textureId, path.c_str(), reinterpret_cast<const char*>(u8base.data()));
 
     // Fallback: 4x4 magenta checkerboard
     td.width  = 4;
@@ -582,9 +612,31 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
     std::vector<SkinWeightData> result;
     result.reserve(model_.geosets.size());
 
-    // MDX matrixIndices reference nodes by objectId. Map to the node's position
-    // in the topologically-sorted hierarchy (same index space as allNodeMatrices
-    // and the GPU bone palette). Any node type (bone, helper, etc.) is valid.
+    // MATS (matrixIndices) stores dense BONE indices (0..numBones-1), NOT
+    // objectIds. Matches Previewd's BuildPrimBone @0x1402cf5e0:
+    //     qmemcpy(bone, &boneMatrices[*matrix], sizeof(C34Matrix));
+    // where `boneMatrices` is the dense `data->boneMtx[0..numBones-1]` array.
+    // Fallback to ObjectIdToNodeIndex when splitIndex is out of range so
+    // third-party exporters that stuff objectIds into MATS still work.
+    //
+    // Each geoset emits a COMPACT PALETTE SUBSET of just the bones it uses.
+    // VertexInfluence::boneIdx is written as a LOCAL slot index into this
+    // subset so it fits in uint8 (the BLS shaders read ATTR6 as R8G8B8A8
+    // — only 256 distinct indices addressable). This mirrors Previewd's
+    // `usedBonesPerPrimitive` mechanism. The model-wide bone palette would
+    // fail for models like nightelf_exp (650 bones).
+    //
+    // v800 matrix-groups with count > 4 get a pseudo slot appended AFTER the
+    // subset bones (mirrors BuildPrimBone's `sum / N` for N > 3). Count <= 4
+    // groups keep the uniform 1/N per-vertex weights path (mathematically
+    // equivalent to matrix averaging).
+    auto resolveBoneIdx = [&](int matsValue) -> int {
+        int nodeIdx = hierarchy_.BoneIndexToNodeIndex(matsValue);
+        if (nodeIdx < 0) nodeIdx = hierarchy_.ObjectIdToNodeIndex(matsValue);
+        return (nodeIdx >= 0) ? nodeIdx : 0;
+    };
+
+    constexpr int kMaxPaletteSlots = 256;  // matches bls::kMaxBones / uint8 index cap
 
     for (int gi = 0; gi < (int)model_.geosets.size(); gi++) {
         const auto& gs = model_.geosets[gi];
@@ -593,51 +645,122 @@ std::vector<SkinWeightData> MdxModelAdapter::GetSkinWeights() {
         sw.geosetId = gi;
         sw.influences.resize(vc);
 
+        // Build a stable, deduplicated subset of global node indices referenced
+        // by this geoset's skin. Insertion order = slot order.
+        std::vector<int> subset;
+        std::unordered_map<int, int> globalToLocal;
+        auto addToSubset = [&](int globalIdx) -> int {
+            auto it = globalToLocal.find(globalIdx);
+            if (it != globalToLocal.end()) return it->second;
+            int local = (int)subset.size();
+            subset.push_back(globalIdx);
+            globalToLocal.emplace(globalIdx, local);
+            return local;
+        };
+
         if (!gs.skinData.empty()) {
-            // v1200: packed u8: 4 bone indices + 4 weights per vertex (8 bytes each)
-            // SKIN bytes are indices into the geoset's local matrixIndices (MATS) table,
-            // which stores objectIds. If MATS is empty, treat as direct objectId.
+            // v1200: packed u8 per vertex, 4 bone-palette indices + 4 weights.
+            // SKIN bytes index the geoset's MATS table (which stores dense
+            // bone indices). Empty MATS ⇒ direct bone index.
             for (int v = 0; v < vc; v++) {
                 int base = v * 8;
                 if (base + 7 < (int)gs.skinData.size()) {
                     for (int k = 0; k < 4; k++) {
                         uint8_t raw = gs.skinData[base + k];
-                        // Resolve to objectId via matrixIndices (if available)
-                        int objectId;
+                        int matsValue;
                         if (!gs.matrixIndices.empty() && raw < gs.matrixIndices.size())
-                            objectId = (int)gs.matrixIndices[raw];
+                            matsValue = (int)gs.matrixIndices[raw];
                         else
-                            objectId = (int)raw;
-                        // Map objectId → node position in hierarchy
-                        int nodeIdx = hierarchy_.ObjectIdToNodeIndex(objectId);
-                        sw.influences[v].boneIdx[k] = (nodeIdx >= 0) ? nodeIdx : 0;
+                            matsValue = (int)raw;
+                        int globalNode = resolveBoneIdx(matsValue);
+                        int localSlot  = addToSubset(globalNode);
+                        sw.influences[v].boneIdx[k] = localSlot;
                         sw.influences[v].weight[k]  = gs.skinData[base + 4 + k] / 255.0f;
                     }
                 }
             }
         } else if (!gs.vertexGroups.empty() && !gs.matrixGroups.empty()) {
-            // v800: vertexGroups + matrixGroups + matrixIndices indirection
-            // Build prefix sums for matrixGroups
+            // v800: vertexGroups + matrixGroups + matrixIndices indirection.
             std::vector<u32> groupStart(gs.matrixGroups.size() + 1, 0);
             for (int g = 0; g < (int)gs.matrixGroups.size(); g++)
                 groupStart[g + 1] = groupStart[g] + gs.matrixGroups[g];
 
+            // First pre-populate subset with every bone referenced by any
+            // N<=4 group, so local slots for direct references stay low and
+            // pseudo slots for N>4 groups cleanly follow them at the end.
+            std::vector<int> groupPseudoSlotGlobal(gs.matrixGroups.size(), -1);
+            for (int g = 0; g < (int)gs.matrixGroups.size(); g++) {
+                u32 count = gs.matrixGroups[g];
+                if (count > 4) continue;  // deferred to the pseudo-slot pass
+                u32 start = groupStart[g];
+                u32 clamp = count > 4 ? 4 : count;
+                for (u32 k = 0; k < clamp && (start + k) < gs.matrixIndices.size(); k++) {
+                    int globalNode = resolveBoneIdx((int)gs.matrixIndices[start + k]);
+                    addToSubset(globalNode);
+                }
+            }
+
+            // Now assign pseudo slots (AFTER the subset bones). nodeIndices
+            // stay in GLOBAL positions — they're the source for per-frame
+            // averaging against SkinningSystem::OffsetMatrices().
+            for (int g = 0; g < (int)gs.matrixGroups.size(); g++) {
+                u32 count = gs.matrixGroups[g];
+                if (count <= 4) continue;
+                int pseudoLocal = (int)subset.size() + (int)sw.groupAverages.size();
+                if (pseudoLocal >= kMaxPaletteSlots) {
+                    std::fprintf(stderr,
+                        "[GetSkinWeights] geoset %d group %d (N=%u) exceeds per-geoset"
+                        " palette cap (%d); falling back to 4-bone clamp\n",
+                        gi, g, count, kMaxPaletteSlots);
+                    continue;
+                }
+                GroupAverageRecord rec;
+                rec.pseudoSlot = pseudoLocal;
+                rec.nodeIndices.reserve(count);
+                u32 start = groupStart[g];
+                for (u32 k = 0; k < count && (start + k) < gs.matrixIndices.size(); k++) {
+                    int nodeIdx = resolveBoneIdx((int)gs.matrixIndices[start + k]);
+                    rec.nodeIndices.push_back(nodeIdx);
+                }
+                groupPseudoSlotGlobal[g] = pseudoLocal;
+                sw.groupAverages.push_back(std::move(rec));
+            }
+
+            // Per-vertex: write local slot indices.
             for (int v = 0; v < vc && v < (int)gs.vertexGroups.size(); v++) {
                 int groupId = gs.vertexGroups[v];
-                if (groupId < (int)gs.matrixGroups.size()) {
+                if (groupId >= (int)gs.matrixGroups.size()) continue;
+
+                int pseudoLocal = groupPseudoSlotGlobal[groupId];
+                if (pseudoLocal >= 0) {
+                    sw.influences[v].boneIdx[0] = pseudoLocal;
+                    sw.influences[v].weight[0]  = 1.0f;
+                } else {
                     u32 start = groupStart[groupId];
                     u32 count = gs.matrixGroups[groupId];
-                    if (count > 4) count = 4;  // clamp to 4 influences
+                    if (count > 4) count = 4;
                     float w = (count > 0) ? 1.0f / (float)count : 0.0f;
                     for (u32 k = 0; k < count && (start + k) < gs.matrixIndices.size(); k++) {
-                        int objectId = (int)gs.matrixIndices[start + k];
-                        int nodeIdx = hierarchy_.ObjectIdToNodeIndex(objectId);
-                        sw.influences[v].boneIdx[k] = (nodeIdx >= 0) ? nodeIdx : 0;
+                        int globalNode = resolveBoneIdx((int)gs.matrixIndices[start + k]);
+                        auto it = globalToLocal.find(globalNode);
+                        int localSlot = (it != globalToLocal.end()) ? it->second
+                                                                    : addToSubset(globalNode);
+                        sw.influences[v].boneIdx[k] = localSlot;
                         sw.influences[v].weight[k]  = w;
                     }
                 }
             }
         }
+
+        // Check final cap including pseudo slots.
+        const int paletteSlotsUsed = (int)subset.size() + (int)sw.groupAverages.size();
+        if (paletteSlotsUsed > kMaxPaletteSlots) {
+            std::fprintf(stderr,
+                "[GetSkinWeights] geoset %d needs %d palette slots (>%d)\n",
+                gi, paletteSlotsUsed, kMaxPaletteSlots);
+        }
+
+        sw.subsetNodeIndices = std::move(subset);
         result.push_back(std::move(sw));
     }
     return result;
@@ -720,7 +843,8 @@ std::vector<ParticleEmitterConfig> MdxModelAdapter::GetParticleConfigs() {
         cfg.lineEmitter = (nf & (u32)Node::NodeFlag::LineEmitter) != 0;
         cfg.unfogged    = (nf & (u32)Node::NodeFlag::Unfogged)   != 0;
 
-        cfg.priorityPlane = (int)pe.priorityPlane;
+        cfg.priorityPlane  = (int)pe.priorityPlane;
+        cfg.replaceableId  = (int)pe.replaceableId;
         // MDX has no per-emitter Count cap; leave at default (0 = unlimited)
 
         result.push_back(cfg);
@@ -977,6 +1101,11 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
                 int gsTime = (globalTimeMs >= 0) ? globalTimeMs : timeMs;
                 int t = (int)std::fmod((float)gsTime, (float)duration);
                 return {t, 0, (int)duration};
+            } else {
+                // duration==0: static global sequence — hold the single key permanently.
+                // The key may be at any frame (e.g. 65667), so use a wide range
+                // to ensure FindBracket finds it.
+                return {0, 0, 0x3FFFFFFF};
             }
         }
         return {timeMs, seqStart_, seqEnd_};
@@ -992,8 +1121,13 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         if (gid < 0 || gid >= geosetCount) continue;
 
         {
+            // Match Previewd's SetGeosetAlpha @0x14019c4d0: when the KGAO
+            // track is authored, the fresh-sequence identity is 1.0 (not
+            // the static `ga.alpha`). The static only applies when no KGAO
+            // track is authored at all.
             auto [t, s, e] = effectiveTime(ga.alphaTracks.globalSequenceId);
-            fs.geosetAlphas[gid] = EvaluateTrackF32(ga.alphaTracks, t, s, e, ga.alpha);
+            const float identity = ga.alphaTracks.isUsed ? 1.0f : ga.alpha;
+            fs.geosetAlphas[gid] = EvaluateTrackF32(ga.alphaTracks, t, s, e, identity);
         }
         if (ga.colorTracks.isUsed) {
             auto [t, s, e] = effectiveTime(ga.colorTracks.globalSequenceId);
@@ -1003,6 +1137,30 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
             fs.geosetColors[gid] = {ga.color.x, ga.color.y, ga.color.z};
         }
     }
+
+    // Per-frame bone-ancestor visibility sweep. Matches Previewd's DFS
+    // skip in PrepareObjectHierarchyViews @0x140535390: any node whose
+    // ancestor chain includes a bone with a zero-byte KGAO alpha is
+    // considered invisible for the frame. `nodes` is topologically sorted
+    // (parent before child) so one forward pass resolves the transitive
+    // closure. Non-bone nodes have boneGateGeoset_[i] == -1 and simply
+    // propagate the parent's visibility.
+    const auto& hierNodes = hierarchy_.Nodes();
+    std::vector<uint8_t> nodeVisible(hierNodes.size(), 1);
+    for (size_t ni = 0; ni < hierNodes.size(); ++ni) {
+        uint8_t vis = (hierNodes[ni].parentIdx < 0)
+                        ? uint8_t{1}
+                        : nodeVisible[hierNodes[ni].parentIdx];
+        const int gate = boneGateGeoset_[ni];
+        if (vis && gate >= 0 && fs.geosetAlphas[gate] <= 0.0f) vis = 0;
+        nodeVisible[ni] = vis;
+    }
+    auto gateByBoneAncestors = [&](int nodeIdx) -> float {
+        return (nodeIdx >= 0 && nodeIdx < (int)nodeVisible.size() &&
+                !nodeVisible[nodeIdx])
+                   ? 0.0f
+                   : 1.0f;
+    };
 
     // Layer alpha (KMTA) evaluation — per material layer
     for (int mi = 0; mi < (int)model_.materials.size(); mi++) {
@@ -1147,8 +1305,12 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
 
         ps.transform = kPE2SpawnFrameRotation * worldOf(nodeIdx);
 
-        { auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
-          ps.emissionRate = EvaluateTrackF32(pe.emissionRateTracks, t, s, e, pe.emissionRate); }
+        {
+            bool squirting = (pe.squirt != 0);
+            auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
+            ps.emissionRate = EvaluateTrackF32(pe.emissionRateTracks, t, s, e, pe.emissionRate, squirting);
+            ps.squirting = squirting;
+        }
         { auto [t,s,e] = effectiveTime(pe.speedTracks.globalSequenceId);
           ps.speed        = EvaluateTrackF32(pe.speedTracks, t, s, e, pe.speed); }
         { auto [t,s,e] = effectiveTime(pe.variationTracks.globalSequenceId);
@@ -1169,6 +1331,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
           ps.length       = EvaluateTrackF32(pe.lengthTracks, t, s, e, pe.length); }
         { auto [t,s,e] = effectiveTime(pe.visibilityTracks.globalSequenceId);
           ps.visibility   = EvaluateTrackF32(pe.visibilityTracks, t, s, e, 1.0f); }
+        ps.visibility *= gateByBoneAncestors(nodeIdx);
 
         (void)pe; // all PE2 per-frame fields set above
     }
@@ -1183,6 +1346,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
             auto [t,s,e] = effectiveTime(att.visibilityTracks.globalSequenceId);
             vis = EvaluateTrackF32(att.visibilityTracks, t, s, e, 1.0f);
         }
+        vis *= gateByBoneAncestors(nodeIdx);
         fs.attachmentStates.push_back({i, tm, vis});
     }
 
@@ -1208,6 +1372,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
           ps.gravity = EvaluateTrackF32(pe.gravityTracks, t, s, e, pe.gravity); }
         { auto [t,s,e] = effectiveTime(pe.visibilityTracks.globalSequenceId);
           ps.visibility = EvaluateTrackF32(pe.visibilityTracks, t, s, e, 1.0f); }
+        ps.visibility *= gateByBoneAncestors(nodeIdx);
 
         fs.pe1States.push_back(ps);
     }
@@ -1231,6 +1396,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
           rs.alpha      = EvaluateTrackF32(rb.alphaTracks, t, s, e, rb.alpha); }
         { auto [t,s,e] = effectiveTime(rb.visibilityTracks.globalSequenceId);
           rs.visibility = EvaluateTrackF32(rb.visibilityTracks, t, s, e, 1.0f); }
+        rs.visibility *= gateByBoneAncestors(nodeIdx);
         { auto [t,s,e] = effectiveTime(rb.textureSlotTracks.globalSequenceId);
           rs.slot       = (int)EvaluateTrackU32(rb.textureSlotTracks, t, s, e, rb.textureSlot); }
 
@@ -1261,13 +1427,19 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
                   (L.type == Light::LightType::Directional) ? FrameState::LightKind::Directional :
                                                               FrameState::LightKind::Ambient;
 
-        // Visibility track (KLAV) gates the whole light. 0 = off.
+        // Visibility track (KLAV) gates the whole light. 0 = off. The
+        // ancestor-bone gate additionally hides the light if its parent
+        // bone chain is invisible, matching Previewd's DFS subtree skip.
         float visibility = 1.0f;
         if (L.visibilityTracks.isUsed) {
             auto [t,s,e] = effectiveTime(L.visibilityTracks.globalSequenceId);
             visibility = EvaluateTrackF32(L.visibilityTracks, t, s, e, 1.0f);
         }
-        ls.enabled = visibility > 0.001f;
+        visibility *= gateByBoneAncestors(
+            hierarchy_.ObjectIdToNodeIndex((int)L.node.objectId));
+        // Strict > 0 matches Previewd's SetLightValues @0x14052f5e0 which
+        // gates EnvApply/EnvUnApply on `isVisible > 0.0`.
+        ls.enabled = visibility > 0.0f;
         if (!ls.enabled) { fs.lights.push_back(ls); continue; }
 
         // Diffuse (KLAC/KLAI) and ambient (KLBC/KLBI) color + intensity.

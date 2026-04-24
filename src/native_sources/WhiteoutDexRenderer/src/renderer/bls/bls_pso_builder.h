@@ -24,6 +24,12 @@ enum class VertexLayoutKind : uint8_t {
     MeshSDTc2     = 1, // PNT0T1 (pos, normal, tc0, tc1)                one VB slot
     MeshSDSkinned = 2, // MeshSD + separate bones VB slot 1
     ParticleSD    = 3, // PNCT0  (pos, normal, color, tc0)              one VB slot
+    // SD mesh with native VS skinning. Slot 0 = PNCT0 rest-pose Vertex
+    // (48 B, same as ParticleSD/unskinnedVb); slot 1 = BoneVertex (ATTR5
+    // weights R8G8B8A8_UNORM, ATTR6 indices R8G8B8A8_UINT, 8 B). Selected
+    // when the SD VS permute picks numWeights=4 so the shader pulls bone
+    // blending from vsCB3 instead of consuming compute-baked geometry.
+    ParticleSDSkinned = 7,
     // HD mesh layout: slot 0 holds the ParticleSD stream (pos / normal /
     // color / tc0) matching our Vertex struct; slot 1 holds a dedicated
     // float4 tangent stream feeding ATTR7 (.xyz = tangent, .w =

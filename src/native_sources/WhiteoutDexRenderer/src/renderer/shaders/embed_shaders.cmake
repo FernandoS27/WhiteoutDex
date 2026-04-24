@@ -4,7 +4,7 @@
 # Inputs (set via -D on the cmake command line):
 #   SHADER_DIR — directory containing the .dxbc files
 #   OUTPUT     — path to the output .h file
-# Variable names are derived from filenames (e.g. kMeshVS.dxbc → kMeshVS).
+# Variable names are derived from filenames (e.g. kLineVS.dxbc → kLineVS).
 # ============================================================================
 cmake_minimum_required(VERSION 3.16)
 

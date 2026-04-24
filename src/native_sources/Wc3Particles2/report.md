@@ -5,6 +5,60 @@ verified engine pseudocode for `CPlaneParticleEmitter` and `CParticleEmitter2`.
 
 ---
 
+## RE Session (2026-04-23): Previewd PE2 Emission Tick Rate vs WhiteoutDex
+
+### Scope
+
+- Target binary: `Previewd.exe` in IDA Pro.
+- Goal: verify whether ParticleEmitter2 emission/squirt runs at a fixed rate or frame-driven delta time.
+
+### Previewd Findings (IDA)
+
+1. `DisplayRender` (`0x1401672A0`) calls:
+    - `AnimSetTime(OsGetAsyncTimeMsPrecise())`
+    - `ParticleSystemManager::UpdateEmitters(elapsedTime, ...)`, where `elapsedTime = (float)(int)s_data.elapsed / 1000.0f`
+2. `ParticleSystemManager::UpdateEmitters` (`0x14035CC40`) calls `CParticleEmitter2::Update(float)` for PE2.
+3. Animation placement path `PlaceObject` (`0x140533200`, case 5) also calls `CParticleEmitter2::Update(float, C34Matrix const&)`.
+4. Handshake bits prevent double-step in one frame:
+    - `Update(float, matrix)` sets `kUpdated` (bit `0x40`) and runs `InternalUpdate`.
+    - `Update(float)` skips `InternalUpdate` if bit `0x40` is set, then clears `0x40/0x80`.
+5. Actual emitter delta comes from `AdvanceTime` (`0x140198E10`):
+    - `fTimeElapsed = s_timeScale * (currentTime - seqLastTime)` (milliseconds)
+    - `status2->elapsedTime = fTimeElapsed * 0.001f` for each `CAnimEmitter2ObjStatus`.
+    - `currentTime` is `AnimGetTime()`, which is set by `AnimSetTime(...)` above.
+
+Conclusion: Previewd PE2 simulation is variable-delta (wall-clock / animation-clock delta), not a fixed tick independent of frame timing.
+
+### Previewd Emission and Squirt Rules
+
+- `CParticleEmitter2::InternalUpdate` (`0x140478B90`):
+   - Clamp: `elapsed = clamp(elapsed, 0.0f, 0.5f)`.
+   - Continuous emission: `m_numNew += elapsed * emissionRate * scaler`, spawn `floor(m_numNew)`, subtract emitted integer count.
+   - Squirt burst: when bit `0x20` set, spawn `int(emissionRate * scaler)` once, then clear bit `0x20`.
+- Squirt trigger source is `SetParticleEmissionRate2` (`0x140530560`):
+   - If interpolated rate transitions from 0 to >0 and emitter has squirt enabled, call `CParticleEmitter2::Squirt()`.
+   - This is a rising-edge rule, not a per-frame forced burst.
+
+### WhiteoutDex Comparison (current)
+
+- `RenderWindow::ThreadFunc` drives sim dt from parent animation clock:
+   - `parentDtMs = curParentMs - lastParentTimeMs`, clamped to `[0, 100]` ms.
+   - `service_.Tick(parentDtMs / 1000.0f)`.
+- PE2 sim path:
+   - `RenderService::UpdateParticles` -> `particleService_.Simulate(dt)` -> `Emitter2::Update(dt)`.
+   - `Emitter2::InternalUpdate` mirrors Previewd's accumulator/burst formulas and 0.5s clamp.
+- Key behavioral delta:
+   - Current squirt arm appears startup-only (`init.squirtAtStart` in adapter/init path), while Previewd arms squirt on emission-rate rising edges during runtime animation.
+
+### Practical Implication for "squirts too fast"
+
+- Previewd itself is not using a hidden fixed-frequency PE2 tick; it uses elapsed-time-based emission.
+- If WhiteoutDex appears to squirt too fast, likely causes are:
+   1. Mismatch in squirt trigger policy (startup-only vs runtime edge-driven state machine), and/or
+   2. Upstream animation clock cadence delivered to `Tick(dt)` differs from Previewd's effective animation time progression.
+
+---
+
 ## 1. Parameter Mapping
 
 | Engine Field | Plugin Param | Match | Notes |

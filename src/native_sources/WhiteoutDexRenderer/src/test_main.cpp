@@ -10,9 +10,11 @@
 #include "gfx/gfx_types.h"
 #include <whiteout/models/mdx/parser.h>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <chrono>
 #include <string>
+#include <vector>
 #include <cstring>
 
 #define WIN32_LEAN_AND_MEAN
@@ -20,38 +22,38 @@
 #include <commdlg.h>
 
 static std::filesystem::path OpenFileDialog() {
-    char filename[MAX_PATH] = {};
-    OPENFILENAMEA ofn = {};
+    wchar_t filename[MAX_PATH] = {};
+    OPENFILENAMEW ofn = {};
     ofn.lStructSize  = sizeof(ofn);
-    ofn.lpstrFilter  = "MDX Files (*.mdx)\0*.mdx\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFilter  = L"MDX Files (*.mdx)\0*.mdx\0All Files (*.*)\0*.*\0";
     ofn.lpstrFile    = filename;
     ofn.nMaxFile     = MAX_PATH;
-    ofn.lpstrTitle   = "Open MDX Model";
+    ofn.lpstrTitle   = L"Open MDX Model";
     ofn.Flags        = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (GetOpenFileNameA(&ofn))
+    if (GetOpenFileNameW(&ofn))
         return std::filesystem::path(filename);
     return {};
 }
 
-int main(int argc, char* argv[]) {
+int wmain(int argc, wchar_t* argv[]) {
     // ---- Parse args: [--backend <d3d11|d3d12>] [<mdx-path>] ----
     WhiteoutDex::gfx::GfxApi backend = WhiteoutDex::gfx::GfxApi::D3D12;
     std::filesystem::path mdxPath;
 
     for (int i = 1; i < argc; ++i) {
-        const char* a = argv[i];
-        if ((std::strcmp(a, "--backend") == 0 || std::strcmp(a, "-b") == 0) && i + 1 < argc) {
-            const char* v = argv[++i];
-            if      (_stricmp(v, "d3d11") == 0 || _stricmp(v, "dx11") == 0)
+        const wchar_t* a = argv[i];
+        if ((std::wcscmp(a, L"--backend") == 0 || std::wcscmp(a, L"-b") == 0) && i + 1 < argc) {
+            const wchar_t* v = argv[++i];
+            if      (_wcsicmp(v, L"d3d11") == 0 || _wcsicmp(v, L"dx11") == 0)
                 backend = WhiteoutDex::gfx::GfxApi::D3D11;
-            else if (_stricmp(v, "d3d12") == 0 || _stricmp(v, "dx12") == 0)
+            else if (_wcsicmp(v, L"d3d12") == 0 || _wcsicmp(v, L"dx12") == 0)
                 backend = WhiteoutDex::gfx::GfxApi::D3D12;
             else {
-                std::cerr << "Unknown backend: " << v << " (valid: d3d11, d3d12)\n";
+                std::wcerr << L"Unknown backend: " << v << L" (valid: d3d11, d3d12)\n";
                 return 1;
             }
-        } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
-            std::cout << "Usage: WhiteoutDexRenderer.exe [--backend d3d11|d3d12] [<mdx-path>]\n";
+        } else if (std::wcscmp(a, L"--help") == 0 || std::wcscmp(a, L"-h") == 0) {
+            std::cout << "Usage: WhiteoutFlakes.exe [--backend d3d11|d3d12] [<mdx-path>]\n";
             return 0;
         } else if (mdxPath.empty()) {
             mdxPath = a;
@@ -74,11 +76,24 @@ int main(int argc, char* argv[]) {
               << (backend == WhiteoutDex::gfx::GfxApi::D3D11 ? "D3D11" : "D3D12") << "\n";
 
     // Parse MDX
-    std::cout << "Parsing " << mdxPath.filename().string() << "...\n";
+    // Read the file via std::ifstream(fs::path) so MSVC uses _wfopen internally
+    // — this handles Unicode (CJK, etc.) paths without changing the WhiteoutLib API.
+    std::cout << "Parsing " << mdxPath.filename().generic_string() << "...\n";
     whiteout::mdx::Parser parser(whiteout::mdx::Parser::ParseMode::Lenient);
     whiteout::mdx::Model model;
     try {
-        model = parser.parse(mdxPath.string());
+        std::ifstream mdxFile(mdxPath, std::ios::binary);
+        if (!mdxFile.is_open())
+            throw std::runtime_error("Failed to open file");
+        std::vector<uint8_t> mdxBytes(
+            (std::istreambuf_iterator<char>(mdxFile)),
+            std::istreambuf_iterator<char>());
+        auto ext = mdxPath.extension();
+        auto fmt = (ext == L".mdl" || ext == L".MDL")
+                       ? whiteout::mdx::MDLXFormat::MDL
+                       : whiteout::mdx::MDLXFormat::MDX;
+        model = parser.parse(
+            std::span<const whiteout::u8>(mdxBytes.data(), mdxBytes.size()), fmt);
     } catch (const std::exception& e) {
         std::cerr << "Parse error: " << e.what() << "\n";
         return 1;
@@ -139,14 +154,14 @@ int main(int argc, char* argv[]) {
 
     // PE1 (model particle emitters) — set configs + base path for child model loading
     if (!pe1Configs.empty()) {
-        renderer.SetPE1BasePath(basePath.string());
+        renderer.SetPE1BasePath(basePath);
         renderer.SetPE1Configs(renderer.GetFocusModelHandle(), pe1Configs);
     }
 
     // Attachment child models — set configs (uses same PE1 base path for resolution)
     if (!attachConfigs.empty()) {
         if (pe1Configs.empty()) {
-            renderer.SetPE1BasePath(basePath.string());
+            renderer.SetPE1BasePath(basePath);
         }
         renderer.SetAttachmentConfigs(renderer.GetFocusModelHandle(), attachConfigs);
     }
@@ -173,12 +188,14 @@ int main(int argc, char* argv[]) {
 
     // Main loop
     auto startTime = std::chrono::steady_clock::now();
+    auto globalStartTime = startTime; // never reset — drives global sequences
     int currentSeq = 0;
     std::cout << "Renderer open. Close the window to exit.\n";
 
     while (renderWindow.IsOpen()) {
         auto now = std::chrono::steady_clock::now();
         int elapsed = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+        int globalTimeMs = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - globalStartTime).count();
 
         // React to sequence picker changes
         if (!sequences.empty()) {
@@ -202,7 +219,7 @@ int main(int argc, char* argv[]) {
 
         auto camPos = renderer.GetCameraPosition();
         adapter.SetCameraPosition(camPos.x, camPos.y, camPos.z);
-        auto frameState = adapter.Evaluate(timeMs, elapsed);
+        auto frameState = adapter.Evaluate(timeMs, globalTimeMs);
         renderer.ApplyFrameState(frameState, timeMs);
 
         Sleep(16); // ~60 FPS

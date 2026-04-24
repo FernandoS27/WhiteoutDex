@@ -5,6 +5,12 @@
 
 #include "max_scene_adapter.h"
 #include "io/team_glow_data.h"
+#include "io/content_provider.h"
+#include <whiteout/textures/blp/blp.h>
+#include <whiteout/textures/dds/parser.h>
+#include <whiteout/textures/tga/parser.h>
+#include <whiteout/textures/png/parser.h>
+#include <whiteout/textures/texture.h>
 
 #include <maxscript/maxscript.h>
 #include <maxscript/foundation/numbers.h>
@@ -14,6 +20,7 @@
 #include <cwchar>
 #include <cstring>
 #include <numbers>
+#include <fstream>
 
 using namespace WhiteoutDex;
 
@@ -212,6 +219,100 @@ std::wstring MaxSceneAdapter::GetMaxFilePath() {
 // Texture loading (stores pixel data for GetTextures() instead of renderer calls)
 // ============================================================================
 
+// Decode a memory buffer to RGBA8 using blp/dds/tga/png parsers.
+static bool DecodeToRGBA8(std::span<const uint8_t> buf, const std::string& ext,
+                          std::vector<uint8_t>& pixels, int& w, int& h) {
+    std::optional<whiteout::textures::Texture> result;
+    if      (ext == ".blp") { whiteout::textures::blp::Parser p; result = p.parse(buf); }
+    else if (ext == ".dds") { whiteout::textures::dds::Parser p; result = p.parse(buf); }
+    else if (ext == ".tga") { whiteout::textures::tga::Parser p; result = p.parse(buf); }
+    else if (ext == ".png") { whiteout::textures::png::Parser p; result = p.parse(buf); }
+    if (!result) return false;
+    result->format(whiteout::textures::PixelFormat::RGBA8);
+    w = (int)result->width(); h = (int)result->height();
+    auto mip0 = result->mipData(0);
+    pixels.assign(mip0.begin(), mip0.end());
+    return true;
+}
+
+// Read raw bytes from a wide-string disk path; ext receives the lowercased extension.
+static bool ReadFileBytesFromDisk(const std::wstring& filePath,
+                                  std::vector<uint8_t>& out, std::string& ext) {
+    std::filesystem::path p(filePath);
+    std::string e = p.extension().string();
+    for (auto& c : e) c = (char)std::tolower((unsigned char)c);
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return false;
+    out.assign(std::istreambuf_iterator<char>(f), {});
+    if (out.empty()) return false;
+    ext = e;
+    return true;
+}
+
+// Load a texture from the FileContentProvider (CASC/MPQ fallback).
+// archivePath should be a WC3-relative path like "Textures\\Dirt.blp"
+// (forward or back slashes are both accepted by the provider).
+// Returns a texture id on success, or -1 if not found.
+int MaxSceneAdapter::LoadTextureFromContentProvider(const std::string& archivePath, int replaceableId) {
+    if (archivePath.empty()) return -1;
+
+    // Use the wide-string key so we share the texPathToId_ cache.
+    std::wstring wkey(archivePath.begin(), archivePath.end());
+    auto cached = texPathToId_.find(wkey);
+    if (cached != texPathToId_.end()) return cached->second;
+
+    std::string foundExt;
+    auto data = contentProvider_.ReadFile(archivePath, &foundExt);
+    if (!data || data->empty()) {
+        mprintf(_M("    [ContentProvider] not found: '%S'\n"), archivePath.c_str());
+        return -1;
+    }
+
+    if (foundExt.empty()) {
+        // Derive extension from path.
+        auto dot = archivePath.rfind('.');
+        if (dot != std::string::npos) foundExt = archivePath.substr(dot);
+        for (auto& c : foundExt) c = (char)std::tolower((unsigned char)c);
+    }
+
+    std::optional<whiteout::textures::Texture> result;
+    std::span<const uint8_t> buf(*data);
+    if (foundExt == ".blp") {
+        whiteout::textures::blp::Parser parser;
+        result = parser.parse(buf);
+    } else if (foundExt == ".dds") {
+        whiteout::textures::dds::Parser parser;
+        result = parser.parse(buf);
+    } else if (foundExt == ".tga") {
+        whiteout::textures::tga::Parser parser;
+        result = parser.parse(buf);
+    } else if (foundExt == ".png") {
+        whiteout::textures::png::Parser parser;
+        result = parser.parse(buf);
+    }
+
+    if (!result) {
+        mprintf(_M("    [ContentProvider] parse failed: '%S'\n"), archivePath.c_str());
+        return -1;
+    }
+
+    // Force RGBA8 so it can slot into the existing LoadedTexture pipeline.
+    result->format(whiteout::textures::PixelFormat::RGBA8);
+    int w = (int)result->width();
+    int h = (int)result->height();
+    auto mip0 = result->mipData(0);
+
+    int id = nextTexId_++;
+    texPathToId_[wkey] = id;
+    loadedTextures_.push_back({id, replaceableId, std::vector<uint8_t>(mip0.begin(), mip0.end()), w, h});
+    TextureEntry te; te.textureId = id; te.replaceableId = replaceableId;
+    // Store narrow path as wide for filePath (display only).
+    te.filePath = wkey;
+    texEntries_.push_back(te);
+    mprintf(_M("    [ContentProvider] loaded '%S' as texId=%d (%dx%d)\n"), archivePath.c_str(), id, w, h);
+    return id;
+}
+
 int MaxSceneAdapter::LoadTexture(const std::wstring& filePath, int replaceableId) {
     if (replaceableId == 1 || replaceableId == 2) {
         std::wstring key = (replaceableId == 1) ? L"__TEAMCOLOR__" : L"__TEAMGLOW__";
@@ -231,11 +332,47 @@ int MaxSceneAdapter::LoadTexture(const std::wstring& filePath, int replaceableId
     auto it = texPathToId_.find(filePath);
     if (it != texPathToId_.end()) return it->second;
 
-    BitmapInfo bi; bi.SetName(filePath.c_str());
-    BMMRES status;
-    Bitmap* bmp = TheManager->Load(&bi, &status);
+    Bitmap* bmp = nullptr;
+    BMMRES status = BMMRES_IOERROR;
+    try {
+        BitmapInfo bi; bi.SetName(filePath.c_str());
+        bmp = TheManager->Load(&bi, &status);
+    } catch (...) {
+        mprintf(_M("  Texture: [exception in TheManager->Load] '%s'\n"), filePath.c_str());
+    }
 
     if (!bmp || status != BMMRES_SUCCESS) {
+        mprintf(_M("  Texture: [Max bitmap failed, status=%d] '%s' — trying direct decode\n"),
+                (int)status, filePath.c_str());
+
+        // Attempt 1: read the file directly from disk with our own parsers.
+        {
+            std::vector<uint8_t> fileBytes; std::string ext;
+            std::vector<uint8_t> pixels; int pw = 0, ph = 0;
+            if (ReadFileBytesFromDisk(filePath, fileBytes, ext) &&
+                DecodeToRGBA8(fileBytes, ext, pixels, pw, ph)) {
+                int id = nextTexId_++;
+                texPathToId_[filePath] = id;
+                loadedTextures_.push_back({id, replaceableId, std::move(pixels), pw, ph});
+                TextureEntry te; te.textureId = id; te.filePath = filePath;
+                texEntries_.push_back(te);
+                mprintf(_M("  Texture %d: %dx%d [direct decode] '%s'\n"), id, pw, ph, filePath.c_str());
+                return id;
+            }
+        }
+
+        // Attempt 2: FileContentProvider (CASC/MPQ) by filename.
+        {
+            std::string narrowName = std::filesystem::path(filePath).filename().string();
+            mprintf(_M("  Texture: [ContentProvider fallback] '%S'\n"), narrowName.c_str());
+            int id = LoadTextureFromContentProvider(narrowName, replaceableId);
+            if (id >= 0) {
+                texPathToId_[filePath] = id;
+                return id;
+            }
+        }
+
+        // All fallbacks exhausted — magenta placeholder.
         int id = nextTexId_++;
         texPathToId_[filePath] = id;
         std::vector<uint8_t> rgba(4*4*4, 0);
@@ -285,69 +422,110 @@ int MaxSceneAdapter::LoadTextureWithTeamColor(const std::wstring& filePath, int 
 
     mprintf(_M("  [TC] Loading BLP for compositing: '%s'\n"), filePath.c_str());
 
-    BitmapInfo bi; bi.SetName(filePath.c_str());
-    BMMRES status;
-    Bitmap* bmp = TheManager->Load(&bi, &status);
-
-    if (!bmp || status != BMMRES_SUCCESS) {
+    // Blend decoded raw RGBA8 pixels with team color and store the result.
+    auto blendAndStore = [&](const std::vector<uint8_t>& src, int bw, int bh) -> int {
         int id = nextTexId_++;
         texPathToId_[key] = id;
-        std::vector<uint8_t> rgba(4*4*4);
-        for (int i = 0; i < 16; i++) {
-            rgba[i*4]=(uint8_t)tcR; rgba[i*4+1]=(uint8_t)tcG;
-            rgba[i*4+2]=(uint8_t)tcB; rgba[i*4+3]=255;
+        std::vector<uint8_t> rgba(bw * bh * 4);
+        int alphaZero = 0, alphaFull = 0, alphaMid = 0;
+        long long alphaSum = 0;
+        for (int i = 0; i < bw * bh; i++) {
+            uint8_t bR = src[i*4], bG = src[i*4+1], bB = src[i*4+2], bA = src[i*4+3];
+            alphaSum += bA;
+            if (bA == 0) alphaZero++; else if (bA >= 254) alphaFull++; else alphaMid++;
+            float t = bA / 255.0f;
+            rgba[i*4]   = (uint8_t)(tcR * (1.0f - t) + bR * t);
+            rgba[i*4+1] = (uint8_t)(tcG * (1.0f - t) + bG * t);
+            rgba[i*4+2] = (uint8_t)(tcB * (1.0f - t) + bB * t);
+            rgba[i*4+3] = 255;
         }
-        loadedTextures_.push_back({id, 0, rgba, 4, 4});
-        TextureEntry te; te.textureId=id; te.filePath=filePath;
+        int totalPixels = bw * bh;
+        int avgAlpha = totalPixels > 0 ? (int)(alphaSum / totalPixels) : 0;
+        mprintf(_M("  [TC] %dx%d — alpha stats: zero=%d, full=%d, mid=%d, avg=%d (of %d pixels)\n"),
+                bw, bh, alphaZero, alphaFull, alphaMid, avgAlpha, totalPixels);
+        if (alphaFull == totalPixels)
+            mprintf(_M("  [TC] *** WARNING: ALL pixels have alpha=255! TeamColor will be invisible! ***\n"));
+        if (alphaZero == totalPixels)
+            mprintf(_M("  [TC] *** WARNING: ALL pixels have alpha=0! Entire texture will be TeamColor! ***\n"));
+        loadedTextures_.push_back({id, 0, std::move(rgba), bw, bh});
+        TextureEntry te; te.textureId = id; te.filePath = filePath;
         texEntries_.push_back(te);
-        mprintf(_M("  [TC] FAILED to load bitmap! Using solid red fallback. Status=%d\n"), (int)status);
+        mprintf(_M("  Texture %d: %dx%d [TeamColor] '%s'\n"), id, bw, bh, filePath.c_str());
         return id;
+    };
+
+    Bitmap* bmp = nullptr;
+    BMMRES status = BMMRES_IOERROR;
+    try {
+        BitmapInfo bi; bi.SetName(filePath.c_str());
+        bmp = TheManager->Load(&bi, &status);
+    } catch (...) {
+        mprintf(_M("  [TC] [exception in TheManager->Load] '%s'\n"), filePath.c_str());
     }
 
-    int w = bmp->Width(), h = bmp->Height();
+    if (bmp && status == BMMRES_SUCCESS) {
+        int w = bmp->Width(), h = bmp->Height();
+        std::vector<uint8_t> rawPixels(w * h * 4);
+        BMM_Color_64* line = new BMM_Color_64[w];
+        for (int y = 0; y < h; y++) {
+            bmp->GetPixels(0, y, w, line);
+            for (int x = 0; x < w; x++) {
+                int idx = (y*w+x)*4;
+                rawPixels[idx]   = (uint8_t)(line[x].r >> 8);
+                rawPixels[idx+1] = (uint8_t)(line[x].g >> 8);
+                rawPixels[idx+2] = (uint8_t)(line[x].b >> 8);
+                rawPixels[idx+3] = (uint8_t)(line[x].a >> 8);
+            }
+        }
+        delete[] line;
+        bmp->DeleteThis();
+        return blendAndStore(rawPixels, w, h);
+    }
+
+    mprintf(_M("  [TC] Max bitmap failed (status=%d) — trying direct decode\n"), (int)status);
+
+    // Attempt 1: read the file directly from disk with our own parsers.
+    {
+        std::vector<uint8_t> fileBytes; std::string ext;
+        std::vector<uint8_t> rawPixels; int pw = 0, ph = 0;
+        if (ReadFileBytesFromDisk(filePath, fileBytes, ext) &&
+            DecodeToRGBA8(fileBytes, ext, rawPixels, pw, ph)) {
+            mprintf(_M("  [TC] Direct decode succeeded (%dx%d)\n"), pw, ph);
+            return blendAndStore(rawPixels, pw, ph);
+        }
+    }
+
+    // Attempt 2: FileContentProvider (CASC/MPQ) by filename.
+    {
+        std::string narrowName = std::filesystem::path(filePath).filename().string();
+        std::string foundExt;
+        auto data = contentProvider_.ReadFile(narrowName, &foundExt);
+        if (data && !data->empty()) {
+            if (foundExt.empty()) {
+                auto dot = narrowName.rfind('.');
+                if (dot != std::string::npos) foundExt = narrowName.substr(dot);
+                for (auto& c : foundExt) c = (char)std::tolower((unsigned char)c);
+            }
+            std::vector<uint8_t> rawPixels; int pw = 0, ph = 0;
+            if (DecodeToRGBA8(*data, foundExt, rawPixels, pw, ph)) {
+                mprintf(_M("  [TC] ContentProvider decode succeeded (%dx%d)\n"), pw, ph);
+                return blendAndStore(rawPixels, pw, ph);
+            }
+        }
+    }
+
+    // All fallbacks exhausted — solid team-color placeholder.
+    mprintf(_M("  [TC] FAILED to load bitmap! Using solid TC fallback. Status=%d\n"), (int)status);
     int id = nextTexId_++;
     texPathToId_[key] = id;
-
-    std::vector<uint8_t> rgba(w*h*4);
-    BMM_Color_64* line = new BMM_Color_64[w];
-    int alphaZero = 0, alphaFull = 0, alphaMid = 0;
-    long long alphaSum = 0;
-
-    for (int y = 0; y < h; y++) {
-        bmp->GetPixels(0, y, w, line);
-        for (int x = 0; x < w; x++) {
-            int idx = (y*w+x)*4;
-            uint8_t baseR = (uint8_t)(line[x].r >> 8);
-            uint8_t baseG = (uint8_t)(line[x].g >> 8);
-            uint8_t baseB = (uint8_t)(line[x].b >> 8);
-            uint8_t baseA = (uint8_t)(line[x].a >> 8);
-            alphaSum += baseA;
-            if (baseA == 0) alphaZero++;
-            else if (baseA >= 254) alphaFull++;
-            else alphaMid++;
-            float t = baseA / 255.0f;
-            rgba[idx]   = (uint8_t)(tcR * (1.0f - t) + baseR * t);
-            rgba[idx+1] = (uint8_t)(tcG * (1.0f - t) + baseG * t);
-            rgba[idx+2] = (uint8_t)(tcB * (1.0f - t) + baseB * t);
-            rgba[idx+3] = 255;
-        }
+    std::vector<uint8_t> rgba(4*4*4);
+    for (int i = 0; i < 16; i++) {
+        rgba[i*4]=(uint8_t)tcR; rgba[i*4+1]=(uint8_t)tcG;
+        rgba[i*4+2]=(uint8_t)tcB; rgba[i*4+3]=255;
     }
-    delete[] line;
-    bmp->DeleteThis();
-
-    int totalPixels = w * h;
-    int avgAlpha = totalPixels > 0 ? (int)(alphaSum / totalPixels) : 0;
-    mprintf(_M("  [TC] %dx%d — alpha stats: zero=%d, full=%d, mid=%d, avg=%d (of %d pixels)\n"),
-            w, h, alphaZero, alphaFull, alphaMid, avgAlpha, totalPixels);
-    if (alphaFull == totalPixels)
-        mprintf(_M("  [TC] *** WARNING: ALL pixels have alpha=255! TeamColor will be invisible! ***\n"));
-    if (alphaZero == totalPixels)
-        mprintf(_M("  [TC] *** WARNING: ALL pixels have alpha=0! Entire texture will be TeamColor! ***\n"));
-
-    loadedTextures_.push_back({id, 0, std::move(rgba), w, h});
+    loadedTextures_.push_back({id, 0, rgba, 4, 4});
     TextureEntry te; te.textureId=id; te.filePath=filePath;
     texEntries_.push_back(te);
-    mprintf(_M("  Texture %d: %dx%d [TeamColor] '%s'\n"), id, w, h, filePath.c_str());
     return id;
 }
 
@@ -401,28 +579,35 @@ void MaxSceneAdapter::CollectScene() {
         if (PB2Bool(mtl, L"noDepthSet", 0, flag) && flag)    flags |= 16;
         if (PB2Bool(mtl, L"constantColor", 0, flag) && flag) flags |= 32;
         snap.flags = flags;
-        Texmap* texmap = nullptr;
-        PB2Texmap(mtl, L"diffuseMap", texmap);
-        int retex = 0;
-        if (texmap && texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-            int replId = 1; PB2Int(texmap, L"replaceableId", 0, replId);
-            retex = std::max(0, replId - 1);
-        }
-        snap.replaceableTexture = retex;
-        // Get texture path
-        BitmapTex* bmt = nullptr;
-        if (texmap) {
-            if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-                for (int r = 0; r < texmap->NumRefs(); r++) {
-                    ReferenceTarget* ref = texmap->GetReference(r);
+        // replaceableId is on the material (v12+)
+        int replId = 1; PB2Int(mtl, L"replaceableId", 0, replId);
+        snap.replaceableTexture = std::max(0, replId - 1);
+        // shaderId
+        int shaderType = 1; PB2Int(mtl, L"shaderType", 0, shaderType);
+        snap.shaderId = (shaderType == 4) ? 24 : std::max(0, shaderType - 1);
+        // Helper to get BitmapTex path from any texmap slot
+        auto getSlotPath = [&](const wchar_t* paramName) -> std::wstring {
+            Texmap* tex = nullptr;
+            if (!PB2Texmap(mtl, paramName, tex) || !tex) return {};
+            BitmapTex* bmt = nullptr;
+            if (tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+                bmt = static_cast<BitmapTex*>(tex);
+            } else if (tex->ClassID() == WC3_BITMAP_CLASS_ID) {
+                for (int r = 0; r < tex->NumRefs(); r++) {
+                    ReferenceTarget* ref = tex->GetReference(r);
                     if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
                         { bmt = static_cast<BitmapTex*>(ref); break; }
                 }
-            } else if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
-                bmt = static_cast<BitmapTex*>(texmap);
             }
-        }
-        if (bmt) { const MCHAR* fn = bmt->GetMapName(); if (fn && fn[0]) snap.texturePath = fn; }
+            if (!bmt) return {};
+            const MCHAR* fn = bmt->GetMapName();
+            return (fn && fn[0]) ? std::wstring(fn) : std::wstring{};
+        };
+        snap.texturePath      = getSlotPath(L"diffuseMap");
+        snap.normalTexPath    = getSlotPath(L"normalMap");
+        snap.ormTexPath       = getSlotPath(L"ormMap");
+        snap.emissiveTexPath  = getSlotPath(L"emissiveMap");
+        snap.teamColorTexPath = getSlotPath(L"teamColorMap");
         int sortOrd = 1; PB2Int(mtl, L"sortOrder", 0, sortOrd);
         snap.sortOrder = std::max(0, sortOrd - 1);
         int priPlane = 0; PB2Int(mtl, L"priorityPlane", 0, priPlane);
@@ -506,14 +691,19 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     float opacity = 100; PB2Float(mtl, L"opacity", 0, opacity);
     layer.alpha = std::min(opacity / 100.0f, 1.0f);
 
-    Texmap* texmap = nullptr;
-    PB2Texmap(mtl, L"diffuseMap", texmap);
-    int retex = 0;
-    if (texmap && texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-        int replId = 1; PB2Int(texmap, L"replaceableId", 0, replId);
-        retex = std::max(0, replId - 1);
+    // replaceableId lives on the Wc3Material (v12+). The old Wc3Bitmap path
+    // is kept as a dead fallback since native BitmapTexture is now the default.
+    {
+        int replId = 1; PB2Int(mtl, L"replaceableId", 0, replId);
+        layer.replaceableTexture = std::max(0, replId - 1);
     }
-    layer.replaceableTexture = retex;
+
+    // Shader type: Wc3Material dropdown is 1-based (1=SD,2=HD,3=SDOnHD,4=Crystal).
+    // Map to renderer shaderId: 0=SD,1=HD,2=SDOnHD,24=Crystal.
+    {
+        int shaderType = 1; PB2Int(mtl, L"shaderType", 0, shaderType);
+        layer.shaderId = (shaderType == 4) ? 24 : std::max(0, shaderType - 1);
+    }
 
     BOOL flag = FALSE; int flags = 0;
     if (PB2Bool(mtl,L"twoSided",0,flag) && flag)    flags|=1;
@@ -524,43 +714,121 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     if (PB2Bool(mtl,L"constantColor",0,flag) && flag) flags|=32;
     layer.flags = flags;
 
-    int baseTexId = -1;
-    std::wstring baseTexPath;
-    if (texmap) {
-        mprintf(_M("    \x2192 texmap found, ClassID=0x%x,0x%x\n"),
-                texmap->ClassID().PartA(), texmap->ClassID().PartB());
-        BitmapTex* bmtex = nullptr;
-        if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
-            bmtex = static_cast<BitmapTex*>(texmap);
-        } else if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-            for (int ri = 0; ri < texmap->NumRefs(); ri++) {
-                ReferenceTarget* ref = texmap->GetReference(ri);
-                if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
-                    bmtex = static_cast<BitmapTex*>(ref);
-                    break;
+    // Reforged PBR knobs
+    {
+        float fv = 0;
+        if (PB2Float(mtl, L"emissiveGain",    0, fv)) layer.emissiveGain    = fv;
+        if (PB2Float(mtl, L"fresnelOpacity",  0, fv)) layer.fresnelOpacity  = fv;
+        if (PB2Float(mtl, L"fresnelTeamCol",  0, fv)) layer.fresnelTeamColor = fv;
+        float fr = 0, fg = 0, fb = 0;
+        bool hasR = PB2Float(mtl, L"fresnelR", 0, fr);
+        bool hasG = PB2Float(mtl, L"fresnelG", 0, fg);
+        bool hasB = PB2Float(mtl, L"fresnelB", 0, fb);
+        if (hasR || hasG || hasB) layer.fresnelColor = {fr, fg, fb};
+    }
+
+    // Helper: resolve a BitmapTex from a texmap slot (native BitmapTex or legacy Wc3Bitmap wrapper)
+    auto getBitmapPath = [&](const wchar_t* paramName) -> std::wstring {
+        Texmap* tex = nullptr;
+        if (!PB2Texmap(mtl, paramName, tex) || !tex) return {};
+        BitmapTex* bmt = nullptr;
+        if (tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+            bmt = static_cast<BitmapTex*>(tex);
+        } else if (tex->ClassID() == WC3_BITMAP_CLASS_ID) {
+            for (int r = 0; r < tex->NumRefs(); r++) {
+                ReferenceTarget* ref = tex->GetReference(r);
+                if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+                    { bmt = static_cast<BitmapTex*>(ref); break; }
+            }
+        }
+        if (!bmt) return {};
+        const MCHAR* fn = bmt->GetMapName();
+        return (fn && fn[0]) ? std::wstring(fn) : std::wstring{};
+    };
+
+    // HD subtexture slots
+    {
+        auto loadSlot = [&](const wchar_t* paramName) -> int {
+            std::wstring path = getBitmapPath(paramName);
+            return path.empty() ? -1 : LoadTexture(path, 0);
+        };
+        layer.normalMapId    = loadSlot(L"normalMap");
+        layer.ormMapId       = loadSlot(L"ormMap");
+        layer.emissiveMapId  = loadSlot(L"emissiveMap");
+        layer.teamColorMapId = loadSlot(L"teamColorMap");
+
+        // For HD materials the TeamColor sub-texture (Konstrukt B) is stored
+        // as a Wc3Bitmap placeholder with empty path and replaceableId=1.
+        // getBitmapPath() can't extract a path from it so loadSlot returns -1,
+        // which would cause the renderer to skip binding the live team-color
+        // swatch at t4. Fix: if the slot is non-null but unresolvable, register
+        // a 1x1 white sentinel so teamColorMapId >= 0 acts as the enable flag.
+        if (layer.teamColorMapId < 0 && (layer.shaderId == 1 || layer.shaderId == 24)) {
+            Texmap* tcTex = nullptr;
+            if (PB2Texmap(mtl, L"teamColorMap", tcTex) && tcTex) {
+                // Slot is occupied — create/reuse a 1x1 white sentinel texture.
+                const std::wstring sentinelKey = L"__HD_TC_SENTINEL__";
+                auto it = texPathToId_.find(sentinelKey);
+                if (it != texPathToId_.end()) {
+                    layer.teamColorMapId = it->second;
+                } else {
+                    int id = nextTexId_++;
+                    texPathToId_[sentinelKey] = id;
+                    std::vector<uint8_t> white(4, 255); // 1x1 RGBA white
+                    loadedTextures_.push_back({id, 0, white, 1, 1});
+                    TextureEntry te; te.textureId = id;
+                    texEntries_.push_back(te);
+                    layer.teamColorMapId = id;
+                    mprintf(_M("    → HD TC sentinel created (texId=%d)\n"), id);
                 }
             }
         }
-        if (bmtex) {
-            const MCHAR* fname = bmtex->GetMapName();
-            if (fname && fname[0]) {
-                baseTexPath = std::wstring(fname);
-                mprintf(_M("    \x2192 texture path: '%s'\n"), baseTexPath.c_str());
-                baseTexId = LoadTexture(baseTexPath, 0);
-            } else {
-                mprintf(_M("    \x2192 texture has no filename!\n"));
-            }
-        } else {
-            mprintf(_M("    \x2192 texmap is NOT a BitmapTexture (e.g. Mix/Composite)\n"));
-        }
+    }
+
+    int baseTexId = -1;
+    std::wstring baseTexPath;
+    baseTexPath = getBitmapPath(L"diffuseMap");
+    if (!baseTexPath.empty()) {
+        mprintf(_M("    \x2192 diffuse path: '%s'\n"), baseTexPath.c_str());
+        baseTexId = LoadTexture(baseTexPath, 0);
     } else {
-        mprintf(_M("    \x2192 NO texmap found for 'diffuseMap' property\n"));
+        // Still log if there is a texmap that wasn't a BitmapTex
+        Texmap* texmap = nullptr;
+        if (PB2Texmap(mtl, L"diffuseMap", texmap) && texmap)
+            mprintf(_M("    \x2192 diffuseMap texmap is NOT a BitmapTexture (e.g. Mix/Composite)\n"));
+        else
+            mprintf(_M("    \x2192 NO texmap found for 'diffuseMap' property\n"));
     }
 
     if (layer.replaceableTexture == 1 && !baseTexPath.empty()) {
-        mprintf(_M("    \x2192 TEAMCOLOR branch: compositing '%s'\n"), baseTexPath.c_str());
-        layer.textureId = LoadTextureWithTeamColor(baseTexPath, 255, 0, 0);
-        layer.filterMode = 0; layer.alpha = 1.0f;
+        if (layer.shaderId == 1 || layer.shaderId == 24) {
+            // HD: team color is driven by the live UI swatch bound at t4
+            // (teamColorMapId acts as the enable flag). Keep diffuse as-is;
+            // baking a static composite here would be wrong.
+            mprintf(_M("    \x2192 HD TEAMCOLOR branch: diffuse='%s', shaderId=%d\n"),
+                    baseTexPath.c_str(), layer.shaderId);
+            layer.textureId = baseTexId;
+            if (layer.teamColorMapId < 0) {
+                const std::wstring sentinelKey = L"__HD_TC_SENTINEL__";
+                auto it = texPathToId_.find(sentinelKey);
+                if (it != texPathToId_.end()) {
+                    layer.teamColorMapId = it->second;
+                } else {
+                    int id = nextTexId_++;
+                    texPathToId_[sentinelKey] = id;
+                    std::vector<uint8_t> white(4, 255);
+                    loadedTextures_.push_back({id, 0, white, 1, 1});
+                    TextureEntry te; te.textureId = id;
+                    texEntries_.push_back(te);
+                    layer.teamColorMapId = id;
+                    mprintf(_M("    \x2192 HD TC sentinel created (texId=%d)\n"), id);
+                }
+            }
+        } else {
+            mprintf(_M("    \x2192 TEAMCOLOR branch: compositing '%s'\n"), baseTexPath.c_str());
+            layer.textureId = LoadTextureWithTeamColor(baseTexPath, 255, 0, 0);
+            layer.filterMode = 0; layer.alpha = 1.0f;
+        }
     } else if (layer.replaceableTexture == 2) {
         mprintf(_M("    \x2192 TEAMGLOW branch: generating glow texture\n"));
         layer.textureId = GenerateTeamGlowTexture(255, 0, 0);
@@ -791,13 +1059,35 @@ void MaxSceneAdapter::CollectParticleEmitters() {
                     mprintf(_M("    Try3 (filename only): '%s'\n"), fp.c_str());
                 }
                 int replId = 0; PB2Int(baseObj, L"ReplaceableId", 0, replId);
-                pi.textureId = LoadTexture(fp, replId);
+                if (GetFileAttributesW(fp.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                    pi.textureId = LoadTexture(fp, replId);
+                } else {
+                    // Disk lookup exhausted — try CASC/MPQ via FileContentProvider.
+                    // Build the WC3-relative archive path: prefix + filename (narrow).
+                    std::string narrowPrefix(texPath.begin(), texPath.end());
+                    std::string narrowFile(texFile.begin(), texFile.end());
+                    // Normalise separators to backslash (WC3 archive convention).
+                    for (auto& c : narrowPrefix) if (c == '/') c = '\\';
+                    for (auto& c : narrowFile)   if (c == '/') c = '\\';
+                    std::string archivePath = narrowPrefix + narrowFile;
+                    mprintf(_M("    Try4 (ContentProvider): '%S'\n"), archivePath.c_str());
+                    pi.textureId = LoadTextureFromContentProvider(archivePath, replId);
+                    if (pi.textureId < 0) {
+                        // Last resort: just the filename without prefix.
+                        mprintf(_M("    Try5 (ContentProvider, no prefix): '%S'\n"), narrowFile.c_str());
+                        pi.textureId = LoadTextureFromContentProvider(narrowFile, replId);
+                    }
+                    if (pi.textureId < 0)
+                        pi.textureId = LoadTexture(fp, replId); // register as missing (magenta)
+                }
+                pi.replaceableId = replId;
                 mprintf(_M("    \x2192 texId=%d\n"), pi.textureId);
             } else {
                 // Check for replaceable texture (TeamColor/TeamGlow)
                 int replId = 0; PB2Int(baseObj, L"ReplaceableId", 0, replId);
                 if (replId > 0) {
                     pi.textureId = LoadTexture(L"", replId);
+                    pi.replaceableId = replId;
                 } else {
                     mprintf(_M("  [Particle '%s'] NO texture file set!\n"), node->GetName());
                 }
@@ -1050,10 +1340,19 @@ std::vector<MaterialData> MaxSceneAdapter::GetMaterials() {
         md.sortOrder     = mi.sortOrder;
         for (auto& li : mi.layers) {
             MaterialLayerData ld;
-            ld.filterMode = li.filterMode;
-            ld.textureId  = li.textureId;
-            ld.alpha      = li.alpha;
-            ld.flags      = li.flags;
+            ld.filterMode      = li.filterMode;
+            ld.textureId       = li.textureId;
+            ld.alpha           = li.alpha;
+            ld.flags           = li.flags;
+            ld.shaderId        = li.shaderId;
+            ld.normalMapId     = li.normalMapId;
+            ld.ormMapId        = li.ormMapId;
+            ld.emissiveMapId   = li.emissiveMapId;
+            ld.teamColorMapId  = li.teamColorMapId;
+            ld.emissiveGain    = li.emissiveGain;
+            ld.fresnelOpacity  = li.fresnelOpacity;
+            ld.fresnelTeamColor = li.fresnelTeamColor;
+            ld.fresnelColor    = li.fresnelColor;
             md.layers.push_back(ld);
         }
         result.push_back(std::move(md));
@@ -1147,6 +1446,33 @@ std::vector<SkinWeightData> MaxSceneAdapter::GetSkinWeights() {
         }
         mprintf(_M("  Geoset %d: skin %d expanded, %d ISkin, maxIdx=%d, mapped=%d, OOB=%d, zeroW=%d\n"),
                 gs.geosetId, ec, origVC, maxFVM, mapped, outOfRange, zeroWeightVerts);
+
+        // Build per-geoset compact subset palette required by the new
+        // per-geoset palette system (commit 6c23683). boneIdx values above
+        // are global node indices; remap them to LOCAL slots so that
+        // GeosetPaletteSize() > 0 and bonePaletteCb gets created.
+        {
+            std::unordered_map<int, int> globalToLocal;
+            for (auto& inf : sw.influences) {
+                for (int j = 0; j < 4; j++) {
+                    if (inf.weight[j] > 0.0f) {
+                        int g = inf.boneIdx[j];
+                        if (globalToLocal.find(g) == globalToLocal.end()) {
+                            int local = (int)sw.subsetNodeIndices.size();
+                            globalToLocal.emplace(g, local);
+                            sw.subsetNodeIndices.push_back(g);
+                        }
+                    }
+                }
+            }
+            for (auto& inf : sw.influences) {
+                for (int j = 0; j < 4; j++) {
+                    auto it = globalToLocal.find(inf.boneIdx[j]);
+                    inf.boneIdx[j] = (it != globalToLocal.end()) ? it->second : 0;
+                }
+            }
+        }
+
         result.push_back(std::move(sw));
     }
     return result;
@@ -1164,6 +1490,7 @@ std::vector<ParticleEmitterConfig> MaxSceneAdapter::GetParticleConfigs() {
         int iv = 0; float fv = 0; BOOL bv = FALSE;
 
         cfg.textureId = pi.textureId >= 0 ? pi.textureId : 0;
+        cfg.replaceableId = pi.replaceableId;
 
         // Wc3Particles2 PB2 param names (from Particles.h enum)
         int blendMode = 0; PB2Int(obj, L"BlendMode", 0, blendMode);
@@ -1439,6 +1766,9 @@ FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
         PB2Float(obj,L"Width",t,fv);        ps.width=fv;
         PB2Float(obj,L"Height",t,fv);       ps.length=fv;
         ps.visibility = pi.node->GetVisibility(t);
+        BOOL bvSquirt = FALSE; 
+        PB2Bool(obj,L"Squirt",t,bvSquirt); 
+        ps.squirting = bvSquirt != 0;
         state.particleStates.push_back(ps);
     }
 
@@ -1585,10 +1915,10 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
     MaterialRefreshResult result;
     result.changed = false;
 
-    // Helper: get current texture file path from a Wc3Material
-    auto getTexturePath = [&](Mtl* mtl) -> std::wstring {
+    // Helper: get BitmapTex file path from any named texmap slot on a Wc3Material
+    auto getTexturePath = [&](Mtl* mtl, const wchar_t* paramName) -> std::wstring {
         Texmap* texmap = nullptr;
-        if (!PB2Texmap(mtl, L"diffuseMap", texmap) || !texmap) return {};
+        if (!PB2Texmap(mtl, paramName, texmap) || !texmap) return {};
         BitmapTex* bmt = nullptr;
         if (texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
             for (int r = 0; r < texmap->NumRefs(); r++) {
@@ -1619,15 +1949,19 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
         if (PB2Bool(mtl, L"constantColor", 0, flag) && flag) flags |= 32;
         snap.flags = flags;
 
-        Texmap* texmap = nullptr;
-        PB2Texmap(mtl, L"diffuseMap", texmap);
-        int retex = 0;
-        if (texmap && texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
-            int replId = 1; PB2Int(texmap, L"replaceableId", 0, replId);
-            retex = std::max(0, replId - 1);
-        }
-        snap.replaceableTexture = retex;
-        snap.texturePath = getTexturePath(mtl);
+        // replaceableId is on the material (v12+)
+        int replId = 1; PB2Int(mtl, L"replaceableId", 0, replId);
+        snap.replaceableTexture = std::max(0, replId - 1);
+
+        // shaderId
+        int shaderType = 1; PB2Int(mtl, L"shaderType", 0, shaderType);
+        snap.shaderId = (shaderType == 4) ? 24 : std::max(0, shaderType - 1);
+
+        snap.texturePath      = getTexturePath(mtl, L"diffuseMap");
+        snap.normalTexPath    = getTexturePath(mtl, L"normalMap");
+        snap.ormTexPath       = getTexturePath(mtl, L"ormMap");
+        snap.emissiveTexPath  = getTexturePath(mtl, L"emissiveMap");
+        snap.teamColorTexPath = getTexturePath(mtl, L"teamColorMap");
 
         int sortOrd = 1; PB2Int(mtl, L"sortOrder", 0, sortOrd);
         snap.sortOrder = std::max(0, sortOrd - 1);
@@ -1651,7 +1985,12 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
                 it->second.priorityPlane != cur.priorityPlane ||
                 it->second.sortOrder != cur.sortOrder ||
                 it->second.replaceableTexture != cur.replaceableTexture ||
-                it->second.texturePath != cur.texturePath)
+                it->second.shaderId != cur.shaderId ||
+                it->second.texturePath != cur.texturePath ||
+                it->second.normalTexPath != cur.normalTexPath ||
+                it->second.ormTexPath != cur.ormTexPath ||
+                it->second.emissiveTexPath != cur.emissiveTexPath ||
+                it->second.teamColorTexPath != cur.teamColorTexPath)
             {
                 anyChanged = true;
                 break;
@@ -1668,7 +2007,12 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
                     it->second.filterMode != cur.filterMode ||
                     it->second.flags != cur.flags ||
                     it->second.replaceableTexture != cur.replaceableTexture ||
-                    it->second.texturePath != cur.texturePath)
+                    it->second.shaderId != cur.shaderId ||
+                    it->second.texturePath != cur.texturePath ||
+                    it->second.normalTexPath != cur.normalTexPath ||
+                    it->second.ormTexPath != cur.ormTexPath ||
+                    it->second.emissiveTexPath != cur.emissiveTexPath ||
+                    it->second.teamColorTexPath != cur.teamColorTexPath)
                 {
                     anyChanged = true;
                     break;

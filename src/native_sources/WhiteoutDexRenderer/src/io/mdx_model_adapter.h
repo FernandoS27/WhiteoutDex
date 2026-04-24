@@ -65,6 +65,20 @@ private:
     IContentProvider* contentProvider_ = nullptr;
     MdxHierarchy hierarchy_;
 
+    // Per-hierarchy-node bone-visibility gate. For each bone node, stores
+    // the fs.geosetAlphas index to AND the node (and its subtree) against;
+    // -1 means "no gate" (non-bone node, or a bone with geosetId ==
+    // MULTIPLE_GEOSETS, or geosetAnimationId unresolved). Cached at load
+    // time; mirrors CreateBone @0x1404573d0 which stores
+    //   CAnimBoneObj::geosetId = (bone.geosetId == -1) ? -1 : bone.geosetAnimId
+    // and CAnimBoneObj::IsVisible's lookup against anim->geosetStatus
+    // (indexed by GeosetAnimation index). Previewd's
+    // PrepareObjectHierarchyViews skips every descendant of a hidden bone,
+    // so we feed this table into a per-frame nodeVisible[] sweep in
+    // Evaluate() to zero the visibility of every attachment / emitter /
+    // ribbon / light sitting below a hidden bone.
+    std::vector<int> boneGateGeoset_;
+
     // Active sequence
     int activeSeqIdx_ = -1;
     int seqStart_ = 0;
