@@ -184,16 +184,36 @@ private:
     void CollectCollisionShapes();
 
     // Helpers
-    void PackMatrix(const Matrix3& tm, float* dst);
+    static Matrix44f PackMatrix(const Matrix3& tm);
     static bool PB2Float(Animatable* a, const wchar_t* name, TimeValue t, float& out);
     static bool PB2Int(Animatable* a, const wchar_t* name, TimeValue t, int& out);
     static bool PB2Bool(Animatable* a, const wchar_t* name, TimeValue t, BOOL& out);
     static bool PB2Color(Animatable* a, const wchar_t* name, TimeValue t, Color& out);
     static bool PB2Texmap(Animatable* a, const wchar_t* name, Texmap*& out);
+    // PB2 reads with an in-place fallback default — return `def` when the param
+    // is absent or the scan fails, otherwise the read value.
+    static int   PB2IntOr  (Animatable* a, const wchar_t* name, TimeValue t, int   def = 0);
+    static float PB2FloatOr(Animatable* a, const wchar_t* name, TimeValue t, float def = 0.0f);
+    static bool  PB2BoolOr (Animatable* a, const wchar_t* name, TimeValue t, bool  def = false);
     static Object* GetBaseObject(INode* node);
     static Modifier* FindSkinModifier(INode* node);
     static Modifier* FindModifierByClassID(INode* node, Class_ID cid);
+    // Wc3Material reading helpers — shared between CollectMaterials, CollectScene,
+    // ExtractWc3MaterialLayer, and RefreshMaterials.
+    static int ReadWc3MaterialFlags(Mtl* mtl);
+    std::wstring ResolveBitmapPath(Mtl* mtl, const wchar_t* paramName);
     MaterialLayerInfo ExtractWc3MaterialLayer(Mtl* mtl);
+    // Texture registration: push (rgba, w, h) into the loaded-texture table and
+    // return its new texId. Used by every loader path. `displayPath` is the
+    // filePath stored on TextureEntry for diagnostics; when empty, the cache
+    // key is reused (the common case — TeamColor-composited textures override
+    // it so the entry shows the original texture path, not the "__TC__" key).
+    int RegisterTexture(const std::wstring& key, int replaceableId,
+                        std::vector<uint8_t>&& pixels, int width, int height,
+                        const std::wstring& displayPath = L"");
+    // HD materials drive team-color from the live UI swatch at t4; the slot just
+    // needs a sentinel so teamColorMapId >= 0.
+    int EnsureHdTeamColorSentinel();
     std::wstring GetMaxFilePath();
 
     // Loaded texture pixel data (kept for GetTextures())
@@ -238,6 +258,11 @@ private:
         std::wstring teamColorTexPath;
     };
     std::unordered_map<int, MaterialSnapshot> matSnapshots_;  // materialId → snapshot
+
+    // Capture the subset of Wc3Material properties used for change detection.
+    MaterialSnapshot SnapshotMaterial(Mtl* mtl);
+    // Rebuild matSnapshots_ from the current materials_ list.
+    void UpdateMaterialSnapshots();
 };
 
 } // namespace WhiteoutDex
