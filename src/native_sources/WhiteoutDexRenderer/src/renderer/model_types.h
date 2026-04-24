@@ -335,7 +335,10 @@ struct FrameState {
     };
     std::vector<LayerFresnelState> layerFresnels;
 
-    // Attachment per-frame state
+    // Attachment per-frame state. `visibility` carries BOTH the KATV track
+    // value AND the effective bone-ancestor gate — the adapter zeros it
+    // when any ancestor bone is hidden (mirroring Previewd's DFS subtree
+    // skip in PrepareObjectHierarchyViews @0x140535390).
     struct AttachmentFrameState {
         int attachmentIndex;
         Matrix44f transform;

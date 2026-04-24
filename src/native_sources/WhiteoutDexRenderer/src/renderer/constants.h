@@ -13,7 +13,11 @@ using whiteout::Vector4f;
 
 // --- Simulation ---
 constexpr float kMaxSimulationDt         = 0.5f;   // engine clamps frame dt to [0, 0.5]
-constexpr float kMinVisibilityThreshold  = 0.01f;  // below this, emitter is considered invisible
+// Strict `> 0` matches Previewd's emitter gating (SetEmitterValues /
+// SetEmitter2Values / SetRibbonValues / SetLightValues in Anim.cpp — all
+// test `isVisible > 0.0`). Any non-zero KPEV/KP2V/KRVS/KLAV sample should
+// enable the emitter; only a track that reaches exactly 0 hides it.
+constexpr float kMinVisibilityThreshold  = 0.0f;
 constexpr float kRibbonMinLifespan       = 0.25f;  // minimum ribbon edge lifespan in seconds
 
 // --- Billboard math ---

@@ -187,6 +187,27 @@ MdxModelAdapter::MdxModelAdapter(whiteout::mdx::Model model, fs::path basePath,
     }
 
     hierarchy_.Build(model_);
+
+    // Build the per-hierarchy-node bone-visibility gate table once.
+    // Previewd's CreateBone @0x1404573d0 caches
+    //   CAnimBoneObj::geosetId = (bone.geosetId == -1) ? -1 : bone.geosetAnimId
+    // and CAnimBoneObj::IsVisible queries anim->geosetStatus[geosetAnimId]
+    // (indexed by GeosetAnimation). We translate that to an index into
+    // fs.geosetAlphas (indexed by target Geoset) so the per-frame sweep can
+    // AND against the geoset's animated alpha directly.
+    const auto& nodes = hierarchy_.Nodes();
+    boneGateGeoset_.assign(nodes.size(), -1);
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (nodes[i].source != HierarchyNode::Source::Bone) continue;
+        const auto& bone = model_.bones[nodes[i].sourceIndex];
+        if (bone.geosetId == whiteout::mdx::Bone::MULTIPLE_GEOSETS) continue;
+        const whiteout::u32 gaId = bone.geosetAnimationId;
+        if (gaId == whiteout::mdx::Bone::MULTIPLE_GEOSETS) continue;
+        if (gaId >= model_.geosetAnimations.size()) continue;
+        const whiteout::u32 targetGeoset = model_.geosetAnimations[gaId].geosetId;
+        if (targetGeoset >= model_.geosets.size()) continue;
+        boneGateGeoset_[i] = (int)targetGeoset;
+    }
 }
 
 // ============================================================================
@@ -1100,8 +1121,13 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         if (gid < 0 || gid >= geosetCount) continue;
 
         {
+            // Match Previewd's SetGeosetAlpha @0x14019c4d0: when the KGAO
+            // track is authored, the fresh-sequence identity is 1.0 (not
+            // the static `ga.alpha`). The static only applies when no KGAO
+            // track is authored at all.
             auto [t, s, e] = effectiveTime(ga.alphaTracks.globalSequenceId);
-            fs.geosetAlphas[gid] = EvaluateTrackF32(ga.alphaTracks, t, s, e, ga.alpha);
+            const float identity = ga.alphaTracks.isUsed ? 1.0f : ga.alpha;
+            fs.geosetAlphas[gid] = EvaluateTrackF32(ga.alphaTracks, t, s, e, identity);
         }
         if (ga.colorTracks.isUsed) {
             auto [t, s, e] = effectiveTime(ga.colorTracks.globalSequenceId);
@@ -1111,6 +1137,30 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
             fs.geosetColors[gid] = {ga.color.x, ga.color.y, ga.color.z};
         }
     }
+
+    // Per-frame bone-ancestor visibility sweep. Matches Previewd's DFS
+    // skip in PrepareObjectHierarchyViews @0x140535390: any node whose
+    // ancestor chain includes a bone with a zero-byte KGAO alpha is
+    // considered invisible for the frame. `nodes` is topologically sorted
+    // (parent before child) so one forward pass resolves the transitive
+    // closure. Non-bone nodes have boneGateGeoset_[i] == -1 and simply
+    // propagate the parent's visibility.
+    const auto& hierNodes = hierarchy_.Nodes();
+    std::vector<uint8_t> nodeVisible(hierNodes.size(), 1);
+    for (size_t ni = 0; ni < hierNodes.size(); ++ni) {
+        uint8_t vis = (hierNodes[ni].parentIdx < 0)
+                        ? uint8_t{1}
+                        : nodeVisible[hierNodes[ni].parentIdx];
+        const int gate = boneGateGeoset_[ni];
+        if (vis && gate >= 0 && fs.geosetAlphas[gate] <= 0.0f) vis = 0;
+        nodeVisible[ni] = vis;
+    }
+    auto gateByBoneAncestors = [&](int nodeIdx) -> float {
+        return (nodeIdx >= 0 && nodeIdx < (int)nodeVisible.size() &&
+                !nodeVisible[nodeIdx])
+                   ? 0.0f
+                   : 1.0f;
+    };
 
     // Layer alpha (KMTA) evaluation — per material layer
     for (int mi = 0; mi < (int)model_.materials.size(); mi++) {
@@ -1281,6 +1331,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
           ps.length       = EvaluateTrackF32(pe.lengthTracks, t, s, e, pe.length); }
         { auto [t,s,e] = effectiveTime(pe.visibilityTracks.globalSequenceId);
           ps.visibility   = EvaluateTrackF32(pe.visibilityTracks, t, s, e, 1.0f); }
+        ps.visibility *= gateByBoneAncestors(nodeIdx);
 
         (void)pe; // all PE2 per-frame fields set above
     }
@@ -1295,6 +1346,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
             auto [t,s,e] = effectiveTime(att.visibilityTracks.globalSequenceId);
             vis = EvaluateTrackF32(att.visibilityTracks, t, s, e, 1.0f);
         }
+        vis *= gateByBoneAncestors(nodeIdx);
         fs.attachmentStates.push_back({i, tm, vis});
     }
 
@@ -1320,6 +1372,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
           ps.gravity = EvaluateTrackF32(pe.gravityTracks, t, s, e, pe.gravity); }
         { auto [t,s,e] = effectiveTime(pe.visibilityTracks.globalSequenceId);
           ps.visibility = EvaluateTrackF32(pe.visibilityTracks, t, s, e, 1.0f); }
+        ps.visibility *= gateByBoneAncestors(nodeIdx);
 
         fs.pe1States.push_back(ps);
     }
@@ -1343,6 +1396,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
           rs.alpha      = EvaluateTrackF32(rb.alphaTracks, t, s, e, rb.alpha); }
         { auto [t,s,e] = effectiveTime(rb.visibilityTracks.globalSequenceId);
           rs.visibility = EvaluateTrackF32(rb.visibilityTracks, t, s, e, 1.0f); }
+        rs.visibility *= gateByBoneAncestors(nodeIdx);
         { auto [t,s,e] = effectiveTime(rb.textureSlotTracks.globalSequenceId);
           rs.slot       = (int)EvaluateTrackU32(rb.textureSlotTracks, t, s, e, rb.textureSlot); }
 
@@ -1373,13 +1427,19 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
                   (L.type == Light::LightType::Directional) ? FrameState::LightKind::Directional :
                                                               FrameState::LightKind::Ambient;
 
-        // Visibility track (KLAV) gates the whole light. 0 = off.
+        // Visibility track (KLAV) gates the whole light. 0 = off. The
+        // ancestor-bone gate additionally hides the light if its parent
+        // bone chain is invisible, matching Previewd's DFS subtree skip.
         float visibility = 1.0f;
         if (L.visibilityTracks.isUsed) {
             auto [t,s,e] = effectiveTime(L.visibilityTracks.globalSequenceId);
             visibility = EvaluateTrackF32(L.visibilityTracks, t, s, e, 1.0f);
         }
-        ls.enabled = visibility > 0.001f;
+        visibility *= gateByBoneAncestors(
+            hierarchy_.ObjectIdToNodeIndex((int)L.node.objectId));
+        // Strict > 0 matches Previewd's SetLightValues @0x14052f5e0 which
+        // gates EnvApply/EnvUnApply on `isVisible > 0.0`.
+        ls.enabled = visibility > 0.0f;
         if (!ls.enabled) { fs.lights.push_back(ls); continue; }
 
         // Diffuse (KLAC/KLAI) and ambient (KLBC/KLBI) color + intensity.

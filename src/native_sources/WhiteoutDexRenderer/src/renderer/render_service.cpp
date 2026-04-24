@@ -1018,7 +1018,12 @@ void RenderService::ApplyParticleFrameStates(ModelInstance& mi, const FrameState
         em->SetAcceleration(ps.gravity);
         em->SetWidth(ps.width);
         em->SetHeight(ps.length);
-        em->SetVisible(ps.visibility > 0.02f);
+        // Mirrors Previewd's SetEmitter2Values @0x140531cb0:
+        //   visible = isVisible[0] > 0.0 && !currobj->squirts;
+        // Squirt emitters are force-hidden so they never emit continuously —
+        // actual bursts are driven through SetSquirtPending below, on the
+        // rising edge of emissionRate.
+        em->SetVisible(ps.visibility > 0.0f && !ps.squirting);
         if (ps.squirting) {
             auto& st = mi.pe2State[i];
             if (st.emissionValid) {
@@ -1072,7 +1077,13 @@ void RenderService::ApplyAttachmentStates(ModelInstance& mi, const FrameState& s
         auto* child = getModel(slot.childModelHandle);
         if (!child) continue;
 
-        bool visible = (as.visibility > 0.02f);
+        // Attachment visibility is a pure boolean gate in Previewd
+        // (AnimIsAttachmentEnabled @0x1404651b0): `visibility > 0.0`. The
+        // additional ancestor-bone gate is baked into `as.visibility` by
+        // the adapter's nodeVisible[] sweep (matches Previewd's DFS skip
+        // in PrepareObjectHierarchyViews @0x140535390), so a single float
+        // check covers both.
+        bool visible = (as.visibility > 0.0f);
         child->worldTransform = as.transform;
 
         // When becoming visible: pick a new random animation and restart from frame 0
@@ -1088,10 +1099,12 @@ void RenderService::ApplyAttachmentStates(ModelInstance& mi, const FrameState& s
             slot.wasVisible = false;
         }
 
-        // Authoritative parent-driven visibility. The child's own animation
-        // still writes geoset/layer alphas via EvaluatePE1Children; the
-        // renderer multiplies them by parentVisibility at draw time.
-        child->parentVisibility = visible ? as.visibility : 0.0f;
+        // Parent-driven visibility is now strict on/off (1.0 or 0.0). The
+        // downstream `<= 0.02f` skip tests and `geoAlpha * parentVisibility`
+        // math still work with these two values and collapse to the same
+        // behaviour as a bool gate: when hidden, every pass skips; when
+        // shown, geoset alpha is unmodified.
+        child->parentVisibility = visible ? 1.0f : 0.0f;
     }
 }
 
@@ -2420,7 +2433,13 @@ public:
         if (matId >= 0 && matId < (int)mi->gpuMaterials.size()) mat = &mi->gpuMaterials[matId];
 
         const float geoAlpha = geo.geosetAlpha * mi->parentVisibility;
-        if (geoAlpha < 0.01f) return;
+        // Previewd's geoset-hidden gate is the byte `flags & 1` flag, which
+        // is set iff `ftol(clamp(animatedAlpha,0,1) * proceduralAlpha)` is
+        // non-zero (CalcGeosetColor @0x140199970). Any alpha that quantizes
+        // to byte 0 — i.e. < 0.5/255 ≈ 0.00196 — would be skipped; anything
+        // else is drawn at the corresponding byte alpha. Using <= 0 keeps
+        // that semantic without forcing the quantization math here.
+        if (geoAlpha <= 0.0f) return;
 
         int numLayers = mat ? (int)mat->cpu.layers.size() : 0;
         if (numLayers <= 0) numLayers = 1;
@@ -2581,7 +2600,13 @@ public:
         if (matId >= 0 && matId < (int)mi->gpuMaterials.size()) mat = &mi->gpuMaterials[matId];
 
         const float geoAlpha = geo.geosetAlpha * mi->parentVisibility;
-        if (geoAlpha < 0.01f) return;
+        // Previewd's geoset-hidden gate is the byte `flags & 1` flag, which
+        // is set iff `ftol(clamp(animatedAlpha,0,1) * proceduralAlpha)` is
+        // non-zero (CalcGeosetColor @0x140199970). Any alpha that quantizes
+        // to byte 0 — i.e. < 0.5/255 ≈ 0.00196 — would be skipped; anything
+        // else is drawn at the corresponding byte alpha. Using <= 0 keeps
+        // that semantic without forcing the quantization math here.
+        if (geoAlpha <= 0.0f) return;
 
         int numLayers = mat ? (int)mat->cpu.layers.size() : 0;
         if (numLayers <= 0) numLayers = 1;
