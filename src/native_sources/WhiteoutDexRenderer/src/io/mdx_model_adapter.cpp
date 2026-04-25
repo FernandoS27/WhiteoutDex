@@ -283,6 +283,10 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     td.textureId     = textureId;
     td.replaceableId = replaceableId;
     td.width = td.height = 0;
+    // Cross-model dedup key. The MDX path string is the canonical resource
+    // identifier — two models referencing `Textures/Dirt.blp` produce one
+    // GPU upload via TextureAssetManager's shared cache.
+    td.sharedKey     = NormalizeTextureKey(path);
 
     // Parse a texture from a decoded result into td.
     //
@@ -393,7 +397,19 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
             td.replaceableId = (int)tex.replaceableId;
             td.width = td.height = 0;
         } else if (!tex.fileName.empty()) {
-            td = LoadTextureFile(tex.fileName, i, (int)tex.replaceableId);
+            // Skip the BLP/CASC decode entirely when the renderer's
+            // shared cache already holds this path — UploadStagedTextures
+            // will detect (sharedKey != "" && pixels empty) and borrow
+            // from the cache via TextureAssetManager::BindShared.
+            std::string sharedKey = NormalizeTextureKey(tex.fileName);
+            if (IsTextureCached(sharedKey)) {
+                td.textureId     = i;
+                td.replaceableId = (int)tex.replaceableId;
+                td.width = td.height = 0;
+                td.sharedKey = std::move(sharedKey);
+            } else {
+                td = LoadTextureFile(tex.fileName, i, (int)tex.replaceableId);
+            }
         } else {
             // Empty texture → 4x4 white
             td.textureId     = i;

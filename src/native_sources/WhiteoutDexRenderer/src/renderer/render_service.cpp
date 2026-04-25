@@ -258,6 +258,10 @@ std::shared_ptr<RenderService::PE1ModelTemplate> RenderService::loadTemplateSync
     auto tmpl = std::make_shared<PE1ModelTemplate>();
     auto adapter = std::make_shared<MdxModelAdapter>(
         std::move(model), texBasePath, activeContentProvider_);
+    // Cross-model dedup query — skip BLP/CASC decode for paths that
+    // earlier models already uploaded.
+    adapter->SetTextureCacheQuery(
+        [this](std::string_view k) { return IsTextureCached(k); });
     tmpl->adapter = adapter;
     tmpl->meshes = adapter->GetMeshes();
     tmpl->textures = adapter->GetTextures();
@@ -338,6 +342,7 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
         st.wrapFlags = tex.wrapFlags;
         st.format = tex.format;
         st.pixels = tex.pixels;
+        st.sharedKey = tex.sharedKey;
         if ((tex.replaceableId == 1 || tex.replaceableId == 2) && replaceables_)
             replaceables_->RegisterModelSlot(*mi, tex.textureId,
                                              static_cast<ReplaceableKind>(tex.replaceableId));
@@ -556,6 +561,7 @@ void RenderService::UpdateMaterials(uint32_t handle, const std::vector<MaterialD
         st.wrapFlags = tex.wrapFlags;
         st.format = tex.format;
         st.pixels = tex.pixels;
+        st.sharedKey = tex.sharedKey;
         if ((tex.replaceableId == 1 || tex.replaceableId == 2) && replaceables_)
             replaceables_->RegisterModelSlot(*mi, tex.textureId,
                                              static_cast<ReplaceableKind>(tex.replaceableId));
@@ -619,6 +625,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
         st.wrapFlags = tex.wrapFlags;
         st.format = tex.format;
         st.pixels = tex.pixels;
+        st.sharedKey = tex.sharedKey;
         // Track replaceable textures for team color updates
         if ((tex.replaceableId == 1 || tex.replaceableId == 2) && replaceables_)
             replaceables_->RegisterModelSlot(*mi, tex.textureId,
@@ -1156,6 +1163,15 @@ void RenderService::ApplyFrameState(const FrameState& state, int timeMs) {
 }
 
 // ============================================================================
+// Texture cache query (cross-model dedup) — adapters poll through their
+// IModelSource::IsTextureCached helper to skip BLP/CASC decode on hit.
+// ============================================================================
+
+bool RenderService::IsTextureCached(std::string_view key) const {
+    return textures_ && textures_->IsCachedShared(key);
+}
+
+// ============================================================================
 // Team Color — thin façade over ReplaceableTextureManager.
 // ============================================================================
 
@@ -1344,6 +1360,26 @@ void RenderService::GetFrameStats(int& geosets, int& textures, int& nodes,
 void RenderService::UploadStagedTextures(ModelInstance& mi) {
     if (!mi.textures) mi.textures = textures_->CreateModelScope();
     for (auto& [id, st] : mi.stagedTextures) {
+        // Three-way dispatch:
+        //   1. sharedKey set, pixels empty → adapter saw a cache hit
+        //      and skipped decode. Borrow only.
+        //   2. sharedKey set, pixels present → file-backed first load.
+        //      UploadShared creates+caches under the key.
+        //   3. sharedKey empty → procedural / per-model owned upload.
+        if (!st.sharedKey.empty() && st.pixels.empty()) {
+            // Cache-hit-at-adapter-time path. BindShared returns Invalid
+            // on the rare race where the entry was evicted between the
+            // adapter's check and now; in that case Get(id) yields
+            // Invalid and bind sites fall through to defaultTex.
+            if (mi.textures->BindShared(id, st.sharedKey, st.wrapFlags)
+                == gfx::TextureHandle::Invalid) {
+                std::string msg = "[WDEX texture] eviction race for '";
+                msg += st.sharedKey;
+                msg += "' — using fallback\n";
+                OutputDebugStringA(msg.c_str());
+            }
+            continue;
+        }
         if (st.width <= 0 || st.height <= 0) continue;
         // Upload in the source pixel format (BC3/BC5/BC7 for normal
         // maps, sRGB variants for albedo, etc). The staged texture
@@ -1359,7 +1395,12 @@ void RenderService::UploadStagedTextures(ModelInstance& mi) {
             .format    = texFormat,
             .usage     = gfx::TextureUsage::ShaderResource,
         };
-        mi.textures->Upload(id, desc, st.pixels.data(), st.wrapFlags);
+        if (st.sharedKey.empty()) {
+            mi.textures->Upload(id, desc, st.pixels.data(), st.wrapFlags);
+        } else {
+            mi.textures->UploadShared(id, st.sharedKey, desc,
+                                      st.pixels.data(), st.wrapFlags);
+        }
     }
     mi.stagedTextures.clear();
 }

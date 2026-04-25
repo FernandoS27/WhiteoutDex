@@ -274,10 +274,12 @@ static bool ReadFileBytesFromDisk(const std::wstring& filePath,
 
 int MaxSceneAdapter::RegisterTexture(const std::wstring& key, int replaceableId,
                                       std::vector<uint8_t>&& pixels, int width, int height,
-                                      const std::wstring& displayPath) {
+                                      const std::wstring& displayPath,
+                                      std::string sharedKey) {
     int id = nextTexId_++;
     if (!key.empty()) texPathToId_[key] = id;
-    loadedTextures_.push_back({id, replaceableId, std::move(pixels), width, height});
+    loadedTextures_.push_back({id, replaceableId, std::move(pixels), width, height,
+                                std::move(sharedKey)});
     TextureEntry te;
     te.textureId     = id;
     te.replaceableId = replaceableId;
@@ -377,6 +379,15 @@ int MaxSceneAdapter::LoadTextureFromContentProvider(const std::string& archivePa
     auto cached = texPathToId_.find(wkey);
     if (cached != texPathToId_.end()) return cached->second;
 
+    // Cross-model dedup: skip the CASC extraction + decode entirely when
+    // the renderer has the archive path cached from a previous model load.
+    std::string sharedKey = NormalizeTextureKey(archivePath);
+    if (IsTextureCached(sharedKey)) {
+        mprintf(_M("    [ContentProvider] cache hit, skipping decode: '%S'\n"), archivePath.c_str());
+        return RegisterTexture(wkey, replaceableId, {}, 0, 0, /*displayPath*/L"",
+                               std::move(sharedKey));
+    }
+
     std::string foundExt;
     auto data = contentProvider_.ReadFile(archivePath, &foundExt);
     if (!data || data->empty()) {
@@ -390,7 +401,8 @@ int MaxSceneAdapter::LoadTextureFromContentProvider(const std::string& archivePa
         mprintf(_M("    [ContentProvider] parse failed: '%S'\n"), archivePath.c_str());
         return -1;
     }
-    int id = RegisterTexture(wkey, replaceableId, std::move(pixels), w, h);
+    int id = RegisterTexture(wkey, replaceableId, std::move(pixels), w, h,
+                             /*displayPath*/L"", std::move(sharedKey));
     mprintf(_M("    [ContentProvider] loaded '%S' as texId=%d (%dx%d)\n"), archivePath.c_str(), id, w, h);
     return id;
 }
@@ -469,11 +481,24 @@ int MaxSceneAdapter::LoadTexture(const std::wstring& filePath, int replaceableId
     auto it = texPathToId_.find(filePath);
     if (it != texPathToId_.end()) return it->second;
 
+    // Cross-model dedup: if the renderer's shared cache already has this
+    // path, reserve a borrow slot WITHOUT decoding. UploadStagedTextures
+    // sees the empty rgba + non-empty sharedKey and binds via
+    // TextureAssetManager::BindShared. This skips the entire bitmap-
+    // manager / disk / CASC pipeline for textures another model loaded.
+    std::string sharedKey = NormalizeTextureKey(filePath);
+    if (IsTextureCached(sharedKey)) {
+        mprintf(_M("  Texture: [cache hit, skipping decode] '%s'\n"), filePath.c_str());
+        return RegisterTexture(filePath, 0, {}, 0, 0, /*displayPath*/L"",
+                               std::move(sharedKey));
+    }
+
     // Primary path: delegate to 3ds Max's bitmap manager.
     long long sumR = 0, sumG = 0, sumB = 0, sumA = 0;
     if (auto bmp = LoadMaxBitmapRGBA(filePath, L"Texture:", &sumR, &sumG, &sumB, &sumA)) {
         const int total = bmp->width * bmp->height;
-        int id = RegisterTexture(filePath, 0, std::move(bmp->rgba), bmp->width, bmp->height);
+        int id = RegisterTexture(filePath, 0, std::move(bmp->rgba), bmp->width, bmp->height,
+                                 /*displayPath*/L"", sharedKey);
         mprintf(_M("  Texture %d: %dx%d avgRGBA=[%d,%d,%d,%d] '%s'\n"),
                 id, bmp->width, bmp->height,
                 (int)(sumR / total), (int)(sumG / total),
@@ -489,7 +514,8 @@ int MaxSceneAdapter::LoadTexture(const std::wstring& filePath, int replaceableId
         std::vector<uint8_t> pixels; int pw = 0, ph = 0;
         if (ReadFileBytesFromDisk(filePath, fileBytes, ext) &&
             DecodeToRGBA8(fileBytes, ext, pixels, pw, ph)) {
-            int id = RegisterTexture(filePath, replaceableId, std::move(pixels), pw, ph);
+            int id = RegisterTexture(filePath, replaceableId, std::move(pixels), pw, ph,
+                                     /*displayPath*/L"", sharedKey);
             mprintf(_M("  Texture %d: %dx%d [direct decode] '%s'\n"), id, pw, ph, filePath.c_str());
             return id;
         }
@@ -506,7 +532,8 @@ int MaxSceneAdapter::LoadTexture(const std::wstring& filePath, int replaceableId
         }
     }
 
-    // All fallbacks exhausted — magenta placeholder.
+    // All fallbacks exhausted — magenta placeholder. No sharedKey: a missing
+    // file should NOT poison the dedup cache for everyone else.
     std::vector<uint8_t> rgba;
     FillSolidRGBA(rgba, 4, 4, 255, 0, 255, 255);
     int id = RegisterTexture(filePath, 0, std::move(rgba), 4, 4);
@@ -1115,6 +1142,11 @@ std::vector<TextureData> MaxSceneAdapter::GetTextures() {
         td.format        = gfx::Format::R8G8B8A8_UNORM;
         td.width         = lt.width;
         td.height        = lt.height;
+        // sharedKey was stamped at LoadTexture time (file-backed slots
+        // only — replaceable / sentinel paths leave it empty so they
+        // stay per-model). When pixels are also empty the renderer treats
+        // this as a borrow-only entry and goes through BindShared.
+        td.sharedKey     = std::move(lt.sharedKey);
         result.push_back(std::move(td));
     }
     loadedTextures_.clear();

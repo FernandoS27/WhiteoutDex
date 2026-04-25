@@ -7,7 +7,9 @@
 // ============================================================================
 
 #include "model_types.h"
+#include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace WhiteoutDex {
@@ -15,6 +17,18 @@ namespace WhiteoutDex {
 class IModelSource {
 public:
     virtual ~IModelSource() = default;
+
+    // ── Cross-model texture-cache query ─────────────────────────────────
+    // Optional callback the host wires up before triggering texture loads
+    // (CollectScene for the Max adapter, the first GetTextures call for
+    // MDX). Adapters call IsTextureCached(key) before the BLP/CASC decode
+    // path; on hit they emit a TextureData with sharedKey set and pixels
+    // empty, signalling the renderer to borrow from TextureAssetManager's
+    // cross-model cache instead of paying the decode + upload cost a
+    // second time. Result is advisory — see TextureAssetManager.h for
+    // the eviction-race contract.
+    using TextureCacheQuery = std::function<bool(std::string_view)>;
+    void SetTextureCacheQuery(TextureCacheQuery q) { textureCacheQuery_ = std::move(q); }
 
     // ---- Static data (called once when loading a model) ----
     virtual std::vector<MeshData>              GetMeshes()           = 0;
@@ -55,6 +69,17 @@ public:
         int startMs, endMs;
     };
     virtual std::vector<SequenceInfo> GetSequences() = 0;
+
+protected:
+    // Adapter-side helper: true when the host has wired a cache query
+    // and the renderer reports `key` already cached. Falls back to false
+    // (decode normally) when no host has wired a query.
+    bool IsTextureCached(std::string_view key) const {
+        return textureCacheQuery_ && textureCacheQuery_(key);
+    }
+
+private:
+    TextureCacheQuery textureCacheQuery_;
 };
 
 } // namespace WhiteoutDex

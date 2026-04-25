@@ -210,18 +210,25 @@ private:
     // it so the entry shows the original texture path, not the "__TC__" key).
     int RegisterTexture(const std::wstring& key, int replaceableId,
                         std::vector<uint8_t>&& pixels, int width, int height,
-                        const std::wstring& displayPath = L"");
+                        const std::wstring& displayPath = L"",
+                        std::string sharedKey = {});
     // HD-sentinel allocation removed — adapters set teamColorMapId to
     // kHdTeamColorActive directly when the HD layer flags its team-colour
     // slot as live-driven. See ReplaceableTextureManager::GetHdSwatchTexture.
     std::wstring GetMaxFilePath();
 
-    // Loaded texture pixel data (kept for GetTextures())
+    // Loaded texture pixel data (kept for GetTextures()).
+    // `sharedKey` carries the cross-model dedup key (normalised path) so
+    // GetTextures can stamp it onto TextureData without an extra lookup.
+    // Empty for procedural / sentinel textures and for cache-borrow
+    // entries where rgba is empty (the renderer's shared cache already
+    // owns the GPU resource — we just record the borrow).
     struct LoadedTexture {
         int textureId;
         int replaceableId;
         std::vector<uint8_t> rgba;
         int width, height;
+        std::string sharedKey;
     };
     std::vector<LoadedTexture> loadedTextures_;
 

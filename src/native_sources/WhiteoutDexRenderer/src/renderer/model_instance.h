@@ -35,6 +35,11 @@ struct StagedTexture {
     int mipLevels = 1;
     int replaceableId = 0;
     uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V)
+
+    // Mirror of TextureData::sharedKey carried across the staging boundary.
+    // Empty = per-model owned upload; non-empty = key into the shared
+    // cross-model GPU texture cache in TextureAssetManager.
+    std::string sharedKey;
 };
 
 struct StagedMaterialLayer {

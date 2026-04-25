@@ -91,6 +91,41 @@ inline std::string ExtensionLower(const std::filesystem::path& p) {
 }
 
 // ============================================================================
+// NormalizeTextureKey — produce a stable narrow-string cache key from any
+// adapter's source-path string. Lower-cased, forward-slash separators,
+// no leading whitespace. Used to populate TextureData::sharedKey so that
+// TextureAssetManager's shared-cache deduplicates the same logical texture
+// across multiple model loads (e.g. two heroes referencing the same
+// Hero.blp produce one GPU upload, not two).
+// ============================================================================
+inline std::string NormalizeTextureKey(std::string_view path) {
+    std::string out;
+    out.reserve(path.size());
+    bool started = false;
+    for (char c : path) {
+        if (!started) {
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+            started = true;
+        }
+        if (c == '\\') c = '/';
+        else c = (char)std::tolower((unsigned char)c);
+        out.push_back(c);
+    }
+    return out;
+}
+
+// Wide-string convenience overload — converts via byte-truncation, which is
+// safe for the ASCII subset MDX/Max texture paths actually use. CJK paths
+// would hash differently in cross-adapter cases, but stay self-consistent
+// within one adapter so dedup still works.
+inline std::string NormalizeTextureKey(std::wstring_view path) {
+    std::string narrow;
+    narrow.reserve(path.size());
+    for (wchar_t wc : path) narrow.push_back(static_cast<char>(wc));
+    return NormalizeTextureKey(std::string_view(narrow));
+}
+
+// ============================================================================
 // DispatchTextureParser — invoke `parse` with the WhiteoutLib parser
 // matching `ext`. `parse` receives the parser by reference (e.g.
 // `blp::Parser&`) and must return `std::optional<Texture>`. Returns

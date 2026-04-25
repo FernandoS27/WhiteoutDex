@@ -177,6 +177,12 @@ public:
     void SetDisplayFlags(const DisplayFlags& flags);
     DisplayFlags GetDisplayFlags() const;
 
+    // Cross-model texture-cache query. Wire this onto an IModelSource
+    // (via IModelSource::SetTextureCacheQuery) before triggering texture
+    // loading so adapters can skip the BLP/CASC decode for textures the
+    // renderer already has in TextureAssetManager's shared cache.
+    bool IsTextureCached(std::string_view key) const;
+
     // Team color raw access (for platform swatch rendering). BGR-packed.
     // Delegates to ReplaceableTextureManager.
     uint32_t GetTeamColorRaw() const;

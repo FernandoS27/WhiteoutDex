@@ -202,6 +202,11 @@ Value* ndxStart_cf(Value** arg_list, int count)
     ip->SetTime(0, FALSE);
 
     g_adapter = new WhiteoutDex::MaxSceneAdapter();
+    // Wire the renderer's cross-model texture cache so CollectScene's
+    // LoadTexture calls can skip the BLP/CASC decode for paths another
+    // model already uploaded.
+    g_adapter->SetTextureCacheQuery(
+        [](std::string_view k) { return g_renderer->IsTextureCached(k); });
     mprintf(_M("WhiteoutDex: Collecting scene...\n"));
     g_adapter->CollectScene();
 

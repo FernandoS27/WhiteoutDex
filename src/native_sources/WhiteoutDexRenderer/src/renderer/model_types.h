@@ -148,6 +148,15 @@ struct TextureData {
     int width, height;
     int mipLevels = 1;
     uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V); default = wrap both
+
+    // Cross-model dedup key. When non-empty the renderer treats this
+    // texture as a shared asset: TextureAssetManager keeps one GPU upload
+    // per unique key with a refcount, so two models referencing the same
+    // BLP cause one upload, not two. Adapters fill this with a normalised
+    // path (lower-case, forward-slash) for file-backed textures and leave
+    // it empty for procedural / replaceable / per-model unique textures
+    // (team-colour swatches, magenta missing-marker, HD sentinels).
+    std::string sharedKey;
 };
 
 struct MaterialLayerData {

@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -34,6 +35,47 @@ public:
     TextureAssetManager(const TextureAssetManager&)            = delete;
     TextureAssetManager& operator=(const TextureAssetManager&) = delete;
 
+    // ── Shared (cross-model) texture cache ──────────────────────────────
+    // Refcounted store of file-backed GPU textures, keyed by the opaque
+    // string adapters supply via TextureData::sharedKey. Two models that
+    // reference the same logical texture share one GPU upload; the
+    // refcount drops to zero when the last referencing ModelScope is
+    // destroyed (or releases its borrow), and the GPU handle is freed
+    // then. AcquireShared / ReleaseShared are render-thread-only — they
+    // touch the device through gfx_.
+    //
+    // Adapters that produce procedural textures (team-colour swatches,
+    // magenta missing-marker, HD live sentinels, …) leave sharedKey
+    // empty so their slots stay per-model in ModelScope.
+    gfx::TextureHandle AcquireShared(std::string_view        key,
+                                     const gfx::TextureDesc& desc,
+                                     const void*             pixels);
+    void               ReleaseShared(std::string_view key);
+
+    // Thread-safe peek — adapters call this from any thread (typically the
+    // model-load thread) before doing the expensive BLP/CASC decode. Result
+    // is advisory: between this call and the eventual UploadStagedTextures
+    // an unloaded model may evict the entry. Renderer's borrow-only path
+    // handles that race by binding the magenta default.
+    bool IsCachedShared(std::string_view key) const;
+
+    // Borrow an entry that the caller already saw via IsCachedShared, with
+    // no pixels supplied. Returns Invalid if the entry has since been
+    // evicted (eviction race). On success the refcount is bumped and the
+    // caller is expected to ReleaseShared the same key when done.
+    gfx::TextureHandle TryAcquireShared(std::string_view key);
+
+    // Diagnostic counters; reset by ResetSharedStats. UI can poll these
+    // for the future debug overlay (uploads = unique GPU creations,
+    // hits = times an Acquire returned a cached handle).
+    struct SharedStats {
+        size_t uniqueEntries = 0;   // current size of shared_
+        size_t totalAcquires = 0;   // lifetime; cumulative
+        size_t cacheHits     = 0;   // lifetime
+    };
+    SharedStats GetSharedStats() const;
+    void        ResetSharedStats();
+
     // ── ModelScope ──────────────────────────────────────────────────────
     // Owns every GPU texture handle for one ModelInstance's per-material
     // texture set. Replaces the previous `ModelInstance::gpuTextures` map
@@ -42,14 +84,32 @@ public:
     // place — the per-model lifetime story is now expressed in the type.
     class ModelScope {
     public:
-        // Upload (or replace) the texture identified by `textureId`.
-        // Releases the previous GPU handle for this id if one existed,
-        // matching the old `UploadStagedTextures` re-upload semantics.
-        // Returns the new gfx handle.
+        // Upload (or replace) a per-model owned texture for `textureId`.
+        // Releases the previous handle for this id if one existed.
+        // Used for procedural/replaceable textures with no dedup key.
         gfx::TextureHandle Upload(int                     textureId,
                                   const gfx::TextureDesc& desc,
                                   const void*             pixels,
                                   uint32_t                wrapFlags);
+
+        // Bind `textureId` to a shared cross-model texture identified by
+        // `sharedKey`. Increments the manager's refcount on cache hit;
+        // creates+caches on miss. The scope tracks the borrow so Clear()
+        // releases the ref instead of destroying the handle directly.
+        gfx::TextureHandle UploadShared(int                     textureId,
+                                        std::string_view        sharedKey,
+                                        const gfx::TextureDesc& desc,
+                                        const void*             pixels,
+                                        uint32_t                wrapFlags);
+
+        // Borrow-only path — for textures the adapter saw cached at decode
+        // time and skipped the BLP/CASC work for. Returns Invalid if the
+        // entry was evicted between the adapter's check and now (eviction
+        // race); caller must bind a fallback (the renderer's default
+        // magenta) at draw time when this happens.
+        gfx::TextureHandle BindShared(int              textureId,
+                                      std::string_view sharedKey,
+                                      uint32_t         wrapFlags);
 
         // Lookup; returns Invalid if `textureId` was never uploaded.
         gfx::TextureHandle Get(int textureId) const noexcept;
@@ -72,12 +132,22 @@ public:
 
     private:
         friend class TextureAssetManager;
-        explicit ModelScope(gfx::IGFXDevice& gfx) : gfx_(gfx) {}
+        ModelScope(gfx::IGFXDevice& gfx, TextureAssetManager& mgr)
+            : gfx_(gfx), mgr_(mgr) {}
 
-        gfx::IGFXDevice& gfx_;
+        // Drop ownership of `entries_[textureId]` if it exists, releasing
+        // the underlying handle through the right path (owned → Destroy,
+        // shared → ReleaseShared to the manager).
+        void DropEntry(int textureId);
+
+        gfx::IGFXDevice&     gfx_;
+        TextureAssetManager& mgr_;
         struct Entry {
             gfx::TextureHandle tex       = gfx::TextureHandle::Invalid;
             uint32_t           wrapFlags = kSamplerWrapBitsMask;
+            // Empty: this scope owns the GPU handle directly (Destroy on Clear).
+            // Non-empty: borrowed from the shared cache; ReleaseShared on Clear.
+            std::string        sharedKey;
         };
         std::unordered_map<int, Entry> entries_;
     };
@@ -162,6 +232,23 @@ private:
     };
     std::unordered_map<std::string, gfx::TextureHandle,
                        TransparentStringHash, std::equal_to<>> owned_;
+
+    // Refcounted shared-texture cache. handle = the GPU resource;
+    // refCount = number of ModelScope::Entry borrows currently outstanding.
+    struct SharedEntry {
+        gfx::TextureHandle handle   = gfx::TextureHandle::Invalid;
+        size_t             refCount = 0;
+    };
+    std::unordered_map<std::string, SharedEntry,
+                       TransparentStringHash, std::equal_to<>> shared_;
+    // Guards every read/write of shared_ + the stats counters. Adapter
+    // threads only call IsCachedShared (read); the render thread is the
+    // only writer (Acquire/Release/TryAcquire). std::mutex over a 1-2µs
+    // critical section is plenty — shared_mutex would be overkill.
+    mutable std::mutex sharedMutex_;
+    // Lifetime totals — never reset on cache evictions.
+    size_t sharedTotalAcquires_ = 0;
+    size_t sharedCacheHits_     = 0;
 };
 
 } // namespace WhiteoutDex
