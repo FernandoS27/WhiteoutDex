@@ -126,6 +126,14 @@ struct MeshData {
     std::vector<uint32_t>  indices;
 };
 
+// Sentinel value adapters write into MaterialLayerData::teamColorMapId
+// when the MDX/Max layer flags its team-colour slot as live-driven but
+// doesn't author a real texture. Any non-negative value suffices — this
+// constant exists purely to make intent explicit at the call site. The
+// HD draw path never looks this up as a textureId; it uses it only as a
+// "is the slot active?" flag before binding the live UI swatch.
+inline constexpr int kHdTeamColorActive = 0;
+
 struct TextureData {
     int textureId;
     int replaceableId;
@@ -164,6 +172,13 @@ struct MaterialLayerData {
     int normalMapId    = -1;
     int ormMapId       = -1;
     int emissiveMapId  = -1;
+    // -1 = no team-colour slot authored on this layer.
+    // Any value >= 0 means "this layer wants the live HD team-colour swatch";
+    // the HD draw path binds ReplaceableTextureManager::GetHdSwatchTexture()
+    // at t4 and ignores the numeric value itself. Adapters set this to
+    // kHdTeamColorActive when the MDX/Max layer flags the slot as live-driven
+    // but doesn't author a real texture; a real textureId from the model's
+    // texture scope is equally valid (the bind path doesn't look it up).
     int teamColorMapId = -1;
 
     // Per-layer HD material knobs. Feed directly into the HD PS CB

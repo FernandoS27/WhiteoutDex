@@ -175,8 +175,8 @@ private:
     void CollectMaterials();
     int  LoadTexture(const std::wstring& filePath, int replaceableId);
     int  LoadTextureFromContentProvider(const std::string& archivePath, int replaceableId);
-    int  LoadTextureWithTeamColor(const std::wstring& filePath, int tcR, int tcG, int tcB);
-    int  GenerateTeamGlowTexture(int tcR, int tcG, int tcB);
+    // SD TEAMCOLOR / TEAMGLOW slots are reserved through LoadTexture(L"", 1|2)
+    // — pixel bake lives in ReplaceableTextureManager renderer-side.
     void CollectBones();
     void CollectAttachments();
     void CollectParticleEmitters();
@@ -211,9 +211,9 @@ private:
     int RegisterTexture(const std::wstring& key, int replaceableId,
                         std::vector<uint8_t>&& pixels, int width, int height,
                         const std::wstring& displayPath = L"");
-    // HD materials drive team-color from the live UI swatch at t4; the slot just
-    // needs a sentinel so teamColorMapId >= 0.
-    int EnsureHdTeamColorSentinel();
+    // HD-sentinel allocation removed — adapters set teamColorMapId to
+    // kHdTeamColorActive directly when the HD layer flags its team-colour
+    // slot as live-driven. See ReplaceableTextureManager::GetHdSwatchTexture.
     std::wstring GetMaxFilePath();
 
     // Loaded texture pixel data (kept for GetTextures())

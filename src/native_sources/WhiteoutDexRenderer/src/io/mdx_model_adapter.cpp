@@ -375,22 +375,6 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     return td;
 }
 
-TextureData MdxModelAdapter::GenerateTeamColorTexture(int textureId,
-                                                       int replaceableId) const {
-    TextureData td;
-    td.textureId     = textureId;
-    td.replaceableId = replaceableId;
-    if (replaceableId == 2) {
-        // TeamGlow: decode embedded TGA tinted with default red
-        td.pixels = DecodeTeamGlow(255, 0, 0, td.width, td.height);
-    } else {
-        // TeamColor: solid 4x4 red
-        td.width = td.height = 4;
-        FillSolidRGBA(td.pixels, 4, 4, 255, 0, 0, 255);
-    }
-    return td;
-}
-
 std::vector<TextureData> MdxModelAdapter::GetTextures() {
     std::vector<TextureData> result;
     result.reserve(model_.textures.size());
@@ -399,7 +383,15 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
         const auto& tex = model_.textures[i];
         TextureData td;
         if (tex.replaceableId == 1 || tex.replaceableId == 2) {
-            td = GenerateTeamColorTexture(i, (int)tex.replaceableId);
+            // Replaceable slot: adapter only declares the kind.
+            // ReplaceableTextureManager::RegisterModelSlot bakes the
+            // pixels from the current swatch at renderer registration time
+            // and re-bakes on every SetTeamColor. Leaving width=height=0
+            // here makes UploadStagedTextures skip this slot until the
+            // manager fills it — avoids a transient red placeholder.
+            td.textureId     = i;
+            td.replaceableId = (int)tex.replaceableId;
+            td.width = td.height = 0;
         } else if (!tex.fileName.empty()) {
             td = LoadTextureFile(tex.fileName, i, (int)tex.replaceableId);
         } else {

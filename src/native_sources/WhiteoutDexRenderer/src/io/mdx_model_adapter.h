@@ -93,7 +93,9 @@ private:
 
     TextureData LoadTextureFile(const std::string& path, int textureId,
                                 int replaceableId) const;
-    TextureData GenerateTeamColorTexture(int textureId, int replaceableId) const;
+    // TeamColor / TeamGlow placeholder generation moved to
+    // ReplaceableTextureManager (renderer-side) — adapters only declare
+    // the replaceableId on the emitted TextureData.
 };
 
 } // namespace WhiteoutDex

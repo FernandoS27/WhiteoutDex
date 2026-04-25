@@ -286,20 +286,10 @@ int MaxSceneAdapter::RegisterTexture(const std::wstring& key, int replaceableId,
     return id;
 }
 
-// ============================================================================
-// EnsureHdTeamColorSentinel — HD materials drive the team-color slot from the
-// live UI swatch at t4; the renderer only needs teamColorMapId >= 0 to enable
-// that binding, so we stash a 1x1 white texture once and reuse it.
-// ============================================================================
-
-int MaxSceneAdapter::EnsureHdTeamColorSentinel() {
-    static const std::wstring kKey = L"__HD_TC_SENTINEL__";
-    auto it = texPathToId_.find(kKey);
-    if (it != texPathToId_.end()) return it->second;
-    int id = RegisterTexture(kKey, 0, std::vector<uint8_t>(4, 255), 1, 1);
-    mprintf(_M("    \x2192 HD TC sentinel created (texId=%d)\n"), id);
-    return id;
-}
+// EnsureHdTeamColorSentinel removed — adapters now set
+// MaterialLayerData::teamColorMapId = kHdTeamColorActive when the HD layer
+// flags its team-colour slot as live-driven. ReplaceableTextureManager owns
+// the live swatch texture; no per-model sentinel allocation is needed.
 
 // ============================================================================
 // ResolveBitmapPath — resolve a BitmapTex filename from a Mtl's named texmap
@@ -464,12 +454,15 @@ static std::optional<MaxBitmapRGBA> LoadMaxBitmapRGBA(const std::wstring& filePa
 
 int MaxSceneAdapter::LoadTexture(const std::wstring& filePath, int replaceableId) {
     if (replaceableId == 1 || replaceableId == 2) {
+        // Adapter reserves an id with the right replaceableId; actual pixel
+        // bake happens renderer-side in ReplaceableTextureManager::BakeSlot
+        // from the current team-colour swatch. Register zero-size entries
+        // so UploadStagedTextures skips them until the manager fills in
+        // width/height/pixels on RegisterModelSlot.
         const std::wstring key = (replaceableId == 1) ? L"__TEAMCOLOR__" : L"__TEAMGLOW__";
         auto it = texPathToId_.find(key);
         if (it != texPathToId_.end()) return it->second;
-        std::vector<uint8_t> rgba;
-        FillSolidRGBA(rgba, 4, 4, 255, 0, 0, 255);
-        return RegisterTexture(key, replaceableId, std::move(rgba), 4, 4);
+        return RegisterTexture(key, replaceableId, {}, 0, 0);
     }
 
     if (filePath.empty()) return -1;
@@ -521,95 +514,16 @@ int MaxSceneAdapter::LoadTexture(const std::wstring& filePath, int replaceableId
     return id;
 }
 
-int MaxSceneAdapter::LoadTextureWithTeamColor(const std::wstring& filePath, int tcR, int tcG, int tcB) {
-    if (filePath.empty()) return -1;
-    const std::wstring key = L"__TC__" + filePath;
-    auto it = texPathToId_.find(key);
-    if (it != texPathToId_.end()) return it->second;
+// LoadTextureWithTeamColor removed — WC3's SD engine ignores the
+// authored diffuse for TEAMCOLOR layers and binds a flat swatch at t0.
+// The TEAMCOLOR branch now funnels through LoadTexture(L"", 1) so the
+// slot is populated by ReplaceableTextureManager::BakeSlot from the
+// current swatch (and re-baked live on SetTeamColor, matching HD).
 
-    mprintf(_M("  [TC] Loading BLP for compositing: '%s'\n"), filePath.c_str());
-
-    // Blend decoded RGBA8 pixels against the supplied team color, log alpha
-    // stats, and register the resulting texture. Source alpha == 1 keeps the
-    // original pixel; alpha == 0 becomes pure team color.
-    auto blendAndStore = [&](const std::vector<uint8_t>& src, int bw, int bh) -> int {
-        std::vector<uint8_t> rgba(size_t(bw) * size_t(bh) * 4);
-        int alphaZero = 0, alphaFull = 0, alphaMid = 0;
-        long long alphaSum = 0;
-        const int totalPixels = bw * bh;
-        for (int i = 0; i < totalPixels; i++) {
-            uint8_t bR = src[i*4], bG = src[i*4+1], bB = src[i*4+2], bA = src[i*4+3];
-            alphaSum += bA;
-            if      (bA == 0)   alphaZero++;
-            else if (bA >= 254) alphaFull++;
-            else                alphaMid++;
-            float t = bA / 255.0f;
-            rgba[i*4  ] = (uint8_t)(tcR * (1.0f - t) + bR * t);
-            rgba[i*4+1] = (uint8_t)(tcG * (1.0f - t) + bG * t);
-            rgba[i*4+2] = (uint8_t)(tcB * (1.0f - t) + bB * t);
-            rgba[i*4+3] = 255;
-        }
-        int avgAlpha = totalPixels > 0 ? (int)(alphaSum / totalPixels) : 0;
-        mprintf(_M("  [TC] %dx%d \x2014 alpha stats: zero=%d, full=%d, mid=%d, avg=%d (of %d pixels)\n"),
-                bw, bh, alphaZero, alphaFull, alphaMid, avgAlpha, totalPixels);
-        if (alphaFull == totalPixels)
-            mprintf(_M("  [TC] *** WARNING: ALL pixels have alpha=255! TeamColor will be invisible! ***\n"));
-        if (alphaZero == totalPixels)
-            mprintf(_M("  [TC] *** WARNING: ALL pixels have alpha=0! Entire texture will be TeamColor! ***\n"));
-        int id = RegisterTexture(key, 0, std::move(rgba), bw, bh, filePath);
-        mprintf(_M("  Texture %d: %dx%d [TeamColor] '%s'\n"), id, bw, bh, filePath.c_str());
-        return id;
-    };
-
-    // Primary path: Max bitmap manager.
-    if (auto bmp = LoadMaxBitmapRGBA(filePath, L"[TC]"))
-        return blendAndStore(bmp->rgba, bmp->width, bmp->height);
-
-    mprintf(_M("  [TC] trying direct decode\n"));
-
-    // Fallback 1: direct disk decode.
-    {
-        std::vector<uint8_t> fileBytes; std::string ext;
-        std::vector<uint8_t> rawPixels; int pw = 0, ph = 0;
-        if (ReadFileBytesFromDisk(filePath, fileBytes, ext) &&
-            DecodeToRGBA8(fileBytes, ext, rawPixels, pw, ph)) {
-            mprintf(_M("  [TC] Direct decode succeeded (%dx%d)\n"), pw, ph);
-            return blendAndStore(rawPixels, pw, ph);
-        }
-    }
-
-    // Fallback 2: CASC/MPQ by filename.
-    {
-        std::string narrowName = std::filesystem::path(filePath).filename().string();
-        std::string foundExt;
-        auto data = contentProvider_.ReadFile(narrowName, &foundExt);
-        if (data && !data->empty()) {
-            if (foundExt.empty()) foundExt = ExtensionLower(std::filesystem::path(narrowName));
-            std::vector<uint8_t> rawPixels; int pw = 0, ph = 0;
-            if (DecodeToRGBA8(*data, foundExt, rawPixels, pw, ph)) {
-                mprintf(_M("  [TC] ContentProvider decode succeeded (%dx%d)\n"), pw, ph);
-                return blendAndStore(rawPixels, pw, ph);
-            }
-        }
-    }
-
-    // All fallbacks exhausted — solid team-color placeholder.
-    mprintf(_M("  [TC] FAILED to load bitmap! Using solid TC fallback.\n"));
-    std::vector<uint8_t> rgba;
-    FillSolidRGBA(rgba, 4, 4, (uint8_t)tcR, (uint8_t)tcG, (uint8_t)tcB, 255);
-    return RegisterTexture(key, 0, std::move(rgba), 4, 4, filePath);
-}
-
-int MaxSceneAdapter::GenerateTeamGlowTexture(int tcR, int tcG, int tcB) {
-    static const std::wstring kKey = L"__TEAMGLOW_GEN__";
-    auto it = texPathToId_.find(kKey);
-    if (it != texPathToId_.end()) return it->second;
-    int w = 0, h = 0;
-    auto rgba = WhiteoutDex::DecodeTeamGlow((uint8_t)tcR, (uint8_t)tcG, (uint8_t)tcB, w, h);
-    int id = RegisterTexture(kKey, 2, std::move(rgba), w, h);
-    mprintf(_M("  Texture %d: %dx%d [TeamGlow from embedded TGA]\n"), id, w, h);
-    return id;
-}
+// GenerateTeamGlowTexture removed — the TEAMGLOW branch in
+// ExtractWc3MaterialLayer now calls LoadTexture(L"", 2), which reserves a
+// textureId with replaceableId=2 and leaves the pixel bake to
+// ReplaceableTextureManager on first RegisterModelSlot.
 
 // ============================================================================
 // CollectScene — called once on main thread before Get*()
@@ -721,12 +635,12 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     // For HD materials the TeamColor sub-texture (Konstrukt B) is stored as a
     // Wc3Bitmap placeholder with empty path and replaceableId=1.
     // ResolveBitmapPath can't extract a path so teamColorMapId is still -1.
-    // If the slot is non-null, register the 1x1 white sentinel so
-    // teamColorMapId >= 0 acts as the renderer's enable flag.
+    // If the slot is non-null, mark it active so the HD draw path binds the
+    // live UI swatch at t4.
     if (layer.teamColorMapId < 0 && (layer.shaderId == 1 || layer.shaderId == 24)) {
         Texmap* tcTex = nullptr;
         if (PB2Texmap(mtl, L"teamColorMap", tcTex) && tcTex)
-            layer.teamColorMapId = EnsureHdTeamColorSentinel();
+            layer.teamColorMapId = kHdTeamColorActive;
     }
 
     const std::wstring baseTexPath = ResolveBitmapPath(mtl, L"diffuseMap");
@@ -752,16 +666,25 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
             mprintf(_M("    \x2192 HD TEAMCOLOR branch: diffuse='%s', shaderId=%d\n"),
                     baseTexPath.c_str(), layer.shaderId);
             layer.textureId = baseTexId;
-            if (layer.teamColorMapId < 0) layer.teamColorMapId = EnsureHdTeamColorSentinel();
+            if (layer.teamColorMapId < 0) layer.teamColorMapId = kHdTeamColorActive;
         } else {
-            mprintf(_M("    \x2192 TEAMCOLOR branch: compositing '%s'\n"), baseTexPath.c_str());
-            layer.textureId  = LoadTextureWithTeamColor(baseTexPath, 255, 0, 0);
+            // SD TEAMCOLOR: WC3's engine ignores whatever BLP the MDX/Max
+            // material points at for this slot and binds a flat team-colour
+            // swatch at t0 — the SD shader samples the swatch verbatim, no
+            // alpha-mask composite. Reserve a replaceableId=1 slot here and
+            // ReplaceableTextureManager::BakeSlot fills the pixels from the
+            // current swatch (and rebakes on SetTeamColor for live retint).
+            mprintf(_M("    \x2192 TEAMCOLOR branch: live swatch slot (source BLP ignored: '%s')\n"),
+                    baseTexPath.c_str());
+            layer.textureId  = LoadTexture(L"", 1);
             layer.filterMode = 0;
             layer.alpha      = 1.0f;
         }
     } else if (layer.replaceableTexture == 2) {
-        mprintf(_M("    \x2192 TEAMGLOW branch: generating glow texture\n"));
-        layer.textureId = GenerateTeamGlowTexture(255, 0, 0);
+        mprintf(_M("    \x2192 TEAMGLOW branch: registering live slot\n"));
+        // Renderer-side ReplaceableTextureManager owns the TGA bake now —
+        // the adapter just reserves a textureId with replaceableId=2.
+        layer.textureId = LoadTexture(L"", 2);
     } else if (layer.replaceableTexture >= 1 && baseTexId >= 0) {
         mprintf(_M("    \x2192 REPLACEABLE branch: replTex=%d, baseTexId=%d\n"),
                 layer.replaceableTexture, baseTexId);
