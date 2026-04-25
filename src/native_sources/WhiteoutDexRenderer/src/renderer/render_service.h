@@ -30,6 +30,9 @@ namespace WhiteoutDex {
     class SamplerAssetManager;
     class TextureAssetManager;
     class ReplaceableTextureManager;
+    // Cross-instance model template. Defined in render_service.cpp; only the
+    // shared_ptr storage needs to see the forward decl here.
+    struct PE1ModelTemplate;
 }
 #include <unordered_map>
 #include <unordered_set>
@@ -120,6 +123,22 @@ public:
                    const std::vector<ParticleEmitterConfig>& particles,
                    const std::vector<RibbonEmitterConfig>& ribbons,
                    const std::vector<CollisionShapeData>& collisions);
+
+    // ---- Path-based load (template-cache aware) ----
+    // Resolves `mdxPath` through the unified content provider, parses + caches
+    // the result, and creates an instance that borrows the cached GPU geometry,
+    // textures, materials, and skinning data. Subsequent calls with the same
+    // path skip parse + decode + GPU upload entirely; only the per-instance
+    // state (transform, animation cursor, particle/ribbon sim state) is fresh.
+    //
+    // AddModelByPath: just appends a new instance. Returns 0 on resolution
+    // or parse failure. Does NOT touch focus, render mode, or existing models.
+    //
+    // LoadModelByPath: convenience wrapper that mirrors LoadModel — clears all
+    // existing models, sets focus, and auto-flips renderMode to HD when any
+    // material layer ships a non-SD shader. Returns the new focus handle (or 0).
+    uint32_t AddModelByPath(const std::string& mdxPath);
+    uint32_t LoadModelByPath(const std::string& mdxPath);
 
     // PE2 service path: register PlaneEmitter instances built from the MDX
     // adapter's GetPlaneEmitterInits() alongside the legacy ParticleSystem.
@@ -354,7 +373,6 @@ private:
     }
 
     // ---- PE1 model template cache (PE1ModelTemplate defined in render_service.cpp) ----
-    struct PE1ModelTemplate;
     std::unordered_map<std::string, std::shared_ptr<PE1ModelTemplate>> pe1TemplateCache_;
     static constexpr int kMaxPE1Depth = 3;
     static constexpr int kMaxPE1Instances = 256;
@@ -366,7 +384,12 @@ private:
     IContentProvider* activeContentProvider_ = nullptr;         // points to external or built-in
     std::shared_ptr<PE1ModelTemplate> getOrLoadTemplate(const std::string& modelPath);
     std::shared_ptr<PE1ModelTemplate> loadTemplateSync(const std::string& modelPath);
-    void stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl);
+    void stageModelFromTemplate(ModelInstance* mi,
+                                std::shared_ptr<PE1ModelTemplate> tmpl);
+    // Lazy upload of a template's shared geometry buffers. Idempotent: the
+    // first call uploads, every subsequent call is a no-op flag check.
+    // Render-thread only (called from UploadStagedGeosets).
+    void uploadTemplateGpu(PE1ModelTemplate& tmpl);
     // Replaceable-texture registration moved to ReplaceableTextureManager.
     // Call sites use replaceables_->RegisterModelSlot(*mi, textureId, kind).
 

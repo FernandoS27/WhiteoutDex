@@ -19,6 +19,13 @@
 
 namespace WhiteoutDex {
 
+// Cross-instance template (full def in render_service.cpp). ModelInstance only
+// needs the forward decl since std::shared_ptr<T> tolerates an incomplete T as
+// long as construction/destruction happens in a TU that sees the full type —
+// which is render_service.cpp for every site that creates or releases an
+// instance.
+struct PE1ModelTemplate;
+
 // ============================================================================
 // Staged data (CPU side — written by API thread, read by render thread)
 // ============================================================================
@@ -42,24 +49,11 @@ struct StagedTexture {
     std::string sharedKey;
 };
 
-struct StagedMaterialLayer {
-    int filterMode          = 0;
-    int textureId           = -1;
-    float alpha             = 1.0f;
-    int flags               = 0;
-    int textureAnimationId  = -1;  // -1 = no tex-anim; else index into MDX TXAN table
-    int shaderId            = 0;   // Layer::ShaderType: 0=SD, 1=HD, 2=SDOnHD, 24=Crystal
-    // Reforged HD subtextures (-1 = unused, use default).
-    int normalMapId         = -1;
-    int ormMapId            = -1;
-    int emissiveMapId       = -1;
-    int teamColorMapId      = -1;
-    // HD material knobs forwarded to the HD PS CB (CGxMatParams::PixelParams).
-    float    emissiveGain    = 0.0f;
-    float    fresnelOpacity  = 0.0f;
-    float    fresnelTeamColor = 0.0f;
-    Vector3f fresnelColor    = {0.0f, 0.0f, 0.0f};
-};
+// StagedMaterialLayer is field-identical to MaterialLayerData (the adapter-side
+// struct from model_types.h). Carrying two separate types just forced every
+// load site to copy member-by-member; aliasing collapses each of those into a
+// single struct assignment.
+using StagedMaterialLayer = MaterialLayerData;
 
 struct StagedMaterial {
     std::vector<StagedMaterialLayer> layers;
@@ -107,7 +101,6 @@ struct GPUGeoset {
     int materialId      = -1;
     uint32_t lod        = 0; // Previewd: 0..3 or 0xFFFFFFFF (always render)
 
-    std::vector<Vertex> baseVertices;
     bool hasSkinning    = false;
 
     float geosetAlpha   = 1.0f;
@@ -115,11 +108,17 @@ struct GPUGeoset {
     Matrix44f worldMatrix = Matrix44f::identity();
     int priorityPlane   = 0;
 
-    void Release(gfx::IGFXDevice& gfx) {
-        gfx.Destroy(ib);
-        gfx.Destroy(unskinnedVb);
-        gfx.Destroy(tangentVb);
-        gfx.Destroy(boneVb);
+    // `freeSharedBuffers` controls whether we destroy ib/unskinnedVb/
+    // tangentVb/boneVb. Instances that borrow geometry from a PE1ModelTemplate
+    // pass false here — the template owns those buffers and frees them in its
+    // own ReleaseGPU. bonePaletteCb is always per-instance and always freed.
+    void Release(gfx::IGFXDevice& gfx, bool freeSharedBuffers = true) {
+        if (freeSharedBuffers) {
+            gfx.Destroy(ib);
+            gfx.Destroy(unskinnedVb);
+            gfx.Destroy(tangentVb);
+            gfx.Destroy(boneVb);
+        }
         gfx.Destroy(bonePaletteCb);
         ib = gfx::BufferHandle::Invalid;
         unskinnedVb = gfx::BufferHandle::Invalid;
@@ -127,7 +126,6 @@ struct GPUGeoset {
         boneVb = gfx::BufferHandle::Invalid;
         bonePaletteCb = gfx::BufferHandle::Invalid;
         indexCount = 0; vertexCount = 0;
-        baseVertices.clear(); baseVertices.shrink_to_fit();
     }
 };
 
@@ -267,13 +265,25 @@ struct ModelInstance {
     int pe1BirthTimeMs = 0;
     int pe1SequenceIdx = 0;
 
+    // Cross-instance template the model was staged from. Non-null for any
+    // ModelInstance built through stageModelFromTemplate (PE1 children,
+    // attachments, future path-based AddModel). Owns the shared geometry
+    // buffers (ib/unskinnedVb/tangentVb/boneVb) — the instance's GPUGeoset
+    // entries borrow those handles and must NOT free them. Per-frame state
+    // (bonePaletteCb, world matrix, geoset alpha/color) stays local.
+    std::shared_ptr<PE1ModelTemplate> sourceTemplate;
+
     // Release all GPU resources
     void ReleaseGPU(gfx::IGFXDevice& gfx) {
-        for (auto& g : gpuGeosets) g.Release(gfx);
+        const bool freeShared = !sourceTemplate;
+        for (auto& g : gpuGeosets) g.Release(gfx, freeShared);
         gpuGeosets.clear();
         if (textures) textures->Clear();   // ModelScope keeps its allocation; pixels are freed.
         gpuMaterials.clear();
         gfx.Destroy(ribbonVB); ribbonVB = gfx::BufferHandle::Invalid; ribbonVBSize = 0;
+        // Drop our refcount on the template; the template is destroyed only
+        // when both the cache entry and every borrowing instance have let go.
+        sourceTemplate.reset();
     }
 };
 

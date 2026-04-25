@@ -38,8 +38,12 @@ extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char* s
 inline void OutputDebugStringA(const char*) {}
 #endif
 
-// PE1 model template — full definition (uses MdxModelAdapter which is now fully included)
-struct WhiteoutDex::RenderService::PE1ModelTemplate {
+// Model template — full definition (uses MdxModelAdapter which is now fully included).
+// Templates are also the cross-instance GPU geometry cache: the immutable index
+// + vertex + tangent + bone buffers are uploaded once on the first instance's
+// ProcessStagedData and borrowed by every subsequent instance. Per-frame state
+// (bonePaletteCb, geosetAlpha/Color, worldMatrix) stays on each ModelInstance.
+struct WhiteoutDex::PE1ModelTemplate {
     std::shared_ptr<MdxModelAdapter> adapter;
     std::vector<MeshData> meshes;
     std::vector<TextureData> textures;
@@ -50,6 +54,43 @@ struct WhiteoutDex::RenderService::PE1ModelTemplate {
     std::vector<RibbonEmitterConfig> ribbonConfigs;
     std::vector<CollisionShapeData> collisionConfigs;
     std::vector<PE1EmitterConfig> pe1Configs;
+    std::vector<AttachmentConfig> attachmentConfigs;
+
+    // Pre-built shared skinning data (nodeCount, inverseBindMatrices, per-geoset
+    // weights + palette layouts). Adopted by every borrowing instance through
+    // SkinningSystem::SetSharedData — eliminates the per-instance ~1.6 MB copy
+    // of vertex influence tables on heavy hero models.
+    std::shared_ptr<SkinningData> skinningData;
+
+    // Shared GPU geometry — populated lazily on the render thread by
+    // RenderService::UploadTemplateGpu the first time a ModelInstance using
+    // this template hits ProcessStagedData. Borrowed by every instance via
+    // ModelInstance::sourceTemplate; freed in RenderService::ShutdownDevice
+    // before CleanupD3D.
+    struct SharedGeoset {
+        int               geosetId    = -1;
+        gfx::BufferHandle ib          = gfx::BufferHandle::Invalid;
+        gfx::BufferHandle unskinnedVb = gfx::BufferHandle::Invalid;
+        gfx::BufferHandle tangentVb   = gfx::BufferHandle::Invalid;
+        gfx::BufferHandle boneVb      = gfx::BufferHandle::Invalid;
+        int               indexCount  = 0;
+        int               vertexCount = 0;
+        int               materialId  = -1;
+        uint32_t          lod         = 0;
+    };
+    bool                       gpuUploaded = false;
+    std::vector<SharedGeoset>  sharedGeosets;
+
+    void ReleaseGPU(gfx::IGFXDevice& gfx) {
+        for (auto& g : sharedGeosets) {
+            gfx.Destroy(g.ib);
+            gfx.Destroy(g.unskinnedVb);
+            gfx.Destroy(g.tangentVb);
+            gfx.Destroy(g.boneVb);
+        }
+        sharedGeosets.clear();
+        gpuUploaded = false;
+    }
 };
 
 namespace WhiteoutDex {
@@ -206,7 +247,7 @@ void RenderService::UpdateAttachments() {
             if (!seqs.empty())
                 child->pe1SequenceIdx = rand() % (int)seqs.size();
 
-            stageModelFromTemplate(child.get(), *tmpl);
+            stageModelFromTemplate(child.get(), tmpl);
             models_[childH] = std::move(child);
             slot.childModelHandle = childH;
         }
@@ -217,7 +258,7 @@ void RenderService::UpdateAttachments() {
 // PE1 Model Template Cache
 // ============================================================================
 
-std::shared_ptr<RenderService::PE1ModelTemplate> RenderService::getOrLoadTemplate(const std::string& modelPath) {
+std::shared_ptr<PE1ModelTemplate> RenderService::getOrLoadTemplate(const std::string& modelPath) {
     // 1. Cache hit (includes cached failures as nullptr)
     auto it = pe1TemplateCache_.find(modelPath);
     if (it != pe1TemplateCache_.end()) return it->second;
@@ -235,7 +276,7 @@ std::shared_ptr<RenderService::PE1ModelTemplate> RenderService::getOrLoadTemplat
     return nullptr;
 }
 
-std::shared_ptr<RenderService::PE1ModelTemplate> RenderService::loadTemplateSync(const std::string& modelPath) {
+std::shared_ptr<PE1ModelTemplate> RenderService::loadTemplateSync(const std::string& modelPath) {
     // Try to read the model file via the active content provider.
     auto fileData = activeContentProvider_->ReadFile(modelPath);
     if (!fileData || fileData->empty())
@@ -272,6 +313,30 @@ std::shared_ptr<RenderService::PE1ModelTemplate> RenderService::loadTemplateSync
     tmpl->ribbonConfigs = adapter->GetRibbonConfigs();
     tmpl->collisionConfigs = adapter->GetCollisionShapes();
     tmpl->pe1Configs = adapter->GetPE1Configs();
+    tmpl->attachmentConfigs = adapter->GetAttachmentConfigs();
+
+    // Build the immutable shared skinning data once. Every instance that
+    // adopts this template calls SetSharedData(skinningData) instead of
+    // re-running the per-vertex influence copy.
+    auto skinningData = std::make_shared<SkinningData>();
+    skinningData->nodeCount           = tmpl->skeleton.nodeCount;
+    skinningData->inverseBindMatrices = tmpl->skeleton.inverseBindMatrices;
+    for (auto& sw : tmpl->skinWeights) {
+        const int vc = (int)sw.influences.size();
+        auto& info = skinningData->geosetWeights[sw.geosetId];
+        info.vertices.resize(vc);
+        for (int v = 0; v < vc; v++) {
+            for (int j = 0; j < 4; j++) {
+                info.vertices[v].boneIdx[j] = sw.influences[v].boneIdx[j];
+                info.vertices[v].weight[j]  = sw.influences[v].weight[j];
+            }
+        }
+        GeosetPaletteLayout layout;
+        layout.subsetNodeIndices = sw.subsetNodeIndices;
+        layout.groupAverages     = sw.groupAverages;
+        skinningData->geosetLayouts[sw.geosetId] = std::move(layout);
+    }
+    tmpl->skinningData = std::move(skinningData);
 
     return tmpl;
 }
@@ -323,101 +388,73 @@ void RenderService::DrainTemplateResults() {
 
     if (results.empty()) return;
 
-    for (auto& [path, tmpl] : results) {
-        pe1TemplateCache_[path] = tmpl;
-        {
-            std::lock_guard<std::mutex> lock(templateQueueMutex_);
+    // pe1TemplateCache_ is now read/written from the API thread too
+    // (AddModelByPath), so write under dataMutex_ to avoid the race.
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        for (auto& [path, tmpl] : results) {
+            pe1TemplateCache_[path] = tmpl;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(templateQueueMutex_);
+        for (auto& [path, tmpl] : results) {
             templateLoadPending_.erase(path);
         }
     }
 }
 
-void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl) {
-    // Stage textures
-    for (auto& tex : tmpl.textures) {
+void RenderService::stageModelFromTemplate(ModelInstance* mi,
+                                           std::shared_ptr<PE1ModelTemplate> tmpl) {
+    if (!tmpl) return;
+    // Pin the template alive for as long as this instance exists. UploadStagedGeosets
+    // borrows ib/unskinnedVb/tangentVb/boneVb from tmpl->sharedGeosets, so the
+    // template must outlive every instance that points at it.
+    mi->sourceTemplate = tmpl;
+
+    // Stage textures. For sharedKey paths we drop tex.pixels — UploadStagedTextures
+    // will hit the renderer-side cache and BindShared without needing a CPU copy.
+    // First-instance uploads still need the pixel data to seed the cache; we
+    // detect that case via IsTextureCached(sharedKey) at staging time.
+    for (auto& tex : tmpl->textures) {
         StagedTexture& st = mi->stagedTextures[tex.textureId];
         st.width = tex.width; st.height = tex.height;
         st.mipLevels = tex.mipLevels;
         st.replaceableId = tex.replaceableId;
         st.wrapFlags = tex.wrapFlags;
         st.format = tex.format;
-        st.pixels = tex.pixels;
         st.sharedKey = tex.sharedKey;
+        const bool alreadyCached =
+            !tex.sharedKey.empty() && IsTextureCached(tex.sharedKey);
+        if (!alreadyCached) st.pixels = tex.pixels;  // first-instance seed
         if ((tex.replaceableId == 1 || tex.replaceableId == 2) && replaceables_)
             replaceables_->RegisterModelSlot(*mi, tex.textureId,
                                              static_cast<ReplaceableKind>(tex.replaceableId));
     }
     // Stage materials
-    for (auto& mat : tmpl.materials) {
+    for (auto& mat : tmpl->materials) {
         StagedMaterial& sm = mi->stagedMaterials[mat.materialId];
-        sm.layers.resize(mat.layers.size());
-        for (size_t i = 0; i < mat.layers.size(); i++) {
-            sm.layers[i].filterMode = mat.layers[i].filterMode;
-            sm.layers[i].textureId  = mat.layers[i].textureId;
-            sm.layers[i].alpha      = mat.layers[i].alpha;
-            sm.layers[i].flags      = mat.layers[i].flags;
-            sm.layers[i].textureAnimationId = mat.layers[i].textureAnimationId;
-            sm.layers[i].shaderId           = mat.layers[i].shaderId;
-            sm.layers[i].normalMapId        = mat.layers[i].normalMapId;
-            sm.layers[i].ormMapId           = mat.layers[i].ormMapId;
-            sm.layers[i].emissiveMapId      = mat.layers[i].emissiveMapId;
-            sm.layers[i].teamColorMapId     = mat.layers[i].teamColorMapId;
-            sm.layers[i].emissiveGain       = mat.layers[i].emissiveGain;
-            sm.layers[i].fresnelOpacity     = mat.layers[i].fresnelOpacity;
-            sm.layers[i].fresnelTeamColor   = mat.layers[i].fresnelTeamColor;
-            sm.layers[i].fresnelColor       = mat.layers[i].fresnelColor;
-        }
+        sm.layers        = mat.layers;
         sm.priorityPlane = mat.priorityPlane;
-        sm.sortOrder = mat.sortOrder;
+        sm.sortOrder     = mat.sortOrder;
     }
-    // Stage meshes
-    for (auto& mesh : tmpl.meshes) {
-        StagedGeoset& sg = mi->stagedGeosets[mesh.geosetId];
-        sg.materialId = mesh.materialId;
-        sg.lod        = mesh.lod;
-        int vc = (int)mesh.positions.size();
-        sg.vertices.resize(vc);
-        for (int i = 0; i < vc; i++) {
-            sg.vertices[i].position = mesh.positions[i];
-            sg.vertices[i].normal = (i < (int)mesh.normals.size()) ? mesh.normals[i] : Vector3f{0,0,1};
-            sg.vertices[i].uv = (i < (int)mesh.uvs.size()) ? mesh.uvs[i] : Vector2f{0,0};
-            sg.vertices[i].color = {1,1,1,1};
-        }
-        if ((int)mesh.tangents.size() == vc) sg.tangents = mesh.tangents;
-        sg.indices = mesh.indices;
-    }
-    // Skeleton
-    if (tmpl.skeleton.nodeCount > 0) {
-        std::vector<float> invBind(tmpl.skeleton.nodeCount * 16);
-        for (int i = 0; i < tmpl.skeleton.nodeCount; i++) {
-            memcpy(&invBind[i * 16], &tmpl.skeleton.inverseBindMatrices[i].data[0][0], 64);
-        }
-        mi->skinning.SetSkeleton(tmpl.skeleton.nodeCount, invBind.data());
-        mi->billboardFlags = tmpl.skeleton.billboardFlags;
-        mi->nodePivots         = tmpl.skeleton.nodePivots;
-        mi->nodeParents        = tmpl.skeleton.nodeParents;
+    // Geometry is uploaded to GPU once on the template (lazy in UploadStagedGeosets);
+    // we no longer copy mesh data into per-instance stagedGeosets. UploadStagedGeosets
+    // sees mi->sourceTemplate set and walks tmpl->sharedGeosets directly.
+    // Skeleton — adopt the shared SkinningData built once at template-load time.
+    // Per-instance state (currentMatrices_/offsetMatrices_) is sized internally
+    // by SetSharedData; the heavy weight + layout tables live on the template.
+    if (tmpl->skinningData && tmpl->skinningData->nodeCount > 0) {
+        mi->skinning.SetSharedData(tmpl->skinningData);
+        // Hierarchy metadata (billboardFlags, nodePivots, nodeParents) is borrowed
+        // straight from tmpl->skeleton at read time; ApplyBoneMatrices picks
+        // template-or-owned via mi.sourceTemplate. Leaving the per-instance
+        // vectors empty saves ~few KB/instance on heavy skeletons.
         mi->skinDirty = true;
     }
-    // Skin weights (per-geoset: boneIdx are LOCAL palette slots, paired with
-    // a per-geoset palette layout that maps local→global node + per-frame
-    // group averages).
-    for (auto& sw : tmpl.skinWeights) {
-        int vc = (int)sw.influences.size();
-        std::vector<int> bIdx(vc * 4); std::vector<float> wts(vc * 4);
-        for (int v = 0; v < vc; v++)
-            for (int j = 0; j < 4; j++) {
-                bIdx[v*4+j] = sw.influences[v].boneIdx[j];
-                wts[v*4+j] = sw.influences[v].weight[j];
-            }
-        mi->skinning.SetGeosetWeights(sw.geosetId, vc, bIdx.data(), wts.data());
-        GeosetPaletteLayout layout;
-        layout.subsetNodeIndices = sw.subsetNodeIndices;
-        layout.groupAverages     = sw.groupAverages;
-        mi->skinning.SetGeosetLayout(sw.geosetId, std::move(layout));
-    }
     // PE2 particles — registered directly with the service (no legacy path).
-    for (int i = 0; i < (int)tmpl.pe2Configs.size(); i++) {
-        const auto& pcfg = tmpl.pe2Configs[i];
+    for (int i = 0; i < (int)tmpl->pe2Configs.size(); i++) {
+        const auto& pcfg = tmpl->pe2Configs[i];
         auto em = std::make_unique<particle::PlaneEmitter>();
         particle::ApplyInit(*em, particle::InitFromLegacyConfig(pcfg));
         particleService_.AddPlaneEmitter(mi->handle, i, std::move(em));
@@ -426,13 +463,13 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
                                              static_cast<ReplaceableKind>(pcfg.replaceableId));
         }
     }
-    mi->pe2State.resize(tmpl.pe2Configs.size());
+    mi->pe2State.resize(tmpl->pe2Configs.size());
     // Ribbons
-    for (int i = 0; i < (int)tmpl.ribbonConfigs.size(); i++)
-        mi->ribbons.AddEmitter(i, tmpl.ribbonConfigs[i]);
+    for (int i = 0; i < (int)tmpl->ribbonConfigs.size(); i++)
+        mi->ribbons.AddEmitter(i, tmpl->ribbonConfigs[i]);
     // PE1 (recursive, only if depth allows)
-    for (int i = 0; i < (int)tmpl.pe1Configs.size(); i++)
-        mi->pe1.AddEmitter(i, tmpl.pe1Configs[i]);
+    for (int i = 0; i < (int)tmpl->pe1Configs.size(); i++)
+        mi->pe1.AddEmitter(i, tmpl->pe1Configs[i]);
 
     mi->stagedDirty = true;
 }
@@ -474,7 +511,7 @@ void RenderService::UpdatePE1(float dt) {
             child->pe1Adapter = tmpl->adapter;
             child->pe1BirthTimeMs = animationTimeMs_;
 
-            stageModelFromTemplate(child.get(), *tmpl);
+            stageModelFromTemplate(child.get(), tmpl);
             models_[birth.handle] = std::move(child);
             pe1InstanceCount_++;
         }
@@ -569,23 +606,7 @@ void RenderService::UpdateMaterials(uint32_t handle, const std::vector<MaterialD
 
     for (auto& mat : materials) {
         StagedMaterial& sm = mi->stagedMaterials[mat.materialId];
-        sm.layers.resize(mat.layers.size());
-        for (size_t i = 0; i < mat.layers.size(); i++) {
-            sm.layers[i].filterMode = mat.layers[i].filterMode;
-            sm.layers[i].textureId  = mat.layers[i].textureId;
-            sm.layers[i].alpha      = mat.layers[i].alpha;
-            sm.layers[i].flags      = mat.layers[i].flags;
-            sm.layers[i].textureAnimationId = mat.layers[i].textureAnimationId;
-            sm.layers[i].shaderId           = mat.layers[i].shaderId;
-            sm.layers[i].normalMapId        = mat.layers[i].normalMapId;
-            sm.layers[i].ormMapId           = mat.layers[i].ormMapId;
-            sm.layers[i].emissiveMapId      = mat.layers[i].emissiveMapId;
-            sm.layers[i].teamColorMapId     = mat.layers[i].teamColorMapId;
-            sm.layers[i].emissiveGain       = mat.layers[i].emissiveGain;
-            sm.layers[i].fresnelOpacity     = mat.layers[i].fresnelOpacity;
-            sm.layers[i].fresnelTeamColor   = mat.layers[i].fresnelTeamColor;
-            sm.layers[i].fresnelColor       = mat.layers[i].fresnelColor;
-        }
+        sm.layers        = mat.layers;
         sm.priorityPlane = mat.priorityPlane;
         sm.sortOrder     = mat.sortOrder;
     }
@@ -635,23 +656,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
     // Materials → staged
     for (auto& mat : materials) {
         StagedMaterial& sm = mi->stagedMaterials[mat.materialId];
-        sm.layers.resize(mat.layers.size());
-        for (size_t i = 0; i < mat.layers.size(); i++) {
-            sm.layers[i].filterMode = mat.layers[i].filterMode;
-            sm.layers[i].textureId  = mat.layers[i].textureId;
-            sm.layers[i].alpha      = mat.layers[i].alpha;
-            sm.layers[i].flags      = mat.layers[i].flags;
-            sm.layers[i].textureAnimationId = mat.layers[i].textureAnimationId;
-            sm.layers[i].shaderId           = mat.layers[i].shaderId;
-            sm.layers[i].normalMapId        = mat.layers[i].normalMapId;
-            sm.layers[i].ormMapId           = mat.layers[i].ormMapId;
-            sm.layers[i].emissiveMapId      = mat.layers[i].emissiveMapId;
-            sm.layers[i].teamColorMapId     = mat.layers[i].teamColorMapId;
-            sm.layers[i].emissiveGain       = mat.layers[i].emissiveGain;
-            sm.layers[i].fresnelOpacity     = mat.layers[i].fresnelOpacity;
-            sm.layers[i].fresnelTeamColor   = mat.layers[i].fresnelTeamColor;
-            sm.layers[i].fresnelColor       = mat.layers[i].fresnelColor;
-        }
+        sm.layers        = mat.layers;
         sm.priorityPlane = mat.priorityPlane;
         sm.sortOrder     = mat.sortOrder;
     }
@@ -775,6 +780,104 @@ void RenderService::LoadModel(const std::vector<MeshData>& meshes,
 }
 
 // ============================================================================
+// Path-based load — borrows everything cacheable through PE1ModelTemplate
+// (parsed adapter, GPU geometry, skinning data, textures via TextureAssetManager).
+// Subsequent calls with the same path skip parse + decode + GPU upload entirely.
+// ============================================================================
+
+uint32_t RenderService::AddModelByPath(const std::string& mdxPath) {
+    // 1. Cache check.
+    std::shared_ptr<PE1ModelTemplate> tmpl;
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        auto it = pe1TemplateCache_.find(mdxPath);
+        if (it != pe1TemplateCache_.end()) tmpl = it->second;
+    }
+
+    // 2. Miss: synchronous load. We own the result regardless of whether the
+    // async worker had this queued — the worker hits a cache hit on its next
+    // pass and DrainTemplateResults silently overwrites with identical data.
+    if (!tmpl) {
+        tmpl = loadTemplateSync(mdxPath);
+        {
+            std::lock_guard<std::mutex> lock(dataMutex_);
+            pe1TemplateCache_[mdxPath] = tmpl;  // cache failure (nullptr) too
+        }
+        {
+            std::lock_guard<std::mutex> q(templateQueueMutex_);
+            templateLoadPending_.erase(mdxPath);
+        }
+    }
+
+    if (!tmpl) return 0;
+
+    // 3. Build the instance under dataMutex_. Collision shapes are populated
+    // here (vs in stageModelFromTemplate) because PE1 children + attachment
+    // children deliberately don't get them — only top-level path-based loads do.
+    uint32_t handle;
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        handle = nextModelHandle_++;
+        auto mi = std::make_unique<ModelInstance>();
+        mi->handle = handle;
+        stageModelFromTemplate(mi.get(), tmpl);
+        for (auto& cs : tmpl->collisionConfigs) {
+            CollisionShape shape;
+            shape.type   = cs.type;
+            shape.vmin   = cs.vertices[0];
+            shape.vmax   = cs.vertices[1];
+            shape.radius = cs.radius;
+            shape.pivot  = cs.pivot;
+            mi->collisionShapes.push_back(shape);
+        }
+        models_[handle] = std::move(mi);
+    }
+
+    // 4. Register attachment configs from the template. SetAttachmentConfigs
+    // takes dataMutex_ itself — call outside the section above.
+    if (!tmpl->attachmentConfigs.empty())
+        SetAttachmentConfigs(handle, tmpl->attachmentConfigs);
+
+    return handle;
+}
+
+uint32_t RenderService::LoadModelByPath(const std::string& mdxPath) {
+    ClearModel();
+    uint32_t h = AddModelByPath(mdxPath);
+    if (h == 0) return 0;
+
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        focusModelHandle_ = h;
+    }
+
+    // HD auto-detect (mirrors LoadModel). Pull the cached template back out
+    // for its material list — cheap hashmap lookup.
+    std::shared_ptr<PE1ModelTemplate> tmpl;
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        auto it = pe1TemplateCache_.find(mdxPath);
+        if (it != pe1TemplateCache_.end()) tmpl = it->second;
+    }
+    if (tmpl) {
+        bool anyNonSd = false;
+        for (auto& mat : tmpl->materials) {
+            for (auto& layer : mat.layers) {
+                if (layer.shaderId != 0) { anyNonSd = true; break; }
+            }
+            if (anyNonSd) break;
+        }
+        const RenderMode desired = anyNonSd ? RenderMode::HD : RenderMode::SD;
+        if (renderMode_ != desired) {
+            renderMode_ = desired;
+            renderModeDirty_ = true;
+        }
+    }
+
+    return h;
+}
+
+// ============================================================================
 // ApplyFrameState helpers
 // ============================================================================
 
@@ -784,19 +887,29 @@ void RenderService::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state
     int bc = (int)state.boneWorldMatrices.size();
     Vector3f camPos = camera_.GetSource();
 
+    // Hierarchy metadata: borrowed from the template's skeleton when the
+    // instance was staged from one (saves a per-instance copy on heavy models),
+    // else read from the per-instance owned vectors populated by AddModel.
+    const std::vector<uint32_t>& billboardFlags = mi.sourceTemplate
+        ? mi.sourceTemplate->skeleton.billboardFlags : mi.billboardFlags;
+    const std::vector<Vector3f>& nodePivots = mi.sourceTemplate
+        ? mi.sourceTemplate->skeleton.nodePivots : mi.nodePivots;
+    const std::vector<int>& nodeParents = mi.sourceTemplate
+        ? mi.sourceTemplate->skeleton.nodeParents : mi.nodeParents;
+
     std::vector<float> worldFlat(bc * 16);
     for (int i = 0; i < bc; i++) {
         Matrix44f boneM = state.boneWorldMatrices[i];
 
-        uint32_t bbFlags = (i < (int)mi.billboardFlags.size()) ? mi.billboardFlags[i] : 0;
+        uint32_t bbFlags = (i < (int)billboardFlags.size()) ? billboardFlags[i] : 0;
         if (bbFlags != 0) {
             // Match Previewd TransformObjectView @0x140534ee0. Two independent
             // pieces: CameraAnchored (0x80 in file) moves the pivot along the
             // parent→camera ray, then the Full/LockX/LockY/LockZ switch writes
             // a replacement rotation basis around that (modified) pivot.
 
-            Vector3f pivF = (i < (int)mi.nodePivots.size())
-                              ? mi.nodePivots[i] : Vector3f{0, 0, 0};
+            Vector3f pivF = (i < (int)nodePivots.size())
+                              ? nodePivots[i] : Vector3f{0, 0, 0};
 
             // Target world-pivot starts as the authored one from boneM. We may
             // overwrite it below for CameraAnchored.
@@ -807,11 +920,11 @@ void RenderService::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state
                 // from parent-world to camera, at the node's rest distance
                 // from parent. Rotation/scale of the stack are then reset
                 // — we achieve the same by rebuilding boneM below.
-                int parentIdx = (i < (int)mi.nodeParents.size()) ? mi.nodeParents[i] : -1;
+                int parentIdx = (i < (int)nodeParents.size()) ? nodeParents[i] : -1;
                 Vector3f parentWorld = {0, 0, 0};
                 if (parentIdx >= 0 && parentIdx < (int)state.boneWorldMatrices.size()) {
-                    Vector3f parentPivF = (parentIdx < (int)mi.nodePivots.size())
-                                            ? mi.nodePivots[parentIdx] : Vector3f{0, 0, 0};
+                    Vector3f parentPivF = (parentIdx < (int)nodePivots.size())
+                                            ? nodePivots[parentIdx] : Vector3f{0, 0, 0};
                     parentWorld = whiteout::transform_point(
                         parentPivF, state.boneWorldMatrices[parentIdx]);
                 }
@@ -1337,6 +1450,15 @@ int  RenderService::GetAnimationTime() const { return animationTimeMs_.load(); }
 
 void RenderService::ShutdownDevice() {
     ReleaseModelGPU();
+    // Templates own the cross-instance geometry buffers — instances released
+    // above only dropped their refcount on those buffers via sourceTemplate.reset().
+    // We must explicitly tear down the template-side GPU resources before the
+    // device is destroyed, otherwise CleanupD3D pulls the rug from under any
+    // pe1TemplateCache_ entry that still holds buffer handles.
+    for (auto& [path, tmpl] : pe1TemplateCache_) {
+        if (tmpl) tmpl->ReleaseGPU(*gfx_);
+    }
+    pe1TemplateCache_.clear();
     CleanupD3D();
 }
 
@@ -1405,67 +1527,150 @@ void RenderService::UploadStagedTextures(ModelInstance& mi) {
     mi.stagedTextures.clear();
 }
 
-void RenderService::UploadStagedGeosets(ModelInstance& mi) {
-    for (auto& [id, sg] : mi.stagedGeosets) {
-        GPUGeoset gg;
-        gg.geosetId    = id;
-        gg.materialId  = sg.materialId;
-        gg.lod         = sg.lod;
-        gg.indexCount   = (int)sg.indices.size();
-        gg.vertexCount  = (int)sg.vertices.size();
-        gg.baseVertices = sg.vertices;  // keep CPU copy for particle/ribbon reads
-        gg.hasSkinning  = true; // all MDX geosets are skinned (v1200 weights or v800 vertex groups)
+void RenderService::uploadTemplateGpu(PE1ModelTemplate& tmpl) {
+    if (tmpl.gpuUploaded) return;
+    tmpl.sharedGeosets.clear();
+    tmpl.sharedGeosets.reserve(tmpl.meshes.size());
 
-        // Copy priorityPlane from material for render sorting
-        if (sg.materialId >= 0 && sg.materialId < (int)mi.gpuMaterials.size())
-            gg.priorityPlane = mi.gpuMaterials[sg.materialId].cpu.priorityPlane;
+    // Build a geosetId → SkinWeightData* map so we can pair each mesh with
+    // its weights without a nested O(N*M) scan.
+    std::unordered_map<int, const SkinWeightData*> weightsByGeoset;
+    weightsByGeoset.reserve(tmpl.skinWeights.size());
+    for (const auto& sw : tmpl.skinWeights) weightsByGeoset[sw.geosetId] = &sw;
 
-        const uint32_t vbBytes = (uint32_t)(sizeof(Vertex) * sg.vertices.size());
-        const GeosetSkinInfo* skinInfo = mi.skinning.GetGeosetWeights(id);
+    for (const auto& mesh : tmpl.meshes) {
+        PE1ModelTemplate::SharedGeoset sg;
+        sg.geosetId    = mesh.geosetId;
+        sg.materialId  = mesh.materialId;
+        sg.lod         = mesh.lod;
+        sg.vertexCount = (int)mesh.positions.size();
+        sg.indexCount  = (int)mesh.indices.size();
 
-        // Slot-0 stream: rest-pose Vertex data (PNCT0, 48 B). Both SD and
-        // HD VS consume this directly; the VS runs FourBoneSkinning
-        // against vsCB3 when numWeights>0, or passes through for static
-        // geosets. No separate compute-output buffer is needed -- all
-        // bone blending happens in the vertex shader.
-        gg.unskinnedVb = gfx_->CreateBuffer({
-            .size  = vbBytes,
+        std::vector<Vertex> vertices(sg.vertexCount);
+        for (int i = 0; i < sg.vertexCount; i++) {
+            vertices[i].position = mesh.positions[i];
+            vertices[i].normal   = (i < (int)mesh.normals.size()) ? mesh.normals[i] : Vector3f{0,0,1};
+            vertices[i].uv       = (i < (int)mesh.uvs.size())     ? mesh.uvs[i]     : Vector2f{0,0};
+            vertices[i].color    = {1.0f, 1.0f, 1.0f, 1.0f};
+        }
+        sg.unskinnedVb = gfx_->CreateBuffer({
+            .size  = (uint32_t)(sizeof(Vertex) * sg.vertexCount),
             .usage = gfx::BufferUsage::Vertex,
-        }, sg.vertices.data());
+        }, vertices.data());
 
-        gg.ib = gfx_->CreateBuffer({
-            .size  = (uint32_t)(sizeof(uint32_t) * sg.indices.size()),
+        sg.ib = gfx_->CreateBuffer({
+            .size  = (uint32_t)(sizeof(uint32_t) * sg.indexCount),
             .usage = gfx::BufferUsage::Index,
-        }, sg.indices.data());
+        }, mesh.indices.data());
 
-        if ((int)sg.tangents.size() == gg.vertexCount) {
-            gg.tangentVb = gfx_->CreateBuffer({
-                .size  = (uint32_t)(sizeof(Vector4f) * sg.tangents.size()),
+        if ((int)mesh.tangents.size() == sg.vertexCount) {
+            sg.tangentVb = gfx_->CreateBuffer({
+                .size  = (uint32_t)(sizeof(Vector4f) * sg.vertexCount),
                 .usage = gfx::BufferUsage::Vertex,
-            }, sg.tangents.data());
+            }, mesh.tangents.data());
         }
 
-        // Pack VertexInfluence into BoneVertex: weights R8G8B8A8_UNORM
-        // (normalised to sum to 255) + indices R8G8B8A8_UINT, 8 B total.
-        // Matches the ATTR5/ATTR6 layout in kParticleSDSkinned /
-        // kMeshHDSkinned so the same buffer feeds both SD and HD draws.
-        if (skinInfo && (int)skinInfo->vertices.size() == gg.vertexCount) {
-            std::vector<BoneVertex> bv(gg.vertexCount);
-            for (int v = 0; v < gg.vertexCount; v++) {
-                const auto& inf = skinInfo->vertices[v];
+        // BoneVertex (ATTR5/ATTR6) — built from skinWeights for this geoset.
+        // Same packing as the legacy path so SD/HD shaders bind the same.
+        auto wIt = weightsByGeoset.find(mesh.geosetId);
+        if (wIt != weightsByGeoset.end()
+            && (int)wIt->second->influences.size() == sg.vertexCount) {
+            const auto& sw = *wIt->second;
+            std::vector<BoneVertex> bv(sg.vertexCount);
+            for (int v = 0; v < sg.vertexCount; v++) {
+                const auto& inf = sw.influences[v];
                 int   idxArr[4] = { inf.boneIdx[0], inf.boneIdx[1], inf.boneIdx[2], inf.boneIdx[3] };
                 float wtArr[4]  = { inf.weight[0],  inf.weight[1],  inf.weight[2],  inf.weight[3]  };
                 bls::PackBoneVertex(bv[v], idxArr, wtArr);
             }
-            gg.boneVb = gfx_->CreateBuffer({
-                .size  = (uint32_t)(sizeof(BoneVertex) * gg.vertexCount),
+            sg.boneVb = gfx_->CreateBuffer({
+                .size  = (uint32_t)(sizeof(BoneVertex) * sg.vertexCount),
                 .usage = gfx::BufferUsage::Vertex,
             }, bv.data());
         }
 
-        mi.gpuGeosets.push_back(gg);
+        tmpl.sharedGeosets.push_back(sg);
     }
-    mi.stagedGeosets.clear();
+    tmpl.gpuUploaded = true;
+}
+
+void RenderService::UploadStagedGeosets(ModelInstance& mi) {
+    if (mi.sourceTemplate) {
+        // Borrow path: every GPUGeoset shares ib/unskinnedVb/tangentVb/boneVb
+        // with the template. Per-frame state (bonePaletteCb, world, alpha,
+        // color, priorityPlane) stays on the per-instance GPUGeoset.
+        auto& tmpl = *mi.sourceTemplate;
+        uploadTemplateGpu(tmpl);
+        for (const auto& shared : tmpl.sharedGeosets) {
+            GPUGeoset gg;
+            gg.geosetId    = shared.geosetId;
+            gg.materialId  = shared.materialId;
+            gg.lod         = shared.lod;
+            gg.ib          = shared.ib;
+            gg.unskinnedVb = shared.unskinnedVb;
+            gg.tangentVb   = shared.tangentVb;
+            gg.boneVb      = shared.boneVb;
+            gg.indexCount  = shared.indexCount;
+            gg.vertexCount = shared.vertexCount;
+            gg.hasSkinning = true;
+            if (shared.materialId >= 0 && shared.materialId < (int)mi.gpuMaterials.size())
+                gg.priorityPlane = mi.gpuMaterials[shared.materialId].cpu.priorityPlane;
+            mi.gpuGeosets.push_back(gg);
+        }
+        mi.stagedGeosets.clear();
+    } else {
+        // Legacy per-instance buffer creation path (top-level Max/test load).
+        for (auto& [id, sg] : mi.stagedGeosets) {
+            GPUGeoset gg;
+            gg.geosetId    = id;
+            gg.materialId  = sg.materialId;
+            gg.lod         = sg.lod;
+            gg.indexCount   = (int)sg.indices.size();
+            gg.vertexCount  = (int)sg.vertices.size();
+            gg.hasSkinning  = true; // all MDX geosets are skinned (v1200 weights or v800 vertex groups)
+
+            // Copy priorityPlane from material for render sorting
+            if (sg.materialId >= 0 && sg.materialId < (int)mi.gpuMaterials.size())
+                gg.priorityPlane = mi.gpuMaterials[sg.materialId].cpu.priorityPlane;
+
+            const uint32_t vbBytes = (uint32_t)(sizeof(Vertex) * sg.vertices.size());
+            const GeosetSkinInfo* skinInfo = mi.skinning.GetGeosetWeights(id);
+
+            gg.unskinnedVb = gfx_->CreateBuffer({
+                .size  = vbBytes,
+                .usage = gfx::BufferUsage::Vertex,
+            }, sg.vertices.data());
+
+            gg.ib = gfx_->CreateBuffer({
+                .size  = (uint32_t)(sizeof(uint32_t) * sg.indices.size()),
+                .usage = gfx::BufferUsage::Index,
+            }, sg.indices.data());
+
+            if ((int)sg.tangents.size() == gg.vertexCount) {
+                gg.tangentVb = gfx_->CreateBuffer({
+                    .size  = (uint32_t)(sizeof(Vector4f) * sg.tangents.size()),
+                    .usage = gfx::BufferUsage::Vertex,
+                }, sg.tangents.data());
+            }
+
+            if (skinInfo && (int)skinInfo->vertices.size() == gg.vertexCount) {
+                std::vector<BoneVertex> bv(gg.vertexCount);
+                for (int v = 0; v < gg.vertexCount; v++) {
+                    const auto& inf = skinInfo->vertices[v];
+                    int   idxArr[4] = { inf.boneIdx[0], inf.boneIdx[1], inf.boneIdx[2], inf.boneIdx[3] };
+                    float wtArr[4]  = { inf.weight[0],  inf.weight[1],  inf.weight[2],  inf.weight[3]  };
+                    bls::PackBoneVertex(bv[v], idxArr, wtArr);
+                }
+                gg.boneVb = gfx_->CreateBuffer({
+                    .size  = (uint32_t)(sizeof(BoneVertex) * gg.vertexCount),
+                    .usage = gfx::BufferUsage::Vertex,
+                }, bv.data());
+            }
+
+            mi.gpuGeosets.push_back(gg);
+        }
+        mi.stagedGeosets.clear();
+    }
 
     // Detect whether this model has a real LOD chain. Mirrors Previewd's
     // HasLODs @0x1401b6670 intent: if any geoset carries a non-zero LOD
