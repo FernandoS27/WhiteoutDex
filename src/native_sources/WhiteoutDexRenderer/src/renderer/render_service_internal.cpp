@@ -1,6 +1,7 @@
 #include "render_service_internal.h"
 #include "render_service.h"  // RenderService::GetRenderOrder / GeosetPassesLod
 #include "constants.h"
+#include "sampler_asset_manager.h"
 #include "bls/bls_frame.h"
 
 #include <algorithm>
@@ -61,24 +62,26 @@ bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
     return hasBones;
 }
 
-void BindLayerAlbedo(gfx::IGFXCommandList*    cmd,
-                     ModelInstance&           mi,
-                     int                      textureId,
-                     gfx::TextureHandle       defaultTex,
-                     const gfx::SamplerHandle (&samplerWrap)[4],
-                     uint32_t                 slot) {
-    uint32_t wrapFlags = kWrapFlagsMask;
+void BindLayerAlbedo(gfx::IGFXCommandList*  cmd,
+                     ModelInstance&         mi,
+                     int                    textureId,
+                     gfx::TextureHandle     defaultTex,
+                     SamplerAssetManager&   samplers,
+                     uint32_t               slot) {
+    // Default to "wrap on both axes" when no per-texture flags are
+    // available — matches the previous kWrapFlagsMask sentinel.
+    uint32_t wrapFlags = kSamplerWrapBitsMask;
     bool     hasTex    = false;
-    if (textureId >= 0) {
-        auto it = mi.gpuTextures.find(textureId);
-        if (it != mi.gpuTextures.end() && it->second.tex != gfx::TextureHandle::Invalid) {
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, slot, it->second.tex);
-            wrapFlags = it->second.wrapFlags & kWrapFlagsMask;
+    if (textureId >= 0 && mi.textures) {
+        const gfx::TextureHandle h = mi.textures->Get(textureId);
+        if (h != gfx::TextureHandle::Invalid) {
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, slot, h);
+            wrapFlags = mi.textures->WrapFlags(textureId);   // SamplerAssetManager masks
             hasTex    = true;
         }
     }
     if (!hasTex) cmd->BindShaderResource(gfx::ShaderStage::Pixel, slot, defaultTex);
-    cmd->BindSampler(gfx::ShaderStage::Pixel, slot, samplerWrap[wrapFlags]);
+    cmd->BindSampler(gfx::ShaderStage::Pixel, slot, samplers.WrapVariant(wrapFlags));
 }
 
 void WriteCbPerFrame(gfx::IGFXDevice*      gfx,

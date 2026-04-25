@@ -12,6 +12,7 @@
 #include "ribbon.h"
 #include "pe1_system.h"
 #include "model_source.h"
+#include "texture_asset_manager.h"
 #include <unordered_map>
 #include <vector>
 #include <memory>
@@ -125,15 +126,10 @@ struct GPUGeoset {
     }
 };
 
-struct GPUTexture {
-    gfx::TextureHandle tex = gfx::TextureHandle::Invalid;
-    uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V)
-
-    void Release(gfx::IGFXDevice& gfx) {
-        gfx.Destroy(tex);
-        tex = gfx::TextureHandle::Invalid;
-    }
-};
+// GPUTexture has been folded into TextureAssetManager::ModelScope::Entry.
+// The scope owns the gfx::TextureHandle plus its wrapFlags and frees both
+// when the model is unloaded; bind sites use textures->Get(id) /
+// textures->WrapFlags(id) instead of touching a GPUTexture struct directly.
 
 struct GPUMaterial {
     StagedMaterial cpu;
@@ -184,7 +180,11 @@ struct ModelInstance {
 
     // ---- GPU resources (render thread only) ----
     std::vector<GPUGeoset>              gpuGeosets;
-    std::unordered_map<int, GPUTexture> gpuTextures;
+    // Per-model texture set, owned by TextureAssetManager via ModelScope.
+    // Allocated by RenderService::TouchModelTextures on first upload and
+    // released either explicitly through ReleaseGPU or implicitly when the
+    // ModelInstance is destroyed.
+    std::unique_ptr<TextureAssetManager::ModelScope> textures;
     std::vector<GPUMaterial>            gpuMaterials;
 
     // ---- Skinning ----
@@ -228,9 +228,9 @@ struct ModelInstance {
     // at CB upload time. See docs/BLS_ShaderABI.md.
     std::vector<FrameState::LightState> activeLights;
 
-    // ---- Replaceable texture map (for team color) ----
-    // textureId → replaceableId (1=TeamColor, 2=TeamGlow)
-    std::unordered_map<int, int> replaceableTexMap;
+    // (Replaceable-texture mapping moved into ReplaceableTextureManager —
+    // no per-instance state remains; the manager keys its slot registry
+    // on this ModelInstance pointer.)
 
     // ---- Attachments with child models ----
     struct AttachmentSlot {
@@ -266,8 +266,7 @@ struct ModelInstance {
     void ReleaseGPU(gfx::IGFXDevice& gfx) {
         for (auto& g : gpuGeosets) g.Release(gfx);
         gpuGeosets.clear();
-        for (auto& [id, t] : gpuTextures) t.Release(gfx);
-        gpuTextures.clear();
+        if (textures) textures->Clear();   // ModelScope keeps its allocation; pixels are freed.
         gpuMaterials.clear();
         gfx.Destroy(ribbonVB); ribbonVB = gfx::BufferHandle::Invalid; ribbonVBSize = 0;
     }

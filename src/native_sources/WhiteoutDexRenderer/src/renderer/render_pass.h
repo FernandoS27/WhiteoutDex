@@ -20,6 +20,7 @@
 
 #include "render_service.h"            // full definition — template body dereferences members
 #include "render_service_internal.h"   // CollectSortedGeosetRefs, GeosetRef
+#include "sampler_asset_manager.h"     // samplers_->LinearWrap() in pass setup
 #include "bls/bls_draw_helpers.h"      // BaselineLights, BuildLightPalette
 #include "bls/bls_frame.h"             // FrameInputs
 
@@ -54,7 +55,7 @@ public:
         frame.viewportRect = { (float)rs_.width_, (float)rs_.height_, 0.0f, 0.0f };
 
         // Default t0 sampler + per-path extras (IBL probes, debug CB, etc.).
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplerLinear_);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplers_->LinearWrap());
         d.BindPassResources(cmd, frame);
 
         const bls::BaselineLights baseline = d.Baseline();

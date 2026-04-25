@@ -104,6 +104,10 @@ private:
     int               gridVertCount_ = 0;
 
     // ---- ViewCube ----
+    // Atlas texture lifetime is owned by TextureAssetManager under this
+    // name; vcFaceTex_ caches the handle for fast per-frame bind.
+    static constexpr const char* kViewCubeFaceTexName = "debug.viewCubeFace";
+
     gfx::BufferHandle   vcCubeVB_    = gfx::BufferHandle::Invalid;
     gfx::BufferHandle   vcCubeIB_    = gfx::BufferHandle::Invalid;
     gfx::BufferHandle   vcOutlineVB_ = gfx::BufferHandle::Invalid;

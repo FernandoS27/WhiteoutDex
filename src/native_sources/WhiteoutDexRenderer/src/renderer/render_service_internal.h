@@ -15,6 +15,8 @@
 
 namespace WhiteoutDex::bls { struct FrameInputs; }
 
+namespace WhiteoutDex { class SamplerAssetManager; }
+
 namespace WhiteoutDex::render_detail {
 
 // Snapshot of one StagedMaterialLayer plus the defaults used when a geoset
@@ -81,17 +83,17 @@ bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
                         const ModelInstance&  mi);
 
 // Binds `textureId`'s GPU texture to pixel-stage slot `slot` with the
-// matching wrap sampler from `samplerWrap[0..3]`. Falls back to
-// `defaultTex` when the id is unresolvable or the texture handle is invalid,
-// masking the wrap flags to `kWrapFlagsMask` (2 bits) like the old inline
-// form. Handles the "no texture + default sampler" case so callers never
-// bind an invalid SRV.
-void BindLayerAlbedo(gfx::IGFXCommandList*    cmd,
-                     ModelInstance&           mi,
-                     int                      textureId,
-                     gfx::TextureHandle       defaultTex,
-                     const gfx::SamplerHandle (&samplerWrap)[4],
-                     uint32_t                 slot = 0);
+// matching wrap sampler resolved through `samplers`. Falls back to
+// `defaultTex` when the id is unresolvable or the texture handle is invalid.
+// SamplerAssetManager owns the wrap-flags → SamplerHandle mapping (bits
+// masked against kSamplerWrapBitsMask internally) so this site no longer
+// indexes a raw [4] array.
+void BindLayerAlbedo(gfx::IGFXCommandList*  cmd,
+                     ModelInstance&         mi,
+                     int                    textureId,
+                     gfx::TextureHandle     defaultTex,
+                     SamplerAssetManager&   samplers,
+                     uint32_t               slot = 0);
 
 // Legacy (Slang) CBPerFrame is filled at ten sites across the five
 // non-BLS render paths (particles, ribbons, collisions, light markers,

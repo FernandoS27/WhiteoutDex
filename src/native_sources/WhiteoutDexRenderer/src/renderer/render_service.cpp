@@ -7,6 +7,9 @@
 #include "render_pass.h"
 #include "debug/debug_renderer.h"
 #include "constants.h"
+#include "sampler_asset_manager.h"
+#include "texture_asset_manager.h"
+#include "replaceable_texture_manager.h"
 #include "compiled_shaders.h"
 #include "team_glow_data.h"
 #include "mdx_model_adapter.h"
@@ -97,6 +100,7 @@ void RenderService::RemoveModel(uint32_t handle) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     auto it = models_.find(handle);
     if (it != models_.end()) {
+        if (replaceables_) replaceables_->UnregisterModel(*it->second);
         it->second->ReleaseGPU(*gfx_);
         models_.erase(it);
     }
@@ -118,8 +122,11 @@ void RenderService::AddPlaneEmitters(uint32_t modelHandle,
         // per-frame state (keyed on emitterId) targets the same logical emitter
         // through both paths while the legacy system is still live.
         particleService_.AddPlaneEmitter(modelHandle, static_cast<int>(i), std::move(emitter));
-        if (mi)
-            RegisterReplaceableEmitterTex(mi, inits[i].material.textureId, inits[i].material.replaceableId);
+        if (mi && replaceables_) {
+            replaceables_->RegisterModelSlot(*mi,
+                inits[i].material.textureId,
+                static_cast<ReplaceableKind>(inits[i].material.replaceableId));
+        }
     }
 }
 
@@ -331,8 +338,9 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
         st.wrapFlags = tex.wrapFlags;
         st.format = tex.format;
         st.pixels = tex.pixels;
-        if (tex.replaceableId == 1 || tex.replaceableId == 2)
-            mi->replaceableTexMap[tex.textureId] = tex.replaceableId;
+        if ((tex.replaceableId == 1 || tex.replaceableId == 2) && replaceables_)
+            replaceables_->RegisterModelSlot(*mi, tex.textureId,
+                                             static_cast<ReplaceableKind>(tex.replaceableId));
     }
     // Stage materials
     for (auto& mat : tmpl.materials) {
@@ -408,7 +416,10 @@ void RenderService::stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemp
         auto em = std::make_unique<particle::PlaneEmitter>();
         particle::ApplyInit(*em, particle::InitFromLegacyConfig(pcfg));
         particleService_.AddPlaneEmitter(mi->handle, i, std::move(em));
-        RegisterReplaceableEmitterTex(mi, pcfg.textureId, pcfg.replaceableId);
+        if (replaceables_) {
+            replaceables_->RegisterModelSlot(*mi, pcfg.textureId,
+                                             static_cast<ReplaceableKind>(pcfg.replaceableId));
+        }
     }
     mi->pe2State.resize(tmpl.pe2Configs.size());
     // Ribbons
@@ -475,6 +486,7 @@ void RenderService::UpdatePE1(float dt) {
     for (uint32_t rh : toRemove) {
         auto it = models_.find(rh);
         if (it != models_.end()) {
+            if (replaceables_) replaceables_->UnregisterModel(*it->second);
             it->second->ReleaseGPU(*gfx_);
             models_.erase(it);
             pe1InstanceCount_--;
@@ -544,8 +556,9 @@ void RenderService::UpdateMaterials(uint32_t handle, const std::vector<MaterialD
         st.wrapFlags = tex.wrapFlags;
         st.format = tex.format;
         st.pixels = tex.pixels;
-        if (tex.replaceableId == 1 || tex.replaceableId == 2)
-            mi->replaceableTexMap[tex.textureId] = tex.replaceableId;
+        if ((tex.replaceableId == 1 || tex.replaceableId == 2) && replaceables_)
+            replaceables_->RegisterModelSlot(*mi, tex.textureId,
+                                             static_cast<ReplaceableKind>(tex.replaceableId));
     }
 
     for (auto& mat : materials) {
@@ -607,8 +620,9 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
         st.format = tex.format;
         st.pixels = tex.pixels;
         // Track replaceable textures for team color updates
-        if (tex.replaceableId == 1 || tex.replaceableId == 2)
-            mi->replaceableTexMap[tex.textureId] = tex.replaceableId;
+        if ((tex.replaceableId == 1 || tex.replaceableId == 2) && replaceables_)
+            replaceables_->RegisterModelSlot(*mi, tex.textureId,
+                                             static_cast<ReplaceableKind>(tex.replaceableId));
     }
 
     // Materials → staged
@@ -693,7 +707,10 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
         auto em = std::make_unique<particle::PlaneEmitter>();
         particle::ApplyInit(*em, particle::InitFromLegacyConfig(pcfg));
         particleService_.AddPlaneEmitter(handle, (int)i, std::move(em));
-        RegisterReplaceableEmitterTex(mi.get(), pcfg.textureId, pcfg.replaceableId);
+        if (replaceables_) {
+            replaceables_->RegisterModelSlot(*mi, pcfg.textureId,
+                                             static_cast<ReplaceableKind>(pcfg.replaceableId));
+        }
     }
     mi->pe2State.resize(particleConfigs.size());
 
@@ -1139,106 +1156,25 @@ void RenderService::ApplyFrameState(const FrameState& state, int timeMs) {
 }
 
 // ============================================================================
-// Team Color Texture Update
+// Team Color — thin façade over ReplaceableTextureManager.
 // ============================================================================
 
-void RenderService::RegisterReplaceableEmitterTex(ModelInstance* mi, int textureId, int replaceableId) {
-    if (replaceableId != 1 && replaceableId != 2) return;
-    auto [it, inserted] = mi->replaceableTexMap.try_emplace(textureId, replaceableId);
-    if (!inserted) return;
-    const uint8_t r = (uint8_t)(teamColor_ & 0xFF);
-    const uint8_t g = (uint8_t)((teamColor_ >> 8)  & 0xFF);
-    const uint8_t b = (uint8_t)((teamColor_ >> 16) & 0xFF);
-    StagedTexture& st = mi->stagedTextures[textureId];
-    st.format    = gfx::Format::R8G8B8A8_UNORM;
-    st.mipLevels = 1;
-    if (replaceableId == 2) {
-        st.pixels = DecodeTeamGlow(r, g, b, st.width, st.height);
-    } else {
-        st.width = 4; st.height = 4;
-        st.pixels.resize(64);
-        for (int j = 0; j < 16; j++) {
-            st.pixels[j*4+0] = r;
-            st.pixels[j*4+1] = g;
-            st.pixels[j*4+2] = b;
-            st.pixels[j*4+3] = 255;
-        }
-    }
-    mi->stagedDirty = true;
+void RenderService::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    if (replaceables_) replaceables_->SetTeamColor(r, g, b);
 }
 
-void RenderService::UpdateTeamColorTextures() {
-    std::lock_guard<std::mutex> lock(dataMutex_);
-    // teamColor_ is BGR-packed (0x00BBGGRR)
-    uint8_t r = (uint8_t)(teamColor_ & 0xFF);
-    uint8_t g = (uint8_t)((teamColor_ >> 8) & 0xFF);
-    uint8_t b = (uint8_t)((teamColor_ >> 16) & 0xFF);
-    for (auto& [h, mi] : models_) {
-        for (auto& [texId, replId] : mi->replaceableTexMap) {
-            StagedTexture& st = mi->stagedTextures[texId];
-            st.replaceableId = replId;
-            // Force RGBA8 — we're writing uncompressed 32bpp pixels, but
-            // the stagedTextures entry may have been created by a prior
-            // pass that loaded a BC3/BC5 image into this same slot. Not
-            // resetting the format would have the upload path treat 64
-            // RGBA8 bytes as BCn blocks and corrupt the texture.
-            st.format = gfx::Format::R8G8B8A8_UNORM;
-            // Generated TeamColor / TeamGlow are single-mip. Reset
-            // mipLevels in case a prior pass loaded a mipped image
-            // into this same slot (stale value would cause the GPU
-            // upload to walk off the end of `pixels`).
-            st.mipLevels = 1;
-            if (replId == 2) {
-                st.pixels = DecodeTeamGlow(r, g, b, st.width, st.height);
-            } else {
-                st.width = 4; st.height = 4;
-                st.pixels.resize(64);
-                for (int j = 0; j < 16; j++) {
-                    st.pixels[j * 4 + 0] = r;
-                    st.pixels[j * 4 + 1] = g;
-                    st.pixels[j * 4 + 2] = b;
-                    st.pixels[j * 4 + 3] = 255;
-                }
-            }
-        }
-        if (!mi->replaceableTexMap.empty()) mi->stagedDirty = true;
-    }
+uint32_t RenderService::GetTeamColorRaw() const {
+    return replaceables_ ? replaceables_->GetTeamColorRaw() : 0u;
+}
+
+bool RenderService::ConsumeTeamColorDirty() {
+    return replaceables_ && replaceables_->ConsumeDirty();
 }
 
 // ============================================================================
 // Camera Presets
 // ============================================================================
-
-void RenderService::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
-    // BGR packing matches the Windows RGB() macro layout: 0x00BBGGRR.
-    teamColor_ = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
-    UpdateTeamColorTextures();
-    teamColorDirty_.store(true);
-}
-
-void RenderService::UpdateTeamColorSwatch() {
-    // Pack current picker colour as RGBA8 (A = 0xFF). `teamColor_` is
-    // BGR-packed so recombine R/G/B explicitly rather than memcpy'ing.
-    const uint8_t r = (uint8_t)(teamColor_ & 0xFF);
-    const uint8_t g = (uint8_t)((teamColor_ >> 8) & 0xFF);
-    const uint8_t b = (uint8_t)((teamColor_ >> 16) & 0xFF);
-    const uint32_t rgba =
-        (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | 0xFF000000u;
-    if (teamColorTex_ != gfx::TextureHandle::Invalid && teamColorTexColor_ == rgba)
-        return;
-    if (teamColorTex_ != gfx::TextureHandle::Invalid) {
-        gfx_->Destroy(teamColorTex_);
-        teamColorTex_ = gfx::TextureHandle::Invalid;
-    }
-    uint32_t px = rgba;
-    teamColorTex_ = gfx_->CreateTexture({
-        .width  = 1,
-        .height = 1,
-        .format = gfx::Format::R8G8B8A8_UNORM,
-        .usage  = gfx::TextureUsage::ShaderResource,
-    }, &px);
-    teamColorTexColor_ = rgba;
-}
 
 void RenderService::SetCameraPresets(const std::vector<CameraPreset>& presets) {
     std::lock_guard<std::mutex> lock(dataMutex_);
@@ -1394,7 +1330,7 @@ void RenderService::GetFrameStats(int& geosets, int& textures, int& nodes,
     std::lock_guard<std::mutex> lock(dataMutex_);
     for (auto& [h, mi] : models_) {
         geosets  += (int)mi->gpuGeosets.size();
-        textures += (int)mi->gpuTextures.size();
+        textures += mi->textures ? (int)mi->textures->Size() : 0;
         nodes    += mi->skinning.NodeCount();
         segments += mi->ribbons.GetTotalSegmentCount();
     }
@@ -1406,28 +1342,24 @@ void RenderService::GetFrameStats(int& geosets, int& textures, int& nodes,
 // ============================================================================
 
 void RenderService::UploadStagedTextures(ModelInstance& mi) {
+    if (!mi.textures) mi.textures = textures_->CreateModelScope();
     for (auto& [id, st] : mi.stagedTextures) {
         if (st.width <= 0 || st.height <= 0) continue;
-
-        if (mi.gpuTextures.count(id)) mi.gpuTextures[id].Release(*gfx_);
-
-        GPUTexture gt;
         // Upload in the source pixel format (BC3/BC5/BC7 for normal
         // maps, sRGB variants for albedo, etc). The staged texture
         // carries the format that the DDS/BLP parser reported; bind
         // it verbatim so hd_ps.slang sees Blizzard's packed channels.
-        gfx::Format texFormat = st.format == gfx::Format::Unknown
-                                   ? gfx::Format::R8G8B8A8_UNORM
-                                   : st.format;
-        gt.tex = gfx_->CreateTexture({
+        const gfx::Format texFormat = (st.format == gfx::Format::Unknown)
+                                          ? gfx::Format::R8G8B8A8_UNORM
+                                          : st.format;
+        const gfx::TextureDesc desc{
             .width     = st.width,
             .height    = st.height,
             .mipLevels = (std::max)(1, st.mipLevels),
             .format    = texFormat,
             .usage     = gfx::TextureUsage::ShaderResource,
-        }, st.pixels.data());
-        gt.wrapFlags = st.wrapFlags;
-        mi.gpuTextures[id] = gt;
+        };
+        mi.textures->Upload(id, desc, st.pixels.data(), st.wrapFlags);
     }
     mi.stagedTextures.clear();
 }
@@ -1531,6 +1463,7 @@ void RenderService::ProcessStagedData() {
     for (auto it = models_.begin(); it != models_.end(); ) {
         if (it->second->stagedClear) {
             const uint32_t clearedHandle = it->first;
+            if (replaceables_) replaceables_->UnregisterModel(*it->second);
             it->second->ReleaseGPU(*gfx_);
             it = models_.erase(it);
             particleService_.RemoveModel(clearedHandle);
@@ -1724,18 +1657,18 @@ bool RenderService::RenderParticlesBls() {
         {
             std::lock_guard<std::mutex> lock(dataMutex_);
             ModelInstance* owner = getModel(dl.model);
-            if (owner && dl.material.textureId >= 0) {
-                auto it = owner->gpuTextures.find(dl.material.textureId);
-                if (it != owner->gpuTextures.end() && it->second.tex != gfx::TextureHandle::Invalid) {
-                    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, it->second.tex);
+            if (owner && owner->textures && dl.material.textureId >= 0) {
+                const gfx::TextureHandle h = owner->textures->Get(dl.material.textureId);
+                if (h != gfx::TextureHandle::Invalid) {
+                    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, h);
                     hasModelTex = true;
                 }
             }
         }
         if (!hasModelTex) {
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, defaultTex_);
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, textures_->GetDefaults().White);
         }
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplerWrap_[wrapFlags]);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplers_->WrapVariant(wrapFlags));
 
         cmd->Draw(dl.vertexCount, drawOffset);
         drawOffset += dl.vertexCount;
@@ -1859,7 +1792,7 @@ void RenderService::RenderRibbons() {
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, blsSdPsCb_);
 
         render_detail::BindLayerAlbedo(cmd, *mi, cfg.textureId,
-                                       defaultTex_, samplerWrap_);
+                                       textures_->GetDefaults().White, *samplers_);
 
         cmd->Draw(count, drawOffset);
         drawOffset += count;
@@ -1915,20 +1848,9 @@ bool RenderService::InitDevice(gfx::GfxApi api) {
     gfx_ = gfx::CreateDevice(api);
     if (!gfx_) return false;
 
-    // Samplers (via GFX)
-    {
-        using AM = gfx::AddressMode;
-        gfx::SamplerDesc sd;
-        samplerLinear_ = gfx_->CreateSampler(sd); // default: linear, wrap
-
-        AM modes[2] = { AM::Clamp, AM::Wrap };
-        for (int i = 0; i < 4; i++) {
-            sd.addressU = modes[(i >> 0) & 1];
-            sd.addressV = modes[(i >> 1) & 1];
-            sd.addressW = AM::Clamp;
-            samplerWrap_[i] = gfx_->CreateSampler(sd);
-        }
-    }
+    // SamplerAssetManager owns every gfx::SamplerHandle. The four wrap-flag
+    // variants and the linear-wrap sampler are created lazily on first use.
+    samplers_ = std::make_unique<SamplerAssetManager>(*gfx_);
 
     // Constant buffer (via GFX)
     cbPerFrame_ = gfx_->CreateBuffer({
@@ -1936,58 +1858,14 @@ bool RenderService::InitDevice(gfx::GfxApi api) {
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
     });
 
-    // 1x1 white default texture (via GFX)
-    {
-        uint32_t white = 0xFFFFFFFF;
-        defaultTex_ = gfx_->CreateTexture({
-            .width  = 1,
-            .height = 1,
-            .format = gfx::Format::R8G8B8A8_UNORM,
-            .usage  = gfx::TextureUsage::ShaderResource,
-        }, &white);
-    }
-    // 1x1 RGBA(0,0,0,0) — bound to t2 ORM / t3 emissive / t4 teamColor when
-    // a v1200 HD layer doesn't author those subtextures. orm.w = 0 zeroes
-    // the multiLayerBlend team-colour weight (see effects/multi_layer.slang),
-    // so unauthored layers stop painting the entire surface with team hue.
-    {
-        uint32_t zero = 0x00000000;
-        defaultBlack_ = gfx_->CreateTexture({
-            .width  = 1,
-            .height = 1,
-            .format = gfx::Format::R8G8B8A8_UNORM,
-            .usage  = gfx::TextureUsage::ShaderResource,
-        }, &zero);
-    }
-    // 1x1 flat normal. decodeNormalMap does nx = 2*r*a - 1, so r=0.5 a=1.0
-    // (packed 0x80 and 0xFF) yields nx = ny = 0, nz = 1 in the shader.
-    {
-        uint32_t flatN = 0xFF808080u;
-        defaultNormal_ = gfx_->CreateTexture({
-            .width  = 1,
-            .height = 1,
-            .format = gfx::Format::R8G8B8A8_UNORM,
-            .usage  = gfx::TextureUsage::ShaderResource,
-        }, &flatN);
-    }
-    // 1x1 ORM fallback — R=1 (occlusion), G=1 (roughness), B=0 (metalness),
-    // A=0 (team blend weight). The roughness=1 is critical: the HD IBL
-    // path reads `orm.y = roughness` and uses it to pick a cubemap mip.
-    // With roughness=0 (mirror), every fragment samples mip 0 of the
-    // specular cube and the cube's sky/ground horizon shows up as a
-    // sharp bright/dark split right at the view centre. Defaulting to
-    // roughness=1 (fully matte) samples the smallest mip, effectively
-    // a uniform probe-average tint — no seam, no hot reflection.
-    // Byte order: R8G8B8A8 little-endian → 0x0000FFFF = R=0xFF, G=0xFF, B=0, A=0.
-    {
-        uint32_t ormNeutral = 0x0000FFFFu;
-        defaultOrm_ = gfx_->CreateTexture({
-            .width  = 1,
-            .height = 1,
-            .format = gfx::Format::R8G8B8A8_UNORM,
-            .usage  = gfx::TextureUsage::ShaderResource,
-        }, &ormNeutral);
-    }
+    // TextureAssetManager owns every gfx::TextureHandle in the renderer.
+    // Its constructor allocates the 5 default 1x1 fallbacks (white / black /
+    // flat normal / neutral ORM / missing-magenta) — see GetDefaults().
+    textures_     = std::make_unique<TextureAssetManager>(*gfx_);
+    // ReplaceableTextureManager owns the team-colour state and the live
+    // 1x1 HD swatch GPU texture bound at t4. Allocated lazily on first
+    // GetHdSwatchTexture(); per-model slots arrive via RegisterModelSlot.
+    replaceables_ = std::make_unique<ReplaceableTextureManager>(*gfx_, *textures_);
 
     // Shaders + pipelines + default geometry (grid, view cube) are part of device init
     if (!CreateShaders())          { CleanupD3D(); return false; }
@@ -2053,7 +1931,7 @@ bool RenderService::InitBlsShaders() {
     // Previewd's UpdateSplitSumTexture (0x14036daf0) lazy-init pattern
     // (we just do it eagerly -- at 1024 samples the CPU cost is ~15 ms
     // single-threaded, trivial compared to the first-frame shader compile).
-    iblSplitSumLut_ = ibl::CreateSplitSumLutTexture(*gfx_);
+    textures_->RegisterOwned(kIblSplitSumLutName, ibl::CreateSplitSumLutTexture(*gfx_));
 
     // Default to the portrait-tuned probe — softer, horizontally
     // isotropic, no sharp sun/horizon features. Avoids the "dark
@@ -2072,31 +1950,29 @@ bool RenderService::InitBlsShaders() {
 }
 
 void RenderService::SetEnvProbe(const std::string& relPath) {
-    if (!gfx_) return;
+    if (!gfx_ || !textures_) return;
 
-    // Destroy the previous pair; skip double-free when from/to alias.
-    if (iblFromProbe_ != gfx::TextureHandle::Invalid) {
-        gfx_->Destroy(iblFromProbe_);
-        if (iblToProbe_ != iblFromProbe_ && iblToProbe_ != gfx::TextureHandle::Invalid)
-            gfx_->Destroy(iblToProbe_);
-        iblFromProbe_ = gfx::TextureHandle::Invalid;
-        iblToProbe_   = gfx::TextureHandle::Invalid;
-    }
+    // Drop the previous probe pair. Aliasing convention: only the "from"
+    // probe is registered; the bind site reuses it for t14 when "to" is
+    // unregistered, so a single ReleaseOwned suffices here.
+    textures_->ReleaseOwned(kIblFromProbeName);
+    textures_->ReleaseOwned(kIblToProbeName);
 
+    gfx::TextureHandle fromHandle = gfx::TextureHandle::Invalid;
     int mips = 0;
     if (!relPath.empty() && activeContentProvider_) {
         auto probe = ibl::LoadEnvProbe(*gfx_, *activeContentProvider_, relPath);
         if (probe.handle != gfx::TextureHandle::Invalid) {
-            iblFromProbe_ = probe.handle;
-            mips          = probe.mipCount;
+            fromHandle = probe.handle;
+            mips       = probe.mipCount;
         }
     }
-    if (iblFromProbe_ == gfx::TextureHandle::Invalid) {
+    if (fromHandle == gfx::TextureHandle::Invalid) {
         OutputDebugStringA("[WDEX IBL] probe load failed — using procedural debug probe\n");
-        iblFromProbe_ = ibl::CreateDebugFacesEnvProbe(*gfx_);
-        mips          = ibl::kEnvProbeMipLevels;
+        fromHandle = ibl::CreateDebugFacesEnvProbe(*gfx_);
+        mips       = ibl::kEnvProbeMipLevels;
     }
-    iblToProbe_     = iblFromProbe_;           // aliased; envTransitionT=0 picks "from"
+    textures_->RegisterOwned(kIblFromProbeName, fromHandle);
     iblProbeMipEnd_ = static_cast<float>(mips - 1);
 }
 
@@ -2111,13 +1987,14 @@ void RenderService::ShutdownBlsShaders() {
         gfx_->Destroy(blsHdPsCb_);     blsHdPsCb_     = gfx::BufferHandle::Invalid;
         gfx_->Destroy(blsSdOnHdPsCb_); blsSdOnHdPsCb_ = gfx::BufferHandle::Invalid;
         gfx_->Destroy(blsHdDebugVisCb_); blsHdDebugVisCb_ = gfx::BufferHandle::Invalid;
-        gfx_->Destroy(iblSplitSumLut_); iblSplitSumLut_ = gfx::TextureHandle::Invalid;
-        // from + to may alias when the night probe failed to load -- guard
-        // the second destroy so we don't touch a freed handle.
-        gfx_->Destroy(iblFromProbe_);
-        if (iblToProbe_ != iblFromProbe_) gfx_->Destroy(iblToProbe_);
-        iblFromProbe_ = gfx::TextureHandle::Invalid;
-        iblToProbe_   = gfx::TextureHandle::Invalid;
+        // IBL probes + split-sum LUT are owned by TextureAssetManager;
+        // release them so a subsequent InitBlsShaders() can re-register
+        // freshly without stale handles lingering in the manager.
+        if (textures_) {
+            textures_->ReleaseOwned(kIblFromProbeName);
+            textures_->ReleaseOwned(kIblToProbeName);
+            textures_->ReleaseOwned(kIblSplitSumLutName);
+        }
     }
     if (blsPsoBuilder_)  blsPsoBuilder_->Clear();
     if (blsPrograms_)    blsPrograms_->Clear();
@@ -2219,13 +2096,13 @@ void RenderService::CleanupD3D() {
 
         // Resources
         gfx_->Destroy(cbPerFrame_);
-        gfx_->Destroy(samplerLinear_);
-        for (auto& s : samplerWrap_) gfx_->Destroy(s);
-        gfx_->Destroy(defaultTex_);
-        gfx_->Destroy(defaultBlack_);
-        gfx_->Destroy(defaultNormal_);
-        gfx_->Destroy(defaultOrm_);
-        gfx_->Destroy(teamColorTex_); teamColorTex_ = gfx::TextureHandle::Invalid;
+        // Asset managers destroy their owned handles on reset.
+        // ReplaceableTextureManager runs first so it can drop the live
+        // swatch handle through gfx_ before the device-owning managers go.
+        if (replaceables_) replaceables_->Shutdown();
+        replaceables_.reset();
+        samplers_.reset();
+        textures_.reset();
 
         // Grid + ViewCube (owned by DebugRenderer)
         debug_->DestroyResources();
@@ -2502,7 +2379,8 @@ public:
             cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, rs_.blsSdPsCb_);
 
             render_detail::BindLayerAlbedo(cmd, *mi, layer.textureId,
-                                           rs_.defaultTex_, rs_.samplerWrap_);
+                                           rs_.textures_->GetDefaults().White,
+                                           *rs_.samplers_);
 
             cmd->DrawIndexed(geo.indexCount);
         }
@@ -2550,7 +2428,9 @@ public:
 
     void BindPassResources(gfx::IGFXCommandList* cmd, bls::FrameInputs& frame) {
         // Refresh the team-colour swatch once per pass (matches the UI picker).
-        rs_.UpdateTeamColorSwatch();
+        // ReplaceableTextureManager re-uploads the 1×1 texture only when the
+        // colour actually changed since the last call.
+        rs_.replaceables_->GetHdSwatchTexture();
 
         // Day at t13 / Night at t14 — envTransitionT=0.75 picks mostly day.
         // envMipEnd clamps the roughness→mip remap; nonzero keeps sampleIBL
@@ -2561,19 +2441,30 @@ public:
 
         // Dynamic sampler table covers s0..s3. Per-layer BindSampler(0, ...)
         // overrides s0 with the wrap-appropriate variant at draw time.
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 1, rs_.samplerLinear_);
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 2, rs_.samplerLinear_);
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 3, rs_.samplerLinear_);
+        const gfx::SamplerHandle linWrap = rs_.samplers_->LinearWrap();
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 1, linWrap);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 2, linWrap);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 3, linWrap);
 
         // s13..s15 are STATIC samplers baked into the root signature, so
         // we only bind the SRVs here. Binding them via the dynamic heap
         // would overflow D3D12's 2048-entry sampler cap and TDR.
-        if (rs_.iblFromProbe_ != gfx::TextureHandle::Invalid)
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 13, rs_.iblFromProbe_);
-        if (rs_.iblToProbe_ != gfx::TextureHandle::Invalid)
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 14, rs_.iblToProbe_);
-        if (rs_.iblSplitSumLut_ != gfx::TextureHandle::Invalid)
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 15, rs_.iblSplitSumLut_);
+        // Aliasing convention: when the "to" probe load failed only "from"
+        // is registered — reuse its handle for t14 so the PS's two-sample
+        // blend still has a valid SRV.
+        const gfx::TextureHandle from = rs_.textures_->GetOwned(
+            RenderService::kIblFromProbeName);
+        gfx::TextureHandle to = rs_.textures_->GetOwned(
+            RenderService::kIblToProbeName);
+        if (to == gfx::TextureHandle::Invalid) to = from;
+        if (from != gfx::TextureHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 13, from);
+        if (to   != gfx::TextureHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 14, to);
+        const gfx::TextureHandle lut = rs_.textures_->GetOwned(
+            RenderService::kIblSplitSumLutName);
+        if (lut != gfx::TextureHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 15, lut);
     }
 
     bls::BaselineLights Baseline() const {
@@ -2823,11 +2714,11 @@ public:
             auto bindMaterialTex = [&](uint32_t slot, int texId,
                                         gfx::TextureHandle fallback,
                                         uint32_t* outWrap) {
-                if (texId >= 0) {
-                    auto it = mi->gpuTextures.find(texId);
-                    if (it != mi->gpuTextures.end() && it->second.tex != gfx::TextureHandle::Invalid) {
-                        cmd->BindShaderResource(gfx::ShaderStage::Pixel, slot, it->second.tex);
-                        if (outWrap) *outWrap = it->second.wrapFlags & kWrapFlagsMask;
+                if (texId >= 0 && mi->textures) {
+                    const gfx::TextureHandle h = mi->textures->Get(texId);
+                    if (h != gfx::TextureHandle::Invalid) {
+                        cmd->BindShaderResource(gfx::ShaderStage::Pixel, slot, h);
+                        if (outWrap) *outWrap = mi->textures->WrapFlags(texId) & kSamplerWrapBitsMask;
                         return true;
                     }
                 }
@@ -2835,11 +2726,12 @@ public:
                 return false;
             };
 
-            uint32_t wrapFlags = kWrapFlagsMask;
-            bindMaterialTex(0, layer.textureId,      rs_.defaultTex_,    &wrapFlags); // t0 albedo (white)
-            bindMaterialTex(1, layer.normalMapId,    rs_.defaultNormal_, nullptr);    // t1 normal (flat)
-            bindMaterialTex(2, layer.ormMapId,       rs_.defaultOrm_,    nullptr);    // t2 ORM (occlusion=1, roughness=1, metal=0, teamBlend=0)
-            bindMaterialTex(3, layer.emissiveMapId,  rs_.defaultBlack_,  nullptr);    // t3 emissive (no glow)
+            const auto& defs = rs_.textures_->GetDefaults();
+            uint32_t wrapFlags = kSamplerWrapBitsMask;
+            bindMaterialTex(0, layer.textureId,      defs.White,      &wrapFlags); // t0 albedo (white)
+            bindMaterialTex(1, layer.normalMapId,    defs.FlatNormal, nullptr);    // t1 normal (flat)
+            bindMaterialTex(2, layer.ormMapId,       defs.NeutralOrm, nullptr);    // t2 ORM (occlusion=1, roughness=1, metal=0, teamBlend=0)
+            bindMaterialTex(3, layer.emissiveMapId,  defs.Black,      nullptr);    // t3 emissive (no glow)
             // t4 team colour: when the MDX layer authors a TeamColor
             // subtexture (or the model carries a replaceableId=1 slot at
             // any point), bind the live UI swatch — the engine itself
@@ -2847,12 +2739,14 @@ public:
             // swaps in the per-player tint at draw time. Without an
             // authored slot, fall back to black so ORM.w-driven blends
             // on unrelated materials stay neutral.
-            if (layer.teamColorMapId >= 0 && rs_.teamColorTex_ != gfx::TextureHandle::Invalid) {
-                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4, rs_.teamColorTex_);
+            if (layer.teamColorMapId >= 0) {
+                // Live UI swatch — manager owns the 1×1 texture lifetime.
+                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4,
+                                        rs_.replaceables_->GetHdSwatchTexture());
             } else {
-                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4, rs_.defaultBlack_);
+                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4, defs.Black);
             }
-            cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplerWrap_[wrapFlags]);
+            cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplers_->WrapVariant(wrapFlags));
 
             cmd->DrawIndexed(geo.indexCount);
         }

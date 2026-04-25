@@ -64,9 +64,6 @@ namespace detail {
 inline const Vector4f kDefaultLightDir   = detail::LiftLightDir({ 0.0f, -0.3f, -0.8f });
 inline const Vector4f kViewCubeLightDir  = detail::LiftLightDir({ 0.5f,  0.3f, -0.8f });
 
-// --- Texture wrap flags ---
-constexpr uint32_t kWrapFlagsMask = 0x3;
-
 // --- ViewCube layout ---
 constexpr float kViewCubeHomeOffset = 0.35f; // horizontal offset as fraction of cube size
 

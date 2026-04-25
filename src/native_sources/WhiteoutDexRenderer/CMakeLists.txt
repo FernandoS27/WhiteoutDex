@@ -124,6 +124,9 @@ set_property(CACHE WDX_DEFAULT_COORD_SPACE PROPERTY STRINGS "Blizzard" "Max")
 add_library(WhiteoutDexRendererLib STATIC
     src/renderer/render_service.cpp
     src/renderer/render_service_internal.cpp
+    src/renderer/sampler_asset_manager.cpp
+    src/renderer/texture_asset_manager.cpp
+    src/renderer/replaceable_texture_manager.cpp
     src/renderer/render_target.cpp
     src/renderer/viewcube_atlas.cpp
     src/renderer/coordinate_system.cpp

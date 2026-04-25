@@ -25,6 +25,12 @@ namespace WhiteoutDex::bls {
     class BlsPsoBuilder;
     struct BlsProgram;
 }
+
+namespace WhiteoutDex {
+    class SamplerAssetManager;
+    class TextureAssetManager;
+    class ReplaceableTextureManager;
+}
 #include <unordered_map>
 #include <unordered_set>
 #include <filesystem>
@@ -172,9 +178,10 @@ public:
     DisplayFlags GetDisplayFlags() const;
 
     // Team color raw access (for platform swatch rendering). BGR-packed.
-    uint32_t GetTeamColorRaw() const { return teamColor_; }
+    // Delegates to ReplaceableTextureManager.
+    uint32_t GetTeamColorRaw() const;
     // True if team color changed since last poll; clears the flag.
-    bool ConsumeTeamColorDirty() { return teamColorDirty_.exchange(false); }
+    bool ConsumeTeamColorDirty();
     // True if LoadModel auto-flipped renderMode_ (e.g. HD on non-SD
     // materials); the UI polls this to re-sync its HD checkbox.
     bool ConsumeRenderModeDirty() { return renderModeDirty_.exchange(false); }
@@ -285,11 +292,8 @@ private:
     void ApplyPE1FrameStates(ModelInstance& mi, const FrameState& state);
     void ApplyAttachmentStates(ModelInstance& mi, const FrameState& state, int timeMs);
 
-    // Team color
-    void UpdateTeamColorTextures();
-    // Refresh/create the RenderService-owned 1x1 team-colour swatch.
-    // Called lazily on the render thread whenever the picker changes.
-    void UpdateTeamColorSwatch();
+    // Team color logic moved into ReplaceableTextureManager. The HD draw
+    // path obtains the live swatch through replaceables_->GetHdSwatchTexture().
 
     // Rendering. SD mesh draws flow through BLS (blsSdProgram_ / blsHdProgram_
     // / blsSdOnHdProgram_); particles and ribbons do the same; no legacy
@@ -357,9 +361,8 @@ private:
     std::shared_ptr<PE1ModelTemplate> getOrLoadTemplate(const std::string& modelPath);
     std::shared_ptr<PE1ModelTemplate> loadTemplateSync(const std::string& modelPath);
     void stageModelFromTemplate(ModelInstance* mi, const PE1ModelTemplate& tmpl);
-    // Register a replaceable-texture slot used by an emitter and immediately
-    // bake the current team color into it. Requires dataMutex_ to be held.
-    void RegisterReplaceableEmitterTex(ModelInstance* mi, int textureId, int replaceableId);
+    // Replaceable-texture registration moved to ReplaceableTextureManager.
+    // Call sites use replaceables_->RegisterModelSlot(*mi, textureId, kind).
 
     // ---- Async PE1 template loader ----
     void StartTemplateLoader();
@@ -376,9 +379,7 @@ private:
     std::mutex                      templateResultMutex_;
     std::vector<std::pair<std::string, std::shared_ptr<PE1ModelTemplate>>> templateLoadResults_;
 
-    // Team color (shared across all models). BGR-packed: 0x00BBGGRR.
-    uint32_t teamColor_ = 0x000000FF;  // red
-    std::atomic<bool> teamColorDirty_{false}; // polled by platform window for swatch repaint
+    // Team-colour state lives in ReplaceableTextureManager (see replaceables_).
 
     // Camera presets
     std::vector<CameraPreset> cameraPresets_;
@@ -418,20 +419,16 @@ private:
 
     // ---- GFX Resources ----
     gfx::BufferHandle  cbPerFrame_     = gfx::BufferHandle::Invalid;
-    gfx::SamplerHandle samplerLinear_  = gfx::SamplerHandle::Invalid;
-    gfx::SamplerHandle samplerWrap_[4] = {};
-    gfx::TextureHandle defaultTex_     = gfx::TextureHandle::Invalid;  // 1x1 white (t0 albedo fallback)
-    gfx::TextureHandle defaultBlack_   = gfx::TextureHandle::Invalid;  // 1x1 RGBA(0,0,0,0) — t3 emissive / t4 teamColor fallback (zero contribution).
-    gfx::TextureHandle defaultOrm_     = gfx::TextureHandle::Invalid;  // 1x1 ORM neutral: occlusion=1, roughness=1, metalness=0, teamBlend=0. Roughness=1 matters — a 0 there turns every unauthored-ORM HD material into a perfect mirror and the IBL cubemap's horizon shows up as a sharp reflection line through the view centre (exactly the "seam" we've been chasing).
-    gfx::TextureHandle defaultNormal_  = gfx::TextureHandle::Invalid;  // 1x1 flat normal. Shader does nx = 2*r*a - 1 -> pack r=0.5, a=1.0 so decodeNormalMap yields (0,0,1).
-
-    // Dynamic team-colour swatch (1x1 RGBA8). Bound at t4 for every HD
-    // draw whose layer authors a TeamColor subtexture — the engine does
-    // the same: it ignores the MDX's referenced team-colour texture and
-    // swaps in a per-player tint. Recreated on SetTeamColor so the UI
-    // picker drives it directly without depending on replaceableId=1.
-    gfx::TextureHandle teamColorTex_   = gfx::TextureHandle::Invalid;
-    uint32_t           teamColorTexColor_ = 0xFFFFFFFFu;
+    // Sampler + texture ownership has moved into the asset managers.
+    // SamplerAssetManager hands out wrap-flag + linear samplers on demand.
+    // TextureAssetManager owns the 5 default 1x1 fallbacks (white/black/
+    // flat-normal/neutral-orm/missing-magenta); see GetDefaults().
+    std::unique_ptr<SamplerAssetManager>       samplers_;
+    std::unique_ptr<TextureAssetManager>       textures_;
+    // ReplaceableTextureManager owns the team-colour state, the per-model
+    // SD-slot registry, and the live HD swatch texture bound at t4. See
+    // its header for the threading model.
+    std::unique_ptr<ReplaceableTextureManager> replaceables_;
 
     // Debug-overlay passes (grid, collision wireframes, light markers,
     // ViewCube). Owns its own GPU resources; accesses shared RenderService
@@ -466,20 +463,20 @@ private:
     // is active (rs.debugShader = true in the HD draw path).
     gfx::BufferHandle                       blsHdDebugVisCb_  = gfx::BufferHandle::Invalid;
 
-    // IBL resources for the HD path.
-    //   iblSplitSumLut_ : 128x128 BRDF pre-integral at t15 (CPU-generated).
-    //   iblFromProbe_   : TextureCubeArray at t13 -- "from" probe, loaded
-    //                     from the game's Day_IBL.dds when available;
-    //                     falls back to a small procedural grey cube.
-    //   iblToProbe_     : TextureCubeArray at t14 -- "to" probe, same
-    //                     loader but pointed at Night_IBL.dds. If loading
-    //                     fails we reuse iblFromProbe_ so t14 still binds.
-    //   iblProbeMipEnd_ : actual loaded mip count minus one; feeds
-    //                     envFromMipEnd / envToMipEnd so the PS's
-    //                     roughness->mip remap clamps correctly.
-    gfx::TextureHandle                      iblSplitSumLut_   = gfx::TextureHandle::Invalid;
-    gfx::TextureHandle                      iblFromProbe_     = gfx::TextureHandle::Invalid;
-    gfx::TextureHandle                      iblToProbe_       = gfx::TextureHandle::Invalid;
+    // IBL resources for the HD path. Owned by TextureAssetManager via
+    // RegisterOwned under the names below; bind sites resolve them with
+    // GetOwned at draw time. Aliasing convention: when the "to" probe load
+    // fails we leave kIblToName unregistered and the bind site reuses the
+    // "from" handle so t14 still binds.
+    //   kIblSplitSumLutName : 128x128 BRDF pre-integral at t15 (CPU-generated)
+    //   kIblFromProbeName   : TextureCubeArray at t13 (Day_IBL.dds | debug cube)
+    //   kIblToProbeName     : TextureCubeArray at t14 (Night_IBL.dds; optional)
+    //   iblProbeMipEnd_     : actual loaded mip count minus one; feeds
+    //                         envFromMipEnd / envToMipEnd so the PS's
+    //                         roughness→mip remap clamps correctly.
+    static constexpr const char* kIblSplitSumLutName = "ibl.splitSumLut";
+    static constexpr const char* kIblFromProbeName   = "ibl.fromProbe";
+    static constexpr const char* kIblToProbeName     = "ibl.toProbe";
     float                                   iblProbeMipEnd_   = 0.0f;
 
     // Dynamic CBs, one-each for the full SD/SD_on_HD ABI. Sized for

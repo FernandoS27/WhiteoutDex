@@ -7,6 +7,8 @@
 #include "render_service_internal.h"
 #include "compiled_shaders.h"
 #include "constants.h"
+#include "sampler_asset_manager.h"
+#include "texture_asset_manager.h"
 #include "viewcube_atlas.h"
 #include "coordinate_system.h"
 
@@ -35,7 +37,9 @@ void DebugRenderer::DestroyResources() {
     rs_.gfx_->Destroy(vcCubeIB_);      vcCubeIB_    = gfx::BufferHandle::Invalid;
     rs_.gfx_->Destroy(vcOutlineVB_);   vcOutlineVB_ = gfx::BufferHandle::Invalid;
     rs_.gfx_->Destroy(vcHomeVB_);      vcHomeVB_    = gfx::BufferHandle::Invalid;
-    rs_.gfx_->Destroy(vcFaceTex_);     vcFaceTex_   = gfx::TextureHandle::Invalid;
+    // ViewCube atlas lifetime owned by TextureAssetManager.
+    if (rs_.textures_) rs_.textures_->ReleaseOwned(kViewCubeFaceTexName);
+    vcFaceTex_   = gfx::TextureHandle::Invalid;
     rs_.gfx_->Destroy(viewCubePSO_);   viewCubePSO_ = gfx::PipelineHandle::Invalid;
     rs_.gfx_->Destroy(viewCubeVS_);    viewCubeVS_  = gfx::ShaderHandle::Invalid;
     rs_.gfx_->Destroy(viewCubePS_);    viewCubePS_  = gfx::ShaderHandle::Invalid;
@@ -71,7 +75,9 @@ bool DebugRenderer::CreateGridResources() {
 }
 
 bool DebugRenderer::CreateViewCubeResources() {
-    // Generate face label atlas procedurally (platform-neutral)
+    // Generate face label atlas procedurally (platform-neutral). Lifetime
+    // is handed to TextureAssetManager via RegisterOwned; vcFaceTex_
+    // caches the handle for fast per-frame bind.
     {
         int tw, th;
         auto pixels = GenerateViewCubeAtlas(tw, th);
@@ -81,6 +87,7 @@ bool DebugRenderer::CreateViewCubeResources() {
             .format = gfx::Format::R8G8B8A8_UNORM,
             .usage  = gfx::TextureUsage::ShaderResource,
         }, pixels.data());
+        if (rs_.textures_) rs_.textures_->RegisterOwned(kViewCubeFaceTexName, vcFaceTex_);
     }
 
     // Cube geometry: 24 vertices (4 per face), 36 indices
@@ -493,11 +500,11 @@ void DebugRenderer::RenderViewCube() {
     cmd->BindIndexBuffer(vcCubeIB_, gfx::Format::R32_UINT);
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.cbPerFrame_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, rs_.cbPerFrame_);
-    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplerLinear_);
+    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplers_->LinearWrap());
     if (vcFaceTex_ != gfx::TextureHandle::Invalid)
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, vcFaceTex_);
     else
-        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, rs_.defaultTex_);
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, rs_.textures_->GetDefaults().White);
     cmd->DrawIndexed(36, 0, 0);
 
     cmd->BindPipeline(rs_.linePSO_);
