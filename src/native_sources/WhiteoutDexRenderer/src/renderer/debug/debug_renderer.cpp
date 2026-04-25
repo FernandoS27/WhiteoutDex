@@ -233,12 +233,12 @@ void DebugRenderer::RenderCollisions() {
     Matrix44f viewMat;
     {
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-        for (auto& [h, mi] : rs_.models_) {
+        for (auto& [h, mi] : rs_.scene_->Actors().All()) {
             if (mi->parentVisibility <= 0.02f) continue;
             shapes.insert(shapes.end(), mi->collisionShapes.begin(), mi->collisionShapes.end());
         }
         if (shapes.empty()) return;
-        viewMat = rs_.camera_.GetViewMatrix();
+        viewMat = rs_.scene_->Camera().GetViewMatrix();
     }
 
     auto* cmd = rs_.gfx_->GetImmediateContext();
@@ -343,7 +343,7 @@ void DebugRenderer::RenderCollisions() {
         float aspect = (rs_.height_ > 0) ? (float)rs_.width_ / (float)rs_.height_ : 1.0f;
         render_detail::CbPerFrameDesc d;
         d.view         = viewMat;
-        d.projection   = rs_.camera_.ProjectionRH(aspect);
+        d.projection   = rs_.scene_->Camera().ProjectionRH(aspect);
         d.lightColor   = kCollisionLightColor;
         d.ambientColor = kCollisionAmbientColor;
         render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
@@ -367,7 +367,7 @@ void DebugRenderer::RenderLightMarkers() {
     Matrix44f viewMat;
     {
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-        for (auto& [h, mi] : rs_.models_) {
+        for (auto& [h, mi] : rs_.scene_->Actors().All()) {
             if (mi->parentVisibility <= 0.02f) continue;
             for (const auto& L : mi->activeLights) {
                 const bool dir = (L.kind == FrameState::LightKind::Directional);
@@ -382,7 +382,7 @@ void DebugRenderer::RenderLightMarkers() {
             }
         }
         if (lights.empty()) return;
-        viewMat = rs_.camera_.GetViewMatrix();
+        viewMat = rs_.scene_->Camera().GetViewMatrix();
     }
 
     auto* cmd = rs_.gfx_->GetImmediateContext();
@@ -435,7 +435,7 @@ void DebugRenderer::RenderLightMarkers() {
         float aspect = (rs_.height_ > 0) ? (float)rs_.width_ / (float)rs_.height_ : 1.0f;
         render_detail::CbPerFrameDesc d;
         d.view       = viewMat;
-        d.projection = rs_.camera_.ProjectionRH(aspect);
+        d.projection = rs_.scene_->Camera().ProjectionRH(aspect);
         render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
     }
     DrawWireLines(rs_.gfx_.get(), cmd, rs_.cbPerFrame_, verts);
@@ -476,8 +476,8 @@ void DebugRenderer::RenderViewCube() {
     {
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
         float dist = 3.5f;
-        float cosP = cosf(rs_.camera_.GetPitch()), sinP = sinf(rs_.camera_.GetPitch());
-        float cosY = cosf(rs_.camera_.GetYaw()),   sinY = sinf(rs_.camera_.GetYaw());
+        float cosP = cosf(rs_.scene_->Camera().GetPitch()), sinP = sinf(rs_.scene_->Camera().GetPitch());
+        float cosY = cosf(rs_.scene_->Camera().GetYaw()),   sinY = sinf(rs_.scene_->Camera().GetYaw());
         Vector3f eye = { dist * cosP * cosY, dist * cosP * sinY, dist * sinP };
         Vector3f tgt = { 0, 0, 0 };
         Vector3f up  = { 0, 0, 1 };
@@ -561,10 +561,10 @@ void DebugRenderer::RenderViewCube() {
     Matrix44f view, proj;
     {
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-        view = rs_.camera_.GetViewMatrix();
+        view = rs_.scene_->Camera().GetViewMatrix();
     }
     float aspect = (rs_.height_ > 0) ? (float)rs_.width_ / (float)rs_.height_ : 1.0f;
-    proj = rs_.camera_.ProjectionRH(aspect);
+    proj = rs_.scene_->Camera().ProjectionRH(aspect);
     {
         render_detail::CbPerFrameDesc d;
         d.view         = view;
@@ -593,8 +593,8 @@ int DebugRenderer::HitTestViewCube(int mx, int my) const {
     Matrix44f vcView;
     {
         float dist = 3.5f;
-        float cosP = cosf(rs_.camera_.GetPitch()), sinP = sinf(rs_.camera_.GetPitch());
-        float cosY = cosf(rs_.camera_.GetYaw()),   sinY = sinf(rs_.camera_.GetYaw());
+        float cosP = cosf(rs_.scene_->Camera().GetPitch()), sinP = sinf(rs_.scene_->Camera().GetPitch());
+        float cosY = cosf(rs_.scene_->Camera().GetYaw()),   sinY = sinf(rs_.scene_->Camera().GetYaw());
         Vector3f eye = { dist*cosP*cosY, dist*cosP*sinY, dist*sinP };
         Vector3f up  = { 0, 0, 1 };
         vcView = Matrix44f::look_at_rh(eye, {0,0,0}, up);
@@ -605,8 +605,8 @@ int DebugRenderer::HitTestViewCube(int mx, int my) const {
     Vector3f centers[] = {{0,.5f,0},{0,-.5f,0},{-.5f,0,0},{.5f,0,0},{0,0,.5f},{0,0,-.5f}};
     Vector3f normals[] = {{0,1,0},{0,-1,0},{-1,0,0},{1,0,0},{0,0,1},{0,0,-1}};
 
-    float cosP = cosf(rs_.camera_.GetPitch()), sinP = sinf(rs_.camera_.GetPitch());
-    float cosY = cosf(rs_.camera_.GetYaw()),   sinY = sinf(rs_.camera_.GetYaw());
+    float cosP = cosf(rs_.scene_->Camera().GetPitch()), sinP = sinf(rs_.scene_->Camera().GetPitch());
+    float cosY = cosf(rs_.scene_->Camera().GetYaw()),   sinY = sinf(rs_.scene_->Camera().GetYaw());
     Vector3f camDir = { -cosP*cosY, -cosP*sinY, -sinP };
 
     int bestFace = -1;

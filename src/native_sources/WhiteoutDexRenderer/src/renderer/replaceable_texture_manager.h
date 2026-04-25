@@ -6,7 +6,7 @@
 //   RenderService::teamColor_, teamColorDirty_, teamColorTex_, teamColorTexColor_
 //   RenderService::SetTeamColor / UpdateTeamColorTextures / UpdateTeamColorSwatch
 //   RenderService::RegisterReplaceableEmitterTex
-//   ModelInstance::replaceableTexMap
+//   Actor::replaceableTexMap
 //
 // One owner means one place to fix bugs like "TeamGlow particles didn't
 // retint when the swatch changed because the emitter registration ran on a
@@ -67,11 +67,11 @@ public:
     // Records that `mi.textures[textureId]` is a replaceable slot. Bakes
     // initial pixels into `mi.stagedTextures[textureId]` from the current
     // swatch and marks `mi.stagedDirty`. Replaces RegisterReplaceableEmitterTex.
-    void RegisterModelSlot(ModelInstance& mi, int textureId, ReplaceableKind kind);
+    void RegisterModelSlot(Actor& mi, int textureId, ReplaceableKind kind);
 
-    // Forget every slot belonging to `mi`. Called when a ModelInstance is
+    // Forget every slot belonging to `mi`. Called when a Actor is
     // about to be destroyed.
-    void UnregisterModel(ModelInstance& mi);
+    void UnregisterModel(Actor& mi);
 
     // ── HD live swatch (render-thread). ─────────────────────────────────
     // Returns the 1x1 swatch texture bound at t4 for HD draws. Lazy:
@@ -80,7 +80,7 @@ public:
 
     // Called from RenderService::ShutdownDevice. Idempotent. Frees the HD
     // swatch GPU handle; the per-model slot registry empties as
-    // ModelInstances are destroyed.
+    // Actors are destroyed.
     void Shutdown();
 
     // ── Debug snapshot ──────────────────────────────────────────────────
@@ -108,14 +108,14 @@ private:
     gfx::TextureHandle hdSwatchTex_    = gfx::TextureHandle::Invalid;
     uint32_t           lastSwatchRgba_ = 0xFFFFFFFFu;
 
-    // Per-model slots — map ModelInstance* → list of (textureId, kind).
+    // Per-model slots — map Actor* → list of (textureId, kind).
     // Erased on UnregisterModel; never persists across model unloads.
     struct Slot { int textureId; ReplaceableKind kind; };
-    std::unordered_map<ModelInstance*, std::vector<Slot>> slots_;
+    std::unordered_map<Actor*, std::vector<Slot>> slots_;
 
     // Bake current-swatch pixels into mi.stagedTextures[textureId] for one slot.
     // Marks mi.stagedDirty so the next render-thread upload picks it up.
-    void BakeSlot(ModelInstance& mi, int textureId, ReplaceableKind kind);
+    void BakeSlot(Actor& mi, int textureId, ReplaceableKind kind);
 };
 
 } // namespace WhiteoutDex

@@ -104,16 +104,23 @@ static KeyBracket FindBracket(const KeyType* keys, int count, int timeMs,
     KeyBracket b;
     if (count == 0) return b;
 
-    int rangeLo = -1, rangeHi = -1;
-    for (int i = 0; i < count; i++) {
-        int f = (int)keys[i].frame;
-        if (f > seqEnd) break;
-        if (f >= seqStart) {
-            if (rangeLo < 0) rangeLo = i;
-            rangeHi = i;
-        }
+    // Binary search: first key with frame >= seqStart (lower_bound of seqStart).
+    {
+        int lo = 0, hi = count;
+        while (lo < hi) { int m = (lo + hi) >> 1; if ((int)keys[m].frame < seqStart) lo = m + 1; else hi = m; }
+        b.lo = lo; // reuse b.lo as rangeLo temporarily
     }
-    if (rangeLo < 0) return b;
+    int rangeLo = b.lo;
+    if (rangeLo >= count || (int)keys[rangeLo].frame > seqEnd) { b.lo = -1; return b; }
+
+    // Binary search: last key with frame <= seqEnd (upper_bound of seqEnd, minus 1).
+    {
+        int lo = rangeLo, hi = count;
+        while (lo < hi) { int m = (lo + hi) >> 1; if ((int)keys[m].frame <= seqEnd) lo = m + 1; else hi = m; }
+        b.hi = lo - 1; // reuse b.hi as rangeHi temporarily
+    }
+    int rangeHi = b.hi;
+
     if (rangeLo == rangeHi) { b.lo = b.hi = rangeLo; return b; }
 
     int firstFrame = (int)keys[rangeLo].frame;
@@ -134,18 +141,16 @@ static KeyBracket FindBracket(const KeyType* keys, int count, int timeMs,
         return b;
     }
 
-    for (int i = rangeLo; i < rangeHi; i++) {
-        int fa = (int)keys[i].frame;
-        int fb = (int)keys[i + 1].frame;
-        if (timeMs >= fa && timeMs < fb) {
-            b.lo = i;
-            b.hi = i + 1;
-            int denom = fb - fa;
-            b.t = denom > 0 ? (float)(timeMs - fa) / (float)denom : 0.0f;
-            return b;
-        }
+    // Binary search: last key in [rangeLo, rangeHi) with frame <= timeMs.
+    // timeMs >= firstFrame and timeMs < lastFrame guarantee a valid bracket exists.
+    {
+        int lo = rangeLo, hi = rangeHi;
+        while (lo < hi) { int m = (lo + hi + 1) >> 1; if ((int)keys[m].frame <= timeMs) lo = m; else hi = m - 1; }
+        b.lo = lo;
+        b.hi = lo + 1;
+        int denom = (int)keys[b.hi].frame - (int)keys[b.lo].frame;
+        b.t = denom > 0 ? (float)(timeMs - (int)keys[b.lo].frame) / (float)denom : 0.0f;
     }
-    b.lo = b.hi = rangeHi;
     return b;
 }
 

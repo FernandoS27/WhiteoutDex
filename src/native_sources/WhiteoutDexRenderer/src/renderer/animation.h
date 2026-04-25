@@ -53,7 +53,7 @@ struct GeosetPaletteLayout {
 // nodeCount + inverseBindMatrices + per-geoset weights + palette layouts
 // don't change between instances of the same model — every PE1 child or
 // attachment that sources from the same MDX shares one of these via
-// PE1ModelTemplate::skinningData. Only currentMatrices_ / offsetMatrices_
+// ModelTemplate::skinningData. Only currentMatrices_ / offsetMatrices_
 // stay per-instance because they're animated state.
 // ============================================================================
 struct SkinningData {
@@ -131,7 +131,7 @@ public:
         }
     }
 
-    // Expose the shared data so RenderService::loadTemplateSync can build it
+    // Expose the shared data so ModelTemplateManager can build it
     // through the legacy setters and then publish the shared_ptr on the template.
     std::shared_ptr<SkinningData> SharedData() const { return data_; }
 

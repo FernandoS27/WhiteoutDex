@@ -14,6 +14,8 @@
 #include "ribbon.h"
 #include "model_types.h"
 #include "model_instance.h"
+#include "actor_manager.h"
+#include "scene_manager.h"
 #include "model_source.h"
 #include "content_provider.h"
 #include "file_content_provider.h"
@@ -30,9 +32,10 @@ namespace WhiteoutDex {
     class SamplerAssetManager;
     class TextureAssetManager;
     class ReplaceableTextureManager;
-    // Cross-instance model template. Defined in render_service.cpp; only the
-    // shared_ptr storage needs to see the forward decl here.
-    struct PE1ModelTemplate;
+    class ModelTemplateManager;
+    class SceneManager;
+    // Cross-instance model template (definition in renderer/model_template.h).
+    struct ModelTemplate;
 }
 #include <unordered_map>
 #include <unordered_set>
@@ -78,7 +81,7 @@ public:
     // Camera control (thread-safe)
     void SetCamera(float pitch, float yaw, float distance,
                    float targetX, float targetY, float targetZ);
-    Vector3f GetCameraPosition() const { return camera_.GetSource(); }
+    Vector3f GetCameraPosition() const;
 
     // Model data (thread-safe — called from API/MaxScript thread)
     void ClearModel();
@@ -96,10 +99,10 @@ public:
     void SetAttachmentConfigs(uint32_t handle, const std::vector<AttachmentConfig>& configs);
     void SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig>& configs);
     void SetPE1BasePath(const std::filesystem::path& basePath);
-    uint32_t GetFocusModelHandle() const { return focusModelHandle_; }
+    uint32_t GetFocusModelHandle() const { return scene_->Focus(); }
 
     // Access the unified file content provider (disk + CASC + MPQ)
-    FileContentProvider& GetContentProvider() { return contentProvider_; }
+    FileContentProvider& GetContentProvider();
 
     // Inject an external content provider (takes precedence over the built-in one)
     void SetContentProvider(std::shared_ptr<IContentProvider> provider);
@@ -164,8 +167,8 @@ public:
 
     // Camera presets (index 0 is always "Free Camera")
     void SetCameraPresets(const std::vector<CameraPreset>& presets);
-    bool IsCameraLocked() const { return cameraLocked_; }
-    void SetCameraLocked(bool locked) { cameraLocked_ = locked; }
+    bool IsCameraLocked() const;
+    void SetCameraLocked(bool locked);
 
     // Activate an MDX preset (Direct mode). idx = -1 reverts to orbital.
     void ActivateCameraPreset(int idx);
@@ -174,9 +177,9 @@ public:
     void SetSequences(const std::vector<std::string>& names);
     // Required for MDX camera animation playback — without frame
     // ranges the animator bails to keyframe 0.
-    void SetSequenceRanges(const std::vector<IModelSource::SequenceInfo>& ranges);
+    void SetSequenceRanges(const std::vector<SequenceInfo>& ranges);
     int  GetActiveSequenceIndex() const;
-    void SetActiveSequence(int index) { activeSequence_ = index; }
+    void SetActiveSequence(int index);
 
     // ---- Camera manipulation (thread-safe, locks dataMutex_) ----
     void RotateCamera(int dx, int dy);
@@ -280,9 +283,9 @@ private:
 
     // GPU resource management
     void ProcessStagedData();
-    void UploadStagedTextures(ModelInstance& mi);
-    void UploadStagedGeosets(ModelInstance& mi);
-    void CreateNodePalette(ModelInstance& mi);
+    void UploadStagedTextures(Actor& mi);
+    void UploadStagedGeosets(Actor& mi);
+    void CreateNodePalette(Actor& mi);
     void ReleaseModelGPU();
 
     // Animation update
@@ -308,14 +311,13 @@ private:
     // to use, then tests each geoset with GeosetPassesLod.
     int  ComputeSelectedLod() const;
 
-    // ApplyFrameState helpers
-    void ApplyBoneMatrices(ModelInstance& mi, const FrameState& state);
-    void ApplyGeosetStates(ModelInstance& mi, const FrameState& state);
-    void ApplyLayerStates(ModelInstance& mi, const FrameState& state);
-    void ApplyParticleFrameStates(ModelInstance& mi, const FrameState& state);
-    void ApplyRibbonFrameStates(ModelInstance& mi, const FrameState& state);
-    void ApplyPE1FrameStates(ModelInstance& mi, const FrameState& state);
-    void ApplyAttachmentStates(ModelInstance& mi, const FrameState& state, int timeMs);
+    // ApplyFrameState helpers — only the externally-coupled ones live on
+    // RenderService; pure per-actor methods (Geoset/Layer/Ribbon/PE1) are
+    // RenderModel members. Bones need camera_, particles need particleService_,
+    // attachments need cross-actor lookups.
+    void ApplyBoneMatrices(Actor& mi, const FrameState& state);
+    void ApplyParticleFrameStates(Actor& mi, const FrameState& state);
+    void ApplyAttachmentStates(Actor& mi, const FrameState& state, int timeMs);
 
     // Team color logic moved into ReplaceableTextureManager. The HD draw
     // path obtains the live swatch through replaceables_->GetHdSwatchTexture().
@@ -326,7 +328,7 @@ private:
     void RenderGeosets();
 
     // PE2 service — centralised registry for the new particle path. Coexists
-    // with the legacy per-ModelInstance ParticleSystem until Phase 6 cut-over.
+    // with the legacy per-Actor ParticleSystem until Phase 6 cut-over.
     particle::ParticleService particleService_;
 
     // Sync
@@ -334,9 +336,6 @@ private:
 
     int                   width_ = 800;
     int                   height_ = 600;
-
-    // Camera
-    Camera                camera_;
 
     // ---- Display toggles ----
     bool                  showGrid_       = true;
@@ -357,71 +356,33 @@ private:
     // LOD override: -1 = auto (screen-size), 0..3 = force that LOD
     std::atomic<int>      lodOverride_{-1};
 
-    // ---- Model instances ----
-    uint32_t nextModelHandle_ = 1;
-    std::unordered_map<uint32_t, std::unique_ptr<ModelInstance>> models_;
-    uint32_t focusModelHandle_ = 0;
+    // ---- Scene state ----
+    // Phase 5: SceneManager owns actors, focus, camera, camera presets,
+    // sequence picker UI inbox, and the animation clock. RenderService
+    // forwards through `scene_->...` for any access.
+    std::unique_ptr<SceneManager> scene_;
 
-    // Helper: get focus model (may be null)
-    ModelInstance* focusModel() const {
-        auto it = models_.find(focusModelHandle_);
-        return (it != models_.end()) ? it->second.get() : nullptr;
-    }
-    ModelInstance* getModel(uint32_t h) const {
-        auto it = models_.find(h);
-        return (it != models_.end()) ? it->second.get() : nullptr;
-    }
+    // Helper: get focus model (may be null). The free function form survives
+    // because most call sites are written as `auto* mi = focusModel(); ...`.
+    Actor* focusModel() const;
+    Actor* getModel(uint32_t h) const;
 
-    // ---- PE1 model template cache (PE1ModelTemplate defined in render_service.cpp) ----
-    std::unordered_map<std::string, std::shared_ptr<PE1ModelTemplate>> pe1TemplateCache_;
-    static constexpr int kMaxPE1Depth = 3;
-    static constexpr int kMaxPE1Instances = 256;
-    int pe1InstanceCount_ = 0;
+    // ---- Asset resolution + template cache + PE1 spawn limits ----
+    // All moved into SceneManager in Phase 5 v2 — access via `scene_->...`.
 
-    std::filesystem::path pe1BasePath_;  // root directory for resolving PE1 model + texture paths
-    FileContentProvider contentProvider_; // unified file resolution (disk + CASC + MPQ)
-    std::shared_ptr<IContentProvider> externalContentProvider_; // optional injected provider
-    IContentProvider* activeContentProvider_ = nullptr;         // points to external or built-in
-    std::shared_ptr<PE1ModelTemplate> getOrLoadTemplate(const std::string& modelPath);
-    std::shared_ptr<PE1ModelTemplate> loadTemplateSync(const std::string& modelPath);
-    void stageModelFromTemplate(ModelInstance* mi,
-                                std::shared_ptr<PE1ModelTemplate> tmpl);
+    void stageModelFromTemplate(Actor* mi,
+                                std::shared_ptr<ModelTemplate> tmpl);
     // Lazy upload of a template's shared geometry buffers. Idempotent: the
     // first call uploads, every subsequent call is a no-op flag check.
     // Render-thread only (called from UploadStagedGeosets).
-    void uploadTemplateGpu(PE1ModelTemplate& tmpl);
+    void uploadTemplateGpu(ModelTemplate& tmpl);
     // Replaceable-texture registration moved to ReplaceableTextureManager.
     // Call sites use replaceables_->RegisterModelSlot(*mi, textureId, kind).
 
-    // ---- Async PE1 template loader ----
-    void StartTemplateLoader();
-    void StopTemplateLoader();
-    void DrainTemplateResults();
-    void TemplateLoaderFunc();
-
-    std::thread                     templateLoaderThread_;
-    std::atomic<bool>               templateLoaderRunning_{false};
-    std::mutex                      templateQueueMutex_;
-    std::condition_variable         templateQueueCV_;
-    std::deque<std::string>         templateLoadQueue_;
-    std::unordered_set<std::string> templateLoadPending_;   // paths queued or in-flight
-    std::mutex                      templateResultMutex_;
-    std::vector<std::pair<std::string, std::shared_ptr<PE1ModelTemplate>>> templateLoadResults_;
-
     // Team-colour state lives in ReplaceableTextureManager (see replaceables_).
-
-    // Camera presets
-    std::vector<CameraPreset> cameraPresets_;
-    std::vector<CameraPreset> pendingCameraPresets_;
-    bool cameraDirty_ = false;
-    bool cameraLocked_ = false;
-    int  activeCameraPresetIdx_ = -1;  // -1 = free camera
-
-    // Sequence picker (standalone viewer)
-    std::vector<std::string> pendingSequenceNames_;
-    bool sequencesDirty_ = false;
-    std::atomic<int> activeSequence_{0};
-    std::vector<IModelSource::SequenceInfo> sequenceRanges_;
+    //
+    // Camera, camera presets, sequence picker UI inbox, and animation clock
+    // moved to SceneManager (`scene_`) in Phase 5.
 
     // ---- GFX device ----
     std::unique_ptr<gfx::IGFXDevice> gfx_;
@@ -469,9 +430,7 @@ private:
     gfx::BufferHandle particleServiceVB_     = gfx::BufferHandle::Invalid;
     int               particleServiceVBSize_ = 0;
 
-    // Animation time (set from API thread via SetAnimationTime / ApplyFrameState,
-    //                  read from render thread in Tick / EvaluatePE1Children)
-    std::atomic<int>        animationTimeMs_{0};
+    // Animation clock moved to SceneManager (`scene_->GetAnimationTime()`).
 
     // ---- BLS shader pipeline (docs/BLS_ShaderABI.md) ----
     // Loaded lazily at InitDevice. If any .bls file is missing the program

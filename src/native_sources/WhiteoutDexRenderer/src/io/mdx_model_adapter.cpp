@@ -1007,39 +1007,31 @@ std::vector<CollisionShapeData> MdxModelAdapter::GetCollisionShapes() {
 }
 
 // ============================================================================
-// SetActiveSequence
-// ============================================================================
-
-void MdxModelAdapter::SetActiveSequence(int sequenceIndex) {
-    activeSeqIdx_ = sequenceIndex;
-    if (sequenceIndex >= 0 && sequenceIndex < (int)model_.sequences.size()) {
-        seqStart_ = (int)model_.sequences[sequenceIndex].intervalStart;
-        seqEnd_   = (int)model_.sequences[sequenceIndex].intervalEnd;
-    } else {
-        seqStart_ = seqEnd_ = 0;
-    }
-}
-
-// ============================================================================
-// SetCameraPosition — store camera position for billboard evaluation
-// ============================================================================
-
-void MdxModelAdapter::SetCameraPosition(float x, float y, float z) {
-    cameraPos_ = { x, y, z };
-}
-
-// ============================================================================
 // Evaluate — Per-frame animation evaluation
+//
+// Phase 3: stateless — sequence + camera arrive as parameters from
+// AnimationDriver instead of being set via SetActiveSequence /
+// SetCameraPosition. The const qualifier reflects that.
 // ============================================================================
 
-FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
+FrameState MdxModelAdapter::Evaluate(int sequenceIdx, int timeMs, int globalTimeMs,
+                                     const Matrix44f& /*worldTransform*/,
+                                     const Vector3f& cameraPos) const {
+    // Resolve sequence range. Out-of-range indices collapse to (0, 0) — same
+    // behaviour the old SetActiveSequence(invalid) path produced.
+    int seqStart = 0, seqEnd = 0;
+    if (sequenceIdx >= 0 && sequenceIdx < (int)model_.sequences.size()) {
+        seqStart = (int)model_.sequences[sequenceIdx].intervalStart;
+        seqEnd   = (int)model_.sequences[sequenceIdx].intervalEnd;
+    }
+
     FrameState fs;
 
     // Evaluate bone hierarchy (pass camera position for billboard nodes)
     std::vector<Matrix44f> boneWorld, allNodes;
-    hierarchy_.Evaluate(timeMs, seqStart_, seqEnd_,
+    hierarchy_.Evaluate(timeMs, seqStart, seqEnd,
                         model_.globalSequences, boneWorld, allNodes,
-                        &cameraPos_, globalTimeMs);
+                        &cameraPos, globalTimeMs);
     // Use ALL node matrices as the skinning palette (indexed by node position
     // in the hierarchy). Vertices can reference any node type via objectId.
     fs.boneWorldMatrices = std::move(allNodes);
@@ -1058,7 +1050,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
                 return {0, 0, 0x3FFFFFFF};
             }
         }
-        return {timeMs, seqStart_, seqEnd_};
+        return {timeMs, seqStart, seqEnd};
     };
 
     // Per-track eval helpers: fold effectiveTime + EvaluateTrack* into one call.
@@ -1482,7 +1474,7 @@ std::vector<PE1EmitterConfig> MdxModelAdapter::GetPE1Configs() {
 // GetSequences
 // ============================================================================
 
-std::vector<IModelSource::SequenceInfo> MdxModelAdapter::GetSequences() {
+std::vector<SequenceInfo> MdxModelAdapter::GetSequences() const {
     std::vector<SequenceInfo> result;
     result.reserve(model_.sequences.size());
     for (const auto& seq : model_.sequences) {

@@ -1446,10 +1446,6 @@ std::vector<CollisionShapeData> MaxSceneAdapter::GetCollisionShapes() {
 }
 
 // ============================================================================
-// IModelSource::SetActiveSequence() — no-op for Max (Max controls the timeline)
-// ============================================================================
-
-// ============================================================================
 // IModelSource::GetPE1Configs()
 // ============================================================================
 
@@ -1478,13 +1474,15 @@ std::vector<PE1EmitterConfig> MaxSceneAdapter::GetPE1Configs() {
     return result;
 }
 
-void MaxSceneAdapter::SetActiveSequence(int) {}
-
 // ============================================================================
-// IModelSource::Evaluate() — compute per-frame state from Max scene
+// IAnimationSource::Evaluate() — compute per-frame state from Max scene.
+// Max controls the timeline, so sequenceIdx + globalTimeMs + worldTransform +
+// cameraPos are unused here; only timeMs (advanced via Max's TimeValue) feeds in.
 // ============================================================================
 
-FrameState MaxSceneAdapter::Evaluate(int timeMs, int /*globalTimeMs*/) {
+FrameState MaxSceneAdapter::Evaluate(int /*sequenceIdx*/, int timeMs, int /*globalTimeMs*/,
+                                     const Matrix44f& /*worldTransform*/,
+                                     const Vector3f& /*cameraPos*/) const {
     // Convert ms → Max ticks (0 if the tick rate is unavailable).
     const int tpf = GetTicksPerFrame(), fps = GetFrameRate();
     const TimeValue t = (tpf > 0 && fps > 0)
@@ -1712,7 +1710,7 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
 // IModelSource::GetSequences() — Max doesn't have MDX sequences
 // ============================================================================
 
-std::vector<IModelSource::SequenceInfo> MaxSceneAdapter::GetSequences() {
+std::vector<SequenceInfo> MaxSceneAdapter::GetSequences() const {
     return {};
 }
 

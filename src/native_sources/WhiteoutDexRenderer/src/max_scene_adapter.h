@@ -160,11 +160,11 @@ public:
     std::vector<AttachmentConfig>      GetAttachmentConfigs() override;
     std::vector<PE1EmitterConfig>      GetPE1Configs()      override;
 
-    void SetActiveSequence(int sequenceIndex) override;  // no-op for Max
-
-    FrameState Evaluate(int timeMs, int globalTimeMs = -1) override;
-
-    std::vector<SequenceInfo> GetSequences() override;
+    // ---- IAnimationSource ----
+    FrameState Evaluate(int sequenceIdx, int timeMs, int globalTimeMs,
+                        const Matrix44f& worldTransform,
+                        const Vector3f&  cameraPos) const override;
+    std::vector<SequenceInfo> GetSequences() const override;
 
     // Camera presets from scene (Max cameras + "Active Viewport")
     std::vector<WhiteoutDex::CameraPreset> GetCameraPresets();

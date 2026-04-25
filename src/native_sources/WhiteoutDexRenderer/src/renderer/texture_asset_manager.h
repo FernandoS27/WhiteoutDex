@@ -77,8 +77,8 @@ public:
     void        ResetSharedStats();
 
     // ── ModelScope ──────────────────────────────────────────────────────
-    // Owns every GPU texture handle for one ModelInstance's per-material
-    // texture set. Replaces the previous `ModelInstance::gpuTextures` map
+    // Owns every GPU texture handle for one Actor's per-material
+    // texture set. Replaces the previous `Actor::gpuTextures` map
     // and the inline `Release(...)` loop in `ReleaseGPU`. Destroying the
     // scope (RAII via std::unique_ptr) releases every owned handle in one
     // place — the per-model lifetime story is now expressed in the type.
@@ -153,7 +153,7 @@ public:
     };
 
     // Allocate a fresh ModelScope. RenderService stores one per
-    // ModelInstance; the unique_ptr lifetime drives texture cleanup.
+    // Actor; the unique_ptr lifetime drives texture cleanup.
     std::unique_ptr<ModelScope> CreateModelScope();
 
     // ── Externally-allocated owned textures ─────────────────────────────

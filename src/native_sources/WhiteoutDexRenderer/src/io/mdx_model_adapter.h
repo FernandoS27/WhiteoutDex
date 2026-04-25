@@ -43,17 +43,13 @@ public:
     std::vector<AttachmentConfig>      GetAttachmentConfigs() override;
     std::vector<PE1EmitterConfig>      GetPE1Configs()      override;
 
-    // ---- Sequence control ----
-    void SetActiveSequence(int sequenceIndex) override;
+    // ---- Per-frame evaluation (IAnimationSource) ----
+    FrameState Evaluate(int sequenceIdx, int timeMs, int globalTimeMs,
+                        const Matrix44f& worldTransform,
+                        const Vector3f&  cameraPos) const override;
 
-    // ---- Camera info for billboard nodes ----
-    void SetCameraPosition(float x, float y, float z) override;
-
-    // ---- Per-frame evaluation ----
-    FrameState Evaluate(int timeMs, int globalTimeMs = -1) override;
-
-    // ---- Sequence info ----
-    std::vector<SequenceInfo> GetSequences() override;
+    // ---- Sequence info (IAnimationSource) ----
+    std::vector<SequenceInfo> GetSequences() const override;
 
     // ---- Camera presets from model ----
     std::vector<CameraPreset> GetCameraPresets() const;
@@ -78,14 +74,6 @@ private:
     // Evaluate() to zero the visibility of every attachment / emitter /
     // ribbon / light sitting below a hidden bone.
     std::vector<int> boneGateGeoset_;
-
-    // Active sequence
-    int activeSeqIdx_ = -1;
-    int seqStart_ = 0;
-    int seqEnd_   = 0;
-
-    // Camera position for billboard evaluation
-    Vector3f cameraPos_ = {0, -350, 50};
 
     // Helpers
     int MapPE2FilterMode(whiteout::u32 mdxMode) const;

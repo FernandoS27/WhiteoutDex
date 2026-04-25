@@ -127,6 +127,10 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/sampler_asset_manager.cpp
     src/renderer/texture_asset_manager.cpp
     src/renderer/replaceable_texture_manager.cpp
+    src/renderer/model_template.cpp
+    src/renderer/model_template_manager.cpp
+    src/renderer/animation_driver.cpp
+    src/renderer/render_model.cpp
     src/renderer/render_target.cpp
     src/renderer/viewcube_atlas.cpp
     src/renderer/coordinate_system.cpp

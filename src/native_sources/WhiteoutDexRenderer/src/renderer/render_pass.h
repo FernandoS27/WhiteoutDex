@@ -19,7 +19,7 @@
 // ============================================================================
 
 #include "render_service.h"            // full definition — template body dereferences members
-#include "render_service_internal.h"   // CollectSortedGeosetRefs, GeosetRef
+#include "render_service_internal.h"   // CollectSortedRenderables, GeosetRef, RenderableView
 #include "sampler_asset_manager.h"     // samplers_->LinearWrap() in pass setup
 #include "bls/bls_draw_helpers.h"      // BaselineLights, BuildLightPalette
 #include "bls/bls_frame.h"             // FrameInputs
@@ -36,13 +36,13 @@ public:
     bool Run() {
         Derived&  d  = self();
         if (!d.IsAvailable()) return false;
-        if (rs_.models_.empty()) return true;
+        if (rs_.scene_->Actors().All().empty()) return true;
 
         auto* cmd = rs_.gfx_->GetImmediateContext();
 
-        auto refs = render_detail::CollectSortedGeosetRefs(
-            rs_.models_, rs_.ComputeSelectedLod());
-        if (refs.empty()) return true;
+        auto collected = render_detail::CollectSortedRenderables(
+            rs_.scene_->Actors().All(), rs_.ComputeSelectedLod());
+        if (collected.refs.empty()) return true;
 
         Matrix44f view, proj;
         d.ComputeViewProj(view, proj);
@@ -50,7 +50,7 @@ public:
         bls::FrameInputs frame;
         frame.view         = view;
         frame.projection   = proj;
-        frame.effectTime   = rs_.animationTimeMs_.load() * 0.001f;
+        frame.effectTime   = rs_.scene_->GetAnimationTime() * 0.001f;
         frame.numLights    = 0;
         frame.viewportRect = { (float)rs_.width_, (float)rs_.height_, 0.0f, 0.0f };
 
@@ -60,15 +60,15 @@ public:
 
         const bls::BaselineLights baseline = d.Baseline();
 
-        for (auto& ref : refs) {
-            auto* mi  = ref.mi;
-            auto& geo = mi->gpuGeosets[ref.idx];
+        for (auto& ref : collected.refs) {
+            const auto& view_  = *ref.view;
+            const auto& geo    = (*view_.geosets)[ref.idx];
             if (geo.unskinnedVb == gfx::BufferHandle::Invalid ||
                 geo.ib == gfx::BufferHandle::Invalid ||
                 geo.indexCount == 0) continue;
 
             const int lightCount = bls::BuildLightPalette(
-                frame, mi->activeLights, view, baseline);
+                frame, *view_.activeLights, view, baseline);
 
             d.DrawGeoset(ref, frame, view, cmd, lightCount);
         }

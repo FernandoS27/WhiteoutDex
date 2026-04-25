@@ -3,7 +3,7 @@
 // WhiteoutDex Renderer — PE1 System (Model Particle Emitter)
 // Simulates particles that spawn MDX model instances.
 // Each particle carries a position, velocity, lifetime, and a handle
-// to its child ModelInstance (managed by the Renderer).
+// to its child Actor (managed by the Renderer).
 // ============================================================================
 
 #include "types.h"

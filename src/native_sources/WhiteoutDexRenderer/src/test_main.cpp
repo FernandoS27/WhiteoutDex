@@ -173,7 +173,6 @@ int wmain(int argc, wchar_t* argv[]) {
         for (auto& s : sequences) seqNames.push_back(s.name);
         renderer.SetSequences(seqNames);
         renderer.SetSequenceRanges(sequences);  // needed for MDX camera animators
-        adapter.SetActiveSequence(0);
         std::cout << "Playing: " << sequences[0].name
                   << " [" << sequences[0].startMs << "-" << sequences[0].endMs << "ms]\n";
     }
@@ -202,7 +201,6 @@ int wmain(int argc, wchar_t* argv[]) {
             int picked = renderer.GetActiveSequenceIndex();
             if (picked >= 0 && picked < (int)sequences.size() && picked != currentSeq) {
                 currentSeq = picked;
-                adapter.SetActiveSequence(currentSeq);
                 startTime = now;
                 elapsed = 0;
             }
@@ -218,8 +216,9 @@ int wmain(int argc, wchar_t* argv[]) {
         }
 
         auto camPos = renderer.GetCameraPosition();
-        adapter.SetCameraPosition(camPos.x, camPos.y, camPos.z);
-        auto frameState = adapter.Evaluate(timeMs, globalTimeMs);
+        auto frameState = adapter.Evaluate(currentSeq, timeMs, globalTimeMs,
+                                           Matrix44f::identity(),
+                                           camPos);
         renderer.ApplyFrameState(frameState, timeMs);
 
         Sleep(16); // ~60 FPS

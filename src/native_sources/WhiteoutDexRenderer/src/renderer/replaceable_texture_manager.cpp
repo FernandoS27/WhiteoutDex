@@ -45,7 +45,7 @@ void ReplaceableTextureManager::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
     dirty_.store(true);
 }
 
-void ReplaceableTextureManager::RegisterModelSlot(ModelInstance&  mi,
+void ReplaceableTextureManager::RegisterModelSlot(Actor&  mi,
                                                   int             textureId,
                                                   ReplaceableKind kind) {
     if (kind == ReplaceableKind::None) return;
@@ -56,11 +56,11 @@ void ReplaceableTextureManager::RegisterModelSlot(ModelInstance&  mi,
     BakeSlot(mi, textureId, kind);
 }
 
-void ReplaceableTextureManager::UnregisterModel(ModelInstance& mi) {
+void ReplaceableTextureManager::UnregisterModel(Actor& mi) {
     slots_.erase(&mi);
 }
 
-void ReplaceableTextureManager::BakeSlot(ModelInstance&  mi,
+void ReplaceableTextureManager::BakeSlot(Actor&  mi,
                                           int             textureId,
                                           ReplaceableKind kind) {
     const uint8_t r = Red(teamColor_);

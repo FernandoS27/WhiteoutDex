@@ -48,15 +48,39 @@ struct UnpackedLayer {
 // this function preserves those exactly.
 UnpackedLayer UnpackLayer(const GPUMaterial* mat, int layerIndex);
 
-// Per-geoset sortable reference produced by the collect pass. Members match
-// the previously-duplicated locally-declared GeosetRef struct in each render
-// path so the rest of the draw loops can switch to this type unchanged.
+// Per-actor view exposed to render passes (F6). Owns pointers into the actor's
+// RenderModel + the per-actor world transform / visibility. Lifetime: built
+// per-frame and stored stable in `CollectedRenderables::views` (reserved
+// up-front so emplace_back never reallocates). Render passes never see
+// `Actor`, only `RenderableView`.
+struct RenderableView {
+    const std::vector<GPUGeoset>*           geosets        = nullptr;
+    const std::vector<GPUMaterial>*         materials      = nullptr;
+    TextureAssetManager::ModelScope*        textures       = nullptr;
+    const SkinningSystem*                   skinning       = nullptr;
+    const std::vector<FrameState::LightState>*       activeLights   = nullptr;
+    const std::vector<RenderModel::TexAnimPaletteEntry>* texAnimPalette = nullptr;
+    Matrix44f                               worldTransform = Matrix44f::identity();
+    float                                   parentVisibility = 1.0f;
+    bool                                    hasLods        = false;
+};
+
+// Per-geoset sortable reference produced by the collect pass. Points into a
+// stable `RenderableView` (held by CollectedRenderables); the geoset index
+// addresses `view->geosets`.
 struct GeosetRef {
-    ModelInstance* mi;
+    const RenderableView* view;
     int idx;
     int renderOrder;
     int priorityPlane;
     int geosetId;
+};
+
+// Output of CollectSortedRenderables. Views are reserved up-front so the
+// raw pointers stored in `refs` remain stable for the frame.
+struct CollectedRenderables {
+    std::vector<RenderableView> views;
+    std::vector<GeosetRef>      refs;
 };
 
 // Walks `models`, drops instances with parentVisibility <= 0.02, applies the
@@ -67,8 +91,8 @@ struct GeosetRef {
 //
 // `selectedLod` is the caller's ComputeSelectedLod() result — kept as a
 // parameter so this helper stays free-function and testable.
-std::vector<GeosetRef> CollectSortedGeosetRefs(
-    const std::unordered_map<uint32_t, std::unique_ptr<ModelInstance>>& models,
+CollectedRenderables CollectSortedRenderables(
+    const std::unordered_map<uint32_t, std::unique_ptr<Actor>>& models,
     int selectedLod);
 
 // Binds the SD-mesh input for native VS skinning:
@@ -79,8 +103,7 @@ std::vector<GeosetRef> CollectSortedGeosetRefs(
 // was bound; caller then picks numWeights=4 + ParticleSDSkinned layout
 // so the SD VS selects the FourBoneSkinning permute.
 bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
-                        const GPUGeoset&      geo,
-                        const ModelInstance&  mi);
+                        const GPUGeoset&      geo);
 
 // Binds `textureId`'s GPU texture to pixel-stage slot `slot` with the
 // matching wrap sampler resolved through `samplers`. Falls back to
@@ -88,12 +111,12 @@ bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
 // SamplerAssetManager owns the wrap-flags → SamplerHandle mapping (bits
 // masked against kSamplerWrapBitsMask internally) so this site no longer
 // indexes a raw [4] array.
-void BindLayerAlbedo(gfx::IGFXCommandList*  cmd,
-                     ModelInstance&         mi,
-                     int                    textureId,
-                     gfx::TextureHandle     defaultTex,
-                     SamplerAssetManager&   samplers,
-                     uint32_t               slot = 0);
+void BindLayerAlbedo(gfx::IGFXCommandList*       cmd,
+                     TextureAssetManager::ModelScope* scope,
+                     int                         textureId,
+                     gfx::TextureHandle          defaultTex,
+                     SamplerAssetManager&        samplers,
+                     uint32_t                    slot = 0);
 
 // Legacy (Slang) CBPerFrame is filled at ten sites across the five
 // non-BLS render paths (particles, ribbons, collisions, light markers,
@@ -129,14 +152,14 @@ void WriteCbPerFrame(gfx::IGFXDevice*     gfx,
 // the call sites to a single line.
 Vector4f NormalizedLightDir4(const Vector4f& dir);
 
-// Populate `frame.texMtx0` (layer UV matrix from the mi texAnimPalette)
+// Populate `frame.texMtx0` (layer UV matrix from the actor's texAnimPalette)
 // and `frame.texMtx1` (always identity — WC3 MDX only uses one UV set).
 // Replaces the eight-line palette-lookup block duplicated verbatim in
 // GeosetPassBls and GeosetPassHd. Out-of-range / missing ids resolve to
 // the BLS identity tex-matrix so the VS's `tex0 = texMtx0 * (u,v,1)`
 // becomes a no-op.
 void ApplyTexAnimPaletteToFrame(bls::FrameInputs&    frame,
-                                const ModelInstance& mi,
+                                const std::vector<RenderModel::TexAnimPaletteEntry>* palette,
                                 int                  textureAnimationId);
 
 } // namespace WhiteoutDex::render_detail

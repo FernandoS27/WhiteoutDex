@@ -10,6 +10,9 @@
 #include "sampler_asset_manager.h"
 #include "texture_asset_manager.h"
 #include "replaceable_texture_manager.h"
+#include "scene_manager.h"
+#include "model_template.h"
+#include "model_template_manager.h"
 #include "compiled_shaders.h"
 #include "team_glow_data.h"
 #include "mdx_model_adapter.h"
@@ -38,61 +41,6 @@ extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char* s
 inline void OutputDebugStringA(const char*) {}
 #endif
 
-// Model template — full definition (uses MdxModelAdapter which is now fully included).
-// Templates are also the cross-instance GPU geometry cache: the immutable index
-// + vertex + tangent + bone buffers are uploaded once on the first instance's
-// ProcessStagedData and borrowed by every subsequent instance. Per-frame state
-// (bonePaletteCb, geosetAlpha/Color, worldMatrix) stays on each ModelInstance.
-struct WhiteoutDex::PE1ModelTemplate {
-    std::shared_ptr<MdxModelAdapter> adapter;
-    std::vector<MeshData> meshes;
-    std::vector<TextureData> textures;
-    std::vector<MaterialData> materials;
-    SkeletonData skeleton;
-    std::vector<SkinWeightData> skinWeights;
-    std::vector<ParticleEmitterConfig> pe2Configs;
-    std::vector<RibbonEmitterConfig> ribbonConfigs;
-    std::vector<CollisionShapeData> collisionConfigs;
-    std::vector<PE1EmitterConfig> pe1Configs;
-    std::vector<AttachmentConfig> attachmentConfigs;
-
-    // Pre-built shared skinning data (nodeCount, inverseBindMatrices, per-geoset
-    // weights + palette layouts). Adopted by every borrowing instance through
-    // SkinningSystem::SetSharedData — eliminates the per-instance ~1.6 MB copy
-    // of vertex influence tables on heavy hero models.
-    std::shared_ptr<SkinningData> skinningData;
-
-    // Shared GPU geometry — populated lazily on the render thread by
-    // RenderService::UploadTemplateGpu the first time a ModelInstance using
-    // this template hits ProcessStagedData. Borrowed by every instance via
-    // ModelInstance::sourceTemplate; freed in RenderService::ShutdownDevice
-    // before CleanupD3D.
-    struct SharedGeoset {
-        int               geosetId    = -1;
-        gfx::BufferHandle ib          = gfx::BufferHandle::Invalid;
-        gfx::BufferHandle unskinnedVb = gfx::BufferHandle::Invalid;
-        gfx::BufferHandle tangentVb   = gfx::BufferHandle::Invalid;
-        gfx::BufferHandle boneVb      = gfx::BufferHandle::Invalid;
-        int               indexCount  = 0;
-        int               vertexCount = 0;
-        int               materialId  = -1;
-        uint32_t          lod         = 0;
-    };
-    bool                       gpuUploaded = false;
-    std::vector<SharedGeoset>  sharedGeosets;
-
-    void ReleaseGPU(gfx::IGFXDevice& gfx) {
-        for (auto& g : sharedGeosets) {
-            gfx.Destroy(g.ib);
-            gfx.Destroy(g.unskinnedVb);
-            gfx.Destroy(g.tangentVb);
-            gfx.Destroy(g.boneVb);
-        }
-        sharedGeosets.clear();
-        gpuUploaded = false;
-    }
-};
-
 namespace WhiteoutDex {
 
 // ============================================================================
@@ -100,11 +48,23 @@ namespace WhiteoutDex {
 // ============================================================================
 
 RenderService::RenderService()
-    : debug_(std::make_unique<DebugRenderer>(*this)) {
-    activeContentProvider_ = &contentProvider_;
-    StartTemplateLoader();
+    : scene_(std::make_unique<SceneManager>()),
+      debug_(std::make_unique<DebugRenderer>(*this)) {
+    // Cross-model dedup query — fed to every adapter the templates manager
+    // builds. Wired here because IsTextureCached lives on RenderService
+    // (it queries the TextureAssetManager, which we own).
+    scene_->Templates().SetTextureCacheQuery(
+        [this](std::string_view k) { return IsTextureCached(k); });
 }
-RenderService::~RenderService() { StopTemplateLoader(); }
+RenderService::~RenderService() = default;   // scene_ joins its template loader thread
+
+// Helpers — out-of-line because they need SceneManager's full type, which only
+// the .cpp sees (the header has just the forward decl).
+Actor* RenderService::focusModel() const { return scene_->FocusActor(); }
+Actor* RenderService::getModel(uint32_t h) const { return scene_->Actors().Find(h); }
+FileContentProvider& RenderService::GetContentProvider() {
+    return scene_->GetContentProvider();
+}
 
 // ViewCube input queries forward to the DebugRenderer, which owns the cube
 // geometry + hover state. Kept out-of-line so the header doesn't need the
@@ -116,10 +76,10 @@ void RenderService::SetViewCubeHovered(bool hovered)     { debug_->SetViewCubeHo
 void RenderService::SetCamera(float pitch, float yaw, float distance,
                          float tx, float ty, float tz) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    camera_.SetPitch(pitch);
-    camera_.SetYaw(yaw);
-    camera_.SetDistance(distance);
-    camera_.SetTarget(tx, ty, tz);
+    scene_->Camera().SetPitch(pitch);
+    scene_->Camera().SetYaw(yaw);
+    scene_->Camera().SetDistance(distance);
+    scene_->Camera().SetTarget(tx, ty, tz);
 }
 
 // ============================================================================
@@ -128,25 +88,25 @@ void RenderService::SetCamera(float pitch, float yaw, float distance,
 
 void RenderService::ClearModel() {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    for (auto& [h, mi] : models_) {
+    for (auto& [h, mi] : scene_->Actors().All()) {
         mi->stagedClear = true;
         mi->stagedDirty = true;
     }
-    focusModelHandle_ = 0;
+    scene_->FocusRef() = 0;
     // Drop everything on the PE2 service side too.
     particleService_.Clear();
 }
 
 void RenderService::RemoveModel(uint32_t handle) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    auto it = models_.find(handle);
-    if (it != models_.end()) {
+    auto it = scene_->Actors().All().find(handle);
+    if (it != scene_->Actors().All().end()) {
         if (replaceables_) replaceables_->UnregisterModel(*it->second);
         it->second->ReleaseGPU(*gfx_);
-        models_.erase(it);
+        scene_->Actors().All().erase(it);
     }
-    if (focusModelHandle_ == handle) {
-        focusModelHandle_ = models_.empty() ? 0 : models_.begin()->first;
+    if (scene_->FocusRef() == handle) {
+        scene_->FocusRef() = scene_->Actors().All().empty() ? 0 : scene_->Actors().All().begin()->first;
     }
     // Drop any PE2-service emitters registered under this model.
     particleService_.RemoveModel(handle);
@@ -179,7 +139,7 @@ void RenderService::SetAttachmentConfigs(uint32_t handle, const std::vector<Atta
     // Keep ALL attachments as slots so slot index == FrameState attachment index.
     // Only slots with non-empty modelPath will have child models loaded.
     for (auto& cfg : configs) {
-        ModelInstance::AttachmentSlot slot;
+        Actor::AttachmentSlot slot;
         slot.config = cfg;
         slot.loaded = cfg.modelPath.empty(); // mark empty-path slots as "loaded" (nothing to load)
         mi->attachmentSlots.push_back(slot);
@@ -187,15 +147,11 @@ void RenderService::SetAttachmentConfigs(uint32_t handle, const std::vector<Atta
 }
 
 void RenderService::SetContentProvider(std::shared_ptr<IContentProvider> provider) {
-    externalContentProvider_ = std::move(provider);
-    activeContentProvider_ = externalContentProvider_
-                                 ? externalContentProvider_.get()
-                                 : static_cast<IContentProvider*>(&contentProvider_);
+    scene_->SetContentProvider(std::move(provider));
 }
 
 void RenderService::SetPE1BasePath(const std::filesystem::path& basePath) {
-    pe1BasePath_ = basePath;
-    contentProvider_.SetBasePath(basePath);
+    scene_->SetPE1BasePath(basePath);
 }
 
 void RenderService::SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig>& configs) {
@@ -213,9 +169,9 @@ void RenderService::SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterC
 void RenderService::UpdateAttachments() {
     std::lock_guard<std::mutex> lock(dataMutex_);
 
-    // Collect handles to avoid modifying models_ during iteration
+    // Collect handles to avoid modifying scene_->Actors().All() during iteration
     std::vector<uint32_t> handles;
-    for (auto& [h, mi] : models_) handles.push_back(h);
+    for (auto& [h, mi] : scene_->Actors().All()) handles.push_back(h);
 
     for (uint32_t h : handles) {
         auto* mi = getModel(h);
@@ -229,183 +185,40 @@ void RenderService::UpdateAttachments() {
             // queued for the async worker). We must NOT mark the slot loaded
             // until the template is actually in hand — otherwise we'd skip
             // this slot forever and never build the child, even after the
-            // worker finishes and DrainTemplateResults populates the cache.
-            auto tmpl = getOrLoadTemplate(slot.config.modelPath);
+            // worker finishes and the manager's Tick populates the cache.
+            auto tmpl = scene_->Templates().GetOrLoadAsync(slot.config.modelPath);
             if (!tmpl) continue;
 
             slot.loaded = true;
 
-            uint32_t childH = nextModelHandle_++;
-            auto child = std::make_unique<ModelInstance>();
+            uint32_t childH = scene_->NextActorIdRef()++;
+            auto child = std::make_unique<Actor>();
             child->handle = childH;
             child->isPE1Child = true;  // reuse the flag for "child model"
             child->pe1Depth = mi->pe1Depth + 1;
-            child->pe1Adapter = tmpl->adapter;
-            child->pe1BirthTimeMs = animationTimeMs_;
+            child->animation.Bind(tmpl->adapter);
+            child->animation.SetBirthTimeMs(scene_->GetAnimationTime());
             // Pick a random sequence
             auto seqs = tmpl->adapter->GetSequences();
             if (!seqs.empty())
-                child->pe1SequenceIdx = rand() % (int)seqs.size();
+                child->animation.SetActiveSequenceIndex(rand() % (int)seqs.size());
 
             stageModelFromTemplate(child.get(), tmpl);
-            models_[childH] = std::move(child);
+            scene_->Actors().All()[childH] = std::move(child);
             slot.childModelHandle = childH;
         }
     }
 }
 
 // ============================================================================
-// PE1 Model Template Cache
+// Model template cache — extracted to ModelTemplateManager (renderer/model_template_manager.{h,cpp}).
+// Path-based load + async loader thread + drain step all live there now.
+// RenderService::templates_ owns the manager; SetContentProvider /
+// SetPE1BasePath forward configuration; Tick() pumps scene_->Templates().Tick().
 // ============================================================================
 
-std::shared_ptr<PE1ModelTemplate> RenderService::getOrLoadTemplate(const std::string& modelPath) {
-    // 1. Cache hit (includes cached failures as nullptr)
-    auto it = pe1TemplateCache_.find(modelPath);
-    if (it != pe1TemplateCache_.end()) return it->second;
-
-    // 2. Already queued for async load — skip this frame
-    {
-        std::lock_guard<std::mutex> lock(templateQueueMutex_);
-        if (templateLoadPending_.count(modelPath)) return nullptr;
-
-        // 3. Queue for async load
-        templateLoadPending_.insert(modelPath);
-        templateLoadQueue_.push_back(modelPath);
-    }
-    templateQueueCV_.notify_one();
-    return nullptr;
-}
-
-std::shared_ptr<PE1ModelTemplate> RenderService::loadTemplateSync(const std::string& modelPath) {
-    // Try to read the model file via the active content provider.
-    auto fileData = activeContentProvider_->ReadFile(modelPath);
-    if (!fileData || fileData->empty())
-        return nullptr;
-
-    // Parse MDX from memory buffer
-    whiteout::mdx::Parser mdxParser;
-    whiteout::mdx::Model model;
-    try {
-        model = mdxParser.parse(std::span<const whiteout::u8>(fileData->data(), fileData->size()));
-    } catch (...) {
-        return nullptr;
-    }
-
-    // basePath for texture resolution: use pe1BasePath_ (war3 data root)
-    // so textures like "Textures\Footprint00.blp" resolve correctly
-    namespace fs = std::filesystem;
-    fs::path texBasePath = pe1BasePath_.empty() ? fs::path(modelPath).parent_path() : pe1BasePath_;
-
-    auto tmpl = std::make_shared<PE1ModelTemplate>();
-    auto adapter = std::make_shared<MdxModelAdapter>(
-        std::move(model), texBasePath, activeContentProvider_);
-    // Cross-model dedup query — skip BLP/CASC decode for paths that
-    // earlier models already uploaded.
-    adapter->SetTextureCacheQuery(
-        [this](std::string_view k) { return IsTextureCached(k); });
-    tmpl->adapter = adapter;
-    tmpl->meshes = adapter->GetMeshes();
-    tmpl->textures = adapter->GetTextures();
-    tmpl->materials = adapter->GetMaterials();
-    tmpl->skeleton = adapter->GetSkeleton();
-    tmpl->skinWeights = adapter->GetSkinWeights();
-    tmpl->pe2Configs = adapter->GetParticleConfigs();
-    tmpl->ribbonConfigs = adapter->GetRibbonConfigs();
-    tmpl->collisionConfigs = adapter->GetCollisionShapes();
-    tmpl->pe1Configs = adapter->GetPE1Configs();
-    tmpl->attachmentConfigs = adapter->GetAttachmentConfigs();
-
-    // Build the immutable shared skinning data once. Every instance that
-    // adopts this template calls SetSharedData(skinningData) instead of
-    // re-running the per-vertex influence copy.
-    auto skinningData = std::make_shared<SkinningData>();
-    skinningData->nodeCount           = tmpl->skeleton.nodeCount;
-    skinningData->inverseBindMatrices = tmpl->skeleton.inverseBindMatrices;
-    for (auto& sw : tmpl->skinWeights) {
-        const int vc = (int)sw.influences.size();
-        auto& info = skinningData->geosetWeights[sw.geosetId];
-        info.vertices.resize(vc);
-        for (int v = 0; v < vc; v++) {
-            for (int j = 0; j < 4; j++) {
-                info.vertices[v].boneIdx[j] = sw.influences[v].boneIdx[j];
-                info.vertices[v].weight[j]  = sw.influences[v].weight[j];
-            }
-        }
-        GeosetPaletteLayout layout;
-        layout.subsetNodeIndices = sw.subsetNodeIndices;
-        layout.groupAverages     = sw.groupAverages;
-        skinningData->geosetLayouts[sw.geosetId] = std::move(layout);
-    }
-    tmpl->skinningData = std::move(skinningData);
-
-    return tmpl;
-}
-
-// ============================================================================
-// Async PE1 Template Loader
-// ============================================================================
-
-void RenderService::StartTemplateLoader() {
-    templateLoaderRunning_ = true;
-    templateLoaderThread_ = std::thread(&RenderService::TemplateLoaderFunc, this);
-}
-
-void RenderService::StopTemplateLoader() {
-    templateLoaderRunning_ = false;
-    templateQueueCV_.notify_one();
-    if (templateLoaderThread_.joinable())
-        templateLoaderThread_.join();
-}
-
-void RenderService::TemplateLoaderFunc() {
-    while (templateLoaderRunning_) {
-        std::string path;
-        {
-            std::unique_lock<std::mutex> lock(templateQueueMutex_);
-            templateQueueCV_.wait_for(lock, std::chrono::milliseconds(50),
-                [this] { return !templateLoadQueue_.empty() || !templateLoaderRunning_; });
-            if (!templateLoaderRunning_) break;
-            if (templateLoadQueue_.empty()) continue;
-            path = std::move(templateLoadQueue_.front());
-            templateLoadQueue_.pop_front();
-        }
-
-        auto tmpl = loadTemplateSync(path);
-
-        {
-            std::lock_guard<std::mutex> lock(templateResultMutex_);
-            templateLoadResults_.emplace_back(std::move(path), std::move(tmpl));
-        }
-    }
-}
-
-void RenderService::DrainTemplateResults() {
-    std::vector<std::pair<std::string, std::shared_ptr<PE1ModelTemplate>>> results;
-    {
-        std::lock_guard<std::mutex> lock(templateResultMutex_);
-        results.swap(templateLoadResults_);
-    }
-
-    if (results.empty()) return;
-
-    // pe1TemplateCache_ is now read/written from the API thread too
-    // (AddModelByPath), so write under dataMutex_ to avoid the race.
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        for (auto& [path, tmpl] : results) {
-            pe1TemplateCache_[path] = tmpl;
-        }
-    }
-    {
-        std::lock_guard<std::mutex> lock(templateQueueMutex_);
-        for (auto& [path, tmpl] : results) {
-            templateLoadPending_.erase(path);
-        }
-    }
-}
-
-void RenderService::stageModelFromTemplate(ModelInstance* mi,
-                                           std::shared_ptr<PE1ModelTemplate> tmpl) {
+void RenderService::stageModelFromTemplate(Actor* mi,
+                                           std::shared_ptr<ModelTemplate> tmpl) {
     if (!tmpl) return;
     // Pin the template alive for as long as this instance exists. UploadStagedGeosets
     // borrows ib/unskinnedVb/tangentVb/boneVb from tmpl->sharedGeosets, so the
@@ -482,38 +295,38 @@ void RenderService::UpdatePE1(float dt) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     std::vector<uint32_t> toRemove;
 
-    // Collect handles to iterate (avoid modifying models_ during iteration)
+    // Collect handles to iterate (avoid modifying scene_->Actors().All() during iteration)
     std::vector<uint32_t> handles;
-    for (auto& [h, mi] : models_) handles.push_back(h);
+    for (auto& [h, mi] : scene_->Actors().All()) handles.push_back(h);
 
     for (uint32_t h : handles) {
         auto* mi = getModel(h);
         if (!mi) continue;
-        if (mi->pe1Depth >= kMaxPE1Depth) continue;
+        if (mi->pe1Depth >= SceneManager::kMaxPE1Depth) continue;
         if (!mi->pe1.HasEmitters()) continue;
         if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent — skip sub-emitter sim
 
-        auto result = mi->pe1.Simulate(dt, nextModelHandle_);
+        auto result = mi->pe1.Simulate(dt, scene_->NextActorIdRef());
 
-        // Birth: create child ModelInstance from template
+        // Birth: create child Actor from template
         for (auto& birth : result.born) {
-            if (pe1InstanceCount_ >= kMaxPE1Instances) continue;
+            if (scene_->PE1InstanceCountRef() >= SceneManager::kMaxPE1Instances) continue;
             auto* cfg = mi->pe1.GetConfig(birth.emitterId);
             if (!cfg) continue;
-            auto tmpl = getOrLoadTemplate(cfg->modelPath);
+            auto tmpl = scene_->Templates().GetOrLoadAsync(cfg->modelPath);
             if (!tmpl) continue;
 
-            auto child = std::make_unique<ModelInstance>();
+            auto child = std::make_unique<Actor>();
             child->handle = birth.handle;
             child->worldTransform = birth.worldTransform;
             child->isPE1Child = true;
             child->pe1Depth = mi->pe1Depth + 1;
-            child->pe1Adapter = tmpl->adapter;
-            child->pe1BirthTimeMs = animationTimeMs_;
+            child->animation.Bind(tmpl->adapter);
+            child->animation.SetBirthTimeMs(scene_->GetAnimationTime());
 
             stageModelFromTemplate(child.get(), tmpl);
-            models_[birth.handle] = std::move(child);
-            pe1InstanceCount_++;
+            scene_->Actors().All()[birth.handle] = std::move(child);
+            scene_->PE1InstanceCountRef()++;
         }
 
         // Death
@@ -526,12 +339,12 @@ void RenderService::UpdatePE1(float dt) {
     }
 
     for (uint32_t rh : toRemove) {
-        auto it = models_.find(rh);
-        if (it != models_.end()) {
+        auto it = scene_->Actors().All().find(rh);
+        if (it != scene_->Actors().All().end()) {
             if (replaceables_) replaceables_->UnregisterModel(*it->second);
             it->second->ReleaseGPU(*gfx_);
-            models_.erase(it);
-            pe1InstanceCount_--;
+            scene_->Actors().All().erase(it);
+            scene_->PE1InstanceCountRef()--;
         }
         // Drop any emitters this child registered with the PE2 service.
         // Otherwise they persist as ghost emitters, drawing with the default
@@ -543,7 +356,7 @@ void RenderService::UpdatePE1(float dt) {
 void RenderService::EvaluatePE1Children() {
     struct ChildEval {
         uint32_t handle;
-        std::shared_ptr<IModelSource> adapter;
+        std::shared_ptr<IAnimationSource> adapter;
         int localTimeMs;
         int seqIdx;
         int globalTimeMs;  // unclamped elapsed since birth (for global sequences)
@@ -553,28 +366,28 @@ void RenderService::EvaluatePE1Children() {
 
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        camPos = camera_.GetSource();
-        int timeMs = animationTimeMs_.load();
-        for (auto& [h, mi] : models_) {
-            if (!mi->isPE1Child || !mi->pe1Adapter) continue;
+        camPos = scene_->Camera().GetSource();
+        int timeMs = scene_->GetAnimationTime();
+        for (auto& [h, mi] : scene_->Actors().All()) {
+            if (!mi->isPE1Child || !mi->animation.HasSource()) continue;
             if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent — skip eval
-            int localTime = timeMs - mi->pe1BirthTimeMs;
+            int localTime = timeMs - mi->animation.BirthTimeMs();
             if (localTime < 0) localTime = 0;
             int globalTime = localTime;  // unclamped wall-clock elapsed since birth
-            auto seqs = mi->pe1Adapter->GetSequences();
+            auto seqs = mi->animation.Sequences();
+            const int seqIdx = mi->animation.ActiveSequenceIndex();
             if (!seqs.empty()) {
-                int seqIdx = mi->pe1SequenceIdx % (int)seqs.size();
-                int dur = seqs[seqIdx].endMs - seqs[seqIdx].startMs;
-                if (dur > 0) localTime = seqs[seqIdx].startMs + (localTime % dur);
+                const int boundedSeq = seqIdx % (int)seqs.size();
+                int dur = seqs[boundedSeq].endMs - seqs[boundedSeq].startMs;
+                if (dur > 0) localTime = seqs[boundedSeq].startMs + (localTime % dur);
             }
-            toEval.push_back({h, mi->pe1Adapter, localTime, mi->pe1SequenceIdx, globalTime});
+            toEval.push_back({h, mi->animation.Source(), localTime, seqIdx, globalTime});
         }
     }
 
     for (auto& ce : toEval) {
-        ce.adapter->SetCameraPosition(camPos.x, camPos.y, camPos.z);
-        ce.adapter->SetActiveSequence(ce.seqIdx);
-        FrameState fs = ce.adapter->Evaluate(ce.localTimeMs, ce.globalTimeMs);
+        FrameState fs = ce.adapter->Evaluate(ce.seqIdx, ce.localTimeMs, ce.globalTimeMs,
+                                             Matrix44f::identity(), camPos);
         ApplyFrameState(ce.handle, fs, ce.localTimeMs);
     }
 }
@@ -616,7 +429,7 @@ void RenderService::UpdateMaterials(uint32_t handle, const std::vector<MaterialD
 
 void RenderService::UpdateMaterials(const std::vector<MaterialData>& materials,
                                const std::vector<TextureData>& textures) {
-    UpdateMaterials(focusModelHandle_, materials, textures);
+    UpdateMaterials(scene_->FocusRef(), materials, textures);
 }
 
 // ============================================================================
@@ -632,8 +445,8 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
                             const std::vector<RibbonEmitterConfig>& ribbonConfigs,
                             const std::vector<CollisionShapeData>& collisions) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    uint32_t handle = nextModelHandle_++;
-    auto mi = std::make_unique<ModelInstance>();
+    uint32_t handle = scene_->NextActorIdRef()++;
+    auto mi = std::make_unique<Actor>();
     mi->handle = handle;
 
     // Textures → staged
@@ -743,8 +556,8 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
     }
 
     mi->stagedDirty = true;
-    if (focusModelHandle_ == 0) focusModelHandle_ = handle;
-    models_[handle] = std::move(mi);
+    if (scene_->FocusRef() == 0) scene_->FocusRef() = handle;
+    scene_->Actors().All()[handle] = std::move(mi);
     return handle;
 }
 
@@ -760,7 +573,7 @@ void RenderService::LoadModel(const std::vector<MeshData>& meshes,
     ClearModel();
     uint32_t h = AddModel(meshes, textures, materials, skeleton,
                           skinWeights, particleConfigs, ribbonConfigs, collisions);
-    focusModelHandle_ = h;
+    scene_->FocusRef() = h;
 
     // Auto-activate HD when any material layer ships a non-SD shader
     // (Layer::ShaderType: 0=SD, 1=HD, 2=SDOnHD, 24=Crystal). Flip the
@@ -780,35 +593,15 @@ void RenderService::LoadModel(const std::vector<MeshData>& meshes,
 }
 
 // ============================================================================
-// Path-based load — borrows everything cacheable through PE1ModelTemplate
+// Path-based load — borrows everything cacheable through ModelTemplate
 // (parsed adapter, GPU geometry, skinning data, textures via TextureAssetManager).
 // Subsequent calls with the same path skip parse + decode + GPU upload entirely.
 // ============================================================================
 
 uint32_t RenderService::AddModelByPath(const std::string& mdxPath) {
-    // 1. Cache check.
-    std::shared_ptr<PE1ModelTemplate> tmpl;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        auto it = pe1TemplateCache_.find(mdxPath);
-        if (it != pe1TemplateCache_.end()) tmpl = it->second;
-    }
-
-    // 2. Miss: synchronous load. We own the result regardless of whether the
-    // async worker had this queued — the worker hits a cache hit on its next
-    // pass and DrainTemplateResults silently overwrites with identical data.
-    if (!tmpl) {
-        tmpl = loadTemplateSync(mdxPath);
-        {
-            std::lock_guard<std::mutex> lock(dataMutex_);
-            pe1TemplateCache_[mdxPath] = tmpl;  // cache failure (nullptr) too
-        }
-        {
-            std::lock_guard<std::mutex> q(templateQueueMutex_);
-            templateLoadPending_.erase(mdxPath);
-        }
-    }
-
+    // Manager handles cache lookup + cancels any pending async request +
+    // synchronous parse on miss. Caches failures (nullptr) too.
+    auto tmpl = scene_->Templates().GetOrLoadSync(mdxPath);
     if (!tmpl) return 0;
 
     // 3. Build the instance under dataMutex_. Collision shapes are populated
@@ -817,8 +610,8 @@ uint32_t RenderService::AddModelByPath(const std::string& mdxPath) {
     uint32_t handle;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        handle = nextModelHandle_++;
-        auto mi = std::make_unique<ModelInstance>();
+        handle = scene_->NextActorIdRef()++;
+        auto mi = std::make_unique<Actor>();
         mi->handle = handle;
         stageModelFromTemplate(mi.get(), tmpl);
         for (auto& cs : tmpl->collisionConfigs) {
@@ -830,7 +623,7 @@ uint32_t RenderService::AddModelByPath(const std::string& mdxPath) {
             shape.pivot  = cs.pivot;
             mi->collisionShapes.push_back(shape);
         }
-        models_[handle] = std::move(mi);
+        scene_->Actors().All()[handle] = std::move(mi);
     }
 
     // 4. Register attachment configs from the template. SetAttachmentConfigs
@@ -848,17 +641,12 @@ uint32_t RenderService::LoadModelByPath(const std::string& mdxPath) {
 
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        focusModelHandle_ = h;
+        scene_->FocusRef() = h;
     }
 
     // HD auto-detect (mirrors LoadModel). Pull the cached template back out
     // for its material list — cheap hashmap lookup.
-    std::shared_ptr<PE1ModelTemplate> tmpl;
-    {
-        std::lock_guard<std::mutex> lock(dataMutex_);
-        auto it = pe1TemplateCache_.find(mdxPath);
-        if (it != pe1TemplateCache_.end()) tmpl = it->second;
-    }
+    auto tmpl = scene_->Templates().Lookup(mdxPath);
     if (tmpl) {
         bool anyNonSd = false;
         for (auto& mat : tmpl->materials) {
@@ -881,11 +669,11 @@ uint32_t RenderService::LoadModelByPath(const std::string& mdxPath) {
 // ApplyFrameState helpers
 // ============================================================================
 
-void RenderService::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state) {
+void RenderService::ApplyBoneMatrices(Actor& mi, const FrameState& state) {
     if (state.boneWorldMatrices.empty()) return;
 
     int bc = (int)state.boneWorldMatrices.size();
-    Vector3f camPos = camera_.GetSource();
+    Vector3f camPos = scene_->Camera().GetSource();
 
     // Hierarchy metadata: borrowed from the template's skeleton when the
     // instance was staged from one (saves a per-instance copy on heavy models),
@@ -1058,84 +846,11 @@ void RenderService::ApplyBoneMatrices(ModelInstance& mi, const FrameState& state
     mi.skinning.UpdateNodeMatrices(bc, worldFlat.data());
 }
 
-void RenderService::ApplyGeosetStates(ModelInstance& mi, const FrameState& state) {
-    for (int i = 0; i < (int)state.geosetTransforms.size() && i < (int)mi.gpuGeosets.size(); i++)
-        mi.gpuGeosets[i].worldMatrix = state.geosetTransforms[i];
+// ApplyGeosetStates / ApplyLayerStates moved to RenderModel — they're pure
+// per-actor render-data updates with no scene/gfx dependencies. See
+// renderer/render_model.cpp.
 
-    for (int i = 0; i < (int)state.geosetAlphas.size() && i < (int)mi.gpuGeosets.size(); i++)
-        mi.gpuGeosets[i].geosetAlpha = state.geosetAlphas[i];
-
-    for (int i = 0; i < (int)state.geosetColors.size() && i < (int)mi.gpuGeosets.size(); i++)
-        mi.gpuGeosets[i].geosetColor = state.geosetColors[i];
-}
-
-void RenderService::ApplyLayerStates(ModelInstance& mi, const FrameState& state) {
-    // Texture animations (per-layer) — clear stale entries from previous frame
-    mi.matTexAnim.clear();
-    for (auto& ta : state.texAnims) {
-        int key = ta.materialId * 1000 + ta.layerIndex;
-        mi.matTexAnim[key] = {ta.uOff, ta.vOff, ta.uTile, ta.vTile, ta.rotation};
-    }
-
-    // BLS-path palette: dense by textureAnimationId. Size it to the max id
-    // we see this frame and fill unused slots with identity.
-    int maxTexAnimId = -1;
-    for (auto& tam : state.texAnimMatrices) {
-        if (tam.textureAnimId > maxTexAnimId) maxTexAnimId = tam.textureAnimId;
-    }
-    mi.texAnimPalette.assign(std::max(0, maxTexAnimId + 1),
-                             ModelInstance::TexAnimPaletteEntry{
-                                 {1.0f, 0.0f, 0.0f, 0.0f},
-                                 {0.0f, 1.0f, 0.0f, 0.0f}});
-    for (auto& tam : state.texAnimMatrices) {
-        if (tam.textureAnimId < 0 || tam.textureAnimId > maxTexAnimId) continue;
-        auto& e = mi.texAnimPalette[tam.textureAnimId];
-        for (int k = 0; k < 4; ++k) { e.row0[k] = tam.row0[k]; e.row1[k] = tam.row1[k]; }
-    }
-
-    // Per-layer alpha animation (KMTA tracks)
-    for (auto& la : state.layerAlphas) {
-        if (la.materialId >= 0 && la.materialId < (int)mi.gpuMaterials.size()) {
-            auto& layers = mi.gpuMaterials[la.materialId].cpu.layers;
-            if (la.layerIndex >= 0 && la.layerIndex < (int)layers.size())
-                layers[la.layerIndex].alpha = la.alpha;
-        }
-    }
-
-    // Per-layer texture ID animation (KMTF tracks)
-    for (auto& lt : state.layerTextureIds) {
-        if (lt.materialId >= 0 && lt.materialId < (int)mi.gpuMaterials.size()) {
-            auto& layers = mi.gpuMaterials[lt.materialId].cpu.layers;
-            if (lt.layerIndex >= 0 && lt.layerIndex < (int)layers.size())
-                layers[lt.layerIndex].textureId = lt.textureId;
-        }
-    }
-
-    // Per-layer fresnel / emissive animation — matches Previewd's
-    // RenderGeosetLayers (0x14030a210), which stamps these four values
-    // into layerMaterial.m_pixelParams every draw from the per-layer
-    // evaluated track arrays (modelptr->m_fresnelColor etc.).
-    for (auto& lf : state.layerFresnels) {
-        if (lf.materialId >= 0 && lf.materialId < (int)mi.gpuMaterials.size()) {
-            auto& layers = mi.gpuMaterials[lf.materialId].cpu.layers;
-            if (lf.layerIndex >= 0 && lf.layerIndex < (int)layers.size()) {
-                auto& L = layers[lf.layerIndex];
-                L.fresnelColor     = lf.fresnelColor;
-                L.fresnelOpacity   = lf.fresnelOpacity;
-                L.fresnelTeamColor = lf.fresnelTeamColor;
-                L.emissiveGain     = lf.emissiveGain;
-            }
-        }
-    }
-
-    // Cache evaluated MDX scene lights. We keep BOTH enabled and disabled
-    // entries so the debug "Lights" overlay can show every authored light
-    // at its world position (disabled ones drawn dim). Consumers that want
-    // only the enabled set must check `L.enabled` themselves.
-    mi.activeLights = state.lights;
-}
-
-void RenderService::ApplyParticleFrameStates(ModelInstance& mi, const FrameState& state) {
+void RenderService::ApplyParticleFrameStates(Actor& mi, const FrameState& state) {
     // PE2 service is the single path. Per-frame: look up the registered
     // PlaneEmitter and push the evaluated animation state into it. Transform
     // is conjugated for Blizzard-space sim (not the default — see §3.8
@@ -1178,35 +893,10 @@ void RenderService::ApplyParticleFrameStates(ModelInstance& mi, const FrameState
     }
 }
 
-void RenderService::ApplyRibbonFrameStates(ModelInstance& mi, const FrameState& state) {
-    for (auto& rs : state.ribbonStates) {
-        RibbonEmitterState st;
-        st.transform   = rs.transform;
-        st.above       = rs.above;
-        st.below       = rs.below;
-        st.alpha       = rs.alpha;
-        st.color       = rs.color;
-        st.visibility  = rs.visibility;
-        st.slot        = rs.slot;
-        mi.ribbons.UpdateEmitterState(rs.emitterId, st);
-    }
-}
+// ApplyRibbonFrameStates / ApplyPE1FrameStates moved to RenderModel —
+// see renderer/render_model.cpp.
 
-void RenderService::ApplyPE1FrameStates(ModelInstance& mi, const FrameState& state) {
-    for (auto& ps : state.pe1States) {
-        PE1EmitterState st;
-        st.transform    = ps.transform;
-        st.emissionRate = ps.emissionRate;
-        st.speed        = ps.speed;
-        st.latitude     = ps.latitude;
-        st.longitude    = ps.longitude;
-        st.gravity      = ps.gravity;
-        st.visibility   = ps.visibility;
-        mi.pe1.UpdateEmitterState(ps.emitterId, st);
-    }
-}
-
-void RenderService::ApplyAttachmentStates(ModelInstance& mi, const FrameState& state, int timeMs) {
+void RenderService::ApplyAttachmentStates(Actor& mi, const FrameState& state, int timeMs) {
     for (auto& as : state.attachmentStates) {
         if (as.attachmentIndex < 0 || as.attachmentIndex >= (int)mi.attachmentSlots.size()) continue;
         auto& slot = mi.attachmentSlots[as.attachmentIndex];
@@ -1225,12 +915,10 @@ void RenderService::ApplyAttachmentStates(ModelInstance& mi, const FrameState& s
 
         // When becoming visible: pick a new random animation and restart from frame 0
         if (visible && !slot.wasVisible) {
-            child->pe1BirthTimeMs = timeMs;
-            if (child->pe1Adapter) {
-                auto seqs = child->pe1Adapter->GetSequences();
-                if (!seqs.empty())
-                    child->pe1SequenceIdx = rand() % (int)seqs.size();
-            }
+            child->animation.SetBirthTimeMs(timeMs);
+            auto seqs = child->animation.Sequences();
+            if (!seqs.empty())
+                child->animation.SetActiveSequenceIndex(rand() % (int)seqs.size());
             slot.wasVisible = true;
         } else if (!visible) {
             slot.wasVisible = false;
@@ -1255,11 +943,11 @@ void RenderService::ApplyFrameState(uint32_t handle, const FrameState& state, in
     if (!mi) return;
 
     ApplyBoneMatrices(*mi, state);
-    ApplyGeosetStates(*mi, state);
-    ApplyLayerStates(*mi, state);
+    mi->ApplyGeosetStates(state);
+    mi->ApplyLayerStates(state);
     ApplyParticleFrameStates(*mi, state);
-    ApplyRibbonFrameStates(*mi, state);
-    ApplyPE1FrameStates(*mi, state);
+    mi->ApplyRibbonFrameStates(state);
+    mi->ApplyPE1FrameStates(state);
 
     // Collision transforms (simple 1:1 copy)
     for (int i = 0; i < (int)state.collisionTransforms.size() && i < (int)mi->collisionShapes.size(); i++)
@@ -1268,11 +956,11 @@ void RenderService::ApplyFrameState(uint32_t handle, const FrameState& state, in
     ApplyAttachmentStates(*mi, state, timeMs);
 
     if (!mi->isPE1Child)
-        animationTimeMs_ = timeMs;
+        scene_->SetAnimationTime(timeMs);
 }
 
 void RenderService::ApplyFrameState(const FrameState& state, int timeMs) {
-    ApplyFrameState(focusModelHandle_, state, timeMs);
+    ApplyFrameState(scene_->FocusRef(), state, timeMs);
 }
 
 // ============================================================================
@@ -1307,24 +995,20 @@ bool RenderService::ConsumeTeamColorDirty() {
 
 void RenderService::SetCameraPresets(const std::vector<CameraPreset>& presets) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    // Service keeps its own copy for ActivateCameraPreset; UI drains
-    // the pending queue separately.
-    cameraPresets_          = presets;
-    pendingCameraPresets_   = presets;
-    cameraDirty_            = true;
-    activeCameraPresetIdx_  = -1;
+    scene_->SetCameraPresets(presets);
 }
 
 void RenderService::ActivateCameraPreset(int idx) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    if (idx < 0 || idx >= (int)cameraPresets_.size()) {
-        camera_.SetOrbitalMode();
-        camera_.SetFovDiagonal(Camera::kDefaultFovDiagonal);
-        camera_.SetClip(Camera::kDefaultNearZ, Camera::kDefaultFarZ);
-        activeCameraPresetIdx_ = -1;
+    const auto& presets = scene_->CameraPresets();
+    if (idx < 0 || idx >= (int)presets.size()) {
+        scene_->Camera().SetOrbitalMode();
+        scene_->Camera().SetFovDiagonal(Camera::kDefaultFovDiagonal);
+        scene_->Camera().SetClip(Camera::kDefaultNearZ, Camera::kDefaultFarZ);
+        scene_->SetActiveCameraPresetIdx(-1);
         return;
     }
-    const auto& p = cameraPresets_[idx];
+    const auto& p = presets[idx];
     Vector3f pos  = p.position;
     Vector3f tgt  = p.target;
     float    roll = p.staticRoll;
@@ -1334,58 +1018,57 @@ void RenderService::ActivateCameraPreset(int idx) {
     // often (0,0,0) for portrait cameras).
     if (p.animator) {
         int seqStart = 0, seqEnd = 0;
-        int seqIdx = activeSequence_.load();
-        if (seqIdx >= 0 && seqIdx < (int)sequenceRanges_.size()) {
-            seqStart = sequenceRanges_[seqIdx].startMs;
-            seqEnd   = sequenceRanges_[seqIdx].endMs;
+        int seqIdx = scene_->ActiveSequenceIndex();
+        const auto& ranges = scene_->SequenceRanges();
+        if (seqIdx >= 0 && seqIdx < (int)ranges.size()) {
+            seqStart = ranges[seqIdx].startMs;
+            seqEnd   = ranges[seqIdx].endMs;
         }
         // Fall back to an open range when no SequenceRanges are
         // known, so FindBracket doesn't empty out and return static.
         if (seqStart == 0 && seqEnd == 0) seqEnd = 1 << 30;
-        p.animator(pos, tgt, roll, animationTimeMs_.load(), seqStart, seqEnd);
+        p.animator(pos, tgt, roll, scene_->GetAnimationTime(), seqStart, seqEnd);
     }
 
-    camera_.SetDirectPose(pos, tgt, roll);
+    scene_->Camera().SetDirectPose(pos, tgt, roll);
 
     // Apply fov/near/far verbatim per Previewd's MdlReadCameras +
     // SetupWorldProjection. fieldOfView=0 is "unset" — substitute a
     // default so the preview doesn't render blank.
     const float fov = (p.fovDiagonal > 1e-3f) ? p.fovDiagonal : Camera::kDefaultFovDiagonal;
-    camera_.SetFovDiagonal(fov);
-    camera_.SetClip(p.zNear, p.zFar);
-    activeCameraPresetIdx_ = idx;
+    scene_->Camera().SetFovDiagonal(fov);
+    scene_->Camera().SetClip(p.zNear, p.zFar);
+    scene_->SetActiveCameraPresetIdx(idx);
 }
 
 std::optional<std::vector<CameraPreset>> RenderService::TakePendingCameraPresets() {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    if (!cameraDirty_) return std::nullopt;
-    cameraDirty_ = false;
-    return std::move(pendingCameraPresets_);
+    return scene_->TakePendingCameraPresets();
 }
 
 void RenderService::SetSequences(const std::vector<std::string>& names) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    pendingSequenceNames_ = names;
-    sequencesDirty_ = true;
+    scene_->SetSequences(names);
 }
 
 void RenderService::SetSequenceRanges(
-    const std::vector<IModelSource::SequenceInfo>& ranges) {
+    const std::vector<SequenceInfo>& ranges) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    sequenceRanges_ = ranges;
+    scene_->SetSequenceRanges(ranges);
 }
 
 int RenderService::GetActiveSequenceIndex() const {
-    return activeSequence_.load();
+    return scene_->ActiveSequenceIndex();
 }
+
+bool RenderService::IsCameraLocked() const   { return scene_->CameraLocked(); }
+void RenderService::SetCameraLocked(bool x)  { scene_->SetCameraLocked(x); }
+void RenderService::SetActiveSequence(int i) { scene_->SetActiveSequenceIndex(i); }
+Vector3f RenderService::GetCameraPosition() const { return scene_->Camera().GetSource(); }
 
 std::optional<std::vector<std::string>> RenderService::TakePendingSequences() {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    if (!sequencesDirty_) return std::nullopt;
-    sequencesDirty_ = false;
-    auto result = std::move(pendingSequenceNames_);
-    pendingSequenceNames_.clear();
-    return result;
+    return scene_->TakePendingSequences();
 }
 
 // ============================================================================
@@ -1394,27 +1077,27 @@ std::optional<std::vector<std::string>> RenderService::TakePendingSequences() {
 
 void RenderService::RotateCamera(int dx, int dy) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    camera_.Rotate(dx, dy);
+    scene_->Camera().Rotate(dx, dy);
 }
 
 void RenderService::PanCamera(int dx, int dy) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    camera_.Pan(dx, dy);
+    scene_->Camera().Pan(dx, dy);
 }
 
 void RenderService::ZoomCamera(int delta) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    camera_.Zoom(delta);
+    scene_->Camera().Zoom(delta);
 }
 
 void RenderService::ZoomCameraSmooth(int dy) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    camera_.ZoomSmooth((float)dy * camera_.GetDistance() / Camera::kFactorRelDist);
+    scene_->Camera().ZoomSmooth((float)dy * scene_->Camera().GetDistance() / Camera::kFactorRelDist);
 }
 
 void RenderService::ResetCamera() {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    camera_.Reset();
+    scene_->Camera().Reset();
 }
 
 void RenderService::SetDisplayFlags(const DisplayFlags& flags) {
@@ -1435,7 +1118,10 @@ DisplayFlags RenderService::GetDisplayFlags() const {
 // ============================================================================
 
 void RenderService::Tick(float dt) {
-    DrainTemplateResults();
+    // Drain async template loads. Eventually the host will pump this directly
+    // (Phase 5 v3 — host owns SceneManager). For now we forward into the
+    // scene's own template manager from inside the render Tick.
+    scene_->Templates().Tick();
     ProcessStagedData();
     UpdateAttachments();
     EvaluatePE1Children();
@@ -1445,8 +1131,8 @@ void RenderService::Tick(float dt) {
     UpdateRibbons(dt);
 }
 
-void RenderService::SetAnimationTime(int ms) { animationTimeMs_ = ms; }
-int  RenderService::GetAnimationTime() const { return animationTimeMs_.load(); }
+void RenderService::SetAnimationTime(int ms) { scene_->SetAnimationTime(ms); }
+int  RenderService::GetAnimationTime() const { return scene_->GetAnimationTime(); }
 
 void RenderService::ShutdownDevice() {
     ReleaseModelGPU();
@@ -1454,11 +1140,9 @@ void RenderService::ShutdownDevice() {
     // above only dropped their refcount on those buffers via sourceTemplate.reset().
     // We must explicitly tear down the template-side GPU resources before the
     // device is destroyed, otherwise CleanupD3D pulls the rug from under any
-    // pe1TemplateCache_ entry that still holds buffer handles.
-    for (auto& [path, tmpl] : pe1TemplateCache_) {
-        if (tmpl) tmpl->ReleaseGPU(*gfx_);
-    }
-    pe1TemplateCache_.clear();
+    // template entry that still holds buffer handles.
+    scene_->Templates().ReleaseAllGPU(*gfx_);
+    scene_->Templates().Clear();
     CleanupD3D();
 }
 
@@ -1466,7 +1150,7 @@ void RenderService::GetFrameStats(int& geosets, int& textures, int& nodes,
                               int& particles, int& segments) const {
     geosets = textures = nodes = particles = segments = 0;
     std::lock_guard<std::mutex> lock(dataMutex_);
-    for (auto& [h, mi] : models_) {
+    for (auto& [h, mi] : scene_->Actors().All()) {
         geosets  += (int)mi->gpuGeosets.size();
         textures += mi->textures ? (int)mi->textures->Size() : 0;
         nodes    += mi->skinning.NodeCount();
@@ -1479,7 +1163,7 @@ void RenderService::GetFrameStats(int& geosets, int& textures, int& nodes,
 // Staged → GPU Resource Upload (render thread only)
 // ============================================================================
 
-void RenderService::UploadStagedTextures(ModelInstance& mi) {
+void RenderService::UploadStagedTextures(Actor& mi) {
     if (!mi.textures) mi.textures = textures_->CreateModelScope();
     for (auto& [id, st] : mi.stagedTextures) {
         // Three-way dispatch:
@@ -1527,7 +1211,7 @@ void RenderService::UploadStagedTextures(ModelInstance& mi) {
     mi.stagedTextures.clear();
 }
 
-void RenderService::uploadTemplateGpu(PE1ModelTemplate& tmpl) {
+void RenderService::uploadTemplateGpu(ModelTemplate& tmpl) {
     if (tmpl.gpuUploaded) return;
     tmpl.sharedGeosets.clear();
     tmpl.sharedGeosets.reserve(tmpl.meshes.size());
@@ -1539,7 +1223,7 @@ void RenderService::uploadTemplateGpu(PE1ModelTemplate& tmpl) {
     for (const auto& sw : tmpl.skinWeights) weightsByGeoset[sw.geosetId] = &sw;
 
     for (const auto& mesh : tmpl.meshes) {
-        PE1ModelTemplate::SharedGeoset sg;
+        ModelTemplate::SharedGeoset sg;
         sg.geosetId    = mesh.geosetId;
         sg.materialId  = mesh.materialId;
         sg.lod         = mesh.lod;
@@ -1594,7 +1278,7 @@ void RenderService::uploadTemplateGpu(PE1ModelTemplate& tmpl) {
     tmpl.gpuUploaded = true;
 }
 
-void RenderService::UploadStagedGeosets(ModelInstance& mi) {
+void RenderService::UploadStagedGeosets(Actor& mi) {
     if (mi.sourceTemplate) {
         // Borrow path: every GPUGeoset shares ib/unskinnedVb/tangentVb/boneVb
         // with the template. Per-frame state (bonePaletteCb, world, alpha,
@@ -1683,7 +1367,7 @@ void RenderService::UploadStagedGeosets(ModelInstance& mi) {
     }
 }
 
-void RenderService::CreateNodePalette(ModelInstance& mi) {
+void RenderService::CreateNodePalette(Actor& mi) {
     // Each skinned geoset gets its OWN bone palette CB (vsCB3), sized for
     // kMaxBones=256 entries even when the geoset only uses a few slots —
     // matches the BLS cb_structs.slang ConstantBuffer layout. Per-geoset
@@ -1706,19 +1390,19 @@ void RenderService::ProcessStagedData() {
 
     // Remove models marked for clear. Also drop their emitters from the PE2
     // service so stale entries don't accumulate across reloads.
-    for (auto it = models_.begin(); it != models_.end(); ) {
+    for (auto it = scene_->Actors().All().begin(); it != scene_->Actors().All().end(); ) {
         if (it->second->stagedClear) {
             const uint32_t clearedHandle = it->first;
             if (replaceables_) replaceables_->UnregisterModel(*it->second);
             it->second->ReleaseGPU(*gfx_);
-            it = models_.erase(it);
+            it = scene_->Actors().All().erase(it);
             particleService_.RemoveModel(clearedHandle);
         } else {
             ++it;
         }
     }
 
-    for (auto& [h, miPtr] : models_) {
+    for (auto& [h, miPtr] : scene_->Actors().All()) {
         auto* mi = miPtr.get();
         if (!mi->stagedDirty && !mi->skinDirty) continue;
 
@@ -1744,7 +1428,7 @@ void RenderService::ProcessStagedData() {
 }
 
 void RenderService::ReleaseModelGPU() {
-    for (auto& [h, miPtr] : models_)
+    for (auto& [h, miPtr] : scene_->Actors().All())
         miPtr->ReleaseGPU(*gfx_);
 }
 
@@ -1761,7 +1445,7 @@ void RenderService::UpdateAnimation() {
     // subsetNodeIndices + groupAverages layout.
     std::lock_guard<std::mutex> lock(dataMutex_);
 
-    for (auto& [h, miPtr] : models_) {
+    for (auto& [h, miPtr] : scene_->Actors().All()) {
         auto* mi = miPtr.get();
         if (!mi->skinning.HasSkeleton() || !mi->skinning.IsReady()) continue;
         if (mi->parentVisibility <= 0.02f) continue;
@@ -1810,7 +1494,7 @@ bool RenderService::RenderParticlesBls() {
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
         if (particleService_.EmitterCount() == 0) return true;
-        viewMat = camera_.GetViewMatrix();
+        viewMat = scene_->Camera().GetViewMatrix();
         particleService_.BuildGeometry(viewMat, verts, drawLists);
     }
     if (verts.empty()) return true;
@@ -1841,8 +1525,8 @@ bool RenderService::RenderParticlesBls() {
     frame.world      = Matrix44f::identity();
     frame.view       = viewMat;
     const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    frame.projection = camera_.ProjectionRH(aspect);
-    frame.effectTime = animationTimeMs_.load() * 0.001f;
+    frame.projection = scene_->Camera().ProjectionRH(aspect);
+    frame.effectTime = scene_->GetAnimationTime() * 0.001f;
     frame.numLights  = 0;  // particles are unlit via MatParams.disables bit 0
     frame.viewportRect = { (float)width_, (float)height_, 0.0f, 0.0f };
 
@@ -1902,7 +1586,7 @@ bool RenderService::RenderParticlesBls() {
         bool hasModelTex = false;
         {
             std::lock_guard<std::mutex> lock(dataMutex_);
-            ModelInstance* owner = getModel(dl.model);
+            Actor* owner = getModel(dl.model);
             if (owner && owner->textures && dl.material.textureId >= 0) {
                 const gfx::TextureHandle h = owner->textures->Get(dl.material.textureId);
                 if (h != gfx::TextureHandle::Invalid) {
@@ -1928,7 +1612,7 @@ bool RenderService::RenderParticlesBls() {
 
 void RenderService::UpdateRibbons(float dt) {
     std::lock_guard<std::mutex> lock(dataMutex_);
-    for (auto& [h, mi] : models_) {
+    for (auto& [h, mi] : scene_->Actors().All()) {
         if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
         mi->ribbons.Simulate(dt);
     }
@@ -1948,9 +1632,9 @@ void RenderService::RenderRibbons() {
     const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
     frame.numLights    = 0;
     frame.viewportRect = { (float)width_, (float)height_, 0.0f, 0.0f };
-    frame.effectTime   = animationTimeMs_.load() * 0.001f;
+    frame.effectTime   = scene_->GetAnimationTime() * 0.001f;
 
-    for (auto& [_mh, _mi] : models_) {
+    for (auto& [_mh, _mi] : scene_->Actors().All()) {
     auto* mi = _mi.get();
     Matrix44f viewMat;
     RibbonSystem::StripResult stripResult;
@@ -1960,7 +1644,7 @@ void RenderService::RenderRibbons() {
         std::lock_guard<std::mutex> lock(dataMutex_);
         if (!mi->ribbons.HasEmitters()) continue;
         if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
-        viewMat = camera_.GetViewMatrix();
+        viewMat = scene_->Camera().GetViewMatrix();
         stripResult = mi->ribbons.BuildStrips();
         for (int eid : stripResult.emitterIds) {
             auto* c = mi->ribbons.GetConfig(eid);
@@ -1994,7 +1678,7 @@ void RenderService::RenderRibbons() {
     cmd->BindVertexBuffer(0, mi->ribbonVB, sizeof(Vertex));
 
     frame.view       = viewMat;
-    frame.projection = camera_.ProjectionRH(aspect);
+    frame.projection = scene_->Camera().ProjectionRH(aspect);
 
     int drawOffset = 0;
     std::vector<int> vertCounts;
@@ -2037,7 +1721,7 @@ void RenderService::RenderRibbons() {
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, blsSdVsCb_);
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, blsSdPsCb_);
 
-        render_detail::BindLayerAlbedo(cmd, *mi, cfg.textureId,
+        render_detail::BindLayerAlbedo(cmd, mi->textures.get(), cfg.textureId,
                                        textures_->GetDefaults().White, *samplers_);
 
         cmd->Draw(count, drawOffset);
@@ -2066,12 +1750,12 @@ int RenderService::ComputeSelectedLod() const {
     // Approximate viewDist as camera-to-origin (models sit near origin in
     // this viewer). Previewd uses the model-to-world translation column
     // transformed by view — at origin they collapse to the same scalar.
-    Vector3f camPos = camera_.GetSource();
+    Vector3f camPos = scene_->Camera().GetSource();
     float viewDist = std::sqrt(camPos.x*camPos.x + camPos.y*camPos.y + camPos.z*camPos.z);
     if (viewDist < 1.0f) return 0;
 
     const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
-    Matrix44f proj = camera_.ProjectionLH(aspect);
+    Matrix44f proj = scene_->Camera().ProjectionLH(aspect);
     // Previewd reads proj.b1 = m11 (row-major[1][1]) — the vertical scale.
     float projM11 = proj.data[1][1];
     float screenPixels = projM11 / viewDist * (float)height_ * 0.5f;
@@ -2128,9 +1812,9 @@ bool RenderService::InitDevice(gfx::GfxApi api) {
 }
 
 bool RenderService::InitBlsShaders() {
-    if (!gfx_ || !activeContentProvider_) return false;
+    if (!gfx_ || !scene_->ActiveContentProvider()) return false;
 
-    blsShaderCache_ = std::make_unique<bls::BlsShaderCache>(gfx_.get(), activeContentProvider_);
+    blsShaderCache_ = std::make_unique<bls::BlsShaderCache>(gfx_.get(), scene_->ActiveContentProvider());
     blsPrograms_    = std::make_unique<bls::BlsProgramCatalog>(blsShaderCache_.get());
     blsPsoBuilder_  = std::make_unique<bls::BlsPsoBuilder>(gfx_.get());
 
@@ -2206,8 +1890,8 @@ void RenderService::SetEnvProbe(const std::string& relPath) {
 
     gfx::TextureHandle fromHandle = gfx::TextureHandle::Invalid;
     int mips = 0;
-    if (!relPath.empty() && activeContentProvider_) {
-        auto probe = ibl::LoadEnvProbe(*gfx_, *activeContentProvider_, relPath);
+    if (!relPath.empty() && scene_->ActiveContentProvider()) {
+        auto probe = ibl::LoadEnvProbe(*gfx_, *scene_->ActiveContentProvider(), relPath);
         if (probe.handle != gfx::TextureHandle::Invalid) {
             fromHandle = probe.handle;
             mips       = probe.mipCount;
@@ -2440,15 +2124,17 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     // Re-sample the active MDX camera animator every frame.
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        if (activeCameraPresetIdx_ >= 0 &&
-            activeCameraPresetIdx_ < (int)cameraPresets_.size()) {
-            const auto& preset = cameraPresets_[activeCameraPresetIdx_];
+        const int activeIdx = scene_->ActiveCameraPresetIdx();
+        const auto& presets = scene_->CameraPresets();
+        if (activeIdx >= 0 && activeIdx < (int)presets.size()) {
+            const auto& preset = presets[activeIdx];
             if (preset.animator) {
                 int seqStart = 0, seqEnd = 0;
-                int idx = activeSequence_.load();
-                if (idx >= 0 && idx < (int)sequenceRanges_.size()) {
-                    seqStart = sequenceRanges_[idx].startMs;
-                    seqEnd   = sequenceRanges_[idx].endMs;
+                int idx = scene_->ActiveSequenceIndex();
+                const auto& ranges = scene_->SequenceRanges();
+                if (idx >= 0 && idx < (int)ranges.size()) {
+                    seqStart = ranges[idx].startMs;
+                    seqEnd   = ranges[idx].endMs;
                 }
                 if (seqStart == 0 && seqEnd == 0) {
                     seqEnd = 1 << 30;
@@ -2457,8 +2143,8 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
                 Vector3f tgt  = preset.target;
                 float    roll = preset.staticRoll;
                 preset.animator(pos, tgt, roll,
-                                animationTimeMs_.load(), seqStart, seqEnd);
-                camera_.SetDirectPose(pos, tgt, roll);
+                                scene_->GetAnimationTime(), seqStart, seqEnd);
+                scene_->Camera().SetDirectPose(pos, tgt, roll);
             }
         }
     }
@@ -2471,10 +2157,10 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     Matrix44f view, proj;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        view = camera_.GetViewMatrix();
+        view = scene_->Camera().GetViewMatrix();
     }
     float aspect = (target.height > 0) ? (float)target.width / (float)target.height : 1.0f;
-    proj = camera_.ProjectionRH(aspect);
+    proj = scene_->Camera().ProjectionRH(aspect);
 
     // Update constant buffer (via GFX MapBuffer)
     {
@@ -2523,10 +2209,10 @@ public:
 
     void ComputeViewProj(Matrix44f& view, Matrix44f& proj) const {
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-        view = rs_.camera_.GetViewMatrix();
+        view = rs_.scene_->Camera().GetViewMatrix();
         const float aspect = (rs_.height_ > 0)
             ? static_cast<float>(rs_.width_) / static_cast<float>(rs_.height_) : 1.0f;
-        proj = rs_.camera_.ProjectionRH(aspect);
+        proj = rs_.scene_->Camera().ProjectionRH(aspect);
     }
 
     void BindPassResources(gfx::IGFXCommandList*, bls::FrameInputs&) const {
@@ -2548,14 +2234,15 @@ public:
                     const Matrix44f&                /*view*/,
                     gfx::IGFXCommandList*           cmd,
                     int                             lightCountForGeoset) {
-        ModelInstance* mi  = ref.mi;
-        auto&          geo = mi->gpuGeosets[ref.idx];
+        const auto& view_ = *ref.view;
+        const auto& geo   = (*view_.geosets)[ref.idx];
 
-        GPUMaterial* mat = nullptr;
+        const GPUMaterial* mat = nullptr;
         const int matId = geo.materialId;
-        if (matId >= 0 && matId < (int)mi->gpuMaterials.size()) mat = &mi->gpuMaterials[matId];
+        if (matId >= 0 && matId < (int)view_.materials->size())
+            mat = &(*view_.materials)[matId];
 
-        const float geoAlpha = geo.geosetAlpha * mi->parentVisibility;
+        const float geoAlpha = geo.geosetAlpha * view_.parentVisibility;
         // Previewd's geoset-hidden gate is the byte `flags & 1` flag, which
         // is set iff `ftol(clamp(animatedAlpha,0,1) * proceduralAlpha)` is
         // non-zero (CalcGeosetColor @0x140199970). Any alpha that quantizes
@@ -2571,12 +2258,12 @@ public:
         // and palette CB when this geoset has skinning data. The returned
         // hasBones flag drives the permute + input layout below so the VS
         // picks FourBoneSkinning vs the pass-through permute consistently.
-        const bool hasBones = render_detail::BindSdMeshGeometry(cmd, geo, *mi);
+        const bool hasBones = render_detail::BindSdMeshGeometry(cmd, geo);
 
         for (int li = 0; li < numLayers; ++li) {
             const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
 
-            render_detail::ApplyTexAnimPaletteToFrame(frame, *mi, layer.textureAnimationId);
+            render_detail::ApplyTexAnimPaletteToFrame(frame, view_.texAnimPalette, layer.textureAnimationId);
 
             const float combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f) continue;
@@ -2613,7 +2300,7 @@ public:
             if (pso == gfx::PipelineHandle::Invalid) continue;
             cmd->BindPipeline(pso);
 
-            frame.world = mi->worldTransform;
+            frame.world = view_.worldTransform;
 
             if (auto vs = bls::ScopedCb<bls::SdVsCbA>(rs_.gfx_.get(), rs_.blsSdVsCb_)) {
                 bls::BuildSdVsCbA(*vs, frame, mp);
@@ -2624,7 +2311,7 @@ public:
             cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.blsSdVsCb_);
             cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, rs_.blsSdPsCb_);
 
-            render_detail::BindLayerAlbedo(cmd, *mi, layer.textureId,
+            render_detail::BindLayerAlbedo(cmd, view_.textures, layer.textureId,
                                            rs_.textures_->GetDefaults().White,
                                            *rs_.samplers_);
 
@@ -2668,8 +2355,8 @@ public:
         const float aspect = (rs_.height_ > 0)
             ? static_cast<float>(rs_.width_) / static_cast<float>(rs_.height_) : 1.0f;
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-        view = rs_.camera_.ViewLH();
-        proj = rs_.camera_.ProjectionLH(aspect);
+        view = rs_.scene_->Camera().ViewLH();
+        proj = rs_.scene_->Camera().ProjectionLH(aspect);
     }
 
     void BindPassResources(gfx::IGFXCommandList* cmd, bls::FrameInputs& frame) {
@@ -2729,14 +2416,15 @@ public:
                     const Matrix44f&                /*view*/,
                     gfx::IGFXCommandList*           cmd,
                     int                             lightCountForGeoset) {
-        ModelInstance* mi  = ref.mi;
-        auto&          geo = mi->gpuGeosets[ref.idx];
+        const auto& view_ = *ref.view;
+        const auto& geo   = (*view_.geosets)[ref.idx];
 
-        GPUMaterial* mat = nullptr;
+        const GPUMaterial* mat = nullptr;
         const int matId = geo.materialId;
-        if (matId >= 0 && matId < (int)mi->gpuMaterials.size()) mat = &mi->gpuMaterials[matId];
+        if (matId >= 0 && matId < (int)view_.materials->size())
+            mat = &(*view_.materials)[matId];
 
-        const float geoAlpha = geo.geosetAlpha * mi->parentVisibility;
+        const float geoAlpha = geo.geosetAlpha * view_.parentVisibility;
         // Previewd's geoset-hidden gate is the byte `flags & 1` flag, which
         // is set iff `ftol(clamp(animatedAlpha,0,1) * proceduralAlpha)` is
         // non-zero (CalcGeosetColor @0x140199970). Any alpha that quantizes
@@ -2776,7 +2464,7 @@ public:
         for (int li = 0; li < numLayers; ++li) {
             const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
 
-            render_detail::ApplyTexAnimPaletteToFrame(frame, *mi, layer.textureAnimationId);
+            render_detail::ApplyTexAnimPaletteToFrame(frame, view_.texAnimPalette, layer.textureAnimationId);
 
             float combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f) continue;
@@ -2886,7 +2574,7 @@ public:
             if (pso == gfx::PipelineHandle::Invalid) continue;
             cmd->BindPipeline(pso);
 
-            frame.world = mi->worldTransform;
+            frame.world = view_.worldTransform;
 
             // VS CB layout is shared between HD and SD_on_HD programs.
             if (auto vs = bls::ScopedCb<bls::HdVsCb>(rs_.gfx_.get(), rs_.blsHdVsCb_)) {
@@ -2960,11 +2648,11 @@ public:
             auto bindMaterialTex = [&](uint32_t slot, int texId,
                                         gfx::TextureHandle fallback,
                                         uint32_t* outWrap) {
-                if (texId >= 0 && mi->textures) {
-                    const gfx::TextureHandle h = mi->textures->Get(texId);
+                if (texId >= 0 && view_.textures) {
+                    const gfx::TextureHandle h = view_.textures->Get(texId);
                     if (h != gfx::TextureHandle::Invalid) {
                         cmd->BindShaderResource(gfx::ShaderStage::Pixel, slot, h);
-                        if (outWrap) *outWrap = mi->textures->WrapFlags(texId) & kSamplerWrapBitsMask;
+                        if (outWrap) *outWrap = view_.textures->WrapFlags(texId) & kSamplerWrapBitsMask;
                         return true;
                     }
                 }
@@ -3035,11 +2723,11 @@ void RenderService::SnapCameraToFace(int faceIndex) {
     if (std::abs(n.z) > 0.99f) {
         // Top/Bottom: yaw is ambiguous at the pole; keep whatever yaw is
         // sensible for the default front view.
-        camera_.SetYaw(Camera::kDefaultYaw);
-        camera_.SetPitch(n.z > 0 ? kTopBottomPitch : -kTopBottomPitch);
+        scene_->Camera().SetYaw(Camera::kDefaultYaw);
+        scene_->Camera().SetPitch(n.z > 0 ? kTopBottomPitch : -kTopBottomPitch);
     } else {
-        camera_.SetYaw(std::atan2(n.y, n.x));
-        camera_.SetPitch(0.0f);
+        scene_->Camera().SetYaw(std::atan2(n.y, n.x));
+        scene_->Camera().SetPitch(0.0f);
     }
 }
 

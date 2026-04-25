@@ -51,10 +51,13 @@ public:
             : 0;
 
         g_lastTimeChangedTick = GetTickCount();
-        // Update camera position for billboard evaluation (no-op for MaxSceneAdapter)
+        // Camera + identity world for billboard evaluation. The Max adapter
+        // ignores sequenceIdx (Max controls the timeline) — pass 0.
         Vector3f cp = g_renderer->GetCameraPosition();
-        g_adapter->SetCameraPosition(cp.x, cp.y, cp.z);
-        WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs, wallClockElapsedMs());
+        WhiteoutDex::FrameState state = g_adapter->Evaluate(
+            0, timeMs, wallClockElapsedMs(),
+            Matrix44f::identity(),
+            cp);
         g_renderer->ApplyFrameState(state, timeMs);
     }
 };
@@ -89,8 +92,10 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
             int timeMs = (tpf > 0 && fps > 0)
                 ? (int)((float)t / (float)tpf * 1000.0f / (float)fps) : 0;
             Vector3f cp = g_renderer->GetCameraPosition();
-            g_adapter->SetCameraPosition(cp.x, cp.y, cp.z);
-            WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs, wallClockElapsedMs());
+            WhiteoutDex::FrameState state = g_adapter->Evaluate(
+                0, timeMs, wallClockElapsedMs(),
+                Matrix44f::identity(),
+                cp);
             g_renderer->ApplyFrameState(state, timeMs);
         }
     }
@@ -260,7 +265,11 @@ Value* ndxStart_cf(Value** arg_list, int count)
     int timeMs = (tpf > 0 && fps > 0)
         ? (int)((float)t / (float)tpf * 1000.0f / (float)fps) : 0;
 
-    WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs, 0);
+    Vector3f cp = g_renderer->GetCameraPosition();
+    WhiteoutDex::FrameState state = g_adapter->Evaluate(
+        0, timeMs, 0,
+        Matrix44f::identity(),
+        cp);
     g_renderer->ApplyFrameState(state, timeMs);
 
     // Register time callback

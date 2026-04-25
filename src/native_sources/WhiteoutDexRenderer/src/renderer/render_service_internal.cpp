@@ -9,15 +9,32 @@
 
 namespace WhiteoutDex::render_detail {
 
-std::vector<GeosetRef> CollectSortedGeosetRefs(
-    const std::unordered_map<uint32_t, std::unique_ptr<ModelInstance>>& models,
+CollectedRenderables CollectSortedRenderables(
+    const std::unordered_map<uint32_t, std::unique_ptr<Actor>>& models,
     int selectedLod) {
-    std::vector<GeosetRef> refs;
-    refs.reserve(64);
+    CollectedRenderables out;
+    // Reserve up-front so emplace_back never reallocates and the raw
+    // pointers we hand to GeosetRef remain stable for the frame.
+    out.views.reserve(models.size());
+    out.refs.reserve(models.size() * 4);
 
     for (const auto& [h, miPtr] : models) {
-        ModelInstance* mi = miPtr.get();
+        Actor* mi = miPtr.get();
         if (mi->parentVisibility <= 0.02f) continue;
+
+        // Build the per-actor view. Pointers borrow from the actor's
+        // RenderModel; valid only for the duration of this frame's render.
+        RenderableView& view = out.views.emplace_back();
+        view.geosets          = &mi->gpuGeosets;
+        view.materials        = &mi->gpuMaterials;
+        view.textures         = mi->textures.get();
+        view.skinning         = &mi->skinning;
+        view.activeLights     = &mi->activeLights;
+        view.texAnimPalette   = &mi->texAnimPalette;
+        view.worldTransform   = mi->worldTransform;
+        view.parentVisibility = mi->parentVisibility;
+        view.hasLods          = mi->hasLods;
+
         const int modelLod = mi->hasLods ? selectedLod : 0;
         const int geosetCount = static_cast<int>(mi->gpuGeosets.size());
         for (int i = 0; i < geosetCount; ++i) {
@@ -30,23 +47,22 @@ std::vector<GeosetRef> CollectSortedGeosetRefs(
                 ro = RenderService::GetRenderOrder(
                     mi->gpuMaterials[matId].cpu.layers[0].filterMode);
             }
-            refs.push_back({mi, i, ro, geo.priorityPlane, geo.geosetId});
+            out.refs.push_back({&view, i, ro, geo.priorityPlane, geo.geosetId});
         }
     }
 
-    std::sort(refs.begin(), refs.end(),
+    std::sort(out.refs.begin(), out.refs.end(),
         [](const GeosetRef& a, const GeosetRef& b) {
             if (a.renderOrder   != b.renderOrder)   return a.renderOrder   < b.renderOrder;
             if (a.priorityPlane != b.priorityPlane) return a.priorityPlane < b.priorityPlane;
             return a.geosetId < b.geosetId;
         });
 
-    return refs;
+    return out;
 }
 
 bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
-                        const GPUGeoset&      geo,
-                        const ModelInstance&  /*mi*/) {
+                        const GPUGeoset&      geo) {
     // Slot 0 always carries the rest-pose Vertex stream -- the SD VS
     // blends against the bone palette when the FourBoneSkinning permute
     // is active, or passes through unchanged when numWeights=0.
@@ -62,21 +78,21 @@ bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
     return hasBones;
 }
 
-void BindLayerAlbedo(gfx::IGFXCommandList*  cmd,
-                     ModelInstance&         mi,
-                     int                    textureId,
-                     gfx::TextureHandle     defaultTex,
-                     SamplerAssetManager&   samplers,
-                     uint32_t               slot) {
+void BindLayerAlbedo(gfx::IGFXCommandList*            cmd,
+                     TextureAssetManager::ModelScope* scope,
+                     int                              textureId,
+                     gfx::TextureHandle               defaultTex,
+                     SamplerAssetManager&             samplers,
+                     uint32_t                         slot) {
     // Default to "wrap on both axes" when no per-texture flags are
     // available — matches the previous kWrapFlagsMask sentinel.
     uint32_t wrapFlags = kSamplerWrapBitsMask;
     bool     hasTex    = false;
-    if (textureId >= 0 && mi.textures) {
-        const gfx::TextureHandle h = mi.textures->Get(textureId);
+    if (textureId >= 0 && scope) {
+        const gfx::TextureHandle h = scope->Get(textureId);
         if (h != gfx::TextureHandle::Invalid) {
             cmd->BindShaderResource(gfx::ShaderStage::Pixel, slot, h);
-            wrapFlags = mi.textures->WrapFlags(textureId);   // SamplerAssetManager masks
+            wrapFlags = scope->WrapFlags(textureId);   // SamplerAssetManager masks
             hasTex    = true;
         }
     }
@@ -109,11 +125,12 @@ Vector4f NormalizedLightDir4(const Vector4f& dir) {
 }
 
 void ApplyTexAnimPaletteToFrame(bls::FrameInputs&    frame,
-                                const ModelInstance& mi,
+                                const std::vector<RenderModel::TexAnimPaletteEntry>* palette,
                                 int                  textureAnimationId) {
-    if (textureAnimationId >= 0 &&
-        textureAnimationId < static_cast<int>(mi.texAnimPalette.size())) {
-        const auto& e = mi.texAnimPalette[textureAnimationId];
+    if (palette &&
+        textureAnimationId >= 0 &&
+        textureAnimationId < static_cast<int>(palette->size())) {
+        const auto& e = (*palette)[textureAnimationId];
         frame.texMtx0.rows[0] = { e.row0[0], e.row0[1], e.row0[2], e.row0[3] };
         frame.texMtx0.rows[1] = { e.row1[0], e.row1[1], e.row1[2], e.row1[3] };
     } else {
