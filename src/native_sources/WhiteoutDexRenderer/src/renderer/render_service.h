@@ -82,37 +82,8 @@ public:
     explicit RenderService(SceneManager& scene);
     ~RenderService();
 
-    // Camera control (thread-safe)
-    void SetCamera(float pitch, float yaw, float distance,
-                   float targetX, float targetY, float targetZ);
-    Vector3f GetCameraPosition() const;
-
-    // Model data (thread-safe — called from API/MaxScript thread)
-    void ClearModel();
-
-    // Multi-model API — returns handle for the loaded model
-    uint32_t AddModel(const std::vector<MeshData>& meshes,
-                      const std::vector<TextureData>& textures,
-                      const std::vector<MaterialData>& materials,
-                      const SkeletonData& skeleton,
-                      const std::vector<SkinWeightData>& skinWeights,
-                      const std::vector<ParticleEmitterConfig>& particles,
-                      const std::vector<RibbonEmitterConfig>& ribbons,
-                      const std::vector<CollisionShapeData>& collisions);
-    void RemoveModel(uint32_t handle);
-    void SetAttachmentConfigs(uint32_t handle, const std::vector<AttachmentConfig>& configs);
-    void SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterConfig>& configs);
-    void SetPE1BasePath(const std::filesystem::path& basePath);
-    uint32_t GetFocusModelHandle() const { return scene_->Focus(); }
-
-    // Access the unified file content provider (disk + CASC + MPQ)
-    FileContentProvider& GetContentProvider();
-
-    // Inject an external content provider (takes precedence over the built-in one)
-    void SetContentProvider(std::shared_ptr<IContentProvider> provider);
-
     // ---- Device & render target management ----
-    bool           InitDevice(gfx::GfxApi api = gfx::GfxApi::D3D12);  // Create gfx device + shaders + states (no window)
+    bool           InitDevice(gfx::GfxApi api = gfx::GfxApi::D3D12);
     RenderTargetId CreateSwapChainTarget(void* nativeWindowHandle, int width, int height);
     RenderTargetId CreateOffscreenTarget(int width, int height);
     void           DestroyRenderTarget(RenderTargetId id);
@@ -121,101 +92,47 @@ public:
     void           Present(RenderTargetId targetId);
     bool           IsDeviceReady() const { return gfx_ != nullptr; }
 
-    // Backward-compatible single-model API (operates on focus model)
-    void LoadModel(const std::vector<MeshData>& meshes,
-                   const std::vector<TextureData>& textures,
-                   const std::vector<MaterialData>& materials,
-                   const SkeletonData& skeleton,
-                   const std::vector<SkinWeightData>& skinWeights,
-                   const std::vector<ParticleEmitterConfig>& particles,
-                   const std::vector<RibbonEmitterConfig>& ribbons,
-                   const std::vector<CollisionShapeData>& collisions);
-
-    // ---- Path-based load (template-cache aware) ----
-    // Resolves `mdxPath` through the unified content provider, parses + caches
-    // the result, and creates an instance that borrows the cached GPU geometry,
-    // textures, materials, and skinning data. Subsequent calls with the same
-    // path skip parse + decode + GPU upload entirely; only the per-instance
-    // state (transform, animation cursor, particle/ribbon sim state) is fresh.
+    // ---- Per-actor state feed (focus actor) ----
     //
-    // AddModelByPath: just appends a new instance. Returns 0 on resolution
-    // or parse failure. Does NOT touch focus, render mode, or existing models.
-    //
-    // LoadModelByPath: convenience wrapper that mirrors LoadModel — clears all
-    // existing models, sets focus, and auto-flips renderMode to HD when any
-    // material layer ships a non-SD shader. Returns the new focus handle (or 0).
-    uint32_t AddModelByPath(const std::string& mdxPath);
-    uint32_t LoadModelByPath(const std::string& mdxPath);
-
-    // PE2 service path: register PlaneEmitter instances built from the MDX
-    // adapter's GetPlaneEmitterInits() alongside the legacy ParticleSystem.
-    // Simulation runs in Blizzard-native space. Passes each init through
-    // particle::ApplyInit, then hands ownership to the internal
-    // particle::ParticleService. Per-frame state (emissionRate, speed, width,
-    // etc.) is fed via ApplyFrameState -> ApplyParticleFrameStates.
-    void AddPlaneEmitters(uint32_t modelHandle,
-                          const std::vector<particle::PlaneEmitterInit>& inits);
-
-    // Apply pre-computed per-frame state
-    void ApplyFrameState(uint32_t handle, const FrameState& state, int timeMs);
-    void ApplyFrameState(const FrameState& state, int timeMs); // focus model
-
-    // Update materials and textures without full model reload
-    void UpdateMaterials(uint32_t handle, const std::vector<MaterialData>& materials,
-                         const std::vector<TextureData>& textures);
+    // Per-frame FrameState evaluation + apply happens automatically inside
+    // Tick() via EvaluateTopLevelActors / EvaluatePE1Children. The host loop
+    // just drives `SceneManager::Update(dt)` (or, for externally-timed hosts
+    // like the Max plugin, writes `actor.animation.SetTimeMs(...)` directly
+    // when the timeline ticks). UpdateMaterials stays as a focus-actor
+    // forwarder for the Max plugin's hot-reload path.
     void UpdateMaterials(const std::vector<MaterialData>& materials,
-                         const std::vector<TextureData>& textures); // focus model
+                         const std::vector<TextureData>& textures);
 
-    // Team color (RGB 0-255)
+    // ---- Lifecycle ----
+    void ClearModel();   // marks every actor for clear; ProcessStagedData destroys them next tick
+
+    // ---- Team color (UI inbox under dataMutex_; re-bakes per-model SD slots) ----
+    // Component-direct alternative: Replaceables().SetTeamColor() — but it's
+    // not currently thread-safe for cross-actor bakes, so this forwarder
+    // takes the renderer's mutex around the whole operation.
     void SetTeamColor(uint8_t r, uint8_t g, uint8_t b);
 
-    // Camera presets (index 0 is always "Free Camera")
-    void SetCameraPresets(const std::vector<CameraPreset>& presets);
-    bool IsCameraLocked() const;
-    void SetCameraLocked(bool locked);
-
-    // Activate an MDX preset (Direct mode). idx = -1 reverts to orbital.
+    // ---- Camera presets + sequence picker UI inbox (RenderWindow + dataMutex_) ----
+    // These wrap SceneManager calls in the renderer's dataMutex_ so the
+    // RenderWindow's UI thread doesn't race the render thread. A scene-side
+    // thread-safe API is the long-term fix.
     void ActivateCameraPreset(int idx);
-
-    // Sequence picker (standalone viewer; Max plugin ignores).
-    void SetSequences(const std::vector<std::string>& names);
-    // Required for MDX camera animation playback — without frame
-    // ranges the animator bails to keyframe 0.
-    void SetSequenceRanges(const std::vector<SequenceInfo>& ranges);
     int  GetActiveSequenceIndex() const;
     void SetActiveSequence(int index);
+    std::optional<std::vector<CameraPreset>> TakePendingCameraPresets();
+    std::optional<std::vector<std::string>>  TakePendingSequences();
 
-    // ---- Camera manipulation (thread-safe, locks dataMutex_) ----
+    // ---- Camera manipulation (thread-safe; same dataMutex_ rationale) ----
     void RotateCamera(int dx, int dy);
     void PanCamera(int dx, int dy);
     void ZoomCamera(int delta);
     void ZoomCameraSmooth(int dy);
     void ResetCamera();
-    void SnapCameraToFace(int faceIndex);   // applies preset camera angle
+    void SnapCameraToFace(int faceIndex);
 
-    // ViewCube queries (called from RenderWindow message handlers).
-    // Implemented in render_service.cpp — they forward to debug_.
-    int  HitTestViewCube(int mx, int my);
-    Rect GetViewCubeRect() const;
-    void SetViewCubeHovered(bool hovered);
-
-    // Display flags
+    // ---- Display + render-policy state ----
     void SetDisplayFlags(const DisplayFlags& flags);
     DisplayFlags GetDisplayFlags() const;
-
-    // Cross-model texture-cache query. Wire this onto an IModelSource
-    // (via IModelSource::SetTextureCacheQuery) before triggering texture
-    // loading so adapters can skip the BLP/CASC decode for textures the
-    // renderer already has in TextureAssetManager's shared cache.
-    bool IsTextureCached(std::string_view key) const;
-
-    // Team color raw access (for platform swatch rendering). BGR-packed.
-    // Delegates to ReplaceableTextureManager.
-    uint32_t GetTeamColorRaw() const;
-    // True if team color changed since last poll; clears the flag.
-    bool ConsumeTeamColorDirty();
-    // True if LoadModel auto-flipped renderMode_ (e.g. HD on non-SD
-    // materials); the UI polls this to re-sync its HD checkbox.
     bool ConsumeRenderModeDirty() { return renderModeDirty_.exchange(false); }
 
     // HD debug visualisation. Mode 0 = normal render (default),
@@ -238,10 +155,6 @@ public:
     // draws keep sampling something valid.
     void SetEnvProbe(const std::string& relPath);
 
-    // Pending data transfer (RenderWindow consumes from render thread)
-    std::optional<std::vector<CameraPreset>> TakePendingCameraPresets();
-    std::optional<std::vector<std::string>>  TakePendingSequences();
-
     // Resize the primary render target (called from WM_SIZE handler)
     void ResizePrimaryTarget(int width, int height);
 
@@ -253,15 +166,50 @@ public:
     // Call once per frame to advance simulation (particles, PE1, ribbons, etc.)
     void Tick(float dt);
 
-    // Set animation time (ms) from external clock (Max timeline, game loop, etc.)
-    void SetAnimationTime(int ms);
-    int  GetAnimationTime() const;
-
     // Shut down device: release model GPU resources + gfx cleanup
     void ShutdownDevice();
 
     // Set the primary render target (used by ResizePrimaryTarget / RenderViewCube)
     void SetPrimaryTarget(RenderTargetId id) { primaryTargetId_ = id; }
+
+    // ---- Component accessors (preferred entry points) ----
+    //
+    // The renderer is a thin facade over component subsystems. Most of the
+    // legacy `RenderService::SetCamera/SetTeamColor/...` forwarders call into
+    // these — calling the components directly skips the indirection and lets
+    // each subsystem evolve its own API without churning RenderService too.
+    //
+    // Lifetime: every accessor returns a reference to a member that lives for
+    // the renderer's lifetime. Asset-manager accessors may dereference null
+    // before `InitDevice` succeeds — the device-related ones (Samplers,
+    // Textures, Replaceables, Debug, Gfx) require the device to be ready.
+    SceneManager&              Scene()       { return *scene_; }
+    const SceneManager&        Scene() const { return *scene_; }
+    SamplerAssetManager&       Samplers()    { return *samplers_; }
+    TextureAssetManager&       Textures()    { return *textures_; }
+    ReplaceableTextureManager& Replaceables(){ return *replaceables_; }
+    DebugRenderer&             Debug()       { return *debug_; }
+    gfx::IGFXDevice&           Gfx()         { return *gfx_; }
+
+    // ---- High-level Actor spawn (preferred over AddModel/LoadModel) ----
+    //
+    // SpawnActorFromMdx: parses + caches the MDX (no-op on cache hit), creates
+    // an Actor, returns it. Returns nullptr on parse/load failure. Sets focus
+    // if no focus actor exists yet.
+    //
+    // LoadActorFromMdx: clears existing actors first, sets focus on the new
+    // one, and auto-flips renderMode to HD when any layer ships a non-SD
+    // shader. Mirrors the LoadModelByPath semantics.
+    //
+    // SpawnActorFromLiveSource: for adapters that drive both static data AND
+    // animation through one object (the Max plugin's MaxSceneAdapter is the
+    // only one today). Calls source->Build() once for the static snapshot,
+    // adopts it as a template, and binds the actor's AnimationDriver to the
+    // source. The host owns the source and keeps it alive — actor holds a
+    // shared_ptr to it through AnimationDriver.
+    Actor* SpawnActorFromMdx(const std::string& mdxPath);
+    Actor* LoadActorFromMdx(const std::string& mdxPath);
+    Actor* SpawnActorFromLiveSource(std::shared_ptr<IModelSource> source);
 
     // ---- Static helpers (public so free-function render helpers can reuse) ----
     // LOD test: geosets flagged with the always-draw sentinel pass every level;
@@ -280,6 +228,47 @@ public:
     }
 
 private:
+    // Granular static-snapshot path — used by SpawnActorFromLiveSource (the
+    // Max plugin's adapter feeds an already-built ModelData through here)
+    // and by the path-based spawners after parsing an MDX into ModelData.
+    uint32_t AddModel(const std::vector<MeshData>& meshes,
+                      const std::vector<TextureData>& textures,
+                      const std::vector<MaterialData>& materials,
+                      const SkeletonData& skeleton,
+                      const std::vector<SkinWeightData>& skinWeights,
+                      const std::vector<ParticleEmitterConfig>& particleConfigs,
+                      const std::vector<RibbonEmitterConfig>& ribbonConfigs,
+                      const std::vector<CollisionShapeData>& collisions);
+
+    // Per-handle config setters — applied right after AddModel by the spawn
+    // helpers. External callers don't need them: SpawnActorFromLiveSource
+    // folds attachments + PE1 emitters into the spawn, and the path-based
+    // spawners pull the data straight from the ModelTemplate.
+    void SetAttachmentConfigs(uint32_t handle,
+                              const std::vector<AttachmentConfig>& configs);
+    void SetPE1Configs(uint32_t handle,
+                       const std::vector<PE1EmitterConfig>& configs);
+
+    // Path-based load — internal helpers backing the public Spawn/Load
+    // *FromMdx methods. Return uint32_t handles; the public API converts
+    // those into Actor* via scene_->Actors().Find(h).
+    uint32_t AddModelByPath(const std::string& mdxPath);
+    uint32_t LoadModelByPath(const std::string& mdxPath);
+
+    // ApplyFrameState by handle — used internally by EvaluatePE1Children
+    // (each PE1 child gets its own FrameState via its IAnimationSource).
+    // Public callers go through ApplyFrameState(state, time) on the focus.
+    void ApplyFrameState(uint32_t handle, const FrameState& state, int timeMs);
+
+    // UpdateMaterials by handle — used by the focus-form forwarder.
+    void UpdateMaterials(uint32_t handle, const std::vector<MaterialData>& materials,
+                         const std::vector<TextureData>& textures);
+
+    // Cross-model texture-cache query for the template manager's adapter
+    // wiring. External callers (Max plugin) use Textures().IsCachedShared()
+    // directly.
+    bool IsTextureCached(std::string_view key) const;
+
     void CleanupD3D();
     bool CreateShaders();
     bool CreatePipelines();
@@ -304,6 +293,11 @@ private:
     // PE1: Model particle lifecycle
     void UpdatePE1(float dt);
     void EvaluatePE1Children();
+
+    // Top-level (non-PE1) actor evaluation. SceneManager::Update has already
+    // looped each actor's animation cursor; this just snapshots, evaluates,
+    // and applies the resulting FrameState through ApplyFrameState(handle).
+    void EvaluateTopLevelActors();
 
     // Ribbon simulation + rendering
     void UpdateRibbons(float dt);

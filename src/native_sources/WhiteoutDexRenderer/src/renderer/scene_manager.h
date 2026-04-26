@@ -120,6 +120,26 @@ public:
     int  GetAnimationTime() const      { return animationTimeMs_.load(); }
     std::atomic<int>& AnimationTimeAtomic() { return animationTimeMs_; }
 
+    // ---- Per-frame simulation tick ----
+    //
+    // Advances the global animation clock by `dtSec`, then walks every
+    // top-level (non-PE1) actor and:
+    //   1. Detects sequence changes (UI picker writes through to
+    //      `actor.animation.SetActiveSequenceIndex` → next Update sees a
+    //      mismatch with `actor.prevActiveSequence` and resets the actor's
+    //      `sequenceStartTimeMs` so the loop math starts from frame 0).
+    //   2. Computes `localTime = animationTime - sequenceStartTimeMs` and
+    //      wraps it into the active sequence's `[startMs, endMs]` range.
+    //   3. Writes the wrapped time onto `actor.animation` so the next
+    //      `Evaluate()` reads the correct cursor.
+    //
+    // PE1/attachment children are deliberately skipped here — their local
+    // time comes from `BirthTimeMs`, evaluated inside
+    // `RenderService::EvaluatePE1Children`. The Max plugin does not call
+    // this (Max owns the timeline; it writes `SetTimeMs` directly on the
+    // actor and the render-thread Tick re-evaluates from there).
+    void Update(float dtSec);
+
     // ---- Asset resolution ----
     FileContentProvider&       GetContentProvider()       { return contentProvider_; }
     const FileContentProvider& GetContentProvider() const { return contentProvider_; }

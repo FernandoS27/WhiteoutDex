@@ -1,19 +1,19 @@
 // ============================================================================
 // WhiteoutDex Standalone Test Harness
-// Loads an .mdx file via MdxModelAdapter → RenderService, no 3ds Max required.
+// Loads an .mdx file via the new component-style API. No 3ds Max required.
 // Usage: WhiteoutDexRenderer.exe [--backend d3d11|d3d12] [<path-to-mdx-file>]
 // ============================================================================
 
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
+#include "renderer/model_instance.h"   // Actor
+#include "renderer/model_template.h"   // for cameraPresets accessor
 #include "ui/render_window.h"
-#include "io/mdx_model_adapter.h"
 #include "gfx/gfx_types.h"
-#include <whiteout/models/mdx/parser.h>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
+
 #include <chrono>
+#include <filesystem>
+#include <iostream>
 #include <string>
 #include <vector>
 #include <cstring>
@@ -76,154 +76,73 @@ int wmain(int argc, wchar_t* argv[]) {
     std::cout << "Backend: "
               << (backend == WhiteoutDex::gfx::GfxApi::D3D11 ? "D3D11" : "D3D12") << "\n";
 
-    // Parse MDX
-    // Read the file via std::ifstream(fs::path) so MSVC uses _wfopen internally
-    // — this handles Unicode (CJK, etc.) paths without changing the WhiteoutLib API.
-    std::cout << "Parsing " << mdxPath.filename().generic_string() << "...\n";
-    whiteout::mdx::Parser parser(whiteout::mdx::Parser::ParseMode::Lenient);
-    whiteout::mdx::Model model;
-    try {
-        std::ifstream mdxFile(mdxPath, std::ios::binary);
-        if (!mdxFile.is_open())
-            throw std::runtime_error("Failed to open file");
-        std::vector<uint8_t> mdxBytes(
-            (std::istreambuf_iterator<char>(mdxFile)),
-            std::istreambuf_iterator<char>());
-        auto ext = mdxPath.extension();
-        auto fmt = (ext == L".mdl" || ext == L".MDL")
-                       ? whiteout::mdx::MDLXFormat::MDL
-                       : whiteout::mdx::MDLXFormat::MDX;
-        model = parser.parse(
-            std::span<const whiteout::u8>(mdxBytes.data(), mdxBytes.size()), fmt);
-    } catch (const std::exception& e) {
-        std::cerr << "Parse error: " << e.what() << "\n";
-        return 1;
-    }
-
-    std::cout << "Model: v" << model.version
-              << ", " << model.geosets.size() << " geosets"
-              << ", " << model.bones.size() << " bones"
-              << ", " << model.sequences.size() << " sequences"
-              << ", " << model.particleEmitters2.size() << " particles"
-              << ", " << model.ribbonEmitters.size() << " ribbons\n";
-
     // Host owns SceneManager; renderer borrows it. Order matters: scene must
     // outlive the renderer (the renderer holds a non-owning pointer).
-    WhiteoutDex::SceneManager scene;
+    WhiteoutDex::SceneManager  scene;
     WhiteoutDex::RenderService renderer(scene);
-    WhiteoutDex::RenderWindow renderWindow(renderer);
+    WhiteoutDex::RenderWindow  renderWindow(renderer);
     if (!renderWindow.Open(1024, 768, backend)) {
         std::cerr << "Failed to open renderer window\n";
         return 1;
     }
 
-    // Create adapter — pass content provider for CASC/MPQ texture fallback
-    auto basePath = mdxPath.parent_path();
-    WhiteoutDex::MdxModelAdapter adapter(
-        std::move(model), basePath, &renderer.GetContentProvider());
-    renderer.GetContentProvider().SetBasePath(basePath);
+    // Base path for texture resolution + child-model lookup.
+    scene.SetPE1BasePath(mdxPath.parent_path());
 
-    // Fetch static data
-    auto meshes     = adapter.GetMeshes();
-    auto textures   = adapter.GetTextures();
-    auto materials  = adapter.GetMaterials();
-    auto skeleton   = adapter.GetSkeleton();
-    auto skinWeights = adapter.GetSkinWeights();
-    auto particles  = adapter.GetParticleConfigs();
-    auto ribbons    = adapter.GetRibbonConfigs();
-    auto collisions = adapter.GetCollisionShapes();
-    auto sequences  = adapter.GetSequences();
-    auto pe1Configs = adapter.GetPE1Configs();
-    auto attachConfigs = adapter.GetAttachmentConfigs();
-
-    std::cout << "Loaded: " << meshes.size() << " meshes, "
-              << textures.size() << " textures, "
-              << materials.size() << " materials, "
-              << skeleton.nodeCount << " nodes\n";
-    if (!pe1Configs.empty())
-        std::cout << "  PE1: " << pe1Configs.size() << " emitter(s)\n";
-    {
-        int attModels = 0;
-        for (auto& a : attachConfigs) if (!a.modelPath.empty()) attModels++;
-        if (attModels > 0)
-            std::cout << "  Attachments: " << attModels << " with child model(s)\n";
+    // ---- One-line load ----
+    // LoadActorFromMdx parses the MDX (cached if seen before), builds the
+    // ModelTemplate (geometry + skinning + materials + sequences + camera
+    // presets), spawns an Actor, binds its AnimationDriver to the parsed
+    // adapter, and sets focus. ~80 lines of legacy boilerplate collapse here.
+    std::cout << "Loading " << mdxPath.filename().generic_string() << "...\n";
+    WhiteoutDex::Actor* hero = renderer.LoadActorFromMdx(mdxPath.string());
+    if (!hero) {
+        std::cerr << "Failed to load MDX.\n";
+        return 1;
     }
 
-    renderer.LoadModel(meshes, textures, materials, skeleton,
-                       skinWeights, particles, ribbons, collisions);
-    // LoadModel internally registers PE2 emitters with the service via
-    // InitFromLegacyConfig. GetPlaneEmitterInits() / AddPlaneEmitters() is
-    // available for callers that want to bypass the legacy config path.
+    // ---- Surface model info ----
+    auto sequences = hero->animation.Sequences();
+    std::cout << "Loaded: " << hero->render.gpuMaterials.size() << " materials, "
+              << hero->animation.Source()->GetSequences().size() << " sequences"
+              << ", template @ " << hero->sourceTemplate.get() << "\n";
 
-    // PE1 (model particle emitters) — set configs + base path for child model loading
-    if (!pe1Configs.empty()) {
-        renderer.SetPE1BasePath(basePath);
-        renderer.SetPE1Configs(renderer.GetFocusModelHandle(), pe1Configs);
-    }
-
-    // Attachment child models — set configs (uses same PE1 base path for resolution)
-    if (!attachConfigs.empty()) {
-        if (pe1Configs.empty()) {
-            renderer.SetPE1BasePath(basePath);
-        }
-        renderer.SetAttachmentConfigs(renderer.GetFocusModelHandle(), attachConfigs);
-    }
-
-    // Populate sequence picker in the renderer toolbar
+    // Populate the toolbar combo + give the camera animator the timeline.
     if (!sequences.empty()) {
-        std::vector<std::string> seqNames;
-        seqNames.reserve(sequences.size());
-        for (auto& s : sequences) seqNames.push_back(s.name);
-        renderer.SetSequences(seqNames);
-        renderer.SetSequenceRanges(sequences);  // needed for MDX camera animators
+        std::vector<std::string> names;
+        names.reserve(sequences.size());
+        for (auto& s : sequences) names.push_back(s.name);
+        scene.SetSequences(std::move(names));
+        scene.SetSequenceRanges(sequences);
         std::cout << "Playing: " << sequences[0].name
                   << " [" << sequences[0].startMs << "-" << sequences[0].endMs << "ms]\n";
     }
 
-    // Camera defaults
-    renderer.SetCamera(30.0f, 45.0f, 300.0f, 0, 0, 50.0f);
+    // Camera defaults — call directly through the scene's Camera component.
+    scene.Camera().SetPitch(30.0f);
+    scene.Camera().SetYaw(45.0f);
+    scene.Camera().SetDistance(300.0f);
+    scene.Camera().SetTarget(0, 0, 50.0f);
 
-    // Populate camera combo with model cameras
-    auto cameraPresets = adapter.GetCameraPresets();
-    if (!cameraPresets.empty())
-        renderer.SetCameraPresets(cameraPresets);
+    // Camera presets ride along on the template; surface them to the
+    // scene's preset list so the toolbar combo can offer them.
+    if (hero->sourceTemplate && !hero->sourceTemplate->cameraPresets.empty())
+        scene.SetCameraPresets(hero->sourceTemplate->cameraPresets);
 
-    // Main loop
-    auto startTime = std::chrono::steady_clock::now();
-    auto globalStartTime = startTime; // never reset — drives global sequences
-    int currentSeq = 0;
+    // ---- Main loop ----
+    // SceneManager::Update advances the global animation clock, runs the
+    // sequence-loop math per actor, and updates each animation cursor.
+    // The render thread (inside RenderWindow) calls RenderService::Tick,
+    // which evaluates each actor's FrameState and applies it. The host
+    // loop's only job is to feed dt and keep the window alive.
+    auto last = std::chrono::steady_clock::now();
     std::cout << "Renderer open. Close the window to exit.\n";
 
     while (renderWindow.IsOpen()) {
-        auto now = std::chrono::steady_clock::now();
-        int elapsed = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
-        int globalTimeMs = (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - globalStartTime).count();
-
-        // React to sequence picker changes
-        if (!sequences.empty()) {
-            int picked = renderer.GetActiveSequenceIndex();
-            if (picked >= 0 && picked < (int)sequences.size() && picked != currentSeq) {
-                currentSeq = picked;
-                startTime = now;
-                elapsed = 0;
-            }
-        }
-
-        // Loop animation within sequence bounds
-        int timeMs = elapsed;
-        if (!sequences.empty()) {
-            const auto& seq = sequences[currentSeq];
-            int duration = seq.endMs - seq.startMs;
-            if (duration > 0)
-                timeMs = seq.startMs + (elapsed % duration);
-        }
-
-        auto camPos = renderer.GetCameraPosition();
-        auto frameState = adapter.Evaluate(currentSeq, timeMs, globalTimeMs,
-                                           Matrix44f::identity(),
-                                           camPos);
-        renderer.ApplyFrameState(frameState, timeMs);
-
+        auto  now = std::chrono::steady_clock::now();
+        float dt  = std::chrono::duration<float>(now - last).count();
+        last = now;
+        scene.Update(dt);
         Sleep(16); // ~60 FPS
     }
 

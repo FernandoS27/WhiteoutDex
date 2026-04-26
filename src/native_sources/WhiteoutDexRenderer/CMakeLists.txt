@@ -129,6 +129,7 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/replaceable_texture_manager.cpp
     src/renderer/model_template.cpp
     src/renderer/model_template_manager.cpp
+    src/renderer/scene_manager.cpp
     src/renderer/animation_driver.cpp
     src/renderer/render_model.cpp
     src/renderer/render_target.cpp

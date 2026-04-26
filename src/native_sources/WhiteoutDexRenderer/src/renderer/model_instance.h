@@ -44,6 +44,18 @@ struct Actor {
     // cursor + birth-time offset that PE1 children + attachment children use.
     AnimationDriver animation;
 
+    // Free-running sequence-loop bookkeeping. Driven by SceneManager::Update
+    // for top-level (non-PE1) actors so each actor can play its own sequence
+    // at its own pace independent of the host loop. PE1/attachment children
+    // skip this entirely — their local time is derived from BirthTimeMs and
+    // computed inside EvaluatePE1Children.
+    //
+    //   `sequenceStartTimeMs` resets to SceneManager::animationTime_ each
+    //   time `prevActiveSequence` mismatches the driver's current index, so
+    //   localTime = animationTime_ - sequenceStartTimeMs.
+    int sequenceStartTimeMs = 0;
+    int prevActiveSequence  = -1;
+
     // ---- Attachments with child models ----
     struct AttachmentSlot {
         AttachmentConfig config;

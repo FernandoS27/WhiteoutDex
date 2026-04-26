@@ -5,6 +5,8 @@
 
 #include "render_window.h"
 #include "render_service.h"
+#include "../renderer/debug/debug_renderer.h"        // service_.Debug() return type
+#include "../renderer/replaceable_texture_manager.h" // service_.Replaceables() return type
 #include "resource.h"
 #include <windowsx.h>
 #include <commdlg.h>
@@ -71,7 +73,7 @@ void RenderWindow::ThreadFunc(int w, int h, gfx::GfxApi api) {
     QueryPerformanceCounter(&lastTime);
     fpsTimer = lastTime;
     int frameCount = 0;
-    int lastParentTimeMs = service_.GetAnimationTime();
+    int lastParentTimeMs = service_.Scene().GetAnimationTime();
 
     // Frame pacing is handled by `Present(1, 0)` (V-Sync) in the
     // D3D12 backend. The previous manual 60 Hz `Sleep` loop stacked
@@ -88,7 +90,7 @@ void RenderWindow::ThreadFunc(int w, int h, gfx::GfxApi api) {
         // animation clock so everything stays locked to Max's timeline:
         // when Max is paused, sims freeze; when playing, sims advance at
         // exactly the parent's playback rate.
-        int curParentMs = service_.GetAnimationTime();
+        int curParentMs = service_.Scene().GetAnimationTime();
         int parentDtMs  = curParentMs - lastParentTimeMs;
         if (parentDtMs < 0)   parentDtMs = 0;     // backward scrub → freeze
         if (parentDtMs > 100) parentDtMs = 100;    // clamp big jumps
@@ -98,7 +100,7 @@ void RenderWindow::ThreadFunc(int w, int h, gfx::GfxApi api) {
         // Process pending camera preset / sequence updates
         ProcessCameraPresets();
         ProcessSequences();
-        if (service_.ConsumeTeamColorDirty()) InvalidateTeamColorSwatch();
+        if (service_.Replaceables().ConsumeDirty()) InvalidateTeamColorSwatch();
         // Drain auto-HD notifications — no user UI to sync, but we
         // still clear the flag so it doesn't leak state.
         (void)service_.ConsumeRenderModeDirty();
@@ -381,7 +383,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     }
     case WM_LBUTTONDOWN: {
         int mx = GET_X_LPARAM(lParam), my = GET_Y_LPARAM(lParam);
-        int vcHit = service_.HitTestViewCube(mx, my);
+        int vcHit = service_.Debug().HitTestViewCube(mx, my);
         if (vcHit >= 0) {
             if (vcHit == 6) service_.ResetCamera();
             else            service_.SnapCameraToFace(vcHit);
@@ -413,11 +415,11 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         int dx = cur.x - lastMouse_.x, dy = cur.y - lastMouse_.y;
         lastMouse_ = cur;
         // Track ViewCube hover
-        auto vcr = service_.GetViewCubeRect();
-        service_.SetViewCubeHovered(
+        auto vcr = service_.Debug().GetViewCubeRect();
+        service_.Debug().SetViewCubeHovered(
             cur.x >= vcr.left && cur.x <= vcr.right &&
             cur.y >= vcr.top  && cur.y <= vcr.bottom);
-        if (!service_.IsCameraLocked()) {
+        if (!service_.Scene().CameraLocked()) {
             if (lmbDown_) service_.RotateCamera(dx, dy);
             if (rmbDown_) service_.PanCamera(-dx, dy);
             if (mmbDown_) service_.ZoomCameraSmooth(dy);
@@ -425,7 +427,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
     }
     case WM_MOUSEWHEEL: {
-        if (!service_.IsCameraLocked()) {
+        if (!service_.Scene().CameraLocked()) {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
             service_.ZoomCamera(delta * 30);
         }
@@ -437,7 +439,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
         if (dis->CtlID == IDC_TEAMCOLOR) {
-            COLORREF tc = service_.GetTeamColorRaw();
+            COLORREF tc = service_.Replaceables().GetTeamColorRaw();
             HBRUSH brush = CreateSolidBrush(tc);
             FillRect(dis->hDC, &dis->rcItem, brush);
             DeleteObject(brush);
@@ -501,7 +503,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 static COLORREF customColors[16] = {};
                 cc.lStructSize = sizeof(cc);
                 cc.hwndOwner = hwnd_;
-                cc.rgbResult = service_.GetTeamColorRaw();
+                cc.rgbResult = service_.Replaceables().GetTeamColorRaw();
                 cc.lpCustColors = customColors;
                 cc.Flags = CC_FULLOPEN | CC_RGBINIT;
                 if (ChooseColorW(&cc)) {
@@ -518,12 +520,12 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     int sel = (int)SendMessageW(cmbCamera_, CB_GETCURSEL, 0, 0);
                     if (sel == 0) {
                         service_.ActivateCameraPreset(-1);  // free camera
-                        service_.SetCameraLocked(false);
+                        service_.Scene().SetCameraLocked(false);
                     } else {
                         int idx = sel - 1;
                         if (idx >= 0 && idx < (int)cameraPresets_.size()) {
                             service_.ActivateCameraPreset(idx);
-                            service_.SetCameraLocked(cameraPresets_[idx].isLive);
+                            service_.Scene().SetCameraLocked(cameraPresets_[idx].isLive);
                         }
                     }
                 }
@@ -561,7 +563,7 @@ void RenderWindow::ProcessCameraPresets() {
         SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)p.name.c_str());
     cameraPresets_ = std::move(*pending);
     SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
-    service_.SetCameraLocked(false);
+    service_.Scene().SetCameraLocked(false);
 }
 
 void RenderWindow::ProcessSequences() {
