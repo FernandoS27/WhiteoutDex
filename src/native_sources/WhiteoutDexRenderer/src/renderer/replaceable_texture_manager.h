@@ -53,7 +53,7 @@ public:
     // ── Team-colour state (API-thread). ─────────────────────────────────
     // Updates the global swatch and re-bakes per-model SD pixels for every
     // registered slot. Render-thread `Tick` will then re-upload them via
-    // the existing `mi.stagedDirty` path. Marks dirty for the platform UI.
+    // the existing `mi.render.stagedDirty` path. Marks dirty for the platform UI.
     void SetTeamColor(uint8_t r, uint8_t g, uint8_t b);
 
     // BGR-packed (matches the legacy Windows RGB() macro layout used at
@@ -64,9 +64,9 @@ public:
     bool ConsumeDirty() { return dirty_.exchange(false); }
 
     // ── Per-model slot registry (API-thread; caller owns dataMutex). ────
-    // Records that `mi.textures[textureId]` is a replaceable slot. Bakes
-    // initial pixels into `mi.stagedTextures[textureId]` from the current
-    // swatch and marks `mi.stagedDirty`. Replaces RegisterReplaceableEmitterTex.
+    // Records that `mi.render.textures[textureId]` is a replaceable slot. Bakes
+    // initial pixels into `mi.render.stagedTextures[textureId]` from the current
+    // swatch and marks `mi.render.stagedDirty`. Replaces RegisterReplaceableEmitterTex.
     void RegisterModelSlot(Actor& mi, int textureId, ReplaceableKind kind);
 
     // Forget every slot belonging to `mi`. Called when a Actor is
@@ -113,8 +113,8 @@ private:
     struct Slot { int textureId; ReplaceableKind kind; };
     std::unordered_map<Actor*, std::vector<Slot>> slots_;
 
-    // Bake current-swatch pixels into mi.stagedTextures[textureId] for one slot.
-    // Marks mi.stagedDirty so the next render-thread upload picks it up.
+    // Bake current-swatch pixels into mi.render.stagedTextures[textureId] for one slot.
+    // Marks mi.render.stagedDirty so the next render-thread upload picks it up.
     void BakeSlot(Actor& mi, int textureId, ReplaceableKind kind);
 };
 

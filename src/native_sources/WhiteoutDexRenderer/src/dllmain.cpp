@@ -9,6 +9,7 @@
 
 #include "max_scene_adapter.h"
 #include "renderer/render_service.h"
+#include "renderer/scene_manager.h"
 #include "ui/render_window.h"
 
 #include <filesystem>
@@ -25,6 +26,7 @@
 // Global state
 // ============================================================================
 static WhiteoutDex::MaxSceneAdapter* g_adapter      = nullptr;
+static WhiteoutDex::SceneManager*    g_scene        = nullptr;
 static WhiteoutDex::RenderService*   g_renderer     = nullptr;
 static WhiteoutDex::RenderWindow*    g_renderWindow = nullptr;
 static bool                           g_running      = false;
@@ -122,8 +124,10 @@ static void NdxCleanup() {
         g_renderWindow->Close();
         delete g_renderWindow; g_renderWindow = nullptr;
     }
+    // Renderer holds a non-owning pointer to the scene; tear it down first.
     if (g_renderer) { delete g_renderer; g_renderer = nullptr; }
-    if (g_adapter) { delete g_adapter; g_adapter = nullptr; }
+    if (g_scene)    { delete g_scene;    g_scene    = nullptr; }
+    if (g_adapter)  { delete g_adapter;  g_adapter  = nullptr; }
     mprintf(_M("WhiteoutDex: === STOPPED ===\n"));
 }
 
@@ -178,13 +182,15 @@ Value* ndxStart_cf(Value** arg_list, int count)
 
     if (g_running) NdxCleanup();
 
-    // Create render service + platform render window
-    g_renderer = new WhiteoutDex::RenderService();
+    // Host owns SceneManager; renderer borrows it.
+    g_scene        = new WhiteoutDex::SceneManager();
+    g_renderer     = new WhiteoutDex::RenderService(*g_scene);
     g_renderWindow = new WhiteoutDex::RenderWindow(*g_renderer);
     if (!g_renderWindow->Open(800, 600)) {
         mprintf(_M("WhiteoutDex: ERROR - Could not open renderer window\n"));
         delete g_renderWindow; g_renderWindow = nullptr;
-        delete g_renderer; g_renderer = nullptr;
+        delete g_renderer;     g_renderer     = nullptr;
+        delete g_scene;        g_scene        = nullptr;
         return Integer::intern(-1);
     }
 

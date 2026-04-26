@@ -25,27 +25,27 @@ CollectedRenderables CollectSortedRenderables(
         // Build the per-actor view. Pointers borrow from the actor's
         // RenderModel; valid only for the duration of this frame's render.
         RenderableView& view = out.views.emplace_back();
-        view.geosets          = &mi->gpuGeosets;
-        view.materials        = &mi->gpuMaterials;
-        view.textures         = mi->textures.get();
-        view.skinning         = &mi->skinning;
-        view.activeLights     = &mi->activeLights;
-        view.texAnimPalette   = &mi->texAnimPalette;
+        view.geosets          = &mi->render.gpuGeosets;
+        view.materials        = &mi->render.gpuMaterials;
+        view.textures         = mi->render.textures.get();
+        view.skinning         = &mi->render.skinning;
+        view.activeLights     = &mi->render.activeLights;
+        view.texAnimPalette   = &mi->render.texAnimPalette;
         view.worldTransform   = mi->worldTransform;
         view.parentVisibility = mi->parentVisibility;
-        view.hasLods          = mi->hasLods;
+        view.hasLods          = mi->render.hasLods;
 
-        const int modelLod = mi->hasLods ? selectedLod : 0;
-        const int geosetCount = static_cast<int>(mi->gpuGeosets.size());
+        const int modelLod = mi->render.hasLods ? selectedLod : 0;
+        const int geosetCount = static_cast<int>(mi->render.gpuGeosets.size());
         for (int i = 0; i < geosetCount; ++i) {
-            const auto& geo = mi->gpuGeosets[i];
+            const auto& geo = mi->render.gpuGeosets[i];
             if (!RenderService::GeosetPassesLod(geo.lod, modelLod)) continue;
             int ro = 1;
             const int matId = geo.materialId;
-            if (matId >= 0 && matId < static_cast<int>(mi->gpuMaterials.size())
-                && !mi->gpuMaterials[matId].cpu.layers.empty()) {
+            if (matId >= 0 && matId < static_cast<int>(mi->render.gpuMaterials.size())
+                && !mi->render.gpuMaterials[matId].cpu.layers.empty()) {
                 ro = RenderService::GetRenderOrder(
-                    mi->gpuMaterials[matId].cpu.layers[0].filterMode);
+                    mi->render.gpuMaterials[matId].cpu.layers[0].filterMode);
             }
             out.refs.push_back({&view, i, ro, geo.priorityPlane, geo.geosetId});
         }

@@ -235,7 +235,7 @@ void DebugRenderer::RenderCollisions() {
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
         for (auto& [h, mi] : rs_.scene_->Actors().All()) {
             if (mi->parentVisibility <= 0.02f) continue;
-            shapes.insert(shapes.end(), mi->collisionShapes.begin(), mi->collisionShapes.end());
+            shapes.insert(shapes.end(), mi->render.collisionShapes.begin(), mi->render.collisionShapes.end());
         }
         if (shapes.empty()) return;
         viewMat = rs_.scene_->Camera().GetViewMatrix();
@@ -369,7 +369,7 @@ void DebugRenderer::RenderLightMarkers() {
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
         for (auto& [h, mi] : rs_.scene_->Actors().All()) {
             if (mi->parentVisibility <= 0.02f) continue;
-            for (const auto& L : mi->activeLights) {
+            for (const auto& L : mi->render.activeLights) {
                 const bool dir = (L.kind == FrameState::LightKind::Directional);
                 lights.push_back({
                     dir ? whiteout::transform_point(Vector3f{0,0,0}, mi->worldTransform)

@@ -3,13 +3,13 @@
 // WhiteoutDex Renderer — Actor
 //
 // Logical entity in the scene: identity, world transform, hierarchy, animation,
-// and a borrowed RenderModel cluster.
+// and an owned RenderModel cluster.
 //
-// Phase 4 implementation note: Actor publicly inherits from RenderModel so
-// existing call sites that read members directly (mi->gpuGeosets, mi->ribbons,
-// etc.) keep compiling without textual churn. The boundary still exists at the
-// type level — `actor.Render()` returns the RenderModel reference for code
-// that wants to acknowledge the split.
+// Phase 5 v3: composition over inheritance — Actor holds a `render` member of
+// type RenderModel instead of inheriting from it. The boundary is now enforced
+// at the call site: `actor.render.gpuGeosets` (preferred) or `actor.Render()`
+// (the explicit accessor). Keeps the cluster split clean and prevents Actor
+// from accumulating render-data methods on its public surface.
 // ============================================================================
 
 #include "../gfx/gfx.h"
@@ -30,7 +30,7 @@ struct ModelTemplate;
 // migration ergonomics; will be tightened to a class with accessors as the
 // migration progresses.
 // ============================================================================
-struct Actor : public RenderModel {
+struct Actor {
     uint32_t  handle  = 0;
     bool      isFocus = false;
 
@@ -58,6 +58,15 @@ struct Actor : public RenderModel {
     // Authoritative source: only the parent's ApplyFrameState writes this.
     float parentVisibility = 1.0f;
 
+    // ---- Hierarchy ----
+    // Parent actor id (0 = root). Set when this actor was spawned as a PE1
+    // child or attached through an AttachmentSlot. Walks up the hierarchy
+    // (despawn cascades, visibility propagation) go through this. The
+    // forward direction (parent → children) is still encoded slot-wise via
+    // attachmentSlots[i].childModelHandle and through PE1System's per-frame
+    // birth/death lists; an explicit `children_` ID list isn't needed yet.
+    uint32_t parent     = 0;
+
     // ---- PE1 (model particle emitter) hierarchy state ----
     int  pe1Depth   = 0;     // recursion depth (0 = root model)
     bool isPE1Child = false; // true if spawned by a PE1 particle
@@ -70,20 +79,25 @@ struct Actor : public RenderModel {
     // (bonePaletteCb, world matrix, geoset alpha/color) stays local.
     std::shared_ptr<ModelTemplate> sourceTemplate;
 
-    // ---- Boundary accessors. Future cleanup will tighten direct field
-    // access into these — call sites that already think in terms of "the
-    // render data" should prefer Render() over inherited member access.
-    RenderModel&       Render()       { return *this; }
-    const RenderModel& Render() const { return *this; }
+    // ---- The render-side cluster. Single concern: per-actor GPU + sim state.
+    RenderModel render;
+
+    // ---- Convenience accessors. `actor.render.X` is the canonical form;
+    // `actor.Render()` keeps reading well at sites that pass the cluster
+    // along (e.g. RenderableView builders).
+    RenderModel&       Render()       { return render; }
+    const RenderModel& Render() const { return render; }
 
     // Release all GPU resources
     void ReleaseGPU(gfx::IGFXDevice& gfx) {
         const bool freeShared = !sourceTemplate;
-        for (auto& g : gpuGeosets) g.Release(gfx, freeShared);
-        gpuGeosets.clear();
-        if (textures) textures->Clear();   // ModelScope keeps its allocation; pixels are freed.
-        gpuMaterials.clear();
-        gfx.Destroy(ribbonVB); ribbonVB = gfx::BufferHandle::Invalid; ribbonVBSize = 0;
+        for (auto& g : render.gpuGeosets) g.Release(gfx, freeShared);
+        render.gpuGeosets.clear();
+        if (render.textures) render.textures->Clear();   // ModelScope keeps its allocation; pixels are freed.
+        render.gpuMaterials.clear();
+        gfx.Destroy(render.ribbonVB);
+        render.ribbonVB = gfx::BufferHandle::Invalid;
+        render.ribbonVBSize = 0;
         // Drop our refcount on the template; the template is destroyed only
         // when both the cache entry and every borrowing instance have let go.
         sourceTemplate.reset();

@@ -85,7 +85,20 @@ public:
         return std::move(pendingCameraPresets_);
     }
 
-    // ---- Sequence picker (UI inbox + selected index) ----
+    // ---- Sequence picker (UI inbox for the FOCUS actor's combo box) ----
+    // Each actor runs its own animation independently — the playing
+    // sequence lives on `actor->animation` (an AnimationDriver). The pieces
+    // here are scene/UI scaffolding only:
+    //
+    //   * `pendingSequenceNames_`  — name list pushed into the toolbar combo
+    //     when the focus actor's MDX loads.
+    //   * `sequenceRanges_`        — start/end ms per sequence for the camera
+    //     animator (which references the focus actor's MDX timeline).
+    //
+    // The actual "selected sequence" is read from
+    // `FocusActor()->animation.ActiveSequenceIndex()` and writes go through
+    // `FocusActor()->animation.SetActiveSequenceIndex(...)` — see
+    // RenderService::GetActiveSequenceIndex / SetActiveSequence.
     void SetSequences(std::vector<std::string> names) {
         pendingSequenceNames_ = std::move(names);
         sequencesDirty_ = true;
@@ -94,8 +107,6 @@ public:
         sequenceRanges_ = std::move(ranges);
     }
     const std::vector<SequenceInfo>& SequenceRanges() const { return sequenceRanges_; }
-    int  ActiveSequenceIndex() const   { return activeSequence_.load(); }
-    void SetActiveSequenceIndex(int i) { activeSequence_ = i; }
     std::optional<std::vector<std::string>> TakePendingSequences() {
         if (!sequencesDirty_) return std::nullopt;
         sequencesDirty_ = false;
@@ -153,7 +164,6 @@ private:
 
     std::vector<std::string>     pendingSequenceNames_;
     bool                         sequencesDirty_ = false;
-    std::atomic<int>             activeSequence_{0};
     std::vector<SequenceInfo>    sequenceRanges_;
 
     std::atomic<int>             animationTimeMs_{0};

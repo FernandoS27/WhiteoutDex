@@ -75,7 +75,11 @@ class RenderService {
     friend class GeosetPassHd;
     friend class DebugRenderer;
 public:
+    // Default ctor: creates an internal SceneManager (back-compat).
     RenderService();
+    // Host-owned scene: pass a SceneManager that outlives the renderer.
+    // The renderer holds a non-owning pointer; lifetime contract is the host's.
+    explicit RenderService(SceneManager& scene);
     ~RenderService();
 
     // Camera control (thread-safe)
@@ -307,7 +311,7 @@ private:
 
     // LOD selection: -1 override -> screen-size computation (mirrors
     // Previewd CalculateLOD @0x140305ae0). Returns 0..3. Models without
-    // LOD data always get 0 — caller checks mi.hasLods to decide which
+    // LOD data always get 0 — caller checks mi.render.hasLods to decide which
     // to use, then tests each geoset with GeosetPassesLod.
     int  ComputeSelectedLod() const;
 
@@ -358,9 +362,16 @@ private:
 
     // ---- Scene state ----
     // Phase 5: SceneManager owns actors, focus, camera, camera presets,
-    // sequence picker UI inbox, and the animation clock. RenderService
-    // forwards through `scene_->...` for any access.
-    std::unique_ptr<SceneManager> scene_;
+    // sequence picker UI inbox, the animation clock, content providers,
+    // template manager, and PE1 spawn state. RenderService forwards through
+    // `scene_->...` for any access.
+    //
+    // Phase 5 v3 split storage: host can pass its own SceneManager (owns
+    // it externally) — `ownedScene_` stays null and `scene_` aims at the
+    // host's instance. Default ctor allocates `ownedScene_` and aims `scene_`
+    // at it; same external API either way.
+    std::unique_ptr<SceneManager> ownedScene_;
+    SceneManager*                 scene_ = nullptr;
 
     // Helper: get focus model (may be null). The free function form survives
     // because most call sites are written as `auto* mi = focusModel(); ...`.

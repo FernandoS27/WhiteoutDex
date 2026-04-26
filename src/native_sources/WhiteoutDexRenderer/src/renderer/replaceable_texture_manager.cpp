@@ -38,7 +38,7 @@ void ReplaceableTextureManager::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
     // renderer + UI exchanges this through.
     teamColor_ = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
     // Re-bake every registered SD slot with the new swatch. The render-
-    // thread upload pass will pick the staged pixels up via mi.stagedDirty.
+    // thread upload pass will pick the staged pixels up via mi.render.stagedDirty.
     for (auto& [mi, slots] : slots_) {
         for (auto& s : slots) BakeSlot(*mi, s.textureId, s.kind);
     }
@@ -67,7 +67,7 @@ void ReplaceableTextureManager::BakeSlot(Actor&  mi,
     const uint8_t g = Green(teamColor_);
     const uint8_t b = Blue(teamColor_);
 
-    StagedTexture& st = mi.stagedTextures[textureId];
+    StagedTexture& st = mi.render.stagedTextures[textureId];
     st.replaceableId = static_cast<int>(kind);
     // Generated TeamColor / TeamGlow are single-mip RGBA8. Reset format and
     // mipLevels in case a previous pass left stale values from a BC3/BC5
@@ -90,7 +90,7 @@ void ReplaceableTextureManager::BakeSlot(Actor&  mi,
             st.pixels[j*4 + 3] = 255;
         }
     }
-    mi.stagedDirty = true;
+    mi.render.stagedDirty = true;
 }
 
 gfx::TextureHandle ReplaceableTextureManager::GetHdSwatchTexture() {

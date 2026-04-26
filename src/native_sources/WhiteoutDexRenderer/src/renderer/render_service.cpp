@@ -48,7 +48,8 @@ namespace WhiteoutDex {
 // ============================================================================
 
 RenderService::RenderService()
-    : scene_(std::make_unique<SceneManager>()),
+    : ownedScene_(std::make_unique<SceneManager>()),
+      scene_(ownedScene_.get()),
       debug_(std::make_unique<DebugRenderer>(*this)) {
     // Cross-model dedup query — fed to every adapter the templates manager
     // builds. Wired here because IsTextureCached lives on RenderService
@@ -56,7 +57,17 @@ RenderService::RenderService()
     scene_->Templates().SetTextureCacheQuery(
         [this](std::string_view k) { return IsTextureCached(k); });
 }
-RenderService::~RenderService() = default;   // scene_ joins its template loader thread
+
+RenderService::RenderService(SceneManager& scene)
+    : scene_(&scene),
+      debug_(std::make_unique<DebugRenderer>(*this)) {
+    // Same wiring as the default ctor; the scene's template loader was
+    // already started by the host that constructed `scene`.
+    scene_->Templates().SetTextureCacheQuery(
+        [this](std::string_view k) { return IsTextureCached(k); });
+}
+
+RenderService::~RenderService() = default;   // ownedScene_ (if any) joins its template loader thread
 
 // Helpers — out-of-line because they need SceneManager's full type, which only
 // the .cpp sees (the header has just the forward decl).
@@ -89,8 +100,8 @@ void RenderService::SetCamera(float pitch, float yaw, float distance,
 void RenderService::ClearModel() {
     std::lock_guard<std::mutex> lock(dataMutex_);
     for (auto& [h, mi] : scene_->Actors().All()) {
-        mi->stagedClear = true;
-        mi->stagedDirty = true;
+        mi->render.stagedClear = true;
+        mi->render.stagedDirty = true;
     }
     scene_->FocusRef() = 0;
     // Drop everything on the PE2 service side too.
@@ -159,7 +170,7 @@ void RenderService::SetPE1Configs(uint32_t handle, const std::vector<PE1EmitterC
     auto* mi = getModel(handle);
     if (!mi) return;
     for (int i = 0; i < (int)configs.size(); i++)
-        mi->pe1.AddEmitter(i, configs[i]);
+        mi->render.pe1.AddEmitter(i, configs[i]);
 }
 
 // ============================================================================
@@ -194,6 +205,7 @@ void RenderService::UpdateAttachments() {
             uint32_t childH = scene_->NextActorIdRef()++;
             auto child = std::make_unique<Actor>();
             child->handle = childH;
+            child->parent = mi->handle;
             child->isPE1Child = true;  // reuse the flag for "child model"
             child->pe1Depth = mi->pe1Depth + 1;
             child->animation.Bind(tmpl->adapter);
@@ -230,7 +242,7 @@ void RenderService::stageModelFromTemplate(Actor* mi,
     // First-instance uploads still need the pixel data to seed the cache; we
     // detect that case via IsTextureCached(sharedKey) at staging time.
     for (auto& tex : tmpl->textures) {
-        StagedTexture& st = mi->stagedTextures[tex.textureId];
+        StagedTexture& st = mi->render.stagedTextures[tex.textureId];
         st.width = tex.width; st.height = tex.height;
         st.mipLevels = tex.mipLevels;
         st.replaceableId = tex.replaceableId;
@@ -246,7 +258,7 @@ void RenderService::stageModelFromTemplate(Actor* mi,
     }
     // Stage materials
     for (auto& mat : tmpl->materials) {
-        StagedMaterial& sm = mi->stagedMaterials[mat.materialId];
+        StagedMaterial& sm = mi->render.stagedMaterials[mat.materialId];
         sm.layers        = mat.layers;
         sm.priorityPlane = mat.priorityPlane;
         sm.sortOrder     = mat.sortOrder;
@@ -258,12 +270,12 @@ void RenderService::stageModelFromTemplate(Actor* mi,
     // Per-instance state (currentMatrices_/offsetMatrices_) is sized internally
     // by SetSharedData; the heavy weight + layout tables live on the template.
     if (tmpl->skinningData && tmpl->skinningData->nodeCount > 0) {
-        mi->skinning.SetSharedData(tmpl->skinningData);
+        mi->render.skinning.SetSharedData(tmpl->skinningData);
         // Hierarchy metadata (billboardFlags, nodePivots, nodeParents) is borrowed
         // straight from tmpl->skeleton at read time; ApplyBoneMatrices picks
         // template-or-owned via mi.sourceTemplate. Leaving the per-instance
         // vectors empty saves ~few KB/instance on heavy skeletons.
-        mi->skinDirty = true;
+        mi->render.skinDirty = true;
     }
     // PE2 particles — registered directly with the service (no legacy path).
     for (int i = 0; i < (int)tmpl->pe2Configs.size(); i++) {
@@ -276,15 +288,15 @@ void RenderService::stageModelFromTemplate(Actor* mi,
                                              static_cast<ReplaceableKind>(pcfg.replaceableId));
         }
     }
-    mi->pe2State.resize(tmpl->pe2Configs.size());
+    mi->render.pe2State.resize(tmpl->pe2Configs.size());
     // Ribbons
     for (int i = 0; i < (int)tmpl->ribbonConfigs.size(); i++)
-        mi->ribbons.AddEmitter(i, tmpl->ribbonConfigs[i]);
+        mi->render.ribbons.AddEmitter(i, tmpl->ribbonConfigs[i]);
     // PE1 (recursive, only if depth allows)
     for (int i = 0; i < (int)tmpl->pe1Configs.size(); i++)
-        mi->pe1.AddEmitter(i, tmpl->pe1Configs[i]);
+        mi->render.pe1.AddEmitter(i, tmpl->pe1Configs[i]);
 
-    mi->stagedDirty = true;
+    mi->render.stagedDirty = true;
 }
 
 // ============================================================================
@@ -303,21 +315,22 @@ void RenderService::UpdatePE1(float dt) {
         auto* mi = getModel(h);
         if (!mi) continue;
         if (mi->pe1Depth >= SceneManager::kMaxPE1Depth) continue;
-        if (!mi->pe1.HasEmitters()) continue;
+        if (!mi->render.pe1.HasEmitters()) continue;
         if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent — skip sub-emitter sim
 
-        auto result = mi->pe1.Simulate(dt, scene_->NextActorIdRef());
+        auto result = mi->render.pe1.Simulate(dt, scene_->NextActorIdRef());
 
         // Birth: create child Actor from template
         for (auto& birth : result.born) {
             if (scene_->PE1InstanceCountRef() >= SceneManager::kMaxPE1Instances) continue;
-            auto* cfg = mi->pe1.GetConfig(birth.emitterId);
+            auto* cfg = mi->render.pe1.GetConfig(birth.emitterId);
             if (!cfg) continue;
             auto tmpl = scene_->Templates().GetOrLoadAsync(cfg->modelPath);
             if (!tmpl) continue;
 
             auto child = std::make_unique<Actor>();
             child->handle = birth.handle;
+            child->parent = mi->handle;
             child->worldTransform = birth.worldTransform;
             child->isPE1Child = true;
             child->pe1Depth = mi->pe1Depth + 1;
@@ -403,7 +416,7 @@ void RenderService::UpdateMaterials(uint32_t handle, const std::vector<MaterialD
     if (!mi) return;
 
     for (auto& tex : textures) {
-        StagedTexture& st = mi->stagedTextures[tex.textureId];
+        StagedTexture& st = mi->render.stagedTextures[tex.textureId];
         st.width  = tex.width;
         st.height = tex.height;
         st.mipLevels = tex.mipLevels;
@@ -418,13 +431,13 @@ void RenderService::UpdateMaterials(uint32_t handle, const std::vector<MaterialD
     }
 
     for (auto& mat : materials) {
-        StagedMaterial& sm = mi->stagedMaterials[mat.materialId];
+        StagedMaterial& sm = mi->render.stagedMaterials[mat.materialId];
         sm.layers        = mat.layers;
         sm.priorityPlane = mat.priorityPlane;
         sm.sortOrder     = mat.sortOrder;
     }
 
-    mi->stagedDirty = true;
+    mi->render.stagedDirty = true;
 }
 
 void RenderService::UpdateMaterials(const std::vector<MaterialData>& materials,
@@ -451,7 +464,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
 
     // Textures → staged
     for (auto& tex : textures) {
-        StagedTexture& st = mi->stagedTextures[tex.textureId];
+        StagedTexture& st = mi->render.stagedTextures[tex.textureId];
         st.width  = tex.width;
         st.height = tex.height;
         st.mipLevels = tex.mipLevels;
@@ -468,7 +481,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
 
     // Materials → staged
     for (auto& mat : materials) {
-        StagedMaterial& sm = mi->stagedMaterials[mat.materialId];
+        StagedMaterial& sm = mi->render.stagedMaterials[mat.materialId];
         sm.layers        = mat.layers;
         sm.priorityPlane = mat.priorityPlane;
         sm.sortOrder     = mat.sortOrder;
@@ -476,7 +489,7 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
 
     // Meshes → staged
     for (auto& mesh : meshes) {
-        StagedGeoset& sg = mi->stagedGeosets[mesh.geosetId];
+        StagedGeoset& sg = mi->render.stagedGeosets[mesh.geosetId];
         sg.materialId = mesh.materialId;
         sg.lod        = mesh.lod;
         int vc = (int)mesh.positions.size();
@@ -498,11 +511,11 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
         for (int i = 0; i < skeleton.nodeCount; i++) {
             memcpy(&invBindFlat[i * 16], &skeleton.inverseBindMatrices[i].data[0][0], 64);
         }
-        mi->skinning.SetSkeleton(skeleton.nodeCount, invBindFlat.data());
-        mi->billboardFlags = skeleton.billboardFlags;
-        mi->nodePivots         = skeleton.nodePivots;
-        mi->nodeParents        = skeleton.nodeParents;
-        mi->skinDirty = true;
+        mi->render.skinning.SetSkeleton(skeleton.nodeCount, invBindFlat.data());
+        mi->render.billboardFlags = skeleton.billboardFlags;
+        mi->render.nodePivots         = skeleton.nodePivots;
+        mi->render.nodeParents        = skeleton.nodeParents;
+        mi->render.skinDirty = true;
     }
 
     // Skin weights (per-geoset: boneIdx are LOCAL palette slots).
@@ -516,13 +529,13 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
                 weights[v * 4 + j] = sw.influences[v].weight[j];
             }
         }
-        mi->skinning.SetGeosetWeights(sw.geosetId, vc, boneIdx.data(), weights.data());
+        mi->render.skinning.SetGeosetWeights(sw.geosetId, vc, boneIdx.data(), weights.data());
         GeosetPaletteLayout layout;
         layout.subsetNodeIndices = sw.subsetNodeIndices;
         layout.groupAverages     = sw.groupAverages;
-        mi->skinning.SetGeosetLayout(sw.geosetId, std::move(layout));
+        mi->render.skinning.SetGeosetLayout(sw.geosetId, std::move(layout));
     }
-    if (!skinWeights.empty()) mi->skinDirty = true;
+    if (!skinWeights.empty()) mi->render.skinDirty = true;
 
     // Particles — register with the PE2 service. The legacy ParticleEmitterConfig
     // boundary type stays (external API), but it's translated to the service's
@@ -537,11 +550,11 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
                                              static_cast<ReplaceableKind>(pcfg.replaceableId));
         }
     }
-    mi->pe2State.resize(particleConfigs.size());
+    mi->render.pe2State.resize(particleConfigs.size());
 
     // Ribbons
     for (size_t i = 0; i < ribbonConfigs.size(); i++) {
-        mi->ribbons.AddEmitter((int)i, ribbonConfigs[i]);
+        mi->render.ribbons.AddEmitter((int)i, ribbonConfigs[i]);
     }
 
     // Collision shapes
@@ -552,10 +565,10 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
         shape.vmax   = cs.vertices[1];
         shape.radius = cs.radius;
         shape.pivot  = cs.pivot;
-        mi->collisionShapes.push_back(shape);
+        mi->render.collisionShapes.push_back(shape);
     }
 
-    mi->stagedDirty = true;
+    mi->render.stagedDirty = true;
     if (scene_->FocusRef() == 0) scene_->FocusRef() = handle;
     scene_->Actors().All()[handle] = std::move(mi);
     return handle;
@@ -621,7 +634,7 @@ uint32_t RenderService::AddModelByPath(const std::string& mdxPath) {
             shape.vmax   = cs.vertices[1];
             shape.radius = cs.radius;
             shape.pivot  = cs.pivot;
-            mi->collisionShapes.push_back(shape);
+            mi->render.collisionShapes.push_back(shape);
         }
         scene_->Actors().All()[handle] = std::move(mi);
     }
@@ -679,11 +692,11 @@ void RenderService::ApplyBoneMatrices(Actor& mi, const FrameState& state) {
     // instance was staged from one (saves a per-instance copy on heavy models),
     // else read from the per-instance owned vectors populated by AddModel.
     const std::vector<uint32_t>& billboardFlags = mi.sourceTemplate
-        ? mi.sourceTemplate->skeleton.billboardFlags : mi.billboardFlags;
+        ? mi.sourceTemplate->skeleton.billboardFlags : mi.render.billboardFlags;
     const std::vector<Vector3f>& nodePivots = mi.sourceTemplate
-        ? mi.sourceTemplate->skeleton.nodePivots : mi.nodePivots;
+        ? mi.sourceTemplate->skeleton.nodePivots : mi.render.nodePivots;
     const std::vector<int>& nodeParents = mi.sourceTemplate
-        ? mi.sourceTemplate->skeleton.nodeParents : mi.nodeParents;
+        ? mi.sourceTemplate->skeleton.nodeParents : mi.render.nodeParents;
 
     std::vector<float> worldFlat(bc * 16);
     for (int i = 0; i < bc; i++) {
@@ -843,7 +856,7 @@ void RenderService::ApplyBoneMatrices(Actor& mi, const FrameState& state) {
 
         memcpy(&worldFlat[i * 16], &boneM.data[0][0], 64);
     }
-    mi.skinning.UpdateNodeMatrices(bc, worldFlat.data());
+    mi.render.skinning.UpdateNodeMatrices(bc, worldFlat.data());
 }
 
 // ApplyGeosetStates / ApplyLayerStates moved to RenderModel — they're pure
@@ -877,7 +890,7 @@ void RenderService::ApplyParticleFrameStates(Actor& mi, const FrameState& state)
         // rising edge of emissionRate.
         em->SetVisible(ps.visibility > 0.0f && !ps.squirting);
         if (ps.squirting) {
-            auto& st = mi.pe2State[i];
+            auto& st = mi.render.pe2State[i];
             if (st.emissionValid) {
                 if (ps.emissionRate > 0.02f && st.lastEmissionRate <= 0.02f)
                     em->SetSquirtPending(true);
@@ -943,15 +956,15 @@ void RenderService::ApplyFrameState(uint32_t handle, const FrameState& state, in
     if (!mi) return;
 
     ApplyBoneMatrices(*mi, state);
-    mi->ApplyGeosetStates(state);
-    mi->ApplyLayerStates(state);
+    mi->render.ApplyGeosetStates(state);
+    mi->render.ApplyLayerStates(state);
     ApplyParticleFrameStates(*mi, state);
-    mi->ApplyRibbonFrameStates(state);
-    mi->ApplyPE1FrameStates(state);
+    mi->render.ApplyRibbonFrameStates(state);
+    mi->render.ApplyPE1FrameStates(state);
 
     // Collision transforms (simple 1:1 copy)
-    for (int i = 0; i < (int)state.collisionTransforms.size() && i < (int)mi->collisionShapes.size(); i++)
-        mi->collisionShapes[i].transform = state.collisionTransforms[i];
+    for (int i = 0; i < (int)state.collisionTransforms.size() && i < (int)mi->render.collisionShapes.size(); i++)
+        mi->render.collisionShapes[i].transform = state.collisionTransforms[i];
 
     ApplyAttachmentStates(*mi, state, timeMs);
 
@@ -1018,7 +1031,11 @@ void RenderService::ActivateCameraPreset(int idx) {
     // often (0,0,0) for portrait cameras).
     if (p.animator) {
         int seqStart = 0, seqEnd = 0;
-        int seqIdx = scene_->ActiveSequenceIndex();
+        // Camera animator follows the focus actor's currently-playing sequence;
+        // the sequence range table is set externally to mirror that actor's
+        // MDX timeline.
+        Actor* focus  = scene_->FocusActor();
+        int    seqIdx = focus ? focus->animation.ActiveSequenceIndex() : 0;
         const auto& ranges = scene_->SequenceRanges();
         if (seqIdx >= 0 && seqIdx < (int)ranges.size()) {
             seqStart = ranges[seqIdx].startMs;
@@ -1058,12 +1075,24 @@ void RenderService::SetSequenceRanges(
 }
 
 int RenderService::GetActiveSequenceIndex() const {
-    return scene_->ActiveSequenceIndex();
+    // Reads the FOCUS actor's per-actor animation cursor. Other actors run
+    // independent animations through their own AnimationDriver — this method
+    // is the toolbar combo's view of the currently-focused actor only.
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    Actor* focus = scene_->FocusActor();
+    return focus ? focus->animation.ActiveSequenceIndex() : 0;
 }
 
 bool RenderService::IsCameraLocked() const   { return scene_->CameraLocked(); }
 void RenderService::SetCameraLocked(bool x)  { scene_->SetCameraLocked(x); }
-void RenderService::SetActiveSequence(int i) { scene_->SetActiveSequenceIndex(i); }
+void RenderService::SetActiveSequence(int i) {
+    // UI picker write — propagates to the FOCUS actor's animation driver.
+    // Other actors are unaffected (they manage their own sequences).
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    if (Actor* focus = scene_->FocusActor()) {
+        focus->animation.SetActiveSequenceIndex(i);
+    }
+}
 Vector3f RenderService::GetCameraPosition() const { return scene_->Camera().GetSource(); }
 
 std::optional<std::vector<std::string>> RenderService::TakePendingSequences() {
@@ -1151,10 +1180,10 @@ void RenderService::GetFrameStats(int& geosets, int& textures, int& nodes,
     geosets = textures = nodes = particles = segments = 0;
     std::lock_guard<std::mutex> lock(dataMutex_);
     for (auto& [h, mi] : scene_->Actors().All()) {
-        geosets  += (int)mi->gpuGeosets.size();
-        textures += mi->textures ? (int)mi->textures->Size() : 0;
-        nodes    += mi->skinning.NodeCount();
-        segments += mi->ribbons.GetTotalSegmentCount();
+        geosets  += (int)mi->render.gpuGeosets.size();
+        textures += mi->render.textures ? (int)mi->render.textures->Size() : 0;
+        nodes    += mi->render.skinning.NodeCount();
+        segments += mi->render.ribbons.GetTotalSegmentCount();
     }
     particles += particleService_.TotalParticleCount();
 }
@@ -1164,8 +1193,8 @@ void RenderService::GetFrameStats(int& geosets, int& textures, int& nodes,
 // ============================================================================
 
 void RenderService::UploadStagedTextures(Actor& mi) {
-    if (!mi.textures) mi.textures = textures_->CreateModelScope();
-    for (auto& [id, st] : mi.stagedTextures) {
+    if (!mi.render.textures) mi.render.textures = textures_->CreateModelScope();
+    for (auto& [id, st] : mi.render.stagedTextures) {
         // Three-way dispatch:
         //   1. sharedKey set, pixels empty → adapter saw a cache hit
         //      and skipped decode. Borrow only.
@@ -1177,7 +1206,7 @@ void RenderService::UploadStagedTextures(Actor& mi) {
             // on the rare race where the entry was evicted between the
             // adapter's check and now; in that case Get(id) yields
             // Invalid and bind sites fall through to defaultTex.
-            if (mi.textures->BindShared(id, st.sharedKey, st.wrapFlags)
+            if (mi.render.textures->BindShared(id, st.sharedKey, st.wrapFlags)
                 == gfx::TextureHandle::Invalid) {
                 std::string msg = "[WDEX texture] eviction race for '";
                 msg += st.sharedKey;
@@ -1202,13 +1231,13 @@ void RenderService::UploadStagedTextures(Actor& mi) {
             .usage     = gfx::TextureUsage::ShaderResource,
         };
         if (st.sharedKey.empty()) {
-            mi.textures->Upload(id, desc, st.pixels.data(), st.wrapFlags);
+            mi.render.textures->Upload(id, desc, st.pixels.data(), st.wrapFlags);
         } else {
-            mi.textures->UploadShared(id, st.sharedKey, desc,
+            mi.render.textures->UploadShared(id, st.sharedKey, desc,
                                       st.pixels.data(), st.wrapFlags);
         }
     }
-    mi.stagedTextures.clear();
+    mi.render.stagedTextures.clear();
 }
 
 void RenderService::uploadTemplateGpu(ModelTemplate& tmpl) {
@@ -1297,14 +1326,14 @@ void RenderService::UploadStagedGeosets(Actor& mi) {
             gg.indexCount  = shared.indexCount;
             gg.vertexCount = shared.vertexCount;
             gg.hasSkinning = true;
-            if (shared.materialId >= 0 && shared.materialId < (int)mi.gpuMaterials.size())
-                gg.priorityPlane = mi.gpuMaterials[shared.materialId].cpu.priorityPlane;
-            mi.gpuGeosets.push_back(gg);
+            if (shared.materialId >= 0 && shared.materialId < (int)mi.render.gpuMaterials.size())
+                gg.priorityPlane = mi.render.gpuMaterials[shared.materialId].cpu.priorityPlane;
+            mi.render.gpuGeosets.push_back(gg);
         }
-        mi.stagedGeosets.clear();
+        mi.render.stagedGeosets.clear();
     } else {
         // Legacy per-instance buffer creation path (top-level Max/test load).
-        for (auto& [id, sg] : mi.stagedGeosets) {
+        for (auto& [id, sg] : mi.render.stagedGeosets) {
             GPUGeoset gg;
             gg.geosetId    = id;
             gg.materialId  = sg.materialId;
@@ -1314,11 +1343,11 @@ void RenderService::UploadStagedGeosets(Actor& mi) {
             gg.hasSkinning  = true; // all MDX geosets are skinned (v1200 weights or v800 vertex groups)
 
             // Copy priorityPlane from material for render sorting
-            if (sg.materialId >= 0 && sg.materialId < (int)mi.gpuMaterials.size())
-                gg.priorityPlane = mi.gpuMaterials[sg.materialId].cpu.priorityPlane;
+            if (sg.materialId >= 0 && sg.materialId < (int)mi.render.gpuMaterials.size())
+                gg.priorityPlane = mi.render.gpuMaterials[sg.materialId].cpu.priorityPlane;
 
             const uint32_t vbBytes = (uint32_t)(sizeof(Vertex) * sg.vertices.size());
-            const GeosetSkinInfo* skinInfo = mi.skinning.GetGeosetWeights(id);
+            const GeosetSkinInfo* skinInfo = mi.render.skinning.GetGeosetWeights(id);
 
             gg.unskinnedVb = gfx_->CreateBuffer({
                 .size  = vbBytes,
@@ -1351,9 +1380,9 @@ void RenderService::UploadStagedGeosets(Actor& mi) {
                 }, bv.data());
             }
 
-            mi.gpuGeosets.push_back(gg);
+            mi.render.gpuGeosets.push_back(gg);
         }
-        mi.stagedGeosets.clear();
+        mi.render.stagedGeosets.clear();
     }
 
     // Detect whether this model has a real LOD chain. Mirrors Previewd's
@@ -1361,9 +1390,9 @@ void RenderService::UploadStagedGeosets(Actor& mi) {
     // (and not the 0xFFFFFFFF always-render sentinel), there are multiple
     // LOD levels to select between. Classic / pre-v900 models leave all
     // lods at 0 and we pin selectedLOD to 0 so nothing gets filtered out.
-    mi.hasLods = false;
-    for (const auto& g : mi.gpuGeosets) {
-        if (g.lod != 0 && g.lod != 0xFFFFFFFFu) { mi.hasLods = true; break; }
+    mi.render.hasLods = false;
+    for (const auto& g : mi.render.gpuGeosets) {
+        if (g.lod != 0 && g.lod != 0xFFFFFFFFu) { mi.render.hasLods = true; break; }
     }
 }
 
@@ -1373,10 +1402,10 @@ void RenderService::CreateNodePalette(Actor& mi) {
     // matches the BLS cb_structs.slang ConstantBuffer layout. Per-geoset
     // subsets keep the uint8 ATTR6 indices in range for models with >256
     // bones total (e.g. nightelf_exp with 650+).
-    for (auto& geo : mi.gpuGeosets) {
+    for (auto& geo : mi.render.gpuGeosets) {
         if (geo.boneVb == gfx::BufferHandle::Invalid) continue;
         if (geo.bonePaletteCb != gfx::BufferHandle::Invalid) continue;
-        if (mi.skinning.GeosetPaletteSize(geo.geosetId) <= 0) continue;
+        if (mi.render.skinning.GeosetPaletteSize(geo.geosetId) <= 0) continue;
         geo.bonePaletteCb = gfx_->CreateBuffer({
             .size  = sizeof(bls::BonePaletteCb),
             .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
@@ -1391,7 +1420,7 @@ void RenderService::ProcessStagedData() {
     // Remove models marked for clear. Also drop their emitters from the PE2
     // service so stale entries don't accumulate across reloads.
     for (auto it = scene_->Actors().All().begin(); it != scene_->Actors().All().end(); ) {
-        if (it->second->stagedClear) {
+        if (it->second->render.stagedClear) {
             const uint32_t clearedHandle = it->first;
             if (replaceables_) replaceables_->UnregisterModel(*it->second);
             it->second->ReleaseGPU(*gfx_);
@@ -1404,25 +1433,25 @@ void RenderService::ProcessStagedData() {
 
     for (auto& [h, miPtr] : scene_->Actors().All()) {
         auto* mi = miPtr.get();
-        if (!mi->stagedDirty && !mi->skinDirty) continue;
+        if (!mi->render.stagedDirty && !mi->render.skinDirty) continue;
 
-        if (mi->stagedDirty) {
+        if (mi->render.stagedDirty) {
             UploadStagedTextures(*mi);
 
             // Copy materials (CPU data for render logic)
-            for (auto& [id, sm] : mi->stagedMaterials) {
-                if ((int)mi->gpuMaterials.size() <= id) mi->gpuMaterials.resize(id + 1);
-                mi->gpuMaterials[id].cpu = sm;
+            for (auto& [id, sm] : mi->render.stagedMaterials) {
+                if ((int)mi->render.gpuMaterials.size() <= id) mi->render.gpuMaterials.resize(id + 1);
+                mi->render.gpuMaterials[id].cpu = sm;
             }
-            mi->stagedMaterials.clear();
+            mi->render.stagedMaterials.clear();
 
             UploadStagedGeosets(*mi);
-            mi->stagedDirty = false;
+            mi->render.stagedDirty = false;
         }
 
-        if (mi->skinDirty) {
+        if (mi->render.skinDirty) {
             CreateNodePalette(*mi);
-            mi->skinDirty = false;
+            mi->render.skinDirty = false;
         }
     }
 }
@@ -1447,12 +1476,12 @@ void RenderService::UpdateAnimation() {
 
     for (auto& [h, miPtr] : scene_->Actors().All()) {
         auto* mi = miPtr.get();
-        if (!mi->skinning.HasSkeleton() || !mi->skinning.IsReady()) continue;
+        if (!mi->render.skinning.HasSkeleton() || !mi->render.skinning.IsReady()) continue;
         if (mi->parentVisibility <= 0.02f) continue;
 
-        mi->skinning.ComputeOffsetMatrices();
+        mi->render.skinning.ComputeOffsetMatrices();
 
-        for (auto& geo : mi->gpuGeosets) {
+        for (auto& geo : mi->render.gpuGeosets) {
             if (geo.bonePaletteCb == gfx::BufferHandle::Invalid) continue;
             if (auto bp = bls::ScopedCb<bls::BonePaletteCb>(gfx_.get(), geo.bonePaletteCb)) {
                 // Fill the geoset's compact palette: subset bones by local
@@ -1461,7 +1490,7 @@ void RenderService::UpdateAnimation() {
                 // staging array of Matrix44f and then pack to shader format.
                 constexpr int kSlots = bls::kMaxBones;
                 static thread_local Matrix44f staging[kSlots];
-                mi->skinning.ComputeGeosetPalette(geo.geosetId, staging, kSlots);
+                mi->render.skinning.ComputeGeosetPalette(geo.geosetId, staging, kSlots);
                 bls::BuildBonePalette(*bp, staging, kSlots);
             }
         }
@@ -1587,8 +1616,8 @@ bool RenderService::RenderParticlesBls() {
         {
             std::lock_guard<std::mutex> lock(dataMutex_);
             Actor* owner = getModel(dl.model);
-            if (owner && owner->textures && dl.material.textureId >= 0) {
-                const gfx::TextureHandle h = owner->textures->Get(dl.material.textureId);
+            if (owner && owner->render.textures && dl.material.textureId >= 0) {
+                const gfx::TextureHandle h = owner->render.textures->Get(dl.material.textureId);
                 if (h != gfx::TextureHandle::Invalid) {
                     cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, h);
                     hasModelTex = true;
@@ -1614,7 +1643,7 @@ void RenderService::UpdateRibbons(float dt) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     for (auto& [h, mi] : scene_->Actors().All()) {
         if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
-        mi->ribbons.Simulate(dt);
+        mi->render.ribbons.Simulate(dt);
     }
 }
 
@@ -1642,12 +1671,12 @@ void RenderService::RenderRibbons() {
 
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        if (!mi->ribbons.HasEmitters()) continue;
+        if (!mi->render.ribbons.HasEmitters()) continue;
         if (mi->parentVisibility <= 0.02f) continue;  // hidden by parent
         viewMat = scene_->Camera().GetViewMatrix();
-        stripResult = mi->ribbons.BuildStrips();
+        stripResult = mi->render.ribbons.BuildStrips();
         for (int eid : stripResult.emitterIds) {
-            auto* c = mi->ribbons.GetConfig(eid);
+            auto* c = mi->render.ribbons.GetConfig(eid);
             configs.push_back(c ? *c : RibbonEmitterConfig{});
         }
     }
@@ -1658,24 +1687,24 @@ void RenderService::RenderRibbons() {
     int vertCount = (int)verts.size();
 
     // Grow ribbon VB if needed
-    if (mi->ribbonVB == gfx::BufferHandle::Invalid || vertCount > mi->ribbonVBSize) {
-        gfx_->Destroy(mi->ribbonVB);
+    if (mi->render.ribbonVB == gfx::BufferHandle::Invalid || vertCount > mi->render.ribbonVBSize) {
+        gfx_->Destroy(mi->render.ribbonVB);
         int newSize = (std::max)(vertCount, 512);
         gfx::BufferDesc bd;
         bd.size  = (uint32_t)(sizeof(Vertex) * newSize);
         bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-        mi->ribbonVB = gfx_->CreateBuffer(bd);
-        mi->ribbonVBSize = newSize;
+        mi->render.ribbonVB = gfx_->CreateBuffer(bd);
+        mi->render.ribbonVBSize = newSize;
     }
 
     // Upload vertex data
-    void* mapped = gfx_->MapBuffer(mi->ribbonVB);
+    void* mapped = gfx_->MapBuffer(mi->render.ribbonVB);
     if (!mapped) continue;
     memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
-    gfx_->UnmapBuffer(mi->ribbonVB);
+    gfx_->UnmapBuffer(mi->render.ribbonVB);
 
     // Bind ribbon VB
-    cmd->BindVertexBuffer(0, mi->ribbonVB, sizeof(Vertex));
+    cmd->BindVertexBuffer(0, mi->render.ribbonVB, sizeof(Vertex));
 
     frame.view       = viewMat;
     frame.projection = scene_->Camera().ProjectionRH(aspect);
@@ -1685,7 +1714,7 @@ void RenderService::RenderRibbons() {
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
         for (int eid : emitterIds)
-            vertCounts.push_back(mi->ribbons.GetEmitterVertCount(eid));
+            vertCounts.push_back(mi->render.ribbons.GetEmitterVertCount(eid));
     }
 
     for (int ei = 0; ei < (int)emitterIds.size(); ei++) {
@@ -1721,7 +1750,7 @@ void RenderService::RenderRibbons() {
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, blsSdVsCb_);
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, blsSdPsCb_);
 
-        render_detail::BindLayerAlbedo(cmd, mi->textures.get(), cfg.textureId,
+        render_detail::BindLayerAlbedo(cmd, mi->render.textures.get(), cfg.textureId,
                                        textures_->GetDefaults().White, *samplers_);
 
         cmd->Draw(count, drawOffset);
@@ -2130,7 +2159,8 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
             const auto& preset = presets[activeIdx];
             if (preset.animator) {
                 int seqStart = 0, seqEnd = 0;
-                int idx = scene_->ActiveSequenceIndex();
+                Actor* focus = scene_->FocusActor();
+                int idx = focus ? focus->animation.ActiveSequenceIndex() : 0;
                 const auto& ranges = scene_->SequenceRanges();
                 if (idx >= 0 && idx < (int)ranges.size()) {
                     seqStart = ranges[idx].startMs;

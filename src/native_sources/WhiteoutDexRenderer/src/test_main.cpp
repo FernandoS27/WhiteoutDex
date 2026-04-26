@@ -5,6 +5,7 @@
 // ============================================================================
 
 #include "renderer/render_service.h"
+#include "renderer/scene_manager.h"
 #include "ui/render_window.h"
 #include "io/mdx_model_adapter.h"
 #include "gfx/gfx_types.h"
@@ -106,8 +107,10 @@ int wmain(int argc, wchar_t* argv[]) {
               << ", " << model.particleEmitters2.size() << " particles"
               << ", " << model.ribbonEmitters.size() << " ribbons\n";
 
-    // Open renderer (initializes the FileContentProvider which discovers WC3)
-    WhiteoutDex::RenderService renderer;
+    // Host owns SceneManager; renderer borrows it. Order matters: scene must
+    // outlive the renderer (the renderer holds a non-owning pointer).
+    WhiteoutDex::SceneManager scene;
+    WhiteoutDex::RenderService renderer(scene);
     WhiteoutDex::RenderWindow renderWindow(renderer);
     if (!renderWindow.Open(1024, 768, backend)) {
         std::cerr << "Failed to open renderer window\n";
