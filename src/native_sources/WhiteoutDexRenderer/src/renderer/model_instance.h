@@ -56,6 +56,16 @@ struct Actor {
     int sequenceStartTimeMs = 0;
     int prevActiveSequence  = -1;
 
+    // Eval scheduling. By default the renderer's per-tick
+    // EvaluateTopLevelActors walks every top-level actor on the render
+    // thread. Sources that read mutable host-thread state (the Max plugin's
+    // MaxSceneAdapter queries live Max scene graph nodes, which are *only*
+    // safe to touch from Max's UI thread) must opt out and let the host
+    // call RenderService::EvaluateAndApply explicitly from the right thread.
+    // SpawnActorFromLiveSource sets this; static MDX-backed actors leave it
+    // false and ride on the auto-evaluate path.
+    bool externallyDriven = false;
+
     // ---- Attachments with child models ----
     struct AttachmentSlot {
         AttachmentConfig config;

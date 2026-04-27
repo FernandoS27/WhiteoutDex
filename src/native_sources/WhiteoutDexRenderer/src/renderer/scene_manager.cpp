@@ -18,6 +18,10 @@ void SceneManager::Update(float dtSec) {
         // PE1 + attachment children run their own clock through BirthTimeMs;
         // EvaluatePE1Children does the loop math for them.
         if (mi->isPE1Child) continue;
+        // Externally-driven actors (Max plugin) own their own time cursor
+        // — the host writes SetTimeMs on TimeChanged. We don't auto-advance
+        // or re-loop because that would fight the externally-set time.
+        if (mi->externallyDriven) continue;
         if (!mi->animation.HasSource()) continue;
 
         const auto seqs = mi->animation.Sequences();

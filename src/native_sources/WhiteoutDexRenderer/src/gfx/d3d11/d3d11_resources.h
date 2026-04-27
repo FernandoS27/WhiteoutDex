@@ -196,6 +196,10 @@ struct SamplerEntry {
 struct SwapChainEntry {
     IDXGISwapChain*    swapChain = nullptr;
     ID3D11Texture2D*   backBuffer = nullptr;
+    // RTV-view DXGI format. May differ from the swap-chain resource format
+    // when a sRGB variant was requested; CreateSwapChainViews uses this on
+    // every CreateRenderTargetView call so writes are gamma-encoded.
+    DXGI_FORMAT        rtvDxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     // The back-buffer texture handle in the texture slot-map
     uint64_t           backBufferTexHandle = 0;
 

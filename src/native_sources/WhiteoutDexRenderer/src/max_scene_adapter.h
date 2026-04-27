@@ -34,7 +34,13 @@
 #define WC3_BITMAP_CLASS_ID      Class_ID(0x3a7c10f1, 0x5e2d4b08)
 #define WC3PARTICLES2_CLASS_ID   Class_ID(0xD9F33BC9, 0x7A0DA37A)
 #define WC3RIBBON_CLASS_ID       Class_ID(0x937AA064, 0x9EFFA3DA)
-#define WC3VERTEXMOD_CLASS_ID    Class_ID(0x234d68a2, 0x7204a141)
+// Wc3VertexMod is a MaxScript scripted plugin — its declared classID is NOT
+// what `Modifier::ClassID()` returns at the C++ layer (Max wraps scripted-
+// plugin ids opaquely). Use FindModifierByClassName with the plugin name
+// instead. This define is kept for symmetry with the other WC3*_CLASS_ID
+// macros but no production code path should resolve a scripted plugin
+// through it.
+#define WC3VERTEXMOD_CLASS_ID    Class_ID(0x7A1B2C07, 0x3D4E5F07)
 #define WC3PARTICLES1_CLASS_ID   Class_ID(0x12E4F5A6, 0x3B7C8D9E)
 #define WC3ATTACHPOINT_CLASS_ID  Class_ID(0x1136ac20, 0x6f9cfeb7)
 
@@ -198,6 +204,13 @@ private:
     static Object* GetBaseObject(INode* node);
     static Modifier* FindSkinModifier(INode* node);
     static Modifier* FindModifierByClassID(INode* node, Class_ID cid);
+    // Name-based modifier lookup. Required for scripted-plugin modifiers
+    // (Wc3VertexMod etc.) — Max's MaxScript-defined plugins do NOT expose
+    // their declared classID through Modifier::ClassID(), so the ClassID
+    // path silently misses every scripted plugin. The exporter takes the
+    // same approach in geoset_anim_extractor.cpp's findVertexMod().
+    static Modifier* FindModifierByClassName(INode* node,
+                                             const wchar_t* const* nameSubstrings);
     // Wc3Material reading helpers — shared between CollectMaterials, CollectScene,
     // ExtractWc3MaterialLayer, and RefreshMaterials.
     static int ReadWc3MaterialFlags(Mtl* mtl);

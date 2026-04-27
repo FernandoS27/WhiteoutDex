@@ -1049,10 +1049,25 @@ SwapChainHandle D3D12Device::CreateSwapChain(void* nativeWindowHandle,
     entry.hwnd        = static_cast<HWND>(nativeWindowHandle);
     entry.colorFormat = colorFormat;
 
+    // FLIP_DISCARD swap chains forbid _SRGB resource formats — the resource
+    // itself must be the linear/raw variant, but we apply the sRGB encoding
+    // on write through the RTV view. We accept the sRGB-suffixed format as
+    // input (so PSOs target the sRGB rtvFormat and the hardware encodes
+    // linear→sRGB on write) and strip the suffix here for the DXGI create
+    // call. Same trick Blizzard uses to satisfy DXGI while still rendering
+    // the tonemap output as gamma-encoded sRGB.
+    DXGI_FORMAT rtvDxgi      = ToDXGI(colorFormat);
+    DXGI_FORMAT resourceDxgi = rtvDxgi;
+    switch (rtvDxgi) {
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: resourceDxgi = DXGI_FORMAT_R8G8B8A8_UNORM; break;
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: resourceDxgi = DXGI_FORMAT_B8G8R8A8_UNORM; break;
+        default: break;
+    }
+
     DXGI_SWAP_CHAIN_DESC1 scd{};
     scd.Width       = static_cast<UINT>(width);
     scd.Height      = static_cast<UINT>(height);
-    scd.Format      = ToDXGI(colorFormat);
+    scd.Format      = resourceDxgi;
     scd.Stereo      = FALSE;
     scd.SampleDesc.Count = 1;
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -1073,6 +1088,10 @@ SwapChainHandle D3D12Device::CreateSwapChain(void* nativeWindowHandle,
 
     factory_->MakeWindowAssociation(entry.hwnd, DXGI_MWA_NO_ALT_ENTER);
 
+    // Cache the sRGB RTV format so resize re-creates RTVs with the same
+    // gamma-encoding behaviour.
+    entry.rtvDxgiFormat = rtvDxgi;
+
     // Pre-allocate the proxy texture slot (contents populated by RefreshProxyTexture).
     TextureEntry proxy{};
     proxy.ownsResource = false;
@@ -1082,11 +1101,16 @@ SwapChainHandle D3D12Device::CreateSwapChain(void* nativeWindowHandle,
     proxy.desc.usage  = TextureUsage::RenderTarget;
     entry.proxyTexHandle = textures_.Insert(std::move(proxy));
 
-    // Acquire per-buffer resources + RTVs.
+    // Acquire per-buffer resources + RTVs. We pass an explicit RTV desc so
+    // the view's format is the *sRGB* variant even though the resource is
+    // linear — gives us hardware linear→sRGB encoding on every write.
+    D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+    rtvDesc.Format        = rtvDxgi;
+    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     for (UINT i = 0; i < kFramesInFlight; ++i) {
         entry.swapChain->GetBuffer(i, IID_PPV_ARGS(&entry.backBuffers[i]));
         entry.backBufferRtvs[i] = rtvPool_.Allocate();
-        device_->CreateRenderTargetView(entry.backBuffers[i], nullptr, entry.backBufferRtvs[i]);
+        device_->CreateRenderTargetView(entry.backBuffers[i], &rtvDesc, entry.backBufferRtvs[i]);
     }
 
     entry.currentBackBufferIndex = entry.swapChain->GetCurrentBackBufferIndex();
@@ -1127,9 +1151,12 @@ void D3D12Device::ResizeSwapChain(SwapChainHandle h, int width, int height) {
                                                DXGI_FORMAT_UNKNOWN, 0);
     if (FAILED(hr)) return;
 
+    D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+    rtvDesc.Format        = sc->rtvDxgiFormat;
+    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     for (UINT i = 0; i < kFramesInFlight; ++i) {
         sc->swapChain->GetBuffer(i, IID_PPV_ARGS(&sc->backBuffers[i]));
-        device_->CreateRenderTargetView(sc->backBuffers[i], nullptr, sc->backBufferRtvs[i]);
+        device_->CreateRenderTargetView(sc->backBuffers[i], &rtvDesc, sc->backBufferRtvs[i]);
     }
     sc->currentBackBufferIndex = sc->swapChain->GetCurrentBackBufferIndex();
 

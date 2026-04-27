@@ -5,6 +5,7 @@
 #include "mdx_model_adapter.h"
 #include "content_provider.h"
 #include "team_glow_data.h"
+#include "texture_image_usage.h"
 #include "renderer/model_source_utils.h"
 #include <cmath>
 #include <cstdio>
@@ -304,6 +305,11 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
             gfxFmt = tex.isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB
                                   : gfx::Format::R8G8B8A8_UNORM;
         }
+        // Engine policy: filename-suffix-driven sRGB / linear (mirrors
+        // CImageFile::DetermineImageUsage @ Preview 0x7ff609bad260).
+        // Ignores the file's stored DXGI flag — same behaviour as
+        // `CreateImageTexture`'s `(imageUsage - 1) > 1` override.
+        gfxFmt = ApplyTextureSrgbPolicy(gfxFmt, path);
         td.width     = (int)tex.width();
         td.height    = (int)tex.height();
         td.format    = gfxFmt;

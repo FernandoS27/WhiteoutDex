@@ -50,13 +50,16 @@ static int MaxTimeToMs(TimeValue t) {
     return (tpf > 0 && fps > 0) ? (int)((float)t / (float)tpf * 1000.0f / (float)fps) : 0;
 }
 
-// Push Max's externally-driven time onto the actor + the scene clock.
-// The render-thread Tick (inside RenderWindow) re-evaluates and applies
-// every frame; we just feed the cursor here.
-static void SyncTimeFromMax(int timeMs) {
-    if (!g_actor || !g_scene) return;
+// Push Max's externally-driven time onto the actor + scene clock, then run
+// eval+apply on Max's thread. MaxSceneAdapter::Evaluate reads live Max
+// scene state (node TMs, modifier params, vertex paint, materials) which is
+// only thread-safe to touch from Max's UI thread — the render-thread Tick
+// can't do this for us.
+static void EvalFromMax(int timeMs) {
+    if (!g_actor || !g_renderer || !g_scene) return;
     g_actor->animation.SetTimeMs(timeMs);
     g_scene->SetAnimationTime(timeMs);
+    g_renderer->EvaluateAndApply(*g_actor);
 }
 
 // ============================================================================
@@ -68,7 +71,7 @@ public:
         if (!g_running || !g_renderer || !g_actor) return;
         if (!g_renderWindow || !g_renderWindow->IsOpen()) return;
         g_lastTimeChangedTick = GetTickCount();
-        SyncTimeFromMax(MaxTimeToMs(t));
+        EvalFromMax(MaxTimeToMs(t));
     }
 };
 
@@ -89,15 +92,14 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
         g_renderer->UpdateMaterials(result.materials, result.textures);
     }
 
-    // Re-sync the cursor from Max only when the timeline is idle — picks
-    // up non-animated changes (vertex colors, modifiers, visibility toggles)
-    // by ensuring the next render-thread Tick re-evaluates against fresh
-    // adapter state. Skip when TimeChanged is actively firing so playback
-    // isn't fighting a duplicate cursor write.
+    // Re-evaluate when the timeline is idle — picks up non-animated
+    // changes (vertex paint, modifier toggles, visibility flips). Skip
+    // when TimeChanged is actively firing so playback isn't fighting a
+    // duplicate eval on the same frame.
     DWORD now = GetTickCount();
     if (now - g_lastTimeChangedTick > 1000) {
         Interface* ip = GetCOREInterface();
-        if (ip) SyncTimeFromMax(MaxTimeToMs(ip->GetTime()));
+        if (ip) EvalFromMax(MaxTimeToMs(ip->GetTime()));
     }
 }
 
@@ -247,10 +249,10 @@ Value* ndxStart_cf(Value** /*arg_list*/, int count)
     if (auto cameras = g_adapter->GetCameraPresets(); !cameras.empty())
         g_scene->SetCameraPresets(std::move(cameras));
 
-    // Restore Max's time and seed the actor cursor so the first render
-    // tick has something to evaluate before TimeChanged starts firing.
+    // Restore Max's time and run the initial eval so the model is visible
+    // before TimeChanged starts firing.
     ip->SetTime(savedTime, FALSE);
-    SyncTimeFromMax(MaxTimeToMs(ip->GetTime()));
+    EvalFromMax(MaxTimeToMs(ip->GetTime()));
 
     // Hook Max's timeline + start the polling timer for hot-reload.
     g_timeCallback = new NdxTimeCallback();

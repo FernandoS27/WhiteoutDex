@@ -6,6 +6,7 @@
 #include "max_scene_adapter.h"
 #include "io/team_glow_data.h"
 #include "io/content_provider.h"
+#include "io/texture_image_usage.h"
 #include "renderer/model_source_utils.h"
 
 #include <maxscript/maxscript.h>
@@ -232,6 +233,35 @@ Modifier* MaxSceneAdapter::FindModifierByClassID(INode* node, Class_ID cid) {
             if (mod && mod->ClassID() == cid) return mod;
         }
         objRef = dobj->GetObjRef();
+    }
+    return nullptr;
+}
+
+Modifier* MaxSceneAdapter::FindModifierByClassName(INode* node,
+                                                   const wchar_t* const* nameSubstrings) {
+    if (!node || !nameSubstrings) return nullptr;
+    Object* obj = node->GetObjectRef();
+    int safety = 32;  // bound the IDerivedObject chain so a self-referential
+                      // stack can't hang the walker (mirrors the exporter).
+    while (obj && safety-- > 0) {
+        if (obj->SuperClassID() != GEN_DERIVOB_CLASS_ID) break;
+        IDerivedObject* dobj = static_cast<IDerivedObject*>(obj);
+        const int n = dobj->NumModifiers();
+        if (n < 0 || n > 256) break;
+        for (int i = 0; i < n; i++) {
+            Modifier* mod = dobj->GetModifier(i);
+            if (!mod) continue;
+            MSTR cname;
+            mod->GetClassName(cname);
+            const wchar_t* nm = cname.data();
+            if (!nm) continue;
+            for (int k = 0; nameSubstrings[k]; k++) {
+                if (wcsstr(nm, nameSubstrings[k]) != nullptr) return mod;
+            }
+        }
+        Object* next = dobj->GetObjRef();
+        if (next == obj) break;  // self-reference guard
+        obj = next;
     }
     return nullptr;
 }
@@ -1138,8 +1168,16 @@ std::vector<TextureData> MaxSceneAdapter::GetTextures() {
         td.replaceableId = lt.replaceableId;
         td.pixels        = std::move(lt.rgba);
         // MaxSceneAdapter always produces RGBA8 (3ds Max bitmaps are
-        // decoded to 32-bit on import); new format field defaults match.
-        td.format        = gfx::Format::R8G8B8A8_UNORM;
+        // decoded to 32-bit on import). Apply the engine's filename-
+        // suffix-driven sRGB / linear policy on top — `_Diffuse` /
+        // `_Emissive` / `_IBL` / default get `_SRGB` SRVs, `_Normal` /
+        // `_ORM` / `Textures/Normal` / `Textures/ORM` stay linear.
+        // The original asset path is carried on lt.sharedKey for
+        // file-backed textures; procedural / sentinel textures have
+        // an empty key and get the default-sRGB policy. Mirrors
+        // `CImageFile::DetermineImageUsage` @ Preview 0x7ff609bad260.
+        td.format        = ApplyTextureSrgbPolicy(gfx::Format::R8G8B8A8_UNORM,
+                                                  lt.sharedKey);
         td.width         = lt.width;
         td.height        = lt.height;
         // sharedKey was stamped at LoadTexture time (file-backed slots
@@ -1510,7 +1548,17 @@ FrameState MaxSceneAdapter::Evaluate(int /*sequenceIdx*/, int timeMs, int /*glob
         // separately via layerAlphas so each layer can fade independently.
         state.geosetAlphas[i] = std::clamp(node->GetVisibility(t), 0.0f, 1.0f);
 
-        if (Modifier* mod = FindModifierByClassID(node, WC3VERTEXMOD_CLASS_ID)) {
+        // Wc3VertexMod is a MaxScript scripted plugin. Max does NOT route
+        // its declared classID through Modifier::ClassID() — the C++ value
+        // is some opaque internal id. The exporter hits the same wall and
+        // resolves it by name (geoset_anim_extractor.cpp::isWc3VertexMod).
+        static const wchar_t* kWc3VertexModNames[] = {
+            L"Wc3VertexMod",          // MaxScript classOf observed
+            L"Wdx_Wc3VertexMod",      // raw plugin internal name
+            L"Wc3 Vertex Color",      // plugin "name:" attribute
+            nullptr
+        };
+        if (Modifier* mod = FindModifierByClassName(node, kWc3VertexModNames)) {
             if (PB2BoolOr(mod, L"UsesColor", t, false)) {
                 Color col(1, 1, 1); PB2Color(mod, L"VertexColor", t, col);
                 state.geosetColors[i] = {col.r, col.g, col.b};

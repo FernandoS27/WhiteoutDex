@@ -341,6 +341,7 @@ void RenderService::EvaluateTopLevelActors() {
         const int now = scene_->GetAnimationTime();
         for (auto& [h, mi] : scene_->Actors().All()) {
             if (mi->isPE1Child) continue;                 // PE1/attachment children -> EvaluatePE1Children
+            if (mi->externallyDriven) continue;           // host calls EvaluateAndApply on its own thread
             if (!mi->animation.HasSource()) continue;
             const int localTime  = mi->animation.TimeMs();         // already loop-clamped by SceneManager::Update
             const int globalTime = now - mi->animation.BirthTimeMs();
@@ -677,6 +678,12 @@ Actor* RenderService::SpawnActorFromLiveSource(std::shared_ptr<IModelSource> sou
     // adapter (Max scene state, etc.) every tick.
     actor->animation.Bind(source);
 
+    // Live sources (e.g. Max plugin's MaxSceneAdapter) read mutable
+    // host-thread-only state during Evaluate(). Mark the actor so the
+    // render-thread auto-eval skips it; the host calls EvaluateAndApply
+    // explicitly from the right thread.
+    actor->externallyDriven = true;
+
     // Fold attachment + PE1 configs into the spawn so callers don't have to
     // chase the actor handle just to set them.
     if (!data.attachmentConfigs.empty())
@@ -684,7 +691,46 @@ Actor* RenderService::SpawnActorFromLiveSource(std::shared_ptr<IModelSource> sou
     if (!data.pe1Configs.empty())
         SetPE1Configs(h, data.pe1Configs);
 
+    // Auto-activate HD when any material layer ships a non-SD shader
+    // (Layer::ShaderType: 0=SD, 1=HD, 2=SDOnHD, 24=Crystal). Matches the
+    // path-based LoadModelByPath. Without this the Max plugin's HD models
+    // render through the SD pipeline — HD swatch (t4 team colour) is never
+    // bound, IBL/PBR is skipped, and HD-only material slots are ignored.
+    bool anyNonSd = false;
+    for (auto& mat : data.materials) {
+        for (auto& layer : mat.layers) {
+            if (layer.shaderId != 0) { anyNonSd = true; break; }
+        }
+        if (anyNonSd) break;
+    }
+    const RenderMode desired = anyNonSd ? RenderMode::HD : RenderMode::SD;
+    if (renderMode_ != desired) {
+        renderMode_ = desired;
+        renderModeDirty_ = true;
+    }
+
     return actor;
+}
+
+// ============================================================================
+// Host-thread eval+apply for externally-driven actors. Reads the actor's
+// IAnimationSource (which may touch host-only state — Max scene graph, etc.)
+// then funnels the FrameState through the per-handle ApplyFrameState.
+// ============================================================================
+void RenderService::EvaluateAndApply(Actor& actor) {
+    if (!actor.animation.HasSource()) return;
+    Vector3f camPos;
+    int      globalTime;
+    {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        camPos     = scene_->Camera().GetSource();
+        globalTime = scene_->GetAnimationTime() - actor.animation.BirthTimeMs();
+    }
+    const int localTime = actor.animation.TimeMs();
+    FrameState fs = actor.animation.Source()->Evaluate(
+        actor.animation.ActiveSequenceIndex(), localTime, globalTime,
+        actor.worldTransform, camPos);
+    ApplyFrameState(actor.handle, fs, localTime);
 }
 
 // ============================================================================
@@ -1842,6 +1888,76 @@ bool RenderService::InitBlsShaders() {
         bls::GxShaderID::HD, "HD", "HD"
     });
 
+    // Tonemap pair (engine slot 14 = Sprite VS + Tonemap PS). Both come
+    // through the BLS shader cache. The catalog's Load() expects matched
+    // mat-shader names so we acquire each stage directly here.
+    blsSpriteVs_  = blsShaderCache_->Acquire(gfx::ShaderStage::Vertex, "sprite");
+    blsTonemapPs_ = blsShaderCache_->Acquire(gfx::ShaderStage::Pixel,  "tonemap");
+
+    // Tonemap PSO. Sprite VS is a passthrough — `o0.xyz = v0.xyz; o0.w
+    // = 1`, copies TEXCOORD0 — so the VB has to ship vertices already
+    // in clip space. Three of them form a screen-covering triangle (the
+    // standard "fullscreen triangle" trick — bigger than the screen,
+    // avoids the diagonal seam of a two-tri quad). Sprite VS uses
+    // semantic name "ATTR" with index 0 for position and index 3 for
+    // texcoord, matching the engine's PNCT0 vertex layout in
+    // GxuFullscreenRenderHelper::Render @0x7ff609adf100 (we just don't
+    // bother shipping NORMAL/COLOR slots that the VS ignores).
+    if (blsSpriteVs_ && !blsSpriteVs_->permuteHandles.empty()
+        && blsTonemapPs_ && !blsTonemapPs_->permuteHandles.empty())
+    {
+        struct TonemapVertex {
+            float x, y, z;     // ATTR0 — clip-space position
+            float u, v;        // ATTR3 — sample uv
+        };
+        // Fullscreen triangle. Vertices outside [-1,1] get clipped, the
+        // visible portion covers the entire viewport with UV in [0,1]
+        // for the inscribed area.
+        static const TonemapVertex kTonemapVerts[3] = {
+            // pos=(x, y, z=0)            uv=(u, v)
+            { -1.0f,  1.0f, 0.0f,         0.0f, 0.0f },
+            {  3.0f,  1.0f, 0.0f,         2.0f, 0.0f },
+            { -1.0f, -3.0f, 0.0f,         0.0f, 2.0f },
+        };
+        tonemapVB_ = gfx_->CreateBuffer({
+            .size  = sizeof(kTonemapVerts),
+            .usage = gfx::BufferUsage::Vertex,
+        }, kTonemapVerts);
+
+        const gfx::InputElement spriteInput[] = {
+            {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0},
+            {"ATTR", 3, gfx::Format::R32G32_FLOAT,    12},
+        };
+        gfx::GraphicsPipelineDesc tm;
+        tm.vs              = blsSpriteVs_->permuteHandles[0];
+        tm.ps              = blsTonemapPs_->permuteHandles[0];
+        tm.inputLayout     = spriteInput;
+        tm.topology        = gfx::PrimitiveTopology::TriangleList;
+        tm.blend.enable    = false;
+        tm.depthStencil.depthTest  = false;
+        tm.depthStencil.depthWrite = false;
+        tm.rasterizer.cull     = gfx::CullMode::None;
+        tm.rasterizer.frontCCW = true;
+        tm.rtvFormat       = gfx::Format::R8G8B8A8_UNORM_SRGB;
+        tm.dsvFormat       = gfx::Format::D24_UNORM_S8_UINT;
+        tonemapPSO_ = gfx_->CreateGraphicsPipeline(tm);
+
+        // PS-side resources. b1 = exposure (16 B), s0 = linear-clamp
+        // sampler bound at draw time. The HDR texture (t0) is per-target
+        // and bound inside RunTonemapPass.
+        tonemapPsCb_ = gfx_->CreateBuffer({
+            .size  = 16,
+            .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        });
+        gfx::SamplerDesc sd;
+        sd.minFilter = gfx::Filter::Linear;
+        sd.magFilter = gfx::Filter::Linear;
+        sd.addressU  = gfx::AddressMode::Clamp;
+        sd.addressV  = gfx::AddressMode::Clamp;
+        sd.addressW  = gfx::AddressMode::Clamp;
+        tonemapSampler_ = gfx_->CreateSampler(sd);
+    }
+
     // Allocate per-draw dynamic CBs sized for worst-case 8-light payloads.
     // Path A (SD): 208+48*8 = 592 B for VS, 48 B for PS.
     // Path B (HD/SD_on_HD): 288 B for VS, 336+64*8 = 848 B for PS.
@@ -1884,13 +2000,19 @@ bool RenderService::InitBlsShaders() {
     // swaps at runtime via the UI combo.
     SetEnvProbe(ibl::kPortraitIblPath);
 
-    // All three BLS programs are required -- SD mesh draws route through
-    // blsSdProgram_; HD-mode mesh draws pick blsHdProgram_ (pure HD/
-    // Crystal materials) or blsSdOnHdProgram_ (legacy SD assets rendered
-    // under HD mode).
+    // All four BLS chains are required:
+    //   * SD mesh draws route through blsSdProgram_;
+    //   * HD-mode mesh draws pick blsHdProgram_ (pure HD/Crystal) or
+    //     blsSdOnHdProgram_ (legacy SD under HD mode);
+    //   * tonemap.bls is the LDR resolve at the end of every frame —
+    //     all 3D PSOs target RGBA16F, so without the tonemap pass the
+    //     back-buffer never gets written and the user sees nothing.
     return blsSdProgram_     != nullptr
         && blsSdOnHdProgram_ != nullptr
-        && blsHdProgram_     != nullptr;
+        && blsHdProgram_     != nullptr
+        && blsSpriteVs_      != nullptr
+        && blsTonemapPs_     != nullptr
+        && tonemapPSO_       != gfx::PipelineHandle::Invalid;
 }
 
 void RenderService::SetEnvProbe(const std::string& relPath) {
@@ -1924,6 +2046,12 @@ void RenderService::ShutdownBlsShaders() {
     blsSdProgram_     = nullptr;
     blsSdOnHdProgram_ = nullptr;
     blsHdProgram_     = nullptr;
+    // Sprite VS + tonemap PS are reference-counted by the BLS shader
+    // cache; the ReleaseAll() below tears down their handles. Clear
+    // the borrowed pointers so a subsequent InitBlsShaders() doesn't
+    // read a dangling entry.
+    blsSpriteVs_      = nullptr;
+    blsTonemapPs_     = nullptr;
     if (gfx_) {
         gfx_->Destroy(blsSdVsCb_);     blsSdVsCb_     = gfx::BufferHandle::Invalid;
         gfx_->Destroy(blsSdPsCb_);     blsSdPsCb_     = gfx::BufferHandle::Invalid;
@@ -1956,10 +2084,11 @@ RenderTargetId RenderService::CreateSwapChainTarget(void* nativeWindowHandle, in
     target.swap  = gfx_->CreateSwapChain(nativeWindowHandle, w, h);
     if (target.swap == gfx::SwapChainHandle::Invalid) return 0;
 
-    target.color = gfx_->GetSwapChainBackBuffer(target.swap);
-    target.depth = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
-    target.width = w;
-    target.height = h;
+    target.color    = gfx_->GetSwapChainBackBuffer(target.swap);
+    target.hdrColor = gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
+    target.depth    = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
+    target.width    = w;
+    target.height   = h;
 
     RenderTargetId id = target.id;
     targets_[id] = target;
@@ -1970,11 +2099,12 @@ RenderTargetId RenderService::CreateOffscreenTarget(int w, int h) {
     if (!gfx_) return 0;
 
     RenderTarget target;
-    target.id    = nextTargetId_++;
-    target.color = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM);
-    target.depth = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
-    target.width = w;
-    target.height = h;
+    target.id       = nextTargetId_++;
+    target.color    = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM);
+    target.hdrColor = gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
+    target.depth    = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
+    target.width    = w;
+    target.height   = h;
 
     if (target.color == gfx::TextureHandle::Invalid) return 0;
 
@@ -1992,6 +2122,7 @@ void RenderService::DestroyRenderTarget(RenderTargetId id) {
     } else {
         gfx_->Destroy(t.color);
     }
+    gfx_->Destroy(t.hdrColor);
     gfx_->Destroy(t.depth);
     targets_.erase(it);
 }
@@ -2001,8 +2132,11 @@ void RenderService::ResizeRenderTarget(RenderTargetId id, int w, int h) {
     if (it == targets_.end() || !gfx_) return;
     auto& t = it->second;
 
-    // Destroy old depth
+    // Destroy old depth + HDR scene target. The HDR target is owned for
+    // every render target (swap-chain back-buffer and offscreen alike) so
+    // it always needs explicit re-creation on resize.
     gfx_->Destroy(t.depth);
+    gfx_->Destroy(t.hdrColor);
 
     if (t.swap != gfx::SwapChainHandle::Invalid) {
         gfx_->ResizeSwapChain(t.swap, w, h);
@@ -2012,9 +2146,10 @@ void RenderService::ResizeRenderTarget(RenderTargetId id, int w, int h) {
         t.color = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM);
     }
 
-    t.depth = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
-    t.width = w;
-    t.height = h;
+    t.hdrColor = gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
+    t.depth    = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
+    t.width    = w;
+    t.height   = h;
 }
 
 void RenderService::ResizePrimaryTarget(int w, int h) {
@@ -2032,11 +2167,19 @@ void RenderService::CleanupD3D() {
 
     // Destroy GFX resources
     if (gfx_) {
-        // Shaders + pipelines. Only line.slang lives here; the BLS stack
-        // owns its own shader cache (released in ShutdownBlsShaders above)
-        // and DebugRenderer owns the viewcube.slang pair.
+        // Shaders + pipelines. line.slang lives here; the BLS stack
+        // owns its own shader cache (released in ShutdownBlsShaders
+        // above) and DebugRenderer owns viewcube.slang.
         gfx_->Destroy(lineVS_);  gfx_->Destroy(linePS_);
         gfx_->Destroy(linePSO_);
+        gfx_->Destroy(tonemapPSO_);
+        gfx_->Destroy(tonemapVB_);
+        gfx_->Destroy(tonemapPsCb_);
+        gfx_->Destroy(tonemapSampler_);
+        tonemapPSO_     = gfx::PipelineHandle::Invalid;
+        tonemapVB_      = gfx::BufferHandle::Invalid;
+        tonemapPsCb_    = gfx::BufferHandle::Invalid;
+        tonemapSampler_ = gfx::SamplerHandle::Invalid;
 
         // Resources
         gfx_->Destroy(cbPerFrame_);
@@ -2062,6 +2205,7 @@ void RenderService::CleanupD3D() {
                 gfx_->DestroySwapChain(t.swap);
             else
                 gfx_->Destroy(t.color);
+            gfx_->Destroy(t.hdrColor);
             gfx_->Destroy(t.depth);
         }
     }
@@ -2078,9 +2222,10 @@ void RenderService::CleanupD3D() {
 bool RenderService::CreateShaders() {
     using namespace WhiteoutDex::Shaders;
 
-    // Only line.slang ships as a Slang-compiled asset on the RenderService
-    // side. viewcube.slang is loaded by DebugRenderer; BLS programs
-    // (sd/sd_on_hd/hd.bls) replace the former mesh/skin Slang family.
+    // Slang-compiled assets on the RenderService side: line.slang (debug
+    // overlay only). viewcube.slang is loaded by DebugRenderer; the
+    // Sprite VS for the tonemap pass comes from sprite.bls via the BLS
+    // shader cache (matches engine slot 14 = Sprite VS + Tonemap PS).
     lineVS_ = gfx_->CreateShader(gfx::ShaderStage::Vertex, kLineVS, sizeof(kLineVS));
     linePS_ = gfx_->CreateShader(gfx::ShaderStage::Pixel,  kLinePS, sizeof(kLinePS));
 
@@ -2101,8 +2246,10 @@ bool RenderService::CreatePipelines() {
     };
 
     // Line PSO (grid, collision wireframes, light markers, ViewCube edges).
-    // Opaque + default depth + no cull + LineList. Textured mesh work all
-    // flows through BLS — this is the one non-BLS pipeline left.
+    // Drawn into the HDR scene target alongside the mesh passes, so
+    // `rtvFormat` matches `kHdrSceneFormat` — the line color is just a
+    // float4 the PS writes verbatim, so ACES on the tonemap pass leaves
+    // it visually identical.
     GraphicsPipelineDesc desc;
     desc.vs          = lineVS_;
     desc.ps          = linePS_;
@@ -2112,8 +2259,12 @@ bool RenderService::CreatePipelines() {
     desc.depthStencil = {};  // defaults: test+write, LessEqual
     desc.rasterizer.cull     = CullMode::None;
     desc.rasterizer.frontCCW = true;
+    desc.rtvFormat   = kHdrSceneFormat;
     linePSO_ = gfx_->CreateGraphicsPipeline(desc);
 
+    // The tonemap PSO is built in InitBlsShaders — it can't be built
+    // here because its PS comes from the BLS shader cache, and
+    // InitBlsShaders runs *after* CreatePipelines in InitDevice.
     return linePSO_ != PipelineHandle::Invalid;
 }
 
@@ -2133,7 +2284,8 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     auto it = targets_.find(targetId);
     if (it == targets_.end()) return;
     auto& target = it->second;
-    if (target.color == gfx::TextureHandle::Invalid || !gfx_) return;
+    if (target.color    == gfx::TextureHandle::Invalid || !gfx_) return;
+    if (target.hdrColor == gfx::TextureHandle::Invalid)         return;
 
     // Re-sample the active MDX camera animator every frame.
     {
@@ -2165,8 +2317,21 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     }
 
     auto* cmd = gfx_->GetImmediateContext();
-    float clearColor[4] = {0.39f, 0.39f, 0.40f, 1.0f};  // Magos-matched gray
-    cmd->BeginRenderPass(target.color, target.depth, clearColor, 1.0f, 0);
+    // 3D pass: render every mesh / particle / ribbon / debug overlay into
+    // the linear-HDR scene target. The tonemap pass at the end of this
+    // function samples it and writes the LDR back-buffer. The BLS PSOs
+    // are baked for RGBA16F so the HDR target is the only valid sink for
+    // 3D draws — if tonemap.bls failed to load we'd have already bailed
+    // out of InitBlsShaders.
+    // Scene clear in linear space — written into the R11G11B10F HDR
+    // target, then ACES + sRGB-encode at tonemap time. The historic
+    // Magos value (0.39, 0.39, 0.40) is the LDR byte the previous
+    // non-sRGB pipeline produced; in linear-HDR-space those numbers
+    // come out far too bright after ACES rolloff. Pick a dark,
+    // slightly cool gray so the post-tonemap display photons sit in
+    // the "darker bluish gray" range the eye expects behind a model.
+    float clearColor[4] = {0.06f, 0.07f, 0.10f, 1.0f};
+    cmd->BeginRenderPass(target.hdrColor, target.depth, clearColor, 1.0f, 0);
     cmd->SetViewport({0, 0, (float)target.width, (float)target.height, 0, 1});
 
     Matrix44f view, proj;
@@ -2195,6 +2360,43 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     if (showCollisions_) debug_->RenderCollisions();
     if (showLights_)     debug_->RenderLightMarkers();
     debug_->RenderViewCube();
+    cmd->EndRenderPass();
+
+    // Tonemap pass: HDR scene → LDR back-buffer.
+    RunTonemapPass(target);
+}
+
+void RenderService::RunTonemapPass(const RenderTarget& target) {
+    if (tonemapPSO_ == gfx::PipelineHandle::Invalid) return;
+    auto* cmd = gfx_->GetImmediateContext();
+
+    // No depth — the tonemap pass is a single covering triangle and we
+    // disabled depth in the PSO. The clear color is a formality: the
+    // fullscreen triangle writes every pixel before Present. We pick
+    // black so the rare case of a degenerate viewport / invalid HDR
+    // sample doesn't flash a stale frame.
+    const float clearLdr[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    cmd->BeginRenderPass(target.color, gfx::TextureHandle::Invalid,
+                         clearLdr, 1.0f, 0);
+    cmd->SetViewport({0, 0, (float)target.width, (float)target.height, 0, 1});
+
+    // Upload exposure (b1, 16 B). Single-float payload padded to a float4
+    // to match TonemapPSPerDraw on the shader side.
+    if (tonemapPsCb_ != gfx::BufferHandle::Invalid) {
+        if (void* mapped = gfx_->MapBuffer(tonemapPsCb_)) {
+            float cb[4] = {tonemapExposure_, 0.0f, 0.0f, 0.0f};
+            std::memcpy(mapped, cb, sizeof(cb));
+            gfx_->UnmapBuffer(tonemapPsCb_);
+        }
+    }
+
+    cmd->BindPipeline(tonemapPSO_);
+    cmd->BindVertexBuffer(0, tonemapVB_, sizeof(float) * 5);  // pos float3 + uv float2 = 20 B
+    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.hdrColor);
+    cmd->BindSampler       (gfx::ShaderStage::Pixel, 0, tonemapSampler_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, tonemapPsCb_);
+    cmd->Draw(3, 0);  // fullscreen triangle, 3 verts from tonemapVB_
+    cmd->EndRenderPass();
 }
 
 void RenderService::Present(RenderTargetId targetId) {
@@ -2582,7 +2784,7 @@ public:
                     : bls::VertexLayoutKind::ParticleSD;
             }
             req.topology  = gfx::PrimitiveTopology::TriangleList;
-            req.rtvFormat = gfx::Format::R8G8B8A8_UNORM;
+            req.rtvFormat = RenderService::kHdrSceneFormat;
             req.dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
             req.lhClipSpace = true;  // HD/SD_on_HD stack (distinct PSO hash)
             auto pso = rs_.blsPsoBuilder_->GetOrBuild(req);

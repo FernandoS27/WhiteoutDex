@@ -26,6 +26,7 @@ namespace WhiteoutDex::bls {
     class BlsProgramCatalog;
     class BlsPsoBuilder;
     struct BlsProgram;
+    struct BlsShader;
 }
 
 namespace WhiteoutDex {
@@ -155,6 +156,14 @@ public:
     // draws keep sampling something valid.
     void SetEnvProbe(const std::string& relPath);
 
+    // Tonemap exposure — pre-ACES multiplier the engine uploads at PS b1
+    // (CGxDevice::ApplyTonemap @0x7ff609aff760 → tonemapPsCB1.exposure).
+    // Larger = brighter image, smaller = darker. Engine default is 1.0;
+    // we bias slightly lower to compensate for HD scenes that already
+    // run hot under our IBL probe. Read by RunTonemapPass each frame.
+    void  SetTonemapExposure(float exposure) { tonemapExposure_ = exposure; }
+    float GetTonemapExposure() const         { return tonemapExposure_; }
+
     // Resize the primary render target (called from WM_SIZE handler)
     void ResizePrimaryTarget(int width, int height);
 
@@ -210,6 +219,15 @@ public:
     Actor* SpawnActorFromMdx(const std::string& mdxPath);
     Actor* LoadActorFromMdx(const std::string& mdxPath);
     Actor* SpawnActorFromLiveSource(std::shared_ptr<IModelSource> source);
+
+    // Host-thread eval+apply for externally-driven actors. Live sources
+    // (Max plugin's MaxSceneAdapter, etc.) cannot be evaluated from the
+    // render thread because they touch host-thread-only state — the host
+    // must drive Evaluate from its own thread on every relevant event
+    // (timeline change, modifier edit, idle hot-reload). For
+    // template/MDX-backed actors there's no need to call this: the
+    // render-thread Tick auto-evaluates them via EvaluateTopLevelActors.
+    void EvaluateAndApply(Actor& actor);
 
     // ---- Static helpers (public so free-function render helpers can reuse) ----
     // LOD test: geosets flagged with the always-draw sentinel pass every level;
@@ -404,13 +422,17 @@ private:
     }
 
     // ---- GFX Shaders ----
-    // Only line.slang (debug overlay) and viewcube.slang (DebugRenderer-owned)
-    // Slang shaders survive; SD mesh rendering is entirely BLS now.
-    gfx::ShaderHandle lineVS_  = gfx::ShaderHandle::Invalid;
-    gfx::ShaderHandle linePS_  = gfx::ShaderHandle::Invalid;
+    // Slang sources: line.slang (debug overlay), viewcube.slang
+    // (DebugRenderer-owned). MDX-material rendering is entirely BLS;
+    // the tonemap pass pairs the engine's Sprite VS (Shaders/vs/sprite.bls)
+    // with Tonemap PS (Shaders/ps/tonemap.bls), exactly like Blizzard's
+    // m_materialShaders[14] in CGxDevice::ILoadShaders @0x7ff609b40820.
+    gfx::ShaderHandle lineVS_     = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle linePS_     = gfx::ShaderHandle::Invalid;
 
     // ---- GFX Pipelines ----
-    gfx::PipelineHandle linePSO_  = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle linePSO_     = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle tonemapPSO_  = gfx::PipelineHandle::Invalid;
 
     // ---- GFX Resources ----
     gfx::BufferHandle  cbPerFrame_     = gfx::BufferHandle::Invalid;
@@ -476,6 +498,46 @@ private:
     // numLights=8 worst case (720 B PS CB). Uploaded per draw.
     gfx::BufferHandle                       blsSdVsCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle                       blsSdPsCb_ = gfx::BufferHandle::Invalid;  // 48 B SDClassicPSPerDraw
+
+    // ---- HDR / tonemap pass ----
+    // All 3D draws (HD/SD mesh, particles, ribbons, debug grid + viewcube)
+    // render into the active target's `hdrColor` (R11G11B10F). After 3D
+    // work we run a fullscreen tonemap pass that samples the HDR target
+    // and writes the LDR back-buffer using Blizzard's ps/tonemap.bls
+    // (Narkowicz ACES filmic). Sourced from war3.w3mod just like
+    // hd.bls / sd.bls.
+    //
+    // Both stages come from the BLS cache: Sprite VS (passthrough — the
+    // VB carries clip-space positions directly) + Tonemap PS (single
+    // permute, ACES filmic).
+    //
+    // Format choice — this matters for ACES correctness:
+    //   The engine defaults to GxTex_R11G11B10F (=12, see Preview RE
+    //   GBuffer::SetRenderTargetFormat @0x7ff609b00a80; runtime value of
+    //   s_renderTargetFormat is 0x0C). It's an *unsigned* packed float
+    //   so any sub-zero pixel the HD PS happens to emit gets clamped to
+    //   0 by hardware on write. We previously used RGBA16F (signed) and
+    //   negative HDR values survived into ACES, where
+    //   `saturate((x*(A*x+B))/(x*(C*x+D)+E))` produces unrelated bright
+    //   LDR pixels for negative x — visible as misplaced highlights /
+    //   bloom-like ghosting. Matching the engine's format restores the
+    //   "negative-clamped to zero" invariant the tonemap was designed
+    //   against.
+    static constexpr gfx::Format kHdrSceneFormat = gfx::Format::R11G11B10_FLOAT;
+    bls::BlsShader*         blsSpriteVs_     = nullptr; // shared fullscreen VS (Sprite.bls)
+    bls::BlsShader*         blsTonemapPs_    = nullptr;
+    gfx::BufferHandle       tonemapVB_       = gfx::BufferHandle::Invalid; // 3 verts: clip-space pos + uv
+    gfx::BufferHandle       tonemapPsCb_     = gfx::BufferHandle::Invalid; // b1: { float exposure; pad×3 }
+    gfx::SamplerHandle      tonemapSampler_  = gfx::SamplerHandle::Invalid; // s0: linear-clamp
+    // Engine default is 1.0 (Preview RE: s_tonemapParams initial bytes
+    // 00 00 80 3F = 1.0f at 0x7ff60acb54a8). We start at 0.6 because
+    // our HD pipeline runs the lighting CB defaults without the
+    // engine's per-scene exposure tuning, so unmodified HD content
+    // sits well above ACES's mid-grey knee. Lowering the multiplier
+    // pulls brights into the rolloff range without crushing shadows.
+    // SetTonemapExposure() exposes a runtime knob.
+    float                   tonemapExposure_ = 0.6f;
+    void RunTonemapPass(const RenderTarget& target);
 
     bool InitBlsShaders();
     void ShutdownBlsShaders();

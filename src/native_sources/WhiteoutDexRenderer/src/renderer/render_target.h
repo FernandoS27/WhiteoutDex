@@ -36,7 +36,18 @@ struct DisplayFlags {
 struct RenderTarget {
     RenderTargetId        id     = 0;
     gfx::SwapChainHandle  swap   = gfx::SwapChainHandle::Invalid;   // Invalid = offscreen
+    // LDR final target. For swap-chain targets this aliases the back-buffer
+    // (recreated by ResizeRenderTarget after each ResizeSwapChain); for
+    // off-screen targets it's owned R8G8B8A8_UNORM. The tonemap pass writes
+    // here at the end of every RenderFrame.
     gfx::TextureHandle    color  = gfx::TextureHandle::Invalid;
+    // Linear-HDR scene target. All 3D mesh / particle / ribbon / debug
+    // draws render into this; the tonemap pass then samples it at t0
+    // and writes the LDR result to `color`. RGBA16F gives the HD lighting
+    // pass real headroom (Blizzard's CGxDevRenderer::CreateMainTarget
+    // does the same — without this the HD pixel shader's filmic exposure
+    // saturates against the [0,1] cap of the 8-bit back-buffer).
+    gfx::TextureHandle    hdrColor = gfx::TextureHandle::Invalid;
     gfx::TextureHandle    depth  = gfx::TextureHandle::Invalid;
     int                   width  = 0;
     int                   height = 0;

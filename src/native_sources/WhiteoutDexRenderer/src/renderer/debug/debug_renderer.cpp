@@ -203,6 +203,11 @@ bool DebugRenderer::CreateViewCubeResources() {
     // (None so the cube is drawable from any angle) and the CCW convention.
     vcDesc.rasterizer.cull     = gfx::CullMode::None;
     vcDesc.rasterizer.frontCCW = true;
+    // ViewCube draws into the HDR scene target (alongside the mesh /
+    // particle passes); the tonemap pass resolves the whole frame to
+    // LDR. Color values are well under 1.0 so ACES is approximately
+    // identity for the cube faces.
+    vcDesc.rtvFormat = RenderService::kHdrSceneFormat;
     viewCubePSO_ = rs_.gfx_->CreateGraphicsPipeline(vcDesc);
 
     return vcCubeVB_    != gfx::BufferHandle::Invalid &&

@@ -30,8 +30,9 @@ set(SLANG_COMMON_FLAGS -matrix-layout-column-major -I "${SHADER_SRC_DIR}"
     -default-downstream-compiler hlsl dxc)
 
 # Shader entry points: <slang_file>  <entry>  <stage>  <output_name>
-# Only line.slang (debug wires) and viewcube.slang (debug orientation cube)
-# remain as Slang sources; every MDX-material draw goes through BLS.
+# Only line.slang (debug wires) and viewcube.slang (debug orientation
+# cube) remain as Slang sources; every MDX-material draw goes through
+# BLS, and the tonemap pass uses the engine's sprite.bls VS directly.
 set(SHADER_ENTRIES
     "line.slang|vsLine|vertex|kLineVS"
     "line.slang|psLine|fragment|kLinePS"
@@ -161,6 +162,7 @@ add_library(WhiteoutDexRendererLib STATIC
     src/io/team_glow_data.cpp
     src/io/file_resolver.cpp
     src/io/file_content_provider.cpp
+    src/io/texture_image_usage.cpp
 )
 
 add_dependencies(WhiteoutDexRendererLib WhiteoutDexShaders)

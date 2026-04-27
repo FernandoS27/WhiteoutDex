@@ -512,17 +512,26 @@ void D3D11Device::Destroy(SamplerHandle h) {
 SwapChainHandle D3D11Device::CreateSwapChain(void* nativeWindowHandle,
                                               int width, int height,
                                               Format colorFormat) {
+    // BitBlt swap chains accept _SRGB resource formats directly; for
+    // flip-model + DXGI_SWAP_EFFECT_FLIP_DISCARD we'd have to strip the
+    // suffix. This D3D11 path uses the legacy BitBlt model so we can
+    // pass the sRGB form through unchanged. Either way we cache the
+    // sRGB-encoded RTV format on the entry so any view recreated by
+    // ResizeSwapChain ends up gamma-encoding on write.
+    DXGI_FORMAT rtvDxgi = ToDXGI(colorFormat);
+
     DXGI_SWAP_CHAIN_DESC scd{};
     scd.BufferCount       = 1;
     scd.BufferDesc.Width  = static_cast<UINT>(width);
     scd.BufferDesc.Height = static_cast<UINT>(height);
-    scd.BufferDesc.Format = ToDXGI(colorFormat);
+    scd.BufferDesc.Format = rtvDxgi;
     scd.BufferUsage       = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.OutputWindow      = static_cast<HWND>(nativeWindowHandle);
     scd.SampleDesc.Count  = 1;
     scd.Windowed          = TRUE;
 
     SwapChainEntry entry{};
+    entry.rtvDxgiFormat = rtvDxgi;
     HRESULT hr = factory_->CreateSwapChain(device_, &scd, &entry.swapChain);
     if (FAILED(hr)) return SwapChainHandle::Invalid;
 
@@ -552,10 +561,10 @@ void D3D11Device::CreateSwapChainViews(SwapChainEntry& sc) {
     sc.swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D),
                             reinterpret_cast<void**>(&sc.backBuffer));
     if (sc.backBuffer)
-        sc.backBufferTexHandle = static_cast<uint64_t>(RegisterBackBuffer(sc.backBuffer));
+        sc.backBufferTexHandle = static_cast<uint64_t>(RegisterBackBuffer(sc.backBuffer, sc.rtvDxgiFormat));
 }
 
-TextureHandle D3D11Device::RegisterBackBuffer(ID3D11Texture2D* bb) {
+TextureHandle D3D11Device::RegisterBackBuffer(ID3D11Texture2D* bb, DXGI_FORMAT rtvFormat) {
     TextureEntry entry{};
     entry.tex = bb;
     bb->AddRef();  // We'll track it; swap chain also holds a ref
@@ -566,7 +575,13 @@ TextureHandle D3D11Device::RegisterBackBuffer(ID3D11Texture2D* bb) {
     entry.desc.height = static_cast<int>(td.Height);
     entry.desc.usage  = TextureUsage::RenderTarget;
 
-    device_->CreateRenderTargetView(bb, nullptr, &entry.rtv);
+    // Explicit RTV-desc format so the view can be _SRGB even if the
+    // underlying resource is the linear variant — gives hardware
+    // linear→sRGB encoding on every write to the back buffer.
+    D3D11_RENDER_TARGET_VIEW_DESC rtvDesc{};
+    rtvDesc.Format        = rtvFormat;
+    rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    device_->CreateRenderTargetView(bb, &rtvDesc, &entry.rtv);
     return static_cast<TextureHandle>(textures_.Insert(std::move(entry)));
 }
 

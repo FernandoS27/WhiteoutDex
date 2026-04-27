@@ -250,7 +250,13 @@ struct SamplerEntry {
 struct SwapChainEntry {
     IDXGISwapChain3*                          swapChain = nullptr;
     HWND                                      hwnd      = nullptr;
-    Format                                    colorFormat = Format::R8G8B8A8_UNORM;
+    Format                                    colorFormat = Format::R8G8B8A8_UNORM_SRGB;
+    // RTV-view DXGI format. May differ from the swap-chain resource format
+    // when the caller asked for an _SRGB variant — flip-model swap chains
+    // require the resource to be the linear/raw form, so we keep the sRGB
+    // form here and pass it as the explicit RTV-desc format on every
+    // `CreateRenderTargetView` (see CreateSwapChain / ResizeSwapChain).
+    DXGI_FORMAT                               rtvDxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
     UINT                                      currentBackBufferIndex = 0;
 
     // One real back-buffer resource per swap-chain buffer.

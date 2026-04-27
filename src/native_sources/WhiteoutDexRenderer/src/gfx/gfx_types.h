@@ -32,6 +32,16 @@ enum class Format : uint16_t {
     R16G16B16A16_UNORM,
     R16G16B16A16_FLOAT,
 
+    // Packed unsigned float format (DXGI_FORMAT_R11G11B10_FLOAT).
+    // 11/11/10 bits with 5-bit biased exponent + unsigned mantissa — no
+    // sign bit, so negative HDR values get hardware-clamped to 0 on
+    // write. Matches Blizzard's `GxTex_R11G11B10F` (=12) which is the
+    // engine's default HDR scene target. We pick this for the
+    // post-light HDR target so the ACES tonemap input range matches
+    // engine behaviour (negative-pixel clamp), and we save 50% memory
+    // vs RGBA16F.
+    R11G11B10_FLOAT,
+
     R16_UINT,
     R32_UINT,
 
@@ -88,7 +98,8 @@ inline uint32_t FormatBytesPerBlock(Format f) {
         case Format::R8G8B8A8_UINT:  case Format::B8G8R8A8_UNORM:
         case Format::R16G16_UNORM:   case Format::R32_UINT:
         case Format::R32_FLOAT:      case Format::D24_UNORM_S8_UINT:
-        case Format::D32_FLOAT:      return 4;
+        case Format::D32_FLOAT:
+        case Format::R11G11B10_FLOAT: return 4;
         case Format::R16G16B16A16_UNORM: case Format::R16G16B16A16_FLOAT:
         case Format::R32G32_FLOAT:   return 8;
         case Format::R32G32B32_FLOAT: return 12;

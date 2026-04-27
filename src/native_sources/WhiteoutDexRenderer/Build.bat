@@ -50,18 +50,22 @@ for %%V in (2016 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 2027) do (
                 echo [%%V] === SUCCESS ===
                 set /a BUILT+=1
 
-                REM Direct path to built .dlx
-                set "DLX_FILE=%PROJECT_DIR%\build_%%V\Release\WhiteoutDexExtractor.dlx"
+                REM Direct path to built .dlx. CMake places Max plugin DLLs
+                REM under build/plugins/Release/ (CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+                REM and the WhiteoutDexExtractor CMake target sets OUTPUT_NAME
+                REM to "WhiteoutFlakes" — the artifact and deployed plugin both
+                REM ship as WhiteoutFlakes.dlx (PackageContents.xml expects it).
+                set "DLX_FILE=%PROJECT_DIR%\build_%%V\plugins\Release\WhiteoutFlakes.dlx"
 
                 if exist "!DLX_FILE!" (
                     REM Copy to local output
-                    copy /Y "!DLX_FILE!" "%OUTPUT_DIR%\WhiteoutDexExtractor_%%V.dlx" >nul
-                    echo [%%V] Copied to output\WhiteoutDexExtractor_%%V.dlx
+                    copy /Y "!DLX_FILE!" "%OUTPUT_DIR%\WhiteoutFlakes_%%V.dlx" >nul
+                    echo [%%V] Copied to output\WhiteoutFlakes_%%V.dlx
 
                     REM Copy to WhiteoutDex native plugins
                     if not exist "%WHITEOUTDEX_DIR%\Max%%V" mkdir "%WHITEOUTDEX_DIR%\Max%%V"
-                    copy /Y "!DLX_FILE!" "%WHITEOUTDEX_DIR%\Max%%V\WhiteoutDexExtractor.dlx" >nul
-                    echo [%%V] Installed to WhiteoutDex\native plugins\Max%%V\WhiteoutDexExtractor.dlx
+                    copy /Y "!DLX_FILE!" "%WHITEOUTDEX_DIR%\Max%%V\WhiteoutFlakes.dlx" >nul
+                    echo [%%V] Installed to WhiteoutDex\native plugins\Max%%V\WhiteoutFlakes.dlx
                 ) else (
                     echo [%%V] WARNING: .dlx not found at expected path
                 )
