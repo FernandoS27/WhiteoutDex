@@ -1038,7 +1038,7 @@ std::vector<CollisionShapeData> MdxModelAdapter::GetCollisionShapes() {
 // ============================================================================
 
 FrameState MdxModelAdapter::Evaluate(int sequenceIdx, int timeMs, int globalTimeMs,
-                                     const Matrix44f& /*worldTransform*/,
+                                     const Matrix44f& worldTransform,
                                      const Vector3f& cameraPos) const {
     // Resolve sequence range. Out-of-range indices collapse to (0, 0) — same
     // behaviour the old SetActiveSequence(invalid) path produced.
@@ -1250,7 +1250,11 @@ FrameState MdxModelAdapter::Evaluate(int sequenceIdx, int timeMs, int globalTime
         const int nodeIdx = nodeOf(pe.node);
 
         ps.emitterId = i;
-        ps.transform = kPE2SpawnFrameRotation * worldOf(nodeIdx);
+        // Lift into scene world space for nested actors (PE1 children, etc.)
+        // — for top-level actors worldTransform is identity so this is a no-op.
+        // Particle/ribbon/attachment draws use frame.world=identity, so the
+        // emitter transform must already be in scene world space here.
+        ps.transform = kPE2SpawnFrameRotation * worldOf(nodeIdx) * worldTransform;
 
         const bool squirting = (pe.squirt != 0);
         ps.squirting    = squirting;
@@ -1273,7 +1277,7 @@ FrameState MdxModelAdapter::Evaluate(int sequenceIdx, int timeMs, int globalTime
         const auto& att = model_.attachments[i];
         const int nodeIdx = nodeOf(att.node);
         const float vis = evalF32(att.visibilityTracks, 1.0f) * gateByBoneAncestors(nodeIdx);
-        fs.attachmentStates.push_back({i, worldOf(nodeIdx), vis});
+        fs.attachmentStates.push_back({i, worldOf(nodeIdx) * worldTransform, vis});
     }
 
     // PE1 (model particle emitter) per-frame state. Lat/lon already in radians
@@ -1284,7 +1288,7 @@ FrameState MdxModelAdapter::Evaluate(int sequenceIdx, int timeMs, int globalTime
 
         FrameState::PE1FrameState ps;
         ps.emitterId    = i;
-        ps.transform    = worldOf(nodeIdx);
+        ps.transform    = worldOf(nodeIdx) * worldTransform;
         ps.emissionRate = evalF32(pe.emissionRateTracks, pe.emissionRate);
         ps.speed        = evalF32(pe.speedTracks,        pe.initialVelocity);
         ps.latitude     = evalF32(pe.latitudeTracks,     pe.latitude);
@@ -1303,7 +1307,7 @@ FrameState MdxModelAdapter::Evaluate(int sequenceIdx, int timeMs, int globalTime
         const int nodeIdx = nodeOf(rb.node);
 
         rs.emitterId  = i;
-        rs.transform  = worldOf(nodeIdx);
+        rs.transform  = worldOf(nodeIdx) * worldTransform;
         rs.above      = evalF32(rb.heightAboveTracks, rb.heightAbove);
         rs.below      = evalF32(rb.heightBelowTracks, rb.heightBelow);
         rs.alpha      = evalF32(rb.alphaTracks,       rb.alpha);
@@ -1384,12 +1388,11 @@ FrameState MdxModelAdapter::Evaluate(int sequenceIdx, int timeMs, int globalTime
         // so transforming {0,0,0} through it collapses to zero for identity
         // TRS -- you have to feed in the PIVOT to recover the node's animated
         // world position. `worldOf` handles that by premultiplying Translate(pivot).
-        Matrix44f world = worldOf(lightNodeIdx);
-        // Omni: node's animated world pivot. Directional: -Z axis of the node
-        // in world space. Engine's SetLightDirection (0x14052f540) sets the
-        // local direction to (0, 0, -1) and transforms it by the world matrix
-        // (translation removed) -- that's the emission direction the shader
-        // expects as CGxLight.m_dir.
+        // Lift into scene world space — light shader CBs expect world-space
+        // positions/directions, and bone matrices stay model-space (paired
+        // with frame.world=mi->worldTransform), so for nested actors we have
+        // to fold worldTransform in here. No-op when worldTransform=identity.
+        Matrix44f world = worldOf(lightNodeIdx) * worldTransform;
         if (ls.kind == FrameState::LightKind::Directional) {
             ls.worldDir = whiteout::transform_normal(Vector3f{0, 0, -1}, world);
         } else {

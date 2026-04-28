@@ -365,6 +365,9 @@ void RenderService::EvaluatePE1Children() {
         int localTimeMs;
         int seqIdx;
         int globalTimeMs;  // unclamped elapsed since birth (for global sequences)
+        Matrix44f worldTransform;  // child's world placement; the adapter folds
+                                   // this into emitter / attachment / light
+                                   // transforms so they spawn in scene space.
     };
     std::vector<ChildEval> toEval;
     Vector3f camPos;
@@ -386,13 +389,14 @@ void RenderService::EvaluatePE1Children() {
                 int dur = seqs[boundedSeq].endMs - seqs[boundedSeq].startMs;
                 if (dur > 0) localTime = seqs[boundedSeq].startMs + (localTime % dur);
             }
-            toEval.push_back({h, mi->animation.Source(), localTime, seqIdx, globalTime});
+            toEval.push_back({h, mi->animation.Source(), localTime, seqIdx,
+                              globalTime, mi->worldTransform});
         }
     }
 
     for (auto& ce : toEval) {
         FrameState fs = ce.adapter->Evaluate(ce.seqIdx, ce.localTimeMs, ce.globalTimeMs,
-                                             Matrix44f::identity(), camPos);
+                                             ce.worldTransform, camPos);
         ApplyFrameState(ce.handle, fs, ce.localTimeMs);
     }
 }
