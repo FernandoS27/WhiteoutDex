@@ -687,17 +687,41 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     layer.normalMapId    = loadSlot(L"normalMap");
     layer.ormMapId       = loadSlot(L"ormMap");
     layer.emissiveMapId  = loadSlot(L"emissiveMap");
-    layer.teamColorMapId = loadSlot(L"teamColorMap");
 
-    // For HD materials the TeamColor sub-texture (Konstrukt B) is stored as a
-    // Wc3Bitmap placeholder with empty path and replaceableId=1.
-    // ResolveBitmapPath can't extract a path so teamColorMapId is still -1.
-    // If the slot is non-null, mark it active so the HD draw path binds the
-    // live UI swatch at t4.
-    if (layer.teamColorMapId < 0 && (layer.shaderId == 1 || layer.shaderId == 24)) {
+    // teamColorMap is special — the slot accepts both:
+    //   (a) a Wc3 replaceable=1 placeholder (Wc3Bitmap with replaceableId=1,
+    //       usually no path) → renderer fills with the live UI swatch at
+    //       draw time. We map this to kHdTeamColorActive so the HD draw
+    //       knows to bind GetHdSwatchTexture() at t4.
+    //   (b) any other Wc3Bitmap (custom mask BLP / DDS the artist dropped
+    //       in this slot) → carry the real loaded texture id through and
+    //       let the HD draw bind it like a regular material slot.
+    //
+    // We read the assigned Texmap's replaceableId directly so a custom
+    // mask plus replaceableId=1 still picks the swatch (engine convention
+    // is "replaceableId is authoritative for this slot's binding").
+    {
         Texmap* tcTex = nullptr;
-        if (PB2Texmap(mtl, L"teamColorMap", tcTex) && tcTex)
+        const bool hasTexmap = PB2Texmap(mtl, L"teamColorMap", tcTex) && tcTex;
+        const bool isWc3Bitmap = hasTexmap && tcTex->ClassID() == WC3_BITMAP_CLASS_ID;
+        const int  tcReplId    = isWc3Bitmap
+            ? std::max(0, PB2IntOr(tcTex, L"replaceableId", 0, 1) - 1)
+            : 0;
+
+        if (isWc3Bitmap && tcReplId == 1) {
+            // Live swatch placeholder.
             layer.teamColorMapId = kHdTeamColorActive;
+        } else {
+            // Try to load whatever path the user assigned; -1 if none.
+            layer.teamColorMapId = loadSlot(L"teamColorMap");
+            // Fallback: HD layer with a Texmap at this slot but no path
+            // (e.g. an empty BitmapTex). Treat as the swatch placeholder
+            // so the slot still drives team-colour blending at draw time.
+            if (layer.teamColorMapId < 0 && hasTexmap
+                && (layer.shaderId == 1 || layer.shaderId == 24)) {
+                layer.teamColorMapId = kHdTeamColorActive;
+            }
+        }
     }
 
     const std::wstring baseTexPath = ResolveBitmapPath(mtl, L"diffuseMap");

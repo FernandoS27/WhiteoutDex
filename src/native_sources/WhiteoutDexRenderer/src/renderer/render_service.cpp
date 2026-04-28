@@ -809,6 +809,15 @@ void RenderService::ApplyBoneMatrices(Actor& mi, const FrameState& state) {
                     return Vector3f{m.data[r][0], m.data[r][1], m.data[r][2]};
                 };
 
+                // Extract per-axis scale from the row magnitudes BEFORE any
+                // normalization. boneM in our row-vector convention is
+                // `S * R * T` so row magnitudes carry the authored scale —
+                // a freshly-built orthonormal billboard basis would drop it,
+                // cancelling any animated bone scale on a billboarded node.
+                const float sX = rowToVec(boneM, 0).length();
+                const float sY = rowToVec(boneM, 1).length();
+                const float sZ = rowToVec(boneM, 2).length();
+
                 Matrix44f bbRot = Matrix44f::identity();
                 bool haveRot = false;
 
@@ -894,17 +903,28 @@ void RenderService::ApplyBoneMatrices(Actor& mi, const FrameState& state) {
                 }
 
                 if (haveRot) {
+                    // Re-bake the captured per-axis scale into the orthonormal
+                    // billboard basis. In row-vector layout this is `S * bbRot`
+                    // expanded as `bbRot.row[i] *= s[i]`, so a v*boneM still
+                    // sees v scaled by the bone's animated S before rotation.
+                    bbRot.data[0][0] *= sX; bbRot.data[0][1] *= sX; bbRot.data[0][2] *= sX;
+                    bbRot.data[1][0] *= sY; bbRot.data[1][1] *= sY; bbRot.data[1][2] *= sY;
+                    bbRot.data[2][0] *= sZ; bbRot.data[2][1] *= sZ; bbRot.data[2][2] *= sZ;
                     Matrix44f T_negRest = Matrix44f::translation({-pivF.x, -pivF.y, -pivF.z});
                     Matrix44f T_world   = Matrix44f::translation({pivWorld.x, pivWorld.y, pivWorld.z});
                     boneM = T_negRest * bbRot * T_world;
                 } else if (bbFlags & BONE_BILLBOARD_CAMERA_ANCHORED) {
                     // CameraAnchored without a billboard rotation flag: still
                     // need to re-center boneM so the pivot lands on pivWorld.
-                    // Previewd's PositionAnchor also strips rotation/scale;
-                    // replicate by rebuilding around identity rotation.
+                    // Previewd's PositionAnchor strips rotation but the node's
+                    // authored scale should still drive size, so we keep the
+                    // diagonal S in place of identity.
+                    Matrix44f S = {};
+                    S.data[0][0] = sX; S.data[1][1] = sY; S.data[2][2] = sZ;
+                    S.data[3][3] = 1.0f;
                     Matrix44f T_negRest = Matrix44f::translation({-pivF.x, -pivF.y, -pivF.z});
                     Matrix44f T_world   = Matrix44f::translation({pivWorld.x, pivWorld.y, pivWorld.z});
-                    boneM = T_negRest * T_world;
+                    boneM = T_negRest * S * T_world;
                 }
             }
         }
@@ -2758,7 +2778,14 @@ public:
             // RenderDoc. Only enable when the layer actually authored
             // a TeamColor subtexture — the standard perm is what
             // every other HD draw wants.
-            rs.teamColor      = (layer.teamColorMapId >= 0);
+            // teamColor permute: enable when the layer carries a
+            // TeamColor slot — either a live-swatch placeholder
+            // (kHdTeamColorActive) or a real authored texture
+            // (id >= 0). Anything else (-1) means no slot → leave
+            // the permute disabled so ps_standard / ps_ibl strips
+            // the t_teamColor sample entirely.
+            rs.teamColor      = (layer.teamColorMapId == kHdTeamColorActive)
+                             || (layer.teamColorMapId >= 0);
             const int  dbgMode     = rs_.hdDebugMode_.load();
             const bool debugActive = (dbgMode > 0);
             rs.debugShader = debugActive;
@@ -2883,17 +2910,25 @@ public:
             bindMaterialTex(1, layer.normalMapId,    defs.FlatNormal, nullptr);    // t1 normal (flat)
             bindMaterialTex(2, layer.ormMapId,       defs.NeutralOrm, nullptr);    // t2 ORM (occlusion=1, roughness=1, metal=0, teamBlend=0)
             bindMaterialTex(3, layer.emissiveMapId,  defs.Black,      nullptr);    // t3 emissive (no glow)
-            // t4 team colour: when the MDX layer authors a TeamColor
-            // subtexture (or the model carries a replaceableId=1 slot at
-            // any point), bind the live UI swatch — the engine itself
-            // ignores whatever texture the .mdx references here and
-            // swaps in the per-player tint at draw time. Without an
-            // authored slot, fall back to black so ORM.w-driven blends
-            // on unrelated materials stay neutral.
-            if (layer.teamColorMapId >= 0) {
-                // Live UI swatch — manager owns the 1×1 texture lifetime.
+            // t4 team colour. Three cases:
+            //   * teamColorMapId == kHdTeamColorActive (-2): the layer's
+            //     slot is the WC3 replaceable=1 placeholder, so bind the
+            //     ReplaceableTextureManager's live 1×1 swatch — the per-
+            //     player tint flows through here exactly as the engine
+            //     does it.
+            //   * teamColorMapId >= 0: the artist authored a real
+            //     texture in this slot (custom mask BLP / DDS). Bind it
+            //     through the regular per-actor texture cache like the
+            //     other HD slots so the user's texture actually drives
+            //     the blend instead of being silently overwritten.
+            //   * teamColorMapId < 0 (and not the sentinel): slot is
+            //     absent. Bind black so t_orm.w-driven blends stay
+            //     neutral.
+            if (layer.teamColorMapId == kHdTeamColorActive) {
                 cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4,
                                         rs_.replaceables_->GetHdSwatchTexture());
+            } else if (layer.teamColorMapId >= 0) {
+                bindMaterialTex(4, layer.teamColorMapId, defs.Black, nullptr);
             } else {
                 cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4, defs.Black);
             }

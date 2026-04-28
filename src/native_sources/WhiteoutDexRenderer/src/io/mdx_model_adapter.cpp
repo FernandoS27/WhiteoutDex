@@ -506,7 +506,24 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
                         case Layer::SlotType::NormalMap:   ld.normalMapId    = tex; break;
                         case Layer::SlotType::ORMMap:      ld.ormMapId       = tex; break;
                         case Layer::SlotType::EmissiveMap: ld.emissiveMapId  = tex; break;
-                        case Layer::SlotType::TeamColor:   ld.teamColorMapId = tex; break;
+                        case Layer::SlotType::TeamColor:
+                            // The TeamColor sub-texture can be either:
+                            //   (a) a Wc3 replaceableId=1 placeholder — author
+                            //       intent is "fill at runtime with the live UI
+                            //       swatch". Map to kHdTeamColorActive so the
+                            //       HD draw binds GetHdSwatchTexture() at t4.
+                            //   (b) a regular authored texture (e.g. a custom
+                            //       mask BLP / DDS the artist dropped in this
+                            //       slot). Carry the real texture id through
+                            //       so the HD draw binds it like any other
+                            //       material slot.
+                            if (tex >= 0 && tex < (int)model_.textures.size()
+                                && model_.textures[tex].replaceableId == 1) {
+                                ld.teamColorMapId = kHdTeamColorActive;
+                            } else {
+                                ld.teamColorMapId = tex;
+                            }
+                            break;
                         default: break;
                     }
                 }

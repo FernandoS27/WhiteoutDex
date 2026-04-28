@@ -127,12 +127,19 @@ struct MeshData {
 };
 
 // Sentinel value adapters write into MaterialLayerData::teamColorMapId
-// when the MDX/Max layer flags its team-colour slot as live-driven but
-// doesn't author a real texture. Any non-negative value suffices — this
-// constant exists purely to make intent explicit at the call site. The
-// HD draw path never looks this up as a textureId; it uses it only as a
-// "is the slot active?" flag before binding the live UI swatch.
-inline constexpr int kHdTeamColorActive = 0;
+// when the MDX/Max layer's team-colour slot is the WC3 replaceable=1
+// placeholder — a "the engine should fill this with the live UI swatch"
+// signal, *not* a real authored texture. The HD draw treats this value
+// as a request to bind ReplaceableTextureManager::GetHdSwatchTexture()
+// at t4 and ignore the per-actor texture cache.
+//
+// Any other non-negative value in `teamColorMapId` is a real authored
+// texture id (e.g. the user assigned a custom mask BLP / DDS in the
+// teamColorMap slot of their HD Wc3Material) and gets bound through
+// the standard `bindMaterialTex` lookup. -1 means the slot is absent
+// entirely. The sentinel is < 0 (and != -1) so it can never collide
+// with a valid texture id.
+inline constexpr int kHdTeamColorActive = -2;
 
 struct TextureData {
     int textureId;
