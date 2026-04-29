@@ -78,6 +78,16 @@ public:
     // re-uploads only when the colour changed since the last call.
     gfx::TextureHandle GetHdSwatchTexture();
 
+    // ── SD live swatches (render-thread). ───────────────────────────────
+    // Per-kind global swatch textures used by PE2 (and any other SD path
+    // that wants to substitute a replaceable at runtime without
+    // overwriting the actor's loaded BLP). Same lazy rebuild contract as
+    // GetHdSwatchTexture: regenerates only when the team colour
+    // changed since the last call. TeamColor is a 4×4 solid; TeamGlow
+    // is the embedded TGA tinted with the current swatch.
+    gfx::TextureHandle GetSdTeamColorTexture();
+    gfx::TextureHandle GetSdTeamGlowTexture();
+
     // Called from RenderService::ShutdownDevice. Idempotent. Frees the HD
     // swatch GPU handle; the per-model slot registry empties as
     // Actors are destroyed.
@@ -107,6 +117,14 @@ private:
     // changes; `lastSwatchRgba_` lets us short-circuit on no-op refreshes.
     gfx::TextureHandle hdSwatchTex_    = gfx::TextureHandle::Invalid;
     uint32_t           lastSwatchRgba_ = 0xFFFFFFFFu;
+
+    // SD swatches — one TeamColor (flat 4×4) and one TeamGlow (full
+    // tinted TGA), shared across every PE2 emitter that asks for them.
+    // Keyed by the same RGBA value as `lastSwatchRgba_` so a colour
+    // change rebuilds both. Allocated lazily on first request.
+    gfx::TextureHandle sdTeamColorTex_     = gfx::TextureHandle::Invalid;
+    gfx::TextureHandle sdTeamGlowTex_      = gfx::TextureHandle::Invalid;
+    uint32_t           lastSdSwatchRgba_   = 0xFFFFFFFFu;
 
     // Per-model slots — map Actor* → list of (textureId, kind).
     // Erased on UnregisterModel; never persists across model unloads.

@@ -34,6 +34,15 @@ void ReplaceableTextureManager::Shutdown() {
         hdSwatchTex_    = gfx::TextureHandle::Invalid;
         lastSwatchRgba_ = 0xFFFFFFFFu;
     }
+    if (sdTeamColorTex_ != gfx::TextureHandle::Invalid) {
+        gfx_.Destroy(sdTeamColorTex_);
+        sdTeamColorTex_ = gfx::TextureHandle::Invalid;
+    }
+    if (sdTeamGlowTex_ != gfx::TextureHandle::Invalid) {
+        gfx_.Destroy(sdTeamGlowTex_);
+        sdTeamGlowTex_ = gfx::TextureHandle::Invalid;
+    }
+    lastSdSwatchRgba_ = 0xFFFFFFFFu;
     slots_.clear();
 }
 
@@ -46,6 +55,18 @@ void ReplaceableTextureManager::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
     for (auto& [mi, slots] : slots_) {
         for (auto& s : slots) BakeSlot(*mi, s.textureId, s.kind);
     }
+    // Drop cached global SD swatches so the next Get* call rebuilds
+    // them with the new tint. HD swatch follows the same pattern via
+    // `lastSwatchRgba_` mismatch.
+    if (sdTeamColorTex_ != gfx::TextureHandle::Invalid) {
+        gfx_.Destroy(sdTeamColorTex_);
+        sdTeamColorTex_ = gfx::TextureHandle::Invalid;
+    }
+    if (sdTeamGlowTex_ != gfx::TextureHandle::Invalid) {
+        gfx_.Destroy(sdTeamGlowTex_);
+        sdTeamGlowTex_ = gfx::TextureHandle::Invalid;
+    }
+    lastSdSwatchRgba_ = 0xFFFFFFFFu;
     dirty_.store(true);
 }
 
@@ -148,6 +169,62 @@ gfx::TextureHandle ReplaceableTextureManager::GetHdSwatchTexture() {
     }, &px);
     lastSwatchRgba_ = rgba;
     return hdSwatchTex_;
+}
+
+gfx::TextureHandle ReplaceableTextureManager::GetSdTeamColorTexture() {
+    // 4×4 RGBA solid filled with the current team colour. Used by the
+    // PE2 SD draw path when an emitter declares replaceableId=1 — it
+    // binds this in place of the loaded BLP so a sibling emitter that
+    // shares the same textureId but DOESN'T declare a replaceable
+    // still sees the unmodified BLP at slot N.
+    const uint8_t r = Red(teamColor_);
+    const uint8_t g = Green(teamColor_);
+    const uint8_t b = Blue(teamColor_);
+    const uint32_t rgba =
+        (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | 0xFF000000u;
+    if (sdTeamColorTex_ != gfx::TextureHandle::Invalid && lastSdSwatchRgba_ == rgba)
+        return sdTeamColorTex_;
+    if (sdTeamColorTex_ != gfx::TextureHandle::Invalid) {
+        gfx_.Destroy(sdTeamColorTex_);
+        sdTeamColorTex_ = gfx::TextureHandle::Invalid;
+    }
+    uint32_t px[16];
+    for (int i = 0; i < 16; ++i) px[i] = rgba;
+    sdTeamColorTex_ = gfx_.CreateTexture({
+        .width  = 4,
+        .height = 4,
+        .format = gfx::Format::R8G8B8A8_UNORM,
+        .usage  = gfx::TextureUsage::ShaderResource,
+    }, px);
+    lastSdSwatchRgba_ = rgba;
+    return sdTeamColorTex_;
+}
+
+gfx::TextureHandle ReplaceableTextureManager::GetSdTeamGlowTexture() {
+    // Embedded TGA decoded once and tinted with the current team
+    // colour. Same lazy-rebuild contract as the TeamColor swatch.
+    const uint8_t r = Red(teamColor_);
+    const uint8_t g = Green(teamColor_);
+    const uint8_t b = Blue(teamColor_);
+    const uint32_t rgba =
+        (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | 0xFF000000u;
+    if (sdTeamGlowTex_ != gfx::TextureHandle::Invalid && lastSdSwatchRgba_ == rgba)
+        return sdTeamGlowTex_;
+    if (sdTeamGlowTex_ != gfx::TextureHandle::Invalid) {
+        gfx_.Destroy(sdTeamGlowTex_);
+        sdTeamGlowTex_ = gfx::TextureHandle::Invalid;
+    }
+    int w = 0, h = 0;
+    std::vector<uint8_t> pixels = DecodeTeamGlow(r, g, b, w, h);
+    if (w <= 0 || h <= 0 || pixels.empty()) return gfx::TextureHandle::Invalid;
+    sdTeamGlowTex_ = gfx_.CreateTexture({
+        .width  = w,
+        .height = h,
+        .format = gfx::Format::R8G8B8A8_UNORM,
+        .usage  = gfx::TextureUsage::ShaderResource,
+    }, pixels.data());
+    lastSdSwatchRgba_ = rgba;
+    return sdTeamGlowTex_;
 }
 
 } // namespace WhiteoutDex

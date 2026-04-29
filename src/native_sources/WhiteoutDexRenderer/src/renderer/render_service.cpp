@@ -226,15 +226,16 @@ void RenderService::stageModelFromTemplate(Actor* mi,
         mi->render.skinDirty = true;
     }
     // PE2 particles — registered directly with the service (no legacy path).
+    // The emitter's own replaceableId is resolved AT DRAW TIME against
+    // the manager's global SD swatches; we deliberately do NOT bake the
+    // swatch into the actor's textureId slot here, otherwise a sibling
+    // emitter that points at the same textureId with replaceableId=0
+    // would also see the swatch instead of the loaded BLP.
     for (int i = 0; i < (int)tmpl->pe2Configs.size(); i++) {
         const auto& pcfg = tmpl->pe2Configs[i];
         auto em = std::make_unique<particle::PlaneEmitter>();
         particle::ApplyInit(*em, particle::InitFromLegacyConfig(pcfg));
         particleService_.AddPlaneEmitter(mi->handle, i, std::move(em));
-        if (replaceables_) {
-            replaceables_->RegisterModelSlot(*mi, pcfg.textureId,
-                                             static_cast<ReplaceableKind>(pcfg.replaceableId));
-        }
     }
     mi->render.pe2State.resize(tmpl->pe2Configs.size());
     // Ribbons
@@ -536,15 +537,14 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
     // Particles — register with the PE2 service. The legacy ParticleEmitterConfig
     // boundary type stays (external API), but it's translated to the service's
     // PlaneEmitterInit on the way in. All downstream simulation/render is service.
+    // PE2 emitter replaceableId is resolved at draw time against the
+    // manager's global SD swatches — see the matching note + draw code
+    // in stageModelFromTemplate / RenderParticlesBls.
     for (size_t i = 0; i < particleConfigs.size(); i++) {
         const auto& pcfg = particleConfigs[i];
         auto em = std::make_unique<particle::PlaneEmitter>();
         particle::ApplyInit(*em, particle::InitFromLegacyConfig(pcfg));
         particleService_.AddPlaneEmitter(handle, (int)i, std::move(em));
-        if (replaceables_) {
-            replaceables_->RegisterModelSlot(*mi, pcfg.textureId,
-                                             static_cast<ReplaceableKind>(pcfg.replaceableId));
-        }
     }
     mi->render.pe2State.resize(particleConfigs.size());
 
@@ -988,7 +988,16 @@ void RenderService::ApplyParticleFrameStates(Actor& mi, const FrameState& state)
 // ApplyRibbonFrameStates / ApplyPE1FrameStates moved to RenderModel —
 // see renderer/render_model.cpp.
 
-void RenderService::ApplyAttachmentStates(Actor& mi, const FrameState& state, int timeMs) {
+void RenderService::ApplyAttachmentStates(Actor& mi, const FrameState& state, int /*timeMs*/) {
+    // BirthTimeMs for attachment children must be in the SCENE WALL-CLOCK
+    // domain, not the parent's MDX-internal sequence time. The `timeMs`
+    // arg propagated from EvaluateTopLevelActors comes from
+    // `mi->animation.TimeMs()` which lives in [seq.startMs, seq.endMs]
+    // — sequences that start at a high offset (e.g. seqStart = 30000)
+    // would otherwise stamp the child's birth ahead of the wall clock,
+    // and EvaluatePE1Children's `sceneTime - birth` clamps negative
+    // results to 0, freezing the child's animation at frame 0 forever.
+    const int sceneNow = scene_->GetAnimationTime();
     for (auto& as : state.attachmentStates) {
         if (as.attachmentIndex < 0 || as.attachmentIndex >= (int)mi.attachmentSlots.size()) continue;
         auto& slot = mi.attachmentSlots[as.attachmentIndex];
@@ -1007,7 +1016,7 @@ void RenderService::ApplyAttachmentStates(Actor& mi, const FrameState& state, in
 
         // When becoming visible: pick a new random animation and restart from frame 0
         if (visible && !slot.wasVisible) {
-            child->animation.SetBirthTimeMs(timeMs);
+            child->animation.SetBirthTimeMs(sceneNow);
             auto seqs = child->animation.Sequences();
             if (!seqs.empty())
                 child->animation.SetActiveSequenceIndex(rand() % (int)seqs.size());
@@ -1674,21 +1683,29 @@ bool RenderService::RenderParticlesBls() {
         // authored range exceeds rows*cols, and clamp-edge would pick
         // zero-alpha edge texels and discard every fragment.
         const uint32_t wrapFlags = 0x3;
-        bool hasModelTex = false;
-        {
+        // Resolve PE2 sample source per emitter. The emitter's own
+        // `replaceableId` (1=TeamColor, 2=TeamGlow) overrides the
+        // textureId binding to the manager's global swatch — that way
+        // a sibling emitter that shares the same textureId but
+        // declares replaceableId=0 still samples the loaded BLP from
+        // its actor's texture cache. Pre-fix used to bake the swatch
+        // into mi.render.stagedTextures[textureId], which destroyed
+        // the original BLP for every other reference.
+        gfx::TextureHandle peTex = gfx::TextureHandle::Invalid;
+        if (dl.material.replaceableId == 1 && replaceables_) {
+            peTex = replaceables_->GetSdTeamColorTexture();
+        } else if (dl.material.replaceableId == 2 && replaceables_) {
+            peTex = replaceables_->GetSdTeamGlowTexture();
+        } else {
             std::lock_guard<std::mutex> lock(dataMutex_);
             Actor* owner = getModel(dl.model);
-            if (owner && owner->render.textures && dl.material.textureId >= 0) {
-                const gfx::TextureHandle h = owner->render.textures->Get(dl.material.textureId);
-                if (h != gfx::TextureHandle::Invalid) {
-                    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, h);
-                    hasModelTex = true;
-                }
-            }
+            if (owner && owner->render.textures && dl.material.textureId >= 0)
+                peTex = owner->render.textures->Get(dl.material.textureId);
         }
-        if (!hasModelTex) {
+        if (peTex != gfx::TextureHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, peTex);
+        else
             cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, textures_->GetDefaults().White);
-        }
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplers_->WrapVariant(wrapFlags));
 
         cmd->Draw(dl.vertexCount, drawOffset);
