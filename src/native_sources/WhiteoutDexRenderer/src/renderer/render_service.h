@@ -14,7 +14,7 @@
 #include "particle/particle_service.h"
 #include "particle/splat_service.h"
 #include "ribbon.h"
-#include "sound_service.h"
+#include "sound_emitter.h"
 #include "spn_spawner.h"
 #include "model_types.h"
 #include "model_instance.h"
@@ -193,6 +193,14 @@ public:
     // run hot under our IBL probe. Read by RunTonemapPass each frame.
     void  SetTonemapExposure(float exposure) { tonemapExposure_ = exposure; }
     float GetTonemapExposure() const         { return tonemapExposure_; }
+
+    // Host-supplied audio backend for MDX SND EventObjects. Default is
+    // a NullSoundEmitter that drops every fire — the renderer library
+    // itself ships no platform audio dependencies. Standalone exe and
+    // Max plugin each install a Windows-specific implementation here
+    // at startup. Pass nullptr to revert to the null backend (e.g.
+    // when shutting an audio device down before destroying the host).
+    void SetSoundEmitter(std::unique_ptr<ISoundEmitter> emitter);
 
     // Resize the primary render target (called from WM_SIZE handler)
     void ResizePrimaryTarget(int width, int height);
@@ -390,7 +398,7 @@ private:
     // the unique_ptr.
     particle::SplatService    splatService_;
     std::unique_ptr<SpnSpawner>     spnSpawner_;
-    std::unique_ptr<SoundService>   soundService_;
+    std::unique_ptr<ISoundEmitter>  soundEmitter_;
 
     // Sync
     mutable std::mutex    dataMutex_;

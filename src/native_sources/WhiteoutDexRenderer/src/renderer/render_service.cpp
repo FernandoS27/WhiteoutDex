@@ -52,7 +52,7 @@ RenderService::RenderService()
       scene_(ownedScene_.get()),
       debug_(std::make_unique<DebugRenderer>(*this)),
       spnSpawner_(std::make_unique<SpnSpawner>(*this)),
-      soundService_(MakeDefaultSoundService()) {
+      soundEmitter_(MakeNullSoundEmitter()) {
     // Cross-model dedup query — fed to every adapter the templates manager
     // builds. Wired here because IsTextureCached lives on RenderService
     // (it queries the TextureAssetManager, which we own).
@@ -64,7 +64,7 @@ RenderService::RenderService(SceneManager& scene)
     : scene_(&scene),
       debug_(std::make_unique<DebugRenderer>(*this)),
       spnSpawner_(std::make_unique<SpnSpawner>(*this)),
-      soundService_(MakeDefaultSoundService()) {
+      soundEmitter_(MakeNullSoundEmitter()) {
     // Same wiring as the default ctor; the scene's template loader was
     // already started by the host that constructed `scene`.
     scene_->Templates().SetTextureCacheQuery(
@@ -1104,7 +1104,7 @@ void RenderService::ApplyFrameState(uint32_t handle, const FrameState& state, in
                         seqStart, seqEnd,
                         &splatService_,
                         spnSpawner_.get(),
-                        soundService_.get());
+                        soundEmitter_.get());
     }
 }
 
@@ -1140,6 +1140,15 @@ void RenderService::SetBackgroundColor(uint8_t r, uint8_t g, uint8_t b) {
     // into the Win32 colour picker via GetBackgroundColorRaw().
     const uint32_t packed = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
     backgroundColor_.store(packed);
+}
+
+void RenderService::SetSoundEmitter(std::unique_ptr<ISoundEmitter> emitter) {
+    // Lock so the render-thread dispatch in EventEmitterPool::Tick can't
+    // observe a half-swapped pointer. Falls back to the null emitter if
+    // the caller hands us nullptr — the dispatch path always invokes
+    // soundEmitter_->Play() unconditionally.
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    soundEmitter_ = emitter ? std::move(emitter) : MakeNullSoundEmitter();
 }
 
 // ============================================================================

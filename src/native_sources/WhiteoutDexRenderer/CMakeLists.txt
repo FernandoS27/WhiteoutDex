@@ -149,7 +149,7 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/particle/particle_service.cpp
     src/renderer/particle/splat_service.cpp
     src/renderer/event_emitter_pool.cpp
-    src/renderer/sound_service.cpp
+    src/renderer/windows_sound_emitter.cpp
     src/renderer/spn_spawner.cpp
     src/renderer/bls/bls_container.cpp
     src/renderer/bls/bls_shader_cache.cpp

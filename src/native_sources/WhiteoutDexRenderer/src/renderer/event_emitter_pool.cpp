@@ -6,7 +6,7 @@
 
 #include "model_instance.h"
 #include "particle/splat_service.h"
-#include "sound_service.h"
+#include "sound_emitter.h"
 #include "spn_spawner.h"
 
 #include "../io/event_data.h"
@@ -150,7 +150,7 @@ void EventEmitterPool::Tick(const Actor&                  actor,
                             int                            seqEndMs,
                             particle::SplatService*        splats,
                             SpnSpawner*                    spn,
-                            SoundService*                  sounds) {
+                            ISoundEmitter*                 sounds) {
     if (entries_.empty()) return;
 
     // Sequence change → re-prime so the new window's tracks don't

@@ -18,6 +18,7 @@
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "renderer/replaceable_texture_manager.h"
+#include "renderer/windows_sound_emitter.h"
 #include "ui/render_window.h"
 
 #include <chrono>
@@ -217,6 +218,13 @@ Value* ndxStart_cf(Value** /*arg_list*/, int count)
         if (pos != std::wstring::npos) wp = wp.substr(0, pos + 1);
         g_scene->SetPE1BasePath(std::filesystem::path(wp));
     }
+
+    // Audio: same Windows-native ISoundEmitter the standalone exe uses.
+    // Borrows the scene's content provider for CASC/MPQ lookup so SND
+    // EventObjects play through the host OS during preview. Without
+    // this, the renderer's default null emitter drops every fire.
+    g_renderer->SetSoundEmitter(std::make_unique<WhiteoutDex::WindowsSoundEmitter>(
+        g_scene->ActiveContentProvider()));
 
     // ---- Build the live adapter ----
     g_adapter = std::make_shared<WhiteoutDex::MaxSceneAdapter>();

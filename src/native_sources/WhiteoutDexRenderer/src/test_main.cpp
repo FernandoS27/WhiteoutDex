@@ -8,6 +8,7 @@
 #include "renderer/scene_manager.h"
 #include "renderer/model_instance.h"   // Actor
 #include "renderer/model_template.h"   // for cameraPresets accessor
+#include "renderer/windows_sound_emitter.h"
 #include "ui/render_window.h"
 #include "gfx/gfx_types.h"
 
@@ -88,6 +89,14 @@ int wmain(int argc, wchar_t* argv[]) {
 
     // Base path for texture resolution + child-model lookup.
     scene.SetPE1BasePath(mdxPath.parent_path());
+
+    // Audio: install the Windows-native ISoundEmitter so SND
+    // EventObjects actually play. Renderer ships a null backend by
+    // default — without this, SND fires are silently dropped. The
+    // emitter borrows the scene's content provider for CASC/MPQ
+    // lookup; lifetime is fine since `scene` outlives `renderer`.
+    renderer.SetSoundEmitter(std::make_unique<WhiteoutDex::WindowsSoundEmitter>(
+        scene.ActiveContentProvider()));
 
     // ---- One-line load ----
     // LoadActorFromMdx parses the MDX (cached if seen before), builds the

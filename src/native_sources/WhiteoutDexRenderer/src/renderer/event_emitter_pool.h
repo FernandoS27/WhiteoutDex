@@ -6,7 +6,7 @@
 // Each Tick scans `eventTrackTimes` for rising-edge crossings against
 // the actor's current animation frame, and on each crossing dispatches
 // to the appropriate service (SplatService for SPL/UBR/FPT,
-// SpnSpawner for SPN, SoundService for SND).
+// SpnSpawner for SPN, ISoundEmitter for SND).
 //
 // The pool itself is stateless w.r.t. graphics — it's just the
 // rising-edge state machine and the dispatch fan-out. All the heavy
@@ -22,7 +22,7 @@
 
 namespace WhiteoutDex {
 
-class SoundService;
+class ISoundEmitter;
 class SpnSpawner;
 
 namespace particle { class SplatService; }
@@ -62,7 +62,7 @@ public:
               int                             seqEndMs,
               particle::SplatService*         splats,
               SpnSpawner*                     spn,
-              SoundService*                   sounds);
+              ISoundEmitter*                  sounds);
 
     bool Empty() const { return entries_.empty(); }
 
