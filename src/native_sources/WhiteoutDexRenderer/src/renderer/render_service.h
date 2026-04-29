@@ -384,8 +384,10 @@ private:
     std::atomic<bool>     renderModeDirty_{false};
     // 0 = off (normal render). See SetHdDebugMode() for the palette.
     std::atomic<int>      hdDebugMode_{0};
-    // LOD override: -1 = auto (screen-size), 0..3 = force that LOD
-    std::atomic<int>      lodOverride_{-1};
+    // LOD override: -1 = auto (screen-size), 0..3 = force that LOD.
+    // Default forces LOD 0 — preview tooling almost always wants the
+    // highest-detail mesh regardless of viewport size.
+    std::atomic<int>      lodOverride_{0};
     // Lighting mode: 0=InGame, 1=Glue, 2=Dynamic. Stored as uint8 to
     // keep the atomic lock-free across all ABIs while the public API
     // exposes the LightingMode enum.

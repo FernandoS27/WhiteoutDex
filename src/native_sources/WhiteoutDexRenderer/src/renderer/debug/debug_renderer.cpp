@@ -53,8 +53,11 @@ bool DebugRenderer::CreateGridResources() {
     Vector4f gridColor  = {0.45f, 0.45f, 0.46f, 1.0f};
     Vector4f axisColorX = {0.75f, 0.2f,  0.2f,  1.0f};
     Vector4f axisColorY = {0.2f,  0.75f, 0.2f,  1.0f};
-    Vector4f axisColorZ = {0.2f,  0.2f,  0.75f, 1.0f};
 
+    // Ground-plane grid + the X/Y axes through origin. The Z axis spike
+    // used to be drawn here too but pollutes screenshots and overlaps
+    // most models' silhouettes; vertical scale reads fine from the
+    // grid spacing alone.
     for (float v = -extent; v <= extent; v += step) {
         Vector4f c = (v == 0.0f) ? axisColorY : gridColor;
         lines.push_back({{v, -extent, 0.0f}, c});
@@ -63,8 +66,6 @@ bool DebugRenderer::CreateGridResources() {
         lines.push_back({{-extent, v, 0.0f}, c});
         lines.push_back({{ extent, v, 0.0f}, c});
     }
-    lines.push_back({{0.0f, 0.0f, 0.0f},   axisColorZ});
-    lines.push_back({{0.0f, 0.0f, extent}, axisColorZ});
     gridVertCount_ = (int)lines.size();
 
     gridVB_ = rs_.gfx_->CreateBuffer({

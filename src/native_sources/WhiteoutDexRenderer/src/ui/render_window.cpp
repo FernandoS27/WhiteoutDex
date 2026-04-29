@@ -228,8 +228,10 @@ bool RenderWindow::Create(int w, int h) {
                        MF_BYCOMMAND);
     AppendMenuW(hMenuDebug_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuDebugVis_, L"Debug View");
 
-    // LOD submenu: Auto + Force 0..3. Radio-checked. Auto (=-1) is
-    // the default and matches Previewd's screen-size-driven LOD.
+    // LOD submenu: Auto + Force 0..3. Radio-checked. Default is
+    // "Force LOD 0" — preview tooling always wants the highest-detail
+    // mesh regardless of viewport size. "Auto (screen size)" mirrors
+    // Previewd's screen-size-driven LOD when the user picks it.
     static const wchar_t* const kLodLabels[5] = {
         L"Auto (screen size)",
         L"Force LOD 0 (base)",
