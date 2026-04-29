@@ -977,7 +977,8 @@ std::vector<RibbonEmitterConfig> MdxModelAdapter::GetRibbonConfigs() {
 
         if (rb.materialId < (u32)model_.materials.size() &&
             !model_.materials[rb.materialId].layers.empty()) {
-            const auto& layer = model_.materials[rb.materialId].layers[0];
+            const auto& mat   = model_.materials[rb.materialId];
+            const auto& layer = mat.layers[0];
 
             if (const auto* diffuse = FindDiffuseSubTexture(layer.subTextures))
                 cfg.textureId = (int)diffuse->textureId;
@@ -989,6 +990,14 @@ std::vector<RibbonEmitterConfig> MdxModelAdapter::GetRibbonConfigs() {
             const u32 sf = (u32)layer.shadingFlags;
             cfg.unshaded = hasFlag(sf, Layer::ShadingFlag::Unshaded);
             cfg.twoSided = hasFlag(sf, Layer::ShadingFlag::TwoSided);
+
+            // Ribbons inherit priorityPlane from their referenced material
+            // (MDX MATS chunk carries it per material, mirroring how
+            // geosets get theirs). PE2 emitters carry their own priority
+            // because they own an inline material rather than referencing
+            // one — see MDLPARTICLEEMITTER2::priorityPlane vs ribbons'
+            // materialId indirection.
+            cfg.priorityPlane = (int)mat.priorityPlane;
         }
         // Ribbons are double-sided in the engine regardless of layer flag
         // (CRibbonEmitter::Render does not bind a cull state).

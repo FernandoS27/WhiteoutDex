@@ -82,10 +82,11 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView,
     in.fogSampler  = fogSampler_;
 
     for (const auto& [k, e] : emitters_) {
+        const int offset = (int)outVertices.size();
         int vcount = BuildEmitterGeometry(*e, in, outVertices);
         if (vcount > 0) {
             outDrawLists.push_back({
-                k.model, k.id, vcount, e->PriorityPlane(), e->Material()
+                k.model, k.id, offset, vcount, e->PriorityPlane(), e->Material()
             });
         }
     }

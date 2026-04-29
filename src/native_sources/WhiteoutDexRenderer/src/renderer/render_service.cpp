@@ -1672,6 +1672,21 @@ bool RenderService::RenderParticlesBls() {
     }
     if (verts.empty()) return true;
 
+    // Sort emitters by priorityPlane so a particle authored with a
+    // negative priority renders behind one with priorityPlane=0, etc.
+    // CParticleEmitter2::m_priorityPlane (offset 0x3C, verified in
+    // Warcraft III.exe) is the engine's sort key for the same purpose.
+    // Stable on (model, emitterId) for deterministic ordering within
+    // a tie. The vertex buffer layout doesn't move — drawLists carry
+    // their own vertexOffset back into `verts`.
+    std::stable_sort(drawLists.begin(), drawLists.end(),
+        [](const particle::EmitterDrawList& a,
+           const particle::EmitterDrawList& b) {
+            if (a.priorityPlane != b.priorityPlane) return a.priorityPlane < b.priorityPlane;
+            if (a.model         != b.model)         return a.model         < b.model;
+            return a.emitterId < b.emitterId;
+        });
+
     const int vertCount = (int)verts.size();
 
     // Grow + upload the shared particle VB.
@@ -1703,7 +1718,6 @@ bool RenderService::RenderParticlesBls() {
     frame.numLights  = 0;  // particles are unlit via MatParams.disables bit 0
     frame.viewportRect = { (float)width_, (float)height_, 0.0f, 0.0f };
 
-    int drawOffset = 0;
     for (const auto& dl : drawLists) {
         if (dl.vertexCount <= 0) continue;
 
@@ -1737,7 +1751,7 @@ bool RenderService::RenderParticlesBls() {
                                              bls::VertexLayoutKind::ParticleSD,
                                              mp, perm);
         auto pso = blsPsoBuilder_->GetOrBuild(req);
-        if (pso == gfx::PipelineHandle::Invalid) { drawOffset += dl.vertexCount; continue; }
+        if (pso == gfx::PipelineHandle::Invalid) continue;
         cmd->BindPipeline(pso);
 
         // VS CB (208 B fixed + 64 B per light; unlit → 208 B).
@@ -1781,8 +1795,7 @@ bool RenderService::RenderParticlesBls() {
             cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, textures_->GetDefaults().White);
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplers_->WrapVariant(wrapFlags));
 
-        cmd->Draw(dl.vertexCount, drawOffset);
-        drawOffset += dl.vertexCount;
+        cmd->Draw(dl.vertexCount, dl.vertexOffset);
     }
     return true;
 }
@@ -1982,18 +1995,43 @@ void RenderService::RenderRibbons() {
     frame.view       = viewMat;
     frame.projection = scene_->Camera().ProjectionRH(aspect);
 
-    int drawOffset = 0;
+    // Per-emitter: vertex count and starting offset in the ribbon VB
+    // (which BuildStrips lays out in emitterIds order). Snapshot under
+    // the lock so we can release it before sorting / drawing.
     std::vector<int> vertCounts;
+    std::vector<int> vertOffsets;
     {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        for (int eid : emitterIds)
-            vertCounts.push_back(mi->render.ribbons.GetEmitterVertCount(eid));
+        int running = 0;
+        for (int eid : emitterIds) {
+            vertOffsets.push_back(running);
+            const int n = mi->render.ribbons.GetEmitterVertCount(eid);
+            vertCounts.push_back(n);
+            running += n;
+        }
     }
 
-    for (int ei = 0; ei < (int)emitterIds.size(); ei++) {
+    // Sort emitter indices by priorityPlane. Stable on emitterId for a
+    // deterministic tie order. Ribbons inherit priorityPlane from their
+    // referenced material (MDX MATS chunk carries it per material) —
+    // the adapter copies it into RibbonEmitterConfig so the render
+    // path doesn't have to chase the materialId here. Engine does the
+    // same lookup at sort time, just without the cache.
+    std::vector<int> drawOrder(emitterIds.size());
+    for (int i = 0; i < (int)drawOrder.size(); ++i) drawOrder[i] = i;
+    std::stable_sort(drawOrder.begin(), drawOrder.end(),
+        [&](int a, int b) {
+            const int pa = configs[a].priorityPlane;
+            const int pb = configs[b].priorityPlane;
+            if (pa != pb) return pa < pb;
+            return emitterIds[a] < emitterIds[b];
+        });
+
+    for (int ei : drawOrder) {
         auto& cfg = configs[ei];
-        int count = vertCounts[ei];
-        if (count <= 0) { continue; }
+        const int count   = vertCounts[ei];
+        const int offset  = vertOffsets[ei];
+        if (count <= 0) continue;
 
         // MatParams from filter mode + cfg flags. Force lighting off —
         // ribbons are always unshaded in classic MDX — so the VS picks
@@ -2011,7 +2049,7 @@ void RenderService::RenderRibbons() {
                                              bls::VertexLayoutKind::ParticleSD,
                                              mp, perm);
         auto pso = blsPsoBuilder_->GetOrBuild(req);
-        if (pso == gfx::PipelineHandle::Invalid) { drawOffset += count; continue; }
+        if (pso == gfx::PipelineHandle::Invalid) continue;
         cmd->BindPipeline(pso);
 
         if (auto vs = bls::ScopedCb<bls::SdVsCbA>(gfx_.get(), blsSdVsCb_)) {
@@ -2026,8 +2064,7 @@ void RenderService::RenderRibbons() {
         render_detail::BindLayerAlbedo(cmd, mi->render.textures.get(), cfg.textureId,
                                        textures_->GetDefaults().White, *samplers_);
 
-        cmd->Draw(count, drawOffset);
-        drawOffset += count;
+        cmd->Draw(count, offset);
     }
     } // end for each model
 }
@@ -2617,21 +2654,21 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     }
 
     if (showGrid_) debug_->RenderGrid();
-    RenderGeosets();
-    // Splats are ground decals; in the game (CSplatEmitter, see
-    // IModelRenderSceneOpaque + "Opaque Models" / "Transparent Models"
-    // in Warcraft III.exe) they render BETWEEN the opaque mesh pass
-    // and any transparent pass. We don't currently split RenderGeosets
-    // by render-order bucket, so as a first-cut compromise we draw
-    // splats AFTER all mesh geosets but BEFORE particles + ribbons —
-    // since particles/ribbons don't write depth, drawing them after
-    // splats lets their alpha-blend correctly composite over the
-    // already-on-screen splat colour. Splats overdrawing the model's
-    // own transparent layers is a remaining limitation tracked for a
-    // future RenderGeosets split.
+    // Pass order mirrors the WC3 engine's labelled render passes
+    // (verified strings in Warcraft III.exe: "Opaque Models" → splats
+    // → "Transparent Models"):
+    //   1. Opaque mesh (renderOrder == 1, full depth write)
+    //   2. Splats — ground decals, depth-test against opaque, no write
+    //   3. Transparent mesh (renderOrder >= 2), sorted by priorityPlane
+    //   4. Particles, sorted by emitter priorityPlane
+    //   5. Ribbons, sorted by per-config priorityPlane (default 0 for
+    //      MDX-loaded ribbons since the file format has no field)
+    // See HANDOFF_ACCURACY.md for what's still not engine-faithful.
+    RenderGeosets(GeosetBucket::Opaque);
     if (showEvents_)    RenderSplatsBls();
+    RenderGeosets(GeosetBucket::Transparent);
     if (showParticles_) RenderParticlesBls();
-    if (showRibbons_) RenderRibbons();
+    if (showRibbons_)   RenderRibbons();
     if (showCollisions_) debug_->RenderCollisions();
     if (showLights_)     debug_->RenderLightMarkers();
     debug_->RenderViewCube();
@@ -2859,8 +2896,8 @@ public:
     }
 };
 
-bool RenderService::RenderGeosetsBls() {
-    return GeosetPassBls{*this}.Run();
+bool RenderService::RenderGeosetsBls(GeosetBucket bucket) {
+    return GeosetPassBls{*this, bucket}.Run();
 }
 
 // HD-path mesh draw. Runs only when renderMode_ == HD. For Phase 2 this is a
@@ -3283,19 +3320,19 @@ public:
     }
 };
 
-bool RenderService::RenderGeosetsHd() {
-    return GeosetPassHd{*this}.Run();
+bool RenderService::RenderGeosetsHd(GeosetBucket bucket) {
+    return GeosetPassHd{*this, bucket}.Run();
 }
 
-void RenderService::RenderGeosets() {
+void RenderService::RenderGeosets(GeosetBucket bucket) {
     // HD mode routes through hd.bls / sd_on_hd.bls; SD mode through sd.bls.
     // InitDevice guarantees both programs are loaded -- there is no legacy
     // Slang fallback any more, so Run() on either pass either draws or
     // returns early (empty scene). No visible failure mode here.
     if (renderMode_ == RenderMode::HD) {
-        RenderGeosetsHd();
+        RenderGeosetsHd(bucket);
     } else {
-        RenderGeosetsBls();
+        RenderGeosetsBls(bucket);
     }
 }
 

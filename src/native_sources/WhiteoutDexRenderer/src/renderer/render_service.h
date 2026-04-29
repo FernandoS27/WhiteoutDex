@@ -72,6 +72,7 @@ struct LineVertex {
 template <class> class BlsGeosetPass;
 class GeosetPassBls;
 class GeosetPassHd;
+enum class GeosetBucket : uint8_t;
 class DebugRenderer;  // debug/debug_renderer.h — overlay passes (grid, collisions, light markers, ViewCube)
 class SpnSpawner;     // renderer/spn_spawner.h — sub-MDX EventObject spawns
 
@@ -370,7 +371,13 @@ private:
     // Rendering. SD mesh draws flow through BLS (blsSdProgram_ / blsHdProgram_
     // / blsSdOnHdProgram_); particles and ribbons do the same; no legacy
     // Slang mesh PSO exists any more.
-    void RenderGeosets();
+    // Mesh geoset draw split. The default `All` runs both opaque and
+    // transparent in one sorted sweep (legacy behaviour); `Opaque` and
+    // `Transparent` filter the sorted ref list so the caller can slot
+    // splats / particles / ribbons between the two buckets — matching
+    // the WC3 engine's separate "Opaque Models" and "Transparent
+    // Models" labelled passes.
+    void RenderGeosets(GeosetBucket bucket);
 
     // PE2 service — centralised registry for the new particle path. Coexists
     // with the legacy per-Actor ParticleSystem until Phase 6 cut-over.
@@ -593,8 +600,8 @@ private:
     void ShutdownBlsShaders();
     bool RenderParticlesBls();  // BLS path; returns false if program unavailable
     bool RenderSplatsBls();     // EventObject SPL/UBR/FPT decals (BLS path)
-    bool RenderGeosetsBls();    // SD-mode mesh geosets (Path A: SD_HighSpec + SD)
-    bool RenderGeosetsHd();     // HD-mode mesh geosets (Path B: HD / SD_on_HD programs)
+    bool RenderGeosetsBls(GeosetBucket bucket);    // SD-mode mesh geosets (Path A: SD_HighSpec + SD)
+    bool RenderGeosetsHd(GeosetBucket bucket);     // HD-mode mesh geosets (Path B: HD / SD_on_HD programs)
 };
 
 } // namespace WhiteoutDex

@@ -37,6 +37,15 @@ struct RibbonEmitterConfig {
     float emission   = 10.0f;   // segments per second
     float life       = 1.0f;    // segment lifespan
     float gravity    = 0.0f;
+    // Inherited from the ribbon's referenced material (MDX MATS chunk
+    // carries `priorityPlane` per material, just like for geosets — see
+    // MdxModelAdapter::GetRibbonConfigs). The CRibbonEmitter struct in
+    // Warcraft III.exe doesn't carry the field directly because the
+    // engine looks it up via materialId at sort time; we cache it here
+    // so the render path doesn't need a back-pointer. Default 0 covers
+    // ribbons whose materialId is out of range or whose material list
+    // was empty.
+    int   priorityPlane = 0;
 };
 
 // ============================================================================

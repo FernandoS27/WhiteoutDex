@@ -28,10 +28,19 @@
 
 namespace WhiteoutDex {
 
+// Mesh-pass bucket. Mirrors the WC3 engine's "Opaque Models" /
+// "Transparent Models" labeled passes (verified in Warcraft III.exe
+// string table) — opaque renders first with full depth writes, then
+// the splat pass sneaks in, then transparent renders sorted by
+// priority. `All` is the legacy single-pass fallback used when a
+// caller doesn't care.
+enum class GeosetBucket : uint8_t { All = 0, Opaque = 1, Transparent = 2 };
+
 template <class Derived>
 class BlsGeosetPass {
 public:
-    explicit BlsGeosetPass(RenderService& rs) noexcept : rs_(rs) {}
+    explicit BlsGeosetPass(RenderService& rs, GeosetBucket bucket = GeosetBucket::All) noexcept
+        : rs_(rs), bucket_(bucket) {}
 
     bool Run() {
         Derived&  d  = self();
@@ -61,6 +70,13 @@ public:
         const bls::BaselineLights baseline = d.Baseline();
 
         for (auto& ref : collected.refs) {
+            // Bucket filter: renderOrder bucket 1 == opaque; >=2 ==
+            // transparent (alpha-test + blend + other). Skip any ref
+            // outside the requested bucket so the splat pass and the
+            // transparent emitter passes can slot between the two.
+            if (bucket_ == GeosetBucket::Opaque       && ref.renderOrder >  1) continue;
+            if (bucket_ == GeosetBucket::Transparent  && ref.renderOrder <= 1) continue;
+
             const auto& view_  = *ref.view;
             const auto& geo    = (*view_.geosets)[ref.idx];
             if (geo.unskinnedVb == gfx::BufferHandle::Invalid ||
@@ -78,6 +94,7 @@ public:
 
 protected:
     RenderService& rs_;
+    GeosetBucket   bucket_;
     Derived&       self()       { return *static_cast<Derived*>(this); }
     const Derived& self() const { return *static_cast<const Derived*>(this); }
 };
