@@ -107,6 +107,7 @@ private:
         IDM_VIEW_GRID      = 1100,
         IDM_VIEW_PARTICLES,
         IDM_VIEW_RIBBONS,
+        IDM_VIEW_EVENTS,
         // Debug menu toggles
         IDM_DBG_COLLISIONS = 1200,
         IDM_DBG_LIGHTS,

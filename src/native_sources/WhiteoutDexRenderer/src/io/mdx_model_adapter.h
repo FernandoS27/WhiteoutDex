@@ -42,6 +42,8 @@ public:
     std::vector<CollisionShapeData>    GetCollisionShapes() override;
     std::vector<AttachmentConfig>      GetAttachmentConfigs() override;
     std::vector<PE1EmitterConfig>      GetPE1Configs()      override;
+    std::vector<EventObjectConfig>     GetEventObjects()    override;
+    std::vector<uint32_t>              GetGlobalSequences() override;
 
     // ---- Per-frame evaluation (IAnimationSource) ----
     FrameState Evaluate(int sequenceIdx, int timeMs, int globalTimeMs,

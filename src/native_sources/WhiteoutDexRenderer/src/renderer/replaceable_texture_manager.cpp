@@ -6,6 +6,7 @@
 #include "texture_asset_manager.h"
 #include "team_glow_data.h"
 #include "../io/content_provider.h"
+#include "../io/event_data.h"
 #include "../io/replaceable_paths.h"
 #include "model_source_utils.h"   // DispatchTextureParser, ExtensionLower
 
@@ -34,6 +35,12 @@ void ReplaceableTextureManager::SetContentProvider(IContentProvider* p) {
     // resolver in io::ReplaceableCanonicalPath can use them. Idempotent;
     // safe to call again on subsequent provider changes.
     io::LoadGameDataFiles(p);
+    // Same hand-off doubles as the trigger for the EventObject SLK
+    // tables (Splats/SpawnData, SplatData, UberSplatData; AnimLookups
+    // chained to AnimSounds). io::Find{Spn,Spl,Ubr,Snd} is empty until
+    // this fires, so EventObjects loaded before a content provider is
+    // wired silently no-op until the user picks a CASC root.
+    io::LoadEventDataFiles(p);
 }
 
 ReplaceableTextureManager::~ReplaceableTextureManager() {

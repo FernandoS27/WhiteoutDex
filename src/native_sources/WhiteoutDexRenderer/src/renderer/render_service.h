@@ -12,7 +12,10 @@
 #include "animation.h"
 #include "particle.h"
 #include "particle/particle_service.h"
+#include "particle/splat_service.h"
 #include "ribbon.h"
+#include "sound_service.h"
+#include "spn_spawner.h"
 #include "model_types.h"
 #include "model_instance.h"
 #include "actor_manager.h"
@@ -70,12 +73,14 @@ template <class> class BlsGeosetPass;
 class GeosetPassBls;
 class GeosetPassHd;
 class DebugRenderer;  // debug/debug_renderer.h — overlay passes (grid, collisions, light markers, ViewCube)
+class SpnSpawner;     // renderer/spn_spawner.h — sub-MDX EventObject spawns
 
 class RenderService {
     template <class> friend class BlsGeosetPass;
     friend class GeosetPassBls;
     friend class GeosetPassHd;
     friend class DebugRenderer;
+    friend class SpnSpawner;
 public:
     // Default ctor: creates an internal SceneManager (back-compat).
     RenderService();
@@ -371,6 +376,15 @@ private:
     // with the legacy per-Actor ParticleSystem until Phase 6 cut-over.
     particle::ParticleService particleService_;
 
+    // EventObject infrastructure. Splats live alongside particles (same
+    // VB / shader path); the SPN spawner manages sub-MDX lifecycles in
+    // sync with the PE1 path; the sound service is a logging stub by
+    // default and can be replaced with an XAudio2 backend by swapping
+    // the unique_ptr.
+    particle::SplatService    splatService_;
+    std::unique_ptr<SpnSpawner>     spnSpawner_;
+    std::unique_ptr<SoundService>   soundService_;
+
     // Sync
     mutable std::mutex    dataMutex_;
 
@@ -383,6 +397,7 @@ private:
     bool                  showRibbons_    = true;
     bool                  showCollisions_ = false;  // off by default
     bool                  showLights_     = false;  // off by default
+    bool                  showEvents_     = true;   // MDX EventObjects (SPN/SPL/UBR/FPT/SND)
     // Global render pipeline selector. Mirrors Previewd's GxDevRenderMode():
     // flipping to HD causes MatSelect-style canonicalisation in the mesh draw
     // path (SD/SD_on_HD route through sd_on_hd.bls, HD/Crystal through hd.bls).
@@ -577,6 +592,7 @@ private:
     bool InitBlsShaders();
     void ShutdownBlsShaders();
     bool RenderParticlesBls();  // BLS path; returns false if program unavailable
+    bool RenderSplatsBls();     // EventObject SPL/UBR/FPT decals (BLS path)
     bool RenderGeosetsBls();    // SD-mode mesh geosets (Path A: SD_HighSpec + SD)
     bool RenderGeosetsHd();     // HD-mode mesh geosets (Path B: HD / SD_on_HD programs)
 };

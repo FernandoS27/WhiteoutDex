@@ -342,6 +342,13 @@ void MdxHierarchy::Build(const whiteout::mdx::Model& model) {
     addAll(model.collisionShapes,   HierarchyNode::Source::CollisionShape);
     addAll(model.attachments,       HierarchyNode::Source::Attachment);
     addAll(model.lights,            HierarchyNode::Source::Light);
+    // EventObjects need their own palette slot so the per-actor
+    // EventEmitterPool can resolve `objectId → world matrix` for splat /
+    // SPN spawns. Without this, ObjectIdToNodeIndex returns -1 and
+    // EventObjects collapse onto actor.worldTransform — which makes
+    // every footprint spawn at the model origin instead of under the
+    // foot bone the EventObject was authored to ride on.
+    addAll(model.eventObjects,      HierarchyNode::Source::EventObject);
 
     for (int i = 0; i < (int)nodes_.size(); i++)
         objectIdToIdx_[nodes_[i].objectId] = i;

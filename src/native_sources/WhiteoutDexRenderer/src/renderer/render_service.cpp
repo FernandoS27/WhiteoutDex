@@ -50,7 +50,9 @@ namespace WhiteoutDex {
 RenderService::RenderService()
     : ownedScene_(std::make_unique<SceneManager>()),
       scene_(ownedScene_.get()),
-      debug_(std::make_unique<DebugRenderer>(*this)) {
+      debug_(std::make_unique<DebugRenderer>(*this)),
+      spnSpawner_(std::make_unique<SpnSpawner>(*this)),
+      soundService_(MakeDefaultSoundService()) {
     // Cross-model dedup query — fed to every adapter the templates manager
     // builds. Wired here because IsTextureCached lives on RenderService
     // (it queries the TextureAssetManager, which we own).
@@ -60,7 +62,9 @@ RenderService::RenderService()
 
 RenderService::RenderService(SceneManager& scene)
     : scene_(&scene),
-      debug_(std::make_unique<DebugRenderer>(*this)) {
+      debug_(std::make_unique<DebugRenderer>(*this)),
+      spnSpawner_(std::make_unique<SpnSpawner>(*this)),
+      soundService_(MakeDefaultSoundService()) {
     // Same wiring as the default ctor; the scene's template loader was
     // already started by the host that constructed `scene`.
     scene_->Templates().SetTextureCacheQuery(
@@ -87,6 +91,12 @@ void RenderService::ClearModel() {
     scene_->FocusRef() = 0;
     // Drop everything on the PE2 service side too.
     particleService_.Clear();
+    // EventObject side-state. Splat decals fade naturally on Tick once
+    // their lifetime elapses, but pending/active SPN handles point at
+    // actors we just queued for staged-clear — drop them eagerly so
+    // the next Tick doesn't try to age out by-now-missing actors.
+    splatService_.Clear();
+    if (spnSpawner_) spnSpawner_->Clear();
 }
 
 void RenderService::SetAttachmentConfigs(uint32_t handle, const std::vector<AttachmentConfig>& configs) {
@@ -244,6 +254,13 @@ void RenderService::stageModelFromTemplate(Actor* mi,
     for (int i = 0; i < (int)tmpl->pe1Configs.size(); i++)
         mi->render.pe1.AddEmitter(i, tmpl->pe1Configs[i]);
 
+    // EventObjects — one EventEmitterPool per actor. Re-primed on each
+    // stage so re-staging the same handle (e.g. live-source rebuild)
+    // doesn't double-fire. PE1/SPN children inherit the same plumbing
+    // because stageModelFromTemplate runs for every actor including
+    // child actors created inside EvaluatePE1Children / SpnSpawner.
+    mi->events.Reset(tmpl->eventObjects, tmpl->globalSequences);
+
     mi->render.stagedDirty = true;
 }
 
@@ -312,6 +329,12 @@ void RenderService::UpdatePE1(float dt) {
         // texture (since getModel(dl.model) returns null on lookup).
         particleService_.RemoveModel(rh);
     }
+
+    // SPN-spawned sub-MDX expiry runs while we still hold the actor-map
+    // mutex. Promotes any pending loads to live actors, then ages out
+    // anything past its sequence duration through the same teardown
+    // path PE1 children use above.
+    if (spnSpawner_) spnSpawner_->Tick(scene_->GetAnimationTime());
 }
 
 void RenderService::EvaluateTopLevelActors() {
@@ -1052,6 +1075,37 @@ void RenderService::ApplyFrameState(uint32_t handle, const FrameState& state, in
         mi->render.collisionShapes[i].transform = state.collisionTransforms[i];
 
     ApplyAttachmentStates(*mi, state, timeMs);
+
+    // EventObject (SPN/SPL/UBR/FPT/SND) dispatch. Runs after bone
+    // matrices are populated so node-anchored spawns land at the
+    // correctly posed world transform. Gated behind the View menu
+    // toggle. The pool's own Tick re-primes rising-edge state on
+    // sequence change — Actor::prevActiveSequence is updated by
+    // SceneManager::Update *before* this function runs, so it can't
+    // be used as the trigger.
+    if (showEvents_ && !mi->events.Empty()) {
+        const int activeSeq = mi->animation.ActiveSequenceIndex();
+        // Resolve the active sequence window. Out-of-range indices
+        // fall back to a permissive [0, INT_MAX] window so tracks
+        // without a sequence anchor still scan.
+        int seqStart = 0, seqEnd = 0x7FFFFFFF;
+        if (mi->animation.Source()) {
+            auto seqs = mi->animation.Source()->GetSequences();
+            if (activeSeq >= 0 && activeSeq < (int)seqs.size()) {
+                seqStart = seqs[activeSeq].startMs;
+                seqEnd   = seqs[activeSeq].endMs;
+            }
+        }
+        const int globalMs = scene_->GetAnimationTime();
+        mi->events.Tick(*mi,
+                        state.boneWorldMatrices,
+                        activeSeq,
+                        timeMs, globalMs,
+                        seqStart, seqEnd,
+                        &splatService_,
+                        spnSpawner_.get(),
+                        soundService_.get());
+    }
 }
 
 // ============================================================================
@@ -1202,11 +1256,12 @@ void RenderService::SetDisplayFlags(const DisplayFlags& flags) {
     showRibbons_    = flags.showRibbons;
     showCollisions_ = flags.showCollisions;
     showLights_     = flags.showLights;
+    showEvents_     = flags.showEvents;
     renderMode_     = flags.renderMode;
 }
 
 DisplayFlags RenderService::GetDisplayFlags() const {
-    return { showGrid_, showParticles_, showRibbons_, showCollisions_, showLights_, renderMode_ };
+    return { showGrid_, showParticles_, showRibbons_, showCollisions_, showLights_, showEvents_, renderMode_ };
 }
 
 // ============================================================================
@@ -1229,6 +1284,11 @@ void RenderService::Tick(float dt) {
 }
 
 void RenderService::ShutdownDevice() {
+    // EventObject lifecycle services run before model teardown so their
+    // Actor handles still resolve; they hold no GPU resources of their
+    // own beyond the splat texture cache (cleared in Clear()).
+    if (spnSpawner_) spnSpawner_->Clear();
+    splatService_.Clear();
     ReleaseModelGPU();
     // Templates own the cross-instance geometry buffers — instances released
     // above only dropped their refcount on those buffers via sourceTemplate.reset().
@@ -1583,6 +1643,13 @@ void RenderService::UpdateParticles(float dt) {
     // ApplyParticleFrameStates — an emitter whose parent is hidden gets
     // ps.visibility <= 0 and never emits anything during Simulate.
     particleService_.Simulate(dt);
+    // EventObject splats age on a real-time clock (independent of the
+    // parent animation dt) so a paused/scrubbed model still fades the
+    // decals it just spawned. Splats are pure GPU decals — no scene-
+    // actor reads — so they don't need the data mutex. SPN sub-MDX
+    // expiry runs from UpdatePE1 instead, where the PE1 path already
+    // owns the actor-map mutex.
+    splatService_.Tick();
 }
 
 bool RenderService::RenderParticlesBls() {
@@ -1716,6 +1783,127 @@ bool RenderService::RenderParticlesBls() {
 
         cmd->Draw(dl.vertexCount, drawOffset);
         drawOffset += dl.vertexCount;
+    }
+    return true;
+}
+
+// ============================================================================
+// EventObject splat rendering (render thread)
+// ============================================================================
+// Reuses the SD VS + SD PS path (same as RenderParticlesBls) and the same
+// global VB. Splat verts are pre-transformed to world space by SplatService;
+// the camera VP takes them straight to clip space.
+namespace {
+particle::FilterMode SplatBlendModeToFilter(int blendMode) {
+    // SLK BlendMode column values mirror MDX layer filter modes:
+    // 0=None, 1=Transparent, 2=Blend, 3=Additive, 4=AddAlpha,
+    // 5=Modulate, 6=Modulate2X. For splat decals "None" is rare in
+    // shipped content; map it to Blend so a missing/zero entry still
+    // produces a visible decal rather than a hard-edged opaque quad.
+    switch (blendMode) {
+        case 1: return particle::FilterMode::AlphaKey;     // Transparent
+        case 3: return particle::FilterMode::Additive;
+        case 4: return particle::FilterMode::Additive;     // AddAlpha — close enough at this fidelity
+        case 5: return particle::FilterMode::Modulate;
+        case 6: return particle::FilterMode::Modulate2X;
+        case 0:
+        case 2:
+        default: return particle::FilterMode::Blend;
+    }
+}
+} // namespace
+
+bool RenderService::RenderSplatsBls() {
+    if (!blsSdProgram_ || !blsPsoBuilder_) return false;
+    if (splatService_.Count() == 0)        return true;
+
+    auto* cmd = gfx_->GetImmediateContext();
+
+    std::vector<Vertex>                       verts;
+    std::vector<particle::SplatDrawList>      drawLists;
+    Matrix44f viewMat = scene_->Camera().GetViewMatrix();
+    splatService_.BuildGeometry(verts, drawLists);
+    if (verts.empty()) return true;
+
+    const int vertCount = (int)verts.size();
+    if (particleServiceVB_ == gfx::BufferHandle::Invalid || vertCount > particleServiceVBSize_) {
+        gfx_->Destroy(particleServiceVB_);
+        int newSize = (std::max)(vertCount, 4096);
+        gfx::BufferDesc bd;
+        bd.size  = (uint32_t)(sizeof(Vertex) * newSize);
+        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+        particleServiceVB_     = gfx_->CreateBuffer(bd);
+        particleServiceVBSize_ = newSize;
+    }
+    if (void* mapped = gfx_->MapBuffer(particleServiceVB_)) {
+        memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
+        gfx_->UnmapBuffer(particleServiceVB_);
+    }
+
+    cmd->BindVertexBuffer(0, particleServiceVB_, sizeof(Vertex));
+
+    bls::FrameInputs frame;
+    frame.world      = Matrix44f::identity();
+    frame.view       = viewMat;
+    const float aspect = (height_ > 0) ? (float)width_ / (float)height_ : 1.0f;
+    frame.projection = scene_->Camera().ProjectionRH(aspect);
+    frame.effectTime = scene_->GetAnimationTime() * 0.001f;
+    frame.numLights  = 0;
+    frame.viewportRect = { (float)width_, (float)height_, 0.0f, 0.0f };
+
+    for (const auto& dl : drawLists) {
+        if (dl.vertexCount <= 0) continue;
+
+        // Build a particle-style material desc from the splat's blend
+        // mode so MakePsoRequest reaches the same PSO bucket the PE2
+        // path uses. Splats are unshaded + unfogged: they're just a
+        // colour-keyed texture sample modulated by the per-vertex RGBA.
+        particle::ParticleMaterialDesc pmd;
+        pmd.filterMode = SplatBlendModeToFilter(dl.blendMode);
+        pmd.unshaded   = true;
+        pmd.unfogged   = true;
+        pmd.textureId  = -1;          // direct binding via dl.texture below
+
+        bls::MatParams mp = bls::FromParticleDesc(pmd, bls::GxShaderID::SD);
+        mp.disables |= bls::kDisableLighting;
+        mp.diffuseColor = {1, 1, 1, 1};
+
+        bls::RenderState rs;
+        rs.shaderId        = bls::GxShaderID::SD;
+        rs.alphaMode       = static_cast<uint8_t>(mp.alpha);
+        rs.numColors       = 1;
+        rs.numTexCoords    = 1;
+        rs.numWeights      = 0;
+        rs.numLights       = 0;
+        rs.fogEnabled      = false;
+        rs.depthWrite      = mp.DepthWriteEnabled();
+        rs.lightingEnabled = false;
+        auto perm = bls::SelectPermutes(rs);
+
+        const auto req = bls::MakePsoRequest(blsSdProgram_,
+                                             bls::VertexLayoutKind::ParticleSD,
+                                             mp, perm);
+        auto pso = blsPsoBuilder_->GetOrBuild(req);
+        if (pso == gfx::PipelineHandle::Invalid) continue;
+        cmd->BindPipeline(pso);
+
+        if (auto vs = bls::ScopedCb<bls::SdVsCbA>(gfx_.get(), blsSdVsCb_)) {
+            bls::BuildSdVsCbA(*vs, frame, mp);
+        }
+        if (auto ps = bls::ScopedCb<bls::SdPsCbA>(gfx_.get(), blsSdPsCb_)) {
+            bls::BuildSdPsCbA(*ps, frame, mp);
+        }
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, blsSdVsCb_);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, blsSdPsCb_);
+
+        const uint32_t wrapFlags = 0x3;
+        if (dl.texture != gfx::TextureHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, dl.texture);
+        else
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, textures_->GetDefaults().White);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, samplers_->WrapVariant(wrapFlags));
+
+        cmd->Draw(dl.vertexCount, dl.vertexOffset);
     }
     return true;
 }
@@ -1932,6 +2120,11 @@ bool RenderService::InitBlsShaders() {
     // canonical replaceable assets (cliff/tree BLPs) for ids 11..36
     // — wired here so it's available before the first model stage.
     if (replaceables_) replaceables_->SetContentProvider(scene_->ActiveContentProvider());
+
+    // SplatService loads SPL/UBR textures on demand from CASC. Wired
+    // here so it has gfx_ + content alive before the first event fires.
+    splatService_.Configure(gfx_.get(), textures_.get(),
+                            scene_->ActiveContentProvider());
 
     blsShaderCache_ = std::make_unique<bls::BlsShaderCache>(gfx_.get(), scene_->ActiveContentProvider());
     blsPrograms_    = std::make_unique<bls::BlsProgramCatalog>(blsShaderCache_.get());
@@ -2425,6 +2618,18 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
 
     if (showGrid_) debug_->RenderGrid();
     RenderGeosets();
+    // Splats are ground decals; in the game (CSplatEmitter, see
+    // IModelRenderSceneOpaque + "Opaque Models" / "Transparent Models"
+    // in Warcraft III.exe) they render BETWEEN the opaque mesh pass
+    // and any transparent pass. We don't currently split RenderGeosets
+    // by render-order bucket, so as a first-cut compromise we draw
+    // splats AFTER all mesh geosets but BEFORE particles + ribbons —
+    // since particles/ribbons don't write depth, drawing them after
+    // splats lets their alpha-blend correctly composite over the
+    // already-on-screen splat colour. Splats overdrawing the model's
+    // own transparent layers is a remaining limitation tracked for a
+    // future RenderGeosets split.
+    if (showEvents_)    RenderSplatsBls();
     if (showParticles_) RenderParticlesBls();
     if (showRibbons_) RenderRibbons();
     if (showCollisions_) debug_->RenderCollisions();

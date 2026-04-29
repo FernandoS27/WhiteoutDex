@@ -64,6 +64,8 @@ struct ModelTemplate {
     std::vector<CollisionShapeData>    collisionConfigs;
     std::vector<PE1EmitterConfig>      pe1Configs;
     std::vector<AttachmentConfig>      attachmentConfigs;
+    std::vector<EventObjectConfig>     eventObjects;
+    std::vector<uint32_t>              globalSequences;
     std::vector<CameraPreset>          cameraPresets;
 
     // Pre-built shared skinning data. See animation.h::SkinningData.

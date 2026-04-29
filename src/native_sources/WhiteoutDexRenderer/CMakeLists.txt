@@ -147,6 +147,10 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/particle/plane_emitter.cpp
     src/renderer/particle/particle_geometry.cpp
     src/renderer/particle/particle_service.cpp
+    src/renderer/particle/splat_service.cpp
+    src/renderer/event_emitter_pool.cpp
+    src/renderer/sound_service.cpp
+    src/renderer/spn_spawner.cpp
     src/renderer/bls/bls_container.cpp
     src/renderer/bls/bls_shader_cache.cpp
     src/renderer/bls/bls_permuter.cpp
@@ -163,6 +167,7 @@ add_library(WhiteoutDexRendererLib STATIC
     src/io/file_resolver.cpp
     src/io/file_content_provider.cpp
     src/io/replaceable_paths.cpp
+    src/io/event_data.cpp
     src/io/slk.cpp
     src/io/texture_image_usage.cpp
 )

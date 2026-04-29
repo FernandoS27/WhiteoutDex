@@ -198,6 +198,8 @@ ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
     tmpl->collisionConfigs  = adapter->GetCollisionShapes();
     tmpl->pe1Configs        = adapter->GetPE1Configs();
     tmpl->attachmentConfigs = adapter->GetAttachmentConfigs();
+    tmpl->eventObjects      = adapter->GetEventObjects();
+    tmpl->globalSequences   = adapter->GetGlobalSequences();
     tmpl->cameraPresets     = adapter->GetCameraPresets();
 
     // Build the immutable shared SkinningData once. Every instance that

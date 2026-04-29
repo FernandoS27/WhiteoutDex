@@ -1497,6 +1497,63 @@ std::vector<PE1EmitterConfig> MdxModelAdapter::GetPE1Configs() {
 }
 
 // ============================================================================
+// GetEventObjects
+// ============================================================================
+// MDX EventObject names follow `XXX-IIII` where the 4-letter prefix
+// (chars 0..2) drives dispatch and chars 4..7 are the SLK row id.
+// We decode here so the renderer doesn't have to re-parse the name on
+// every fire. Unknown prefixes are still surfaced so the renderer can
+// log them once per model rather than swallowing them silently.
+
+static EventObjectConfig::Kind DecodeEventKind(std::string_view name) {
+    if (name.size() < 3) return EventObjectConfig::Kind::Unknown;
+    auto eq = [&](const char* p) {
+        return name[0] == p[0] && name[1] == p[1] && name[2] == p[2];
+    };
+    if (eq("SPN")) return EventObjectConfig::Kind::SPN;
+    if (eq("SPL")) return EventObjectConfig::Kind::SPL;
+    if (eq("UBR")) return EventObjectConfig::Kind::UBR;
+    if (eq("FPT")) return EventObjectConfig::Kind::FPT;
+    if (eq("SND")) return EventObjectConfig::Kind::SND;
+    return EventObjectConfig::Kind::Unknown;
+}
+
+std::vector<EventObjectConfig> MdxModelAdapter::GetEventObjects() {
+    std::vector<EventObjectConfig> result;
+    result.reserve(model_.eventObjects.size());
+    for (const auto& ev : model_.eventObjects) {
+        EventObjectConfig cfg;
+        cfg.name = ev.node.name;
+        cfg.kind = DecodeEventKind(cfg.name);
+        // Skip leading prefix + dash; the SLK id is the remainder. MDX
+        // name fields are fixed 80 bytes but typically null-trimmed by
+        // the parser, so just slice from char 4 onward when long enough.
+        if (cfg.name.size() >= 4) {
+            std::string_view tail{cfg.name.data() + 4, cfg.name.size() - 4};
+            // Trim trailing nulls / spaces that some authoring tools leave.
+            while (!tail.empty() && (tail.back() == '\0' || tail.back() == ' ')) tail.remove_suffix(1);
+            cfg.id.assign(tail);
+        }
+        cfg.nodeIndex        = hierarchy_.ObjectIdToNodeIndex((int)ev.node.objectId);
+        if (ev.node.objectId < model_.pivotPoints.size())
+            cfg.pivot = model_.pivotPoints[ev.node.objectId];
+        cfg.globalSequenceId = ev.globalSequenceId;
+        cfg.eventTrackTimes  = ev.eventTrackTimes;
+        result.push_back(std::move(cfg));
+    }
+    return result;
+}
+
+// ============================================================================
+// GetGlobalSequences
+// ============================================================================
+
+std::vector<uint32_t> MdxModelAdapter::GetGlobalSequences() {
+    return std::vector<uint32_t>(model_.globalSequences.begin(),
+                                 model_.globalSequences.end());
+}
+
+// ============================================================================
 // GetSequences
 // ============================================================================
 

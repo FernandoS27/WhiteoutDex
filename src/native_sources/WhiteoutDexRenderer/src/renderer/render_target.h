@@ -43,6 +43,7 @@ struct DisplayFlags {
     bool showRibbons    = true;
     bool showCollisions = false;
     bool showLights     = false;
+    bool showEvents     = true;
     RenderMode renderMode = RenderMode::SD;
 };
 

@@ -197,6 +197,7 @@ bool RenderWindow::Create(int w, int h) {
     addToggle(hMenuView_, IDM_VIEW_GRID,      L"Grid",      df.showGrid);
     addToggle(hMenuView_, IDM_VIEW_PARTICLES, L"Particles", df.showParticles);
     addToggle(hMenuView_, IDM_VIEW_RIBBONS,   L"Ribbons",   df.showRibbons);
+    addToggle(hMenuView_, IDM_VIEW_EVENTS,    L"Event Objects", df.showEvents);
     AppendMenuW(hMenuView_, MF_SEPARATOR, 0, nullptr);
 
     static const wchar_t* const kProbeLabels[5] = {
@@ -576,6 +577,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (id == IDM_VIEW_GRID)        { toggleView(id, &DisplayFlags::showGrid);       return 0; }
         if (id == IDM_VIEW_PARTICLES)   { toggleView(id, &DisplayFlags::showParticles);  return 0; }
         if (id == IDM_VIEW_RIBBONS)     { toggleView(id, &DisplayFlags::showRibbons);    return 0; }
+        if (id == IDM_VIEW_EVENTS)      { toggleView(id, &DisplayFlags::showEvents);     return 0; }
         if (id == IDM_DBG_COLLISIONS)   { toggleView(id, &DisplayFlags::showCollisions); return 0; }
         if (id == IDM_DBG_LIGHTS)       { toggleView(id, &DisplayFlags::showLights);     return 0; }
 

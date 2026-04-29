@@ -57,8 +57,13 @@ struct ModelData {
     std::vector<CollisionShapeData>    collisionConfigs;
     std::vector<AttachmentConfig>      attachmentConfigs;
     std::vector<PE1EmitterConfig>      pe1Configs;
+    std::vector<EventObjectConfig>     eventObjects;
     std::vector<CameraPreset>          cameraPresets;
     std::vector<SequenceInfo>          sequences;
+    // Global-sequence durations in milliseconds, indexed by the
+    // EventObjectConfig::globalSequenceId. Empty when the model uses
+    // none (the typical case).
+    std::vector<uint32_t>              globalSequences;
 };
 
 // ----------------------------------------------------------------------------
@@ -126,6 +131,8 @@ public:
     virtual std::vector<CollisionShapeData>    GetCollisionShapes()  = 0;
     virtual std::vector<AttachmentConfig>      GetAttachmentConfigs() { return {}; }
     virtual std::vector<PE1EmitterConfig>      GetPE1Configs()       { return {}; }
+    virtual std::vector<EventObjectConfig>     GetEventObjects()     { return {}; }
+    virtual std::vector<uint32_t>              GetGlobalSequences()  { return {}; }
 
     // Default Build() aggregates the granular methods. Adapters can override
     // for efficiency, but the default is correct.
@@ -141,6 +148,8 @@ public:
         d.collisionConfigs  = GetCollisionShapes();
         d.attachmentConfigs = GetAttachmentConfigs();
         d.pe1Configs        = GetPE1Configs();
+        d.eventObjects      = GetEventObjects();
+        d.globalSequences   = GetGlobalSequences();
         d.sequences         = GetSequences();
         return d;
     }

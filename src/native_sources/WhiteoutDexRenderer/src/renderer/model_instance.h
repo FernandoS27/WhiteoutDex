@@ -14,6 +14,7 @@
 
 #include "../gfx/gfx.h"
 #include "animation_driver.h"
+#include "event_emitter_pool.h"
 #include "model_source.h"
 #include "render_model.h"
 
@@ -103,6 +104,10 @@ struct Actor {
 
     // ---- The render-side cluster. Single concern: per-actor GPU + sim state.
     RenderModel render;
+
+    // ---- MDX EventObject (SPN/SPL/UBR/FPT/SND) per-actor dispatcher.
+    // Empty until populated by stageModelFromTemplate / SpawnActorFromLiveSource.
+    EventEmitterPool events;
 
     // ---- Convenience accessors. `actor.render.X` is the canonical form;
     // `actor.Render()` keeps reading well at sites that pass the cluster

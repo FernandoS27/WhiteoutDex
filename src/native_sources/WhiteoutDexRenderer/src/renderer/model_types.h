@@ -61,6 +61,38 @@ struct PE1EmitterConfig {
 };
 
 // ============================================================================
+// EventObject configuration — animation event triggers (SPN/SPL/UBR/FPT/SND)
+// ============================================================================
+// Decoded from the MDX EventObject's `name` field: chars 0..2 are the
+// 3-letter prefix (encoded into Kind), char 3 is a dash, chars 4..7 are
+// the SLK row id (lowercased into `id`). `eventTrackTimes` carries the
+// raw frame numbers from the parsed EventObject — the rising-edge
+// scanner walks them backward to detect crossings against the active
+// sequence's frame window.
+//
+// `globalSequenceId` follows MDX semantics: 0xFFFFFFFFu means "use the
+// active sequence", anything else indexes into model.globalSequences[].
+// `nodeIndex` is the bone-world matrix slot to fetch the spawn transform
+// from at fire time.
+struct EventObjectConfig {
+    enum class Kind : uint8_t { SPN, SPL, UBR, FPT, SND, Unknown };
+
+    std::string  name;
+    Kind         kind             = Kind::Unknown;
+    std::string  id;
+    int          nodeIndex        = -1;
+    // The EventObject's bind-pose pivot. Used to lift the
+    // hierarchy's "delta from bind" matrix into an absolute world
+    // transform: `pivotT * boneMatrix * actor.worldTransform`. Without
+    // this the splat sits near the model origin offset by whatever
+    // delta the foot bone has from bind, instead of at the foot's
+    // animated world position. See worldOf() in mdx_model_adapter.cpp.
+    Vector3f     pivot            = {0, 0, 0};
+    uint32_t     globalSequenceId = 0xFFFFFFFFu;
+    std::vector<uint32_t> eventTrackTimes;
+};
+
+// ============================================================================
 // FilterMode enum (matches Magos Constants.h / WhiteoutDex IO)
 // ============================================================================
 enum FilterMode {
