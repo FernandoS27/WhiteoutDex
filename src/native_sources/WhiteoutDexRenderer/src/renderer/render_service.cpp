@@ -200,9 +200,8 @@ void RenderService::stageModelFromTemplate(Actor* mi,
         const bool alreadyCached =
             !tex.sharedKey.empty() && IsTextureCached(tex.sharedKey);
         if (!alreadyCached) st.pixels = tex.pixels;  // first-instance seed
-        if ((tex.replaceableId == 1 || tex.replaceableId == 2) && replaceables_)
-            replaceables_->RegisterModelSlot(*mi, tex.textureId,
-                                             static_cast<ReplaceableKind>(tex.replaceableId));
+        if (tex.replaceableId != 0 && replaceables_)
+            replaceables_->RegisterModelSlot(*mi, tex.textureId, tex.replaceableId);
     }
     // Stage materials
     for (auto& mat : tmpl->materials) {
@@ -422,9 +421,8 @@ void RenderService::UpdateMaterials(uint32_t handle, const std::vector<MaterialD
         st.format = tex.format;
         st.pixels = tex.pixels;
         st.sharedKey = tex.sharedKey;
-        if ((tex.replaceableId == 1 || tex.replaceableId == 2) && replaceables_)
-            replaceables_->RegisterModelSlot(*mi, tex.textureId,
-                                             static_cast<ReplaceableKind>(tex.replaceableId));
+        if (tex.replaceableId != 0 && replaceables_)
+            replaceables_->RegisterModelSlot(*mi, tex.textureId, tex.replaceableId);
     }
 
     for (auto& mat : materials) {
@@ -470,10 +468,9 @@ uint32_t RenderService::AddModel(const std::vector<MeshData>& meshes,
         st.format = tex.format;
         st.pixels = tex.pixels;
         st.sharedKey = tex.sharedKey;
-        // Track replaceable textures for team color updates
-        if ((tex.replaceableId == 1 || tex.replaceableId == 2) && replaceables_)
-            replaceables_->RegisterModelSlot(*mi, tex.textureId,
-                                             static_cast<ReplaceableKind>(tex.replaceableId));
+        // Track replaceable textures for team-color / tileset updates.
+        if (tex.replaceableId != 0 && replaceables_)
+            replaceables_->RegisterModelSlot(*mi, tex.textureId, tex.replaceableId);
     }
 
     // Materials → staged
@@ -1073,6 +1070,15 @@ bool RenderService::IsTextureCached(std::string_view key) const {
 void RenderService::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
     std::lock_guard<std::mutex> lock(dataMutex_);
     if (replaceables_) replaceables_->SetTeamColor(r, g, b);
+}
+
+void RenderService::SetTileset(io::Tileset ts) {
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    if (replaceables_) replaceables_->SetTileset(ts);
+}
+
+io::Tileset RenderService::GetTileset() const {
+    return io::GetCurrentTileset();
 }
 
 void RenderService::SetBackgroundColor(uint8_t r, uint8_t g, uint8_t b) {
@@ -1921,6 +1927,11 @@ bool RenderService::InitDevice(gfx::GfxApi api) {
 
 bool RenderService::InitBlsShaders() {
     if (!gfx_ || !scene_->ActiveContentProvider()) return false;
+
+    // ReplaceableTextureManager needs the same provider to load
+    // canonical replaceable assets (cliff/tree BLPs) for ids 11..36
+    // — wired here so it's available before the first model stage.
+    if (replaceables_) replaceables_->SetContentProvider(scene_->ActiveContentProvider());
 
     blsShaderCache_ = std::make_unique<bls::BlsShaderCache>(gfx_.get(), scene_->ActiveContentProvider());
     blsPrograms_    = std::make_unique<bls::BlsProgramCatalog>(blsShaderCache_.get());

@@ -83,9 +83,12 @@ private:
     HWND cmbSequence_  = nullptr;
     HWND cmbLighting_  = nullptr;
     HWND btnBgColor_   = nullptr;
+    HWND sldExposure_  = nullptr;
+    HWND lblExposure_  = nullptr;
     HMENU hMenuBar_      = nullptr;
     HMENU hMenuView_     = nullptr;
     HMENU hMenuProbe_    = nullptr;
+    HMENU hMenuTileset_  = nullptr;
     HMENU hMenuDebug_    = nullptr;
     HMENU hMenuDebugVis_ = nullptr;
     HMENU hMenuLod_      = nullptr;
@@ -99,6 +102,7 @@ private:
         IDC_SEQUENCE,
         IDC_LIGHTING,
         IDC_BGCOLOR,
+        IDC_EXPOSURE,
         // View menu toggles
         IDM_VIEW_GRID      = 1100,
         IDM_VIEW_PARTICLES,
@@ -109,6 +113,10 @@ private:
         // Probe submenu (5 entries; index = id - IDM_PROBE_BASE)
         IDM_PROBE_BASE     = 1300,
         IDM_PROBE_LAST     = IDM_PROBE_BASE + 4,
+        // Tileset submenu (16 entries — one per io::Tileset enumerator;
+        // index = id - IDM_TILESET_BASE casts straight to io::Tileset)
+        IDM_TILESET_BASE   = 1310,
+        IDM_TILESET_LAST   = IDM_TILESET_BASE + 15,
         // Debug-vis submenu (8 entries; index = id - IDM_DBGVIS_BASE)
         IDM_DBGVIS_BASE    = 1400,
         IDM_DBGVIS_LAST    = IDM_DBGVIS_BASE + 7,

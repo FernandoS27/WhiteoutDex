@@ -392,13 +392,13 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
     for (int i = 0; i < (int)model_.textures.size(); i++) {
         const auto& tex = model_.textures[i];
         TextureData td;
-        if (tex.replaceableId == 1 || tex.replaceableId == 2) {
-            // Replaceable slot: adapter only declares the kind.
-            // ReplaceableTextureManager::RegisterModelSlot bakes the
-            // pixels from the current swatch at renderer registration time
-            // and re-bakes on every SetTeamColor. Leaving width=height=0
-            // here makes UploadStagedTextures skip this slot until the
-            // manager fills it — avoids a transient red placeholder.
+        if (tex.replaceableId != 0) {
+            // Replaceable slot: adapter only declares the id; the
+            // ReplaceableTextureManager::RegisterModelSlot path resolves
+            // the canonical CASC asset (or bakes a TeamColor / TeamGlow
+            // swatch for ids 1/2) and stamps the pixels into stagedTextures.
+            // Leaving width/height = 0 here keeps UploadStagedTextures
+            // off this slot until the manager fills it.
             td.textureId     = i;
             td.replaceableId = (int)tex.replaceableId;
             td.width = td.height = 0;

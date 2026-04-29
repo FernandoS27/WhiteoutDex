@@ -21,6 +21,7 @@
 // ============================================================================
 
 #include "../gfx/gfx.h"
+#include "../io/replaceable_paths.h"   // io::Tileset (consumed by RebakeTilesetSlots)
 #include "model_instance.h"
 
 #include <atomic>
@@ -31,15 +32,15 @@
 namespace WhiteoutDex {
 
 class TextureAssetManager;
+class IContentProvider;
 
-// What the engine substitutes at runtime for textures flagged with one of
-// Blizzard's "replaceable" ids. Numeric values mirror MDX's wire format
-// (`replaceableId` byte) — 0 means "not replaceable", 1/2 are the only
-// values the SD code path bakes per-model pixels for.
+// Legacy alias kept so call sites that still spell out the special
+// cases compile. Internally we now key slots by the raw replaceableId
+// byte (1=TeamColor, 2=TeamGlow, 11..37=tileset assets, 0=skip).
 enum class ReplaceableKind : uint8_t {
     None      = 0,
-    TeamColor = 1,  // SD path: 4x4 RGBA flat-fill matching the live swatch.
-    TeamGlow  = 2,  // SD path: embedded TGA decoded with the swatch as tint.
+    TeamColor = 1,
+    TeamGlow  = 2,
 };
 
 class ReplaceableTextureManager {
@@ -49,6 +50,12 @@ public:
 
     ReplaceableTextureManager(const ReplaceableTextureManager&)            = delete;
     ReplaceableTextureManager& operator=(const ReplaceableTextureManager&) = delete;
+
+    // ── Content provider hook ──────────────────────────────────────────
+    // RegisterModelSlot needs to read CASC for replaceable ids 11..37;
+    // the render service hands us a borrowed pointer at device-init
+    // time (lifetime owned by the host's content provider stack).
+    void SetContentProvider(IContentProvider* p);
 
     // ── Team-colour state (API-thread). ─────────────────────────────────
     // Updates the global swatch and re-bakes per-model SD pixels for every
@@ -60,14 +67,26 @@ public:
     // the platform-window-picker boundary). 0x00BBGGRR.
     uint32_t GetTeamColorRaw() const noexcept { return teamColor_; }
 
+    // ── Tileset state (API-thread). ─────────────────────────────────────
+    // Pushes the new tileset selector through io::SetCurrentTileset and
+    // re-bakes every registered slot whose replaceableId is in 11..37
+    // (TeamColor/TeamGlow swatches are tileset-independent and untouched).
+    // The same `mi.render.stagedDirty` upload path picks the new pixels
+    // up next render-thread Tick.
+    void SetTileset(io::Tileset ts);
+
     // Set/exchange the dirty flag — UI polls this once per repaint.
     bool ConsumeDirty() { return dirty_.exchange(false); }
 
     // ── Per-model slot registry (API-thread; caller owns dataMutex). ────
-    // Records that `mi.render.textures[textureId]` is a replaceable slot. Bakes
-    // initial pixels into `mi.render.stagedTextures[textureId]` from the current
-    // swatch and marks `mi.render.stagedDirty`. Replaces RegisterReplaceableEmitterTex.
-    void RegisterModelSlot(Actor& mi, int textureId, ReplaceableKind kind);
+    // Records that `mi.render.textures[textureId]` is a replaceable slot,
+    // and immediately bakes pixels for the slot via `BakeSlot`:
+    //   replaceableId == 1 → TeamColor flat swatch
+    //   replaceableId == 2 → TeamGlow tinted TGA
+    //   replaceableId in 11..37 → CASC asset via io::ReplaceableCanonicalPath
+    //   anything else → no-op (slot stays as whatever the adapter staged)
+    // Marks `mi.render.stagedDirty` on success.
+    void RegisterModelSlot(Actor& mi, int textureId, int replaceableId);
 
     // Forget every slot belonging to `mi`. Called when a Actor is
     // about to be destroyed.
@@ -126,14 +145,20 @@ private:
     gfx::TextureHandle sdTeamGlowTex_      = gfx::TextureHandle::Invalid;
     uint32_t           lastSdSwatchRgba_   = 0xFFFFFFFFu;
 
-    // Per-model slots — map Actor* → list of (textureId, kind).
+    // Per-model slots — map Actor* → list of (textureId, replaceableId).
     // Erased on UnregisterModel; never persists across model unloads.
-    struct Slot { int textureId; ReplaceableKind kind; };
+    struct Slot { int textureId; uint8_t replaceableId; };
     std::unordered_map<Actor*, std::vector<Slot>> slots_;
 
-    // Bake current-swatch pixels into mi.render.stagedTextures[textureId] for one slot.
-    // Marks mi.render.stagedDirty so the next render-thread upload picks it up.
-    void BakeSlot(Actor& mi, int textureId, ReplaceableKind kind);
+    // Borrowed: the host's CASC/MPQ provider, used only for ids 11..37
+    // when BakeSlot needs to load `ReplaceableTextures\…\…blp`.
+    IContentProvider* contentProvider_ = nullptr;
+
+    // Bake pixels for one slot into mi.render.stagedTextures[textureId].
+    // Dispatches on replaceableId (TeamColor/TeamGlow swatch vs. CASC
+    // load) and marks mi.render.stagedDirty so the next render-thread
+    // upload picks the new pixels up.
+    void BakeSlot(Actor& mi, int textureId, int replaceableId);
 };
 
 } // namespace WhiteoutDex

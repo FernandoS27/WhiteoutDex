@@ -6,6 +6,7 @@
 
 #include "types.h"
 #include "gfx/gfx.h"
+#include "../io/replaceable_paths.h"   // io::Tileset (SetTileset façade)
 
 #include "camera.h"
 #include "animation.h"
@@ -112,6 +113,14 @@ public:
     // not currently thread-safe for cross-actor bakes, so this forwarder
     // takes the renderer's mutex around the whole operation.
     void SetTeamColor(uint8_t r, uint8_t g, uint8_t b);
+
+    // ---- Tileset selector (drives canonical replaceable paths for ids 11..36) ----
+    // Pushes the new tileset through io::SetCurrentTileset and triggers
+    // re-bake of every per-model slot whose replaceableId falls in
+    // 11..36. TeamColor / TeamGlow swatches are tileset-independent and
+    // unaffected.
+    void        SetTileset(io::Tileset ts);
+    io::Tileset GetTileset() const;
 
     // ---- Camera presets + sequence picker UI inbox (RenderWindow + dataMutex_) ----
     // These wrap SceneManager calls in the renderer's dataMutex_ so the

@@ -7,10 +7,14 @@
 #include "render_service.h"
 #include "../renderer/debug/debug_renderer.h"        // service_.Debug() return type
 #include "../renderer/replaceable_texture_manager.h" // service_.Replaceables() return type
+#include "../io/replaceable_paths.h"                 // Tileset enum + setter
 #include "resource.h"
 #include <windowsx.h>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <algorithm>
+
+#pragma comment(lib, "comctl32.lib")
 
 #pragma comment(lib, "comdlg32.lib")
 
@@ -142,6 +146,11 @@ bool RenderWindow::Create(int w, int h) {
                        (LPCWSTR)&RenderWindow::WndProc, &hMod);
     HINSTANCE hInst = hMod ? (HINSTANCE)hMod : GetModuleHandle(nullptr);
 
+    // Register the trackbar (msctls_trackbar32) class — required before
+    // CreateWindow can instantiate the exposure slider below.
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_BAR_CLASSES };
+    InitCommonControlsEx(&icc);
+
     // Load icon from embedded resource
     icon_ = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_WHITEOUT_ICON));
 
@@ -204,6 +213,27 @@ bool RenderWindow::Create(int w, int h) {
                        IDM_PROBE_BASE, IDM_PROBE_BASE + 4,
                        IDM_PROBE_BASE + kDefaultProbeIdx, MF_BYCOMMAND);
     AppendMenuW(hMenuView_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuProbe_, L"Probe");
+
+    // Tileset submenu (radio). Drives io::ReplaceableCanonicalPath /
+    // CliffTypes.slk lookup — affects replaceable id 11. Item index =
+    // id - IDM_TILESET_BASE casts straight to io::Tileset.
+    hMenuTileset_ = CreatePopupMenu();
+    {
+        const int n = static_cast<int>(WhiteoutDex::io::Tileset::Count);
+        for (int i = 0; i < n; ++i) {
+            const char* nm = WhiteoutDex::io::TilesetName(
+                static_cast<WhiteoutDex::io::Tileset>(i));
+            wchar_t wbuf[64];
+            MultiByteToWideChar(CP_UTF8, 0, nm, -1, wbuf, 64);
+            AppendMenuW(hMenuTileset_, MF_STRING, IDM_TILESET_BASE + i, wbuf);
+        }
+        const int curIdx = static_cast<int>(service_.GetTileset());
+        CheckMenuRadioItem(hMenuTileset_,
+                           IDM_TILESET_BASE, IDM_TILESET_LAST,
+                           IDM_TILESET_BASE + curIdx, MF_BYCOMMAND);
+    }
+    AppendMenuW(hMenuView_, MF_POPUP | MF_STRING,
+                (UINT_PTR)hMenuTileset_, L"Tileset");
 
     addToggle(hMenuDebug_, IDM_DBG_COLLISIONS, L"Collision Markers", df.showCollisions);
     addToggle(hMenuDebug_, IDM_DBG_LIGHTS,     L"Light Markers",     df.showLights);
@@ -283,12 +313,15 @@ bool RenderWindow::Create(int w, int h) {
         WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
         x, 4, 50, 20, hwnd_, nullptr, hInst, nullptr);
     x += 52;
+    // Narrower than the Animation combo — most camera-preset names
+    // fit in ~110 px and the dropdown still expands to the full text
+    // width when opened.
     cmbCamera_ = CreateWindowW(L"COMBOBOX", L"",
         WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-        x, 2, 180, 200, hwnd_, (HMENU)(INT_PTR)IDC_CAMERA, hInst, nullptr);
+        x, 2, 110, 200, hwnd_, (HMENU)(INT_PTR)IDC_CAMERA, hInst, nullptr);
     SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)L"Free Camera");
     SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
-    x += 188;
+    x += 118;
 
     // --- Team color ---
     CreateWindowW(L"STATIC", L"Team:",
@@ -330,6 +363,31 @@ bool RenderWindow::Create(int w, int h) {
         WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
         x, 4, 22, 20, hwnd_, (HMENU)(INT_PTR)IDC_BGCOLOR, hInst, nullptr);
     x += 30;
+
+    // --- Tonemap exposure slider ---
+    // Drives RenderService::SetTonemapExposure (PS b1 in the engine's
+    // ApplyTonemap path). Range 0.00..3.00 stored as 0..300 so the
+    // trackbar can step in 0.01 increments. Numeric label after the
+    // slider mirrors the live value.
+    CreateWindowW(L"STATIC", L"Exposure:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        x, 4, 60, 20, hwnd_, nullptr, hInst, nullptr);
+    x += 62;
+    sldExposure_ = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
+        WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS,
+        x, 4, 110, 20, hwnd_, (HMENU)(INT_PTR)IDC_EXPOSURE, hInst, nullptr);
+    SendMessageW(sldExposure_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 300));
+    SendMessageW(sldExposure_, TBM_SETPOS,   TRUE,
+                 (LPARAM)(int)(service_.GetTonemapExposure() * 100.0f));
+    x += 114;
+    {
+        wchar_t buf[16];
+        swprintf_s(buf, L"%.2f", service_.GetTonemapExposure());
+        lblExposure_ = CreateWindowW(L"STATIC", buf,
+            WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+            x, 4, 40, 20, hwnd_, nullptr, hInst, nullptr);
+    }
+    x += 44;
 
     return true;
 }
@@ -469,6 +527,22 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_KEYDOWN: {
         return 0;
     }
+    case WM_HSCROLL: {
+        // Trackbar drag/keypress notifications come in as WM_HSCROLL with
+        // the control HWND in lParam. Only the exposure slider feeds it.
+        if ((HWND)lParam == sldExposure_ && sldExposure_) {
+            int pos = (int)SendMessageW(sldExposure_, TBM_GETPOS, 0, 0);
+            float exposure = (float)pos / 100.0f;
+            service_.SetTonemapExposure(exposure);
+            if (lblExposure_) {
+                wchar_t buf[16];
+                swprintf_s(buf, L"%.2f", exposure);
+                SetWindowTextW(lblExposure_, buf);
+            }
+            return 0;
+        }
+        break;
+    }
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
         if (dis->CtlID == IDC_TEAMCOLOR) {
@@ -517,6 +591,17 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             const int idx = id - IDM_PROBE_BASE;
             CheckMenuRadioItem(hMenuProbe_, IDM_PROBE_BASE, IDM_PROBE_LAST, id, MF_BYCOMMAND);
             service_.SetEnvProbe(kPaths[idx]);
+            return 0;
+        }
+
+        // Tileset submenu (radio). idx casts straight to io::Tileset.
+        if (id >= (int)IDM_TILESET_BASE && id <= (int)IDM_TILESET_LAST) {
+            const int idx = id - IDM_TILESET_BASE;
+            const int n   = static_cast<int>(WhiteoutDex::io::Tileset::Count);
+            if (idx < 0 || idx >= n) return 0;
+            CheckMenuRadioItem(hMenuTileset_, IDM_TILESET_BASE, IDM_TILESET_LAST,
+                               id, MF_BYCOMMAND);
+            service_.SetTileset(static_cast<WhiteoutDex::io::Tileset>(idx));
             return 0;
         }
 

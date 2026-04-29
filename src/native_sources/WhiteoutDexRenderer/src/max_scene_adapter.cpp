@@ -495,13 +495,16 @@ static std::optional<MaxBitmapRGBA> LoadMaxBitmapRGBA(const std::wstring& filePa
 }
 
 int MaxSceneAdapter::LoadTexture(const std::wstring& filePath, int replaceableId) {
-    if (replaceableId == 1 || replaceableId == 2) {
-        // Adapter reserves an id with the right replaceableId; actual pixel
-        // bake happens renderer-side in ReplaceableTextureManager::BakeSlot
-        // from the current team-colour swatch. Register zero-size entries
-        // so UploadStagedTextures skips them until the manager fills in
-        // width/height/pixels on RegisterModelSlot.
-        const std::wstring key = (replaceableId == 1) ? L"__TEAMCOLOR__" : L"__TEAMGLOW__";
+    if (replaceableId != 0) {
+        // Replaceable slot: adapter only declares the id. The renderer-
+        // side ReplaceableTextureManager::RegisterModelSlot path bakes
+        // pixels (TeamColor/TeamGlow ids 1/2) or loads canonical CASC
+        // assets (higher ids) once the actor is staged. We dedupe by
+        // a synthetic key so two emitters declaring the same id share
+        // one slot.
+        wchar_t buf[32];
+        swprintf_s(buf, L"__REPL_%d__", replaceableId);
+        std::wstring key = buf;
         auto it = texPathToId_.find(key);
         if (it != texPathToId_.end()) return it->second;
         return RegisterTexture(key, replaceableId, {}, 0, 0);

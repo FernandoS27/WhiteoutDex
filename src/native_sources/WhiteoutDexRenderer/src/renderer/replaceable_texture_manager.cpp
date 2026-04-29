@@ -5,8 +5,12 @@
 #include "replaceable_texture_manager.h"
 #include "texture_asset_manager.h"
 #include "team_glow_data.h"
+#include "../io/content_provider.h"
+#include "../io/replaceable_paths.h"
+#include "model_source_utils.h"   // DispatchTextureParser, ExtensionLower
 
 #include <cstdio>
+#include <filesystem>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>  // OutputDebugStringA
 
@@ -23,6 +27,14 @@ inline uint8_t Blue (uint32_t bgr) noexcept { return (uint8_t)((bgr >>16) & 0xFF
 ReplaceableTextureManager::ReplaceableTextureManager(gfx::IGFXDevice& gfx,
                                                      TextureAssetManager& textures)
     : gfx_(gfx), textures_(textures) {}
+
+void ReplaceableTextureManager::SetContentProvider(IContentProvider* p) {
+    contentProvider_ = p;
+    // Pull the game's TerrainArt SLK tables now so the canonical path
+    // resolver in io::ReplaceableCanonicalPath can use them. Idempotent;
+    // safe to call again on subsequent provider changes.
+    io::LoadGameDataFiles(p);
+}
 
 ReplaceableTextureManager::~ReplaceableTextureManager() {
     Shutdown();
@@ -50,10 +62,12 @@ void ReplaceableTextureManager::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
     // BGR-packed — matches the legacy uint32 wire format the rest of the
     // renderer + UI exchanges this through.
     teamColor_ = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
-    // Re-bake every registered SD slot with the new swatch. The render-
-    // thread upload pass will pick the staged pixels up via mi.render.stagedDirty.
+    // Re-bake every registered slot with the new swatch. Tileset-driven
+    // ids 11..36 are colour-independent but BakeSlot is cheap for them
+    // (path-resolve + decode happens once per slot anyway), so we don't
+    // bother filtering — keeps the caller simple.
     for (auto& [mi, slots] : slots_) {
-        for (auto& s : slots) BakeSlot(*mi, s.textureId, s.kind);
+        for (auto& s : slots) BakeSlot(*mi, s.textureId, (int)s.replaceableId);
     }
     // Drop cached global SD swatches so the next Get* call rebuilds
     // them with the new tint. HD swatch follows the same pattern via
@@ -70,68 +84,105 @@ void ReplaceableTextureManager::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
     dirty_.store(true);
 }
 
-void ReplaceableTextureManager::RegisterModelSlot(Actor&  mi,
-                                                  int             textureId,
-                                                  ReplaceableKind kind) {
-    // Only the SD path bakes per-team-color pixels for replaceableId 1
-    // (TeamColor) and 2 (TeamGlow). Anything else (None, or higher ids
-    // like 11..36 which the engine handles via its generic
-    // `IModelReplaceMaterialTexture_0` registry — not modeled here) is a
-    // no-op: the BLP loaded from disk for that slot stays in place. The
-    // earlier behaviour cast every non-zero id to TeamColor and overwrote
-    // the loaded texture with a flat 4x4 swatch.
-    if (kind != ReplaceableKind::TeamColor && kind != ReplaceableKind::TeamGlow)
-        return;
+void ReplaceableTextureManager::SetTileset(io::Tileset ts) {
+    io::SetCurrentTileset(ts);
+    // Only the cliff replaceable (id 11) is tileset-driven; tree ids
+    // 31..37 are static per-id (verified against TerrainArt/Terrain.slk
+    // — no tree column exists). TeamColor / TeamGlow are
+    // tileset-independent. Re-bake only the slots that can actually
+    // change.
+    for (auto& [mi, slots] : slots_) {
+        for (auto& s : slots) {
+            if (s.replaceableId >= 11 && s.replaceableId <= 14)
+                BakeSlot(*mi, s.textureId, (int)s.replaceableId);
+        }
+    }
+    dirty_.store(true);
+}
+
+void ReplaceableTextureManager::RegisterModelSlot(Actor& mi,
+                                                  int    textureId,
+                                                  int    replaceableId) {
+    // Skip the no-replaceable case and any unmodeled id — the slot stays
+    // as whatever pixels the adapter staged (or empty, if the adapter
+    // declared a placeholder).
+    const bool isTeamColor = (replaceableId == 1);
+    const bool isTeamGlow  = (replaceableId == 2);
+    const bool isCanonical = (replaceableId >= 11 && replaceableId <= 37);
+    if (!isTeamColor && !isTeamGlow && !isCanonical) return;
+
     auto& list = slots_[&mi];
-    // Slot key is (textureId, kind). Idempotent on the pair. A textureId
-    // shared across emitters with different `kind`s is a degenerate case
-    // — both registrations are recorded so re-bakes (SetTeamColor) hit
-    // both, but the staged pixel buffer is one-per-textureId so the
-    // last bake wins. A warning is emitted at the collision so we
-    // notice if any model relies on the unsupported pattern.
+    // Idempotent on (textureId, replaceableId). A textureId shared
+    // across two declared replaceables is degenerate — record both so
+    // re-bakes (SetTeamColor / SetTileset) cover them, but warn that
+    // the staged pixel slot is one-per-textureId and the last bake wins.
     for (auto& s : list)
-        if (s.textureId == textureId && s.kind == kind) return;
+        if (s.textureId == textureId && (int)s.replaceableId == replaceableId) return;
     for (auto& s : list)
-        if (s.textureId == textureId && s.kind != kind) {
-            // Distinct-kind collision on shared textureId. Log + still record.
-            // (No std::cerr in the renderer; OutputDebugStringA matches the
-            // texture eviction warning style elsewhere in this file.)
+        if (s.textureId == textureId && (int)s.replaceableId != replaceableId) {
             char msg[160];
             std::snprintf(msg, sizeof(msg),
-                "[WDEX replaceable] textureId %d registered with kind %d AND %d "
-                "— second kind overwrites the first's swatch on bake.\n",
-                textureId, (int)s.kind, (int)kind);
+                "[WDEX replaceable] textureId %d registered with replaceableId %d AND %d "
+                "— second registration overwrites the first's pixels on bake.\n",
+                textureId, (int)s.replaceableId, replaceableId);
             OutputDebugStringA(msg);
             break;
         }
-    list.push_back({textureId, kind});
-    BakeSlot(mi, textureId, kind);
+    list.push_back({textureId, static_cast<uint8_t>(replaceableId)});
+    BakeSlot(mi, textureId, replaceableId);
 }
 
 void ReplaceableTextureManager::UnregisterModel(Actor& mi) {
     slots_.erase(&mi);
 }
 
-void ReplaceableTextureManager::BakeSlot(Actor&  mi,
-                                          int             textureId,
-                                          ReplaceableKind kind) {
+namespace {
+// Decode a CASC-loaded BLP/DDS/TGA buffer into RGBA8 pixels, picking the
+// extension from the content provider's match. Returns false on miss /
+// decode failure.
+bool DecodeCanonicalAsset(IContentProvider& cp, const std::string& path,
+                          std::vector<uint8_t>& outPixels, int& outW, int& outH) {
+    std::string foundExt;
+    auto data = cp.ReadFile(path, &foundExt);
+    if (!data) return false;
+    if (foundExt.empty()) foundExt = ExtensionLower(std::filesystem::path(path));
+
+    auto result = DispatchTextureParser(foundExt,
+        [&](auto& parser) { return parser.parse(*data); });
+    if (!result) return false;
+
+    // Force RGBA8 so we don't have to plumb format/mips through the
+    // staged-texture pixel buffer for the replaceable path.
+    result->format(whiteout::textures::PixelFormat::RGBA8);
+    outW = (int)result->width();
+    outH = (int)result->height();
+    if (outW <= 0 || outH <= 0) return false;
+    auto mip0 = result->mipData(0);
+    outPixels.assign(mip0.begin(), mip0.end());
+    return true;
+}
+} // namespace
+
+void ReplaceableTextureManager::BakeSlot(Actor& mi,
+                                         int    textureId,
+                                         int    replaceableId) {
     const uint8_t r = Red(teamColor_);
     const uint8_t g = Green(teamColor_);
     const uint8_t b = Blue(teamColor_);
 
     StagedTexture& st = mi.render.stagedTextures[textureId];
-    st.replaceableId = static_cast<int>(kind);
-    // Generated TeamColor / TeamGlow are single-mip RGBA8. Reset format and
-    // mipLevels in case a previous pass left stale values from a BC3/BC5
-    // image in this same slot — without the resets the upload path would
-    // walk off the end of `pixels`.
+    st.replaceableId = replaceableId;
+    // All baked replaceable pixels are single-mip RGBA8. Reset format
+    // and mipLevels in case a previous pass left stale values from a
+    // BC3/BC5 image in this slot.
     st.format    = gfx::Format::R8G8B8A8_UNORM;
     st.mipLevels = 1;
 
-    if (kind == ReplaceableKind::TeamGlow) {
+    if (replaceableId == 2) {
+        // TeamGlow — embedded TGA decoded + tinted with the swatch.
         st.pixels = DecodeTeamGlow(r, g, b, st.width, st.height);
-    } else {
-        // Flat 4x4 swatch — the SD shader path samples this verbatim.
+    } else if (replaceableId == 1) {
+        // TeamColor — flat 4×4 RGBA in the swatch colour.
         st.width  = 4;
         st.height = 4;
         st.pixels.resize(64);
@@ -140,6 +191,31 @@ void ReplaceableTextureManager::BakeSlot(Actor&  mi,
             st.pixels[j*4 + 1] = g;
             st.pixels[j*4 + 2] = b;
             st.pixels[j*4 + 3] = 255;
+        }
+    } else {
+        // Tileset-driven canonical asset — resolve the path through the
+        // shared `io::ReplaceableCanonicalPath` table (see
+        // `io/replaceable_paths.h`) and read the BLP via the borrowed
+        // IFileContentProvider. Fall back to a magenta 4×4 if the
+        // provider isn't wired or the asset can't be loaded so the
+        // missing data is visible at a glance instead of silently
+        // showing blank.
+        const char* canon = io::ReplaceableCanonicalPath(replaceableId);
+        bool loaded = false;
+        if (canon && contentProvider_) {
+            loaded = DecodeCanonicalAsset(*contentProvider_, canon,
+                                          st.pixels, st.width, st.height);
+        }
+        if (!loaded) {
+            st.width  = 4;
+            st.height = 4;
+            st.pixels.assign(64, 0);
+            for (int j = 0; j < 16; ++j) {
+                st.pixels[j*4 + 0] = 255;  // R
+                st.pixels[j*4 + 1] = 0;    // G
+                st.pixels[j*4 + 2] = 255;  // B
+                st.pixels[j*4 + 3] = 255;  // A
+            }
         }
     }
     mi.render.stagedDirty = true;

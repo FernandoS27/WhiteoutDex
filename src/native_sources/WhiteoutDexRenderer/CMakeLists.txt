@@ -162,6 +162,8 @@ add_library(WhiteoutDexRendererLib STATIC
     src/io/team_glow_data.cpp
     src/io/file_resolver.cpp
     src/io/file_content_provider.cpp
+    src/io/replaceable_paths.cpp
+    src/io/slk.cpp
     src/io/texture_image_usage.cpp
 )
 
