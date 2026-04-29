@@ -150,6 +150,13 @@ public:
     void SetLodOverride(int lod) { lodOverride_.store(lod); }
     int  GetLodOverride() const  { return lodOverride_.load(); }
 
+    // Lighting mode. Drives how BuildLightPalette mixes the renderer's
+    // baseline headlight with the model's authored MDX lights — see the
+    // LightingMode enum in render_target.h. Default: InGame (baseline
+    // always present; authored MDX lights stack on top).
+    void         SetLightingMode(LightingMode m) { lightingMode_.store(static_cast<uint8_t>(m)); }
+    LightingMode GetLightingMode() const         { return static_cast<LightingMode>(lightingMode_.load()); }
+
     // Swap the HD IBL probe at runtime. `relPath` is the CASC-relative
     // path ("environment/environmentmap/.../foo_ibl.dds"). Empty or a
     // load failure reverts to the built-in debug probe so HAS_IBL
@@ -371,6 +378,10 @@ private:
     std::atomic<int>      hdDebugMode_{0};
     // LOD override: -1 = auto (screen-size), 0..3 = force that LOD
     std::atomic<int>      lodOverride_{-1};
+    // Lighting mode: 0=InGame, 1=Glue, 2=Dynamic. Stored as uint8 to
+    // keep the atomic lock-free across all ABIs while the public API
+    // exposes the LightingMode enum.
+    std::atomic<uint8_t>  lightingMode_{static_cast<uint8_t>(LightingMode::InGame)};
 
     // ---- Scene state ----
     // Phase 5: SceneManager owns actors, focus, camera, camera presets,

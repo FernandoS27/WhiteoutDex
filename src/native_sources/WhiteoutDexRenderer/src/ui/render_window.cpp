@@ -298,6 +298,24 @@ bool RenderWindow::Create(int w, int h) {
         x, 4, 22, 20, hwnd_, (HMENU)(INT_PTR)IDC_TEAMCOLOR, hInst, nullptr);
     x += 30;
 
+    // --- Lighting mode ---
+    // Picks how the renderer's baseline headlight mixes with the model's
+    // authored MDX lights. Index order matches the LightingMode enum
+    // (InGame=0, Glue=1, Dynamic=2) so we can cast straight from CB_GETCURSEL.
+    CreateWindowW(L"STATIC", L"Lighting:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        x, 4, 56, 20, hwnd_, nullptr, hInst, nullptr);
+    x += 58;
+    cmbLighting_ = CreateWindowW(L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        x, 2, 100, 200, hwnd_, (HMENU)(INT_PTR)IDC_LIGHTING, hInst, nullptr);
+    SendMessageW(cmbLighting_, CB_ADDSTRING, 0, (LPARAM)L"InGame");
+    SendMessageW(cmbLighting_, CB_ADDSTRING, 0, (LPARAM)L"Glue");
+    SendMessageW(cmbLighting_, CB_ADDSTRING, 0, (LPARAM)L"Dynamic");
+    SendMessageW(cmbLighting_, CB_SETCURSEL,
+                 static_cast<WPARAM>(service_.GetLightingMode()), 0);
+    x += 108;
+
     return true;
 }
 
@@ -535,6 +553,14 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 if (code == CBN_SELCHANGE) {
                     int sel = (int)SendMessageW(cmbSequence_, CB_GETCURSEL, 0, 0);
                     if (sel >= 0) service_.SetActiveSequence(sel);
+                }
+                break;
+            }
+            case IDC_LIGHTING: {
+                if (code == CBN_SELCHANGE) {
+                    int sel = (int)SendMessageW(cmbLighting_, CB_GETCURSEL, 0, 0);
+                    if (sel >= 0 && sel <= 2)
+                        service_.SetLightingMode(static_cast<LightingMode>(sel));
                 }
                 break;
             }

@@ -68,7 +68,8 @@ public:
                 geo.indexCount == 0) continue;
 
             const int lightCount = bls::BuildLightPalette(
-                frame, *view_.activeLights, view, baseline);
+                frame, *view_.activeLights, view, baseline,
+                rs_.GetLightingMode());
 
             d.DrawGeoset(ref, frame, view, cmd, lightCount);
         }

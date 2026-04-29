@@ -81,6 +81,7 @@ private:
     HWND cmbCamera_    = nullptr;
     HWND lblSequence_  = nullptr;
     HWND cmbSequence_  = nullptr;
+    HWND cmbLighting_  = nullptr;
     HMENU hMenuBar_      = nullptr;
     HMENU hMenuView_     = nullptr;
     HMENU hMenuProbe_    = nullptr;
@@ -95,6 +96,7 @@ private:
         IDC_TEAMCOLOR = 1001,
         IDC_CAMERA,
         IDC_SEQUENCE,
+        IDC_LIGHTING,
         // View menu toggles
         IDM_VIEW_GRID      = 1100,
         IDM_VIEW_PARTICLES,

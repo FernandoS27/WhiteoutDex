@@ -417,7 +417,7 @@ PipelineHandle D3D11Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     bd.RenderTarget[0].SrcBlendAlpha         = ToD3D11(desc.blend.srcAlpha);
     bd.RenderTarget[0].DestBlendAlpha        = ToD3D11(desc.blend.dstAlpha);
     bd.RenderTarget[0].BlendOpAlpha          = ToD3D11(desc.blend.opAlpha);
-    bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    bd.RenderTarget[0].RenderTargetWriteMask = desc.blend.colorWrite ? D3D11_COLOR_WRITE_ENABLE_ALL : 0;
     device_->CreateBlendState(&bd, &entry.blendState);
 
     // Depth-stencil state

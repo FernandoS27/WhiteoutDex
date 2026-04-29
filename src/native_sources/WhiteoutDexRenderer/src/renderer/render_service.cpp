@@ -2501,62 +2501,109 @@ public:
         // picks FourBoneSkinning vs the pass-through permute consistently.
         const bool hasBones = render_detail::BindSdMeshGeometry(cmd, geo);
 
+        const auto layout = hasBones
+            ? bls::VertexLayoutKind::ParticleSDSkinned
+            : bls::VertexLayoutKind::ParticleSD;
+
+        // Per-layer state we need to derive twice (once for the prepass
+        // sweep, once for the color sweep). Compute once up front to
+        // keep the two passes consistent and to avoid double-tracing
+        // FromMdxLayer + UnpackLayer.
+        struct LayerJob {
+            render_detail::UnpackedLayer layer;
+            bls::MatParams               mp;
+            int                          activeN = 0;
+            bool                         unlit   = false;
+            bool                         isOpaqueFading = false;
+            bool                         valid   = false;
+        };
+        std::vector<LayerJob> jobs(numLayers);
+
         for (int li = 0; li < numLayers; ++li) {
-            const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
-
-            render_detail::ApplyTexAnimPaletteToFrame(frame, view_.texAnimPalette, layer.textureAnimationId);
-
+            jobs[li].layer = render_detail::UnpackLayer(mat, li);
+            const auto& layer = jobs[li].layer;
             const float combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f) continue;
+            // isOpaqueFading mirror (RenderGeosetLayers @0x7ff609afcf70):
+            // an authored opaque/AlphaKey layer that's currently fading
+            // promotes to Blend and triggers a depth-prepass clone.
+            const bool isOpaqueFading =
+                combinedAlpha < 0.99f && layer.filterMode <= FILTER_TRANSPARENT;
             int effectiveFilter = layer.filterMode;
-            if (combinedAlpha < 0.99f && layer.filterMode <= FILTER_TRANSPARENT)
+            if (isOpaqueFading)
                 effectiveFilter = FILTER_BLEND;
 
             bls::MatParams mp = bls::FromMdxLayer(effectiveFilter, layer.flags, bls::GxShaderID::SD);
-            // SelectModelMaterial mirror: diffuseColor = geoColor * combinedAlpha.
-            // Modulate takes the alpha-into-RGB trick; per-vertex color already
-            // carries the model tint so geoColor stays white by default.
             if (mp.alpha == bls::GxMatAlpha::Modulate) {
                 mp.diffuseColor = {combinedAlpha, 1, 1, 1};
             } else {
                 mp.diffuseColor = {geo.geosetColor.x, geo.geosetColor.y, geo.geosetColor.z, combinedAlpha};
             }
-
-            // Unshaded layers (MAT_UNSHADED / kDisableLighting) skip the VS
-            // lighting loop. Permute count must agree with the upload: the
-            // "no lights" VS is picked when numLights=0.
-            const bool unlit   = (mp.disables & bls::kDisableLighting) != 0;
+            const bool unlit = (mp.disables & bls::kDisableLighting) != 0;
             const int  activeN = unlit ? 0 : lightCountForGeoset;
-            frame.numLights = activeN;
 
-            const auto rs   = bls::MakeSdMeshRenderState(mp, activeN, unlit, hasBones);
-            const auto perm = bls::SelectPermutes(rs);
-            const auto layout = hasBones
-                ? bls::VertexLayoutKind::ParticleSDSkinned
-                : bls::VertexLayoutKind::ParticleSD;
-            const auto req  = bls::MakePsoRequest(rs_.blsSdProgram_,
-                                                  layout,
-                                                  mp, perm);
-            auto pso = rs_.blsPsoBuilder_->GetOrBuild(req);
-            if (pso == gfx::PipelineHandle::Invalid) continue;
+            jobs[li].mp = mp;
+            jobs[li].activeN = activeN;
+            jobs[li].unlit   = unlit;
+            jobs[li].isOpaqueFading = isOpaqueFading;
+            jobs[li].valid   = true;
+        }
+
+        auto issueDraw = [&](const LayerJob& job, const bls::MatParams& matParams) {
+            frame.numLights = job.activeN;
+            render_detail::ApplyTexAnimPaletteToFrame(frame, view_.texAnimPalette, job.layer.textureAnimationId);
+
+            const auto rsLocal   = bls::MakeSdMeshRenderState(matParams, job.activeN, job.unlit, hasBones);
+            const auto permLocal = bls::SelectPermutes(rsLocal);
+            const auto reqLocal  = bls::MakePsoRequest(rs_.blsSdProgram_,
+                                                       layout,
+                                                       matParams, permLocal);
+            auto pso = rs_.blsPsoBuilder_->GetOrBuild(reqLocal);
+            if (pso == gfx::PipelineHandle::Invalid) return;
             cmd->BindPipeline(pso);
 
             frame.world = view_.worldTransform;
 
             if (auto vs = bls::ScopedCb<bls::SdVsCbA>(rs_.gfx_.get(), rs_.blsSdVsCb_)) {
-                bls::BuildSdVsCbA(*vs, frame, mp);
+                bls::BuildSdVsCbA(*vs, frame, matParams);
             }
             if (auto ps = bls::ScopedCb<bls::SdPsCbA>(rs_.gfx_.get(), rs_.blsSdPsCb_)) {
-                bls::BuildSdPsCbA(*ps, frame, mp);
+                bls::BuildSdPsCbA(*ps, frame, matParams);
             }
             cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.blsSdVsCb_);
             cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, rs_.blsSdPsCb_);
 
-            render_detail::BindLayerAlbedo(cmd, view_.textures, layer.textureId,
+            render_detail::BindLayerAlbedo(cmd, view_.textures, job.layer.textureId,
                                            rs_.textures_->GetDefaults().White,
                                            *rs_.samplers_);
 
             cmd->DrawIndexed(geo.indexCount);
+        };
+
+        // Pass 1 — depth prepass sweep. Mirrors the engine's separately-
+        // sorted DEPTHFILL_DEPTH clone (RenderGeosetLayers @0x7ff609afcf70
+        // skips non-fading layers in the DEPTH branch). Writing z first,
+        // before any layer's color, is what keeps a fading-opaque layer
+        // from clobbering an earlier BLEND layer's expected ordering: the
+        // BLEND layer's color pass in pass 2 simply tests against the
+        // already-locked z. SelectModelMaterial DEPTHFILL_DEPTH state:
+        //   diffuseColor = (1,1,1,1)
+        //   m_alpha      = Blend           (alphaRef = 4/255)
+        //   m_disables  &= ~kDisableDepthWrite
+        //   m_disables  |=  kDisableBit8   (color writes off)
+        for (int li = 0; li < numLayers; ++li) {
+            if (!jobs[li].valid || !jobs[li].isOpaqueFading) continue;
+            bls::MatParams prepass = jobs[li].mp;
+            prepass.diffuseColor = {1.0f, 1.0f, 1.0f, 1.0f};
+            prepass.disables &= ~bls::kDisableDepthWrite;
+            prepass.disables |=  bls::kDisableBit8;
+            issueDraw(jobs[li], prepass);
+        }
+
+        // Pass 2 — color sweep. All layers in source (stack) order.
+        for (int li = 0; li < numLayers; ++li) {
+            if (!jobs[li].valid) continue;
+            issueDraw(jobs[li], jobs[li].mp);
         }
     }
 };
@@ -2702,30 +2749,40 @@ public:
             cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, geo.bonePaletteCb);
         }
 
+        // Per-layer state we need to derive twice (prepass + color sweeps).
+        // Precompute up front so prepass runs BEFORE any layer's color
+        // pass — otherwise an early BLEND layer's color would be drawn
+        // before a later fading-opaque layer's z-write, which can leak z
+        // out and cull other transparent geosets behind it.
+        struct LayerJob {
+            render_detail::UnpackedLayer layer;
+            bls::MatParams               mp;
+            const bls::BlsProgram*       program = nullptr;
+            bls::GxShaderID              programShaderId = bls::GxShaderID::SD_on_HD;
+            int                          activeN = 0;
+            bool                         unlit   = false;
+            bool                         isOpaqueFading = false;
+            bool                         valid   = false;
+        };
+        std::vector<LayerJob> jobs(numLayers);
+
         for (int li = 0; li < numLayers; ++li) {
-            const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
-
-            render_detail::ApplyTexAnimPaletteToFrame(frame, view_.texAnimPalette, layer.textureAnimationId);
-
+            jobs[li].layer = render_detail::UnpackLayer(mat, li);
+            const auto& layer = jobs[li].layer;
             float combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f) continue;
+            const bool isOpaqueFading =
+                combinedAlpha < 0.99f && layer.filterMode <= FILTER_TRANSPARENT;
             int effectiveFilter = layer.filterMode;
-            if (combinedAlpha < 0.99f && layer.filterMode <= FILTER_TRANSPARENT)
+            if (isOpaqueFading)
                 effectiveFilter = FILTER_BLEND;
 
-            // Route program + permute family based on the MDX layer's
-            // shader id. MatSelect (0x1403fa7c0) canonicalises SD <-> SD_on_HD;
-            // Crystal shares the HD permute axes. Any mesh-authored HD
-            // variant goes through hd.bls; SD-authored or unknown layers use
-            // sd_on_hd.bls (which is the HD-mode fallback for legacy assets).
             const bool isHdMaterial =
                 (layer.shaderId == 1) /* HD */ || (layer.shaderId == 24) /* Crystal */;
             const bls::GxShaderID programShaderId =
                 isHdMaterial ? bls::GxShaderID::HD : bls::GxShaderID::SD_on_HD;
             const bls::BlsProgram* program =
                 isHdMaterial ? rs_.blsHdProgram_ : rs_.blsSdOnHdProgram_;
-            // InitDevice guarantees both HD programs are loaded, so no
-            // availability fallback is needed here.
 
             bls::MatParams mp = bls::FromMdxLayer(effectiveFilter, layer.flags, programShaderId);
             if (mp.alpha == bls::GxMatAlpha::Modulate) {
@@ -2733,29 +2790,35 @@ public:
             } else {
                 mp.diffuseColor = {geo.geosetColor.x, geo.geosetColor.y, geo.geosetColor.z, combinedAlpha};
             }
-            // HD PS pixelParams / fresnelColor sourced from the MDX layer.
-            // Engine layout per CGxMatParams::PixelParams (IDA):
-            //   pixelParams1 = {inverseSoftness, cloak, fresnelTeamColor, 0}
-            //   fresnelColor = {fresnelR, fresnelG, fresnelB, fresnelOpacity}
             mp.emissiveGain     = layer.emissiveGain;
             mp.fresnelTeamColor = layer.fresnelTeamColor;
             mp.fresnelOpacity   = layer.fresnelOpacity;
             mp.fresnelColor     = layer.fresnelColor;
 
-            // Phase 6: GFX supports TextureCubeArray now (kSrvsPerStage=16,
-            // TextureDesc::isCube), so we can legally pick lights>0
-            // permutes. The HD PS compiles HAS_IBL = (lights > 0) -- those
-            // perms sample t13/t14/t15 which we bind above. The direct-
-            // lighting path (psIBLBody) still runs Cook-Torrance over
-            // ShaderLight[]; the BRDF LUT + env probe supply the IBL
-            // contribution.
             const bool unlit   = (mp.disables & bls::kDisableLighting) != 0;
             const int  activeN = unlit ? 0 : lightCountForGeoset;
-            frame.numLights = activeN;
 
+            jobs[li].mp = mp;
+            jobs[li].program = program;
+            jobs[li].programShaderId = programShaderId;
+            jobs[li].activeN = activeN;
+            jobs[li].unlit   = unlit;
+            jobs[li].isOpaqueFading = isOpaqueFading;
+            jobs[li].valid   = true;
+        }
+
+        auto issueHdDraw = [&](const LayerJob& job, const bls::MatParams& matParams) {
+            const auto& layer = job.layer;
+            const bool unlit  = job.unlit;
+            const int  activeN = job.activeN;
+            const bls::GxShaderID programShaderId = job.programShaderId;
+            const bls::BlsProgram* program = job.program;
+            frame.numLights = activeN;
+            render_detail::ApplyTexAnimPaletteToFrame(frame, view_.texAnimPalette, layer.textureAnimationId);
+            {
             bls::RenderState rs;
             rs.shaderId       = programShaderId;
-            rs.alphaMode      = static_cast<uint8_t>(mp.alpha);
+            rs.alphaMode      = static_cast<uint8_t>(matParams.alpha);
             rs.numColors      = 0;
             rs.numTexCoords   = 1;
             // numTangents drives the VS permute's hasTangent dimension
@@ -2770,7 +2833,7 @@ public:
             rs.numWeights     = hasBones ? 4 : 0;
             rs.numLights      = static_cast<uint8_t>(activeN);
             rs.fogEnabled     = false;
-            rs.depthWrite     = mp.DepthWriteEnabled();
+            rs.depthWrite     = matParams.DepthWriteEnabled();
             rs.lightingEnabled= !unlit && activeN > 0;
             rs.prepass        = false;
             rs.shadows        = false;
@@ -2799,7 +2862,7 @@ public:
             req.program   = program;
             req.vsIndex   = perm.vs;
             req.psIndex   = perm.ps;
-            req.material  = mp;
+            req.material  = matParams;
             // Layout picks:
             //   bones + tangent  -> MeshHDSkinned        (slots 0/1/2)
             //   bones, no tangent-> MeshHDSkinnedNoTangent (slots 0/1)
@@ -2819,14 +2882,14 @@ public:
             req.dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
             req.lhClipSpace = true;  // HD/SD_on_HD stack (distinct PSO hash)
             auto pso = rs_.blsPsoBuilder_->GetOrBuild(req);
-            if (pso == gfx::PipelineHandle::Invalid) continue;
+            if (pso == gfx::PipelineHandle::Invalid) return;
             cmd->BindPipeline(pso);
 
             frame.world = view_.worldTransform;
 
             // VS CB layout is shared between HD and SD_on_HD programs.
             if (auto vs = bls::ScopedCb<bls::HdVsCb>(rs_.gfx_.get(), rs_.blsHdVsCb_)) {
-                bls::BuildHdVsCb(*vs, frame, mp);
+                bls::BuildHdVsCb(*vs, frame, matParams);
             }
             cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, rs_.blsHdVsCb_);
 
@@ -2836,7 +2899,7 @@ public:
             // lightCountSlot.z bit-reinterpret.
             if (program == rs_.blsHdProgram_) {
                 if (auto ps = bls::ScopedCb<bls::HdPsCb>(rs_.gfx_.get(), rs_.blsHdPsCb_)) {
-                    bls::BuildHdPsCb(*ps, frame, mp);
+                    bls::BuildHdPsCb(*ps, frame, matParams);
                 }
                 cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, rs_.blsHdPsCb_);
                 // b3 DebugVisCB. Only meaningful when the HAS_DEBUG_VIS
@@ -2870,7 +2933,7 @@ public:
                 cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3, rs_.blsHdDebugVisCb_);
             } else {
                 if (auto ps = bls::ScopedCb<bls::SdOnHdPsCb>(rs_.gfx_.get(), rs_.blsSdOnHdPsCb_)) {
-                    bls::BuildSdOnHdPsCb(*ps, frame, mp);
+                    bls::BuildSdOnHdPsCb(*ps, frame, matParams);
                 }
                 cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, rs_.blsSdOnHdPsCb_);
             }
@@ -2939,6 +3002,32 @@ public:
             cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplers_->WrapVariant(wrapFlags));
 
             cmd->DrawIndexed(geo.indexCount);
+            } // body block opened to keep the original local scope structure
+        }; // issueHdDraw
+
+        // Pass 1 — depth prepass sweep. Engine RenderGeosetLayers
+        // @0x7ff609afcf70 schedules a separately-sorted DEPTHFILL_DEPTH
+        // clone that runs the prepass for every fading-opaque layer
+        // BEFORE any color pass. SelectModelMaterial DEPTHFILL_DEPTH
+        // forces diffuseColor=(1,1,1,1), m_alpha=Blend, depth-write ON,
+        // color writes OFF. Running this as a separate sweep avoids
+        // having an early BLEND layer's color clobbered by a later
+        // fading layer's prepass z-write — and prevents that z-write
+        // from leaking out and culling other transparent geosets behind
+        // this one when no global transparent sort is in place.
+        for (int li = 0; li < numLayers; ++li) {
+            if (!jobs[li].valid || !jobs[li].isOpaqueFading) continue;
+            bls::MatParams prepass = jobs[li].mp;
+            prepass.diffuseColor = {1.0f, 1.0f, 1.0f, 1.0f};
+            prepass.disables &= ~bls::kDisableDepthWrite;
+            prepass.disables |=  bls::kDisableBit8;
+            issueHdDraw(jobs[li], prepass);
+        }
+
+        // Pass 2 — color sweep. All layers in source (stack) order.
+        for (int li = 0; li < numLayers; ++li) {
+            if (!jobs[li].valid) continue;
+            issueHdDraw(jobs[li], jobs[li].mp);
         }
     }
 };

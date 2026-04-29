@@ -218,6 +218,10 @@ struct BlendDesc {
     BlendFactor dstAlpha        = BlendFactor::Zero;
     BlendOp     opAlpha         = BlendOp::Add;
     bool        alphaToCoverage = false;
+    // Mask all four RTV channels off when false. Used by the depth-prepass
+    // pass for fading opaque-baked layers (SelectModelMaterial DEPTHFILL_DEPTH
+    // sets m_disables |= 0x100 to suppress color writes).
+    bool        colorWrite      = true;
 };
 
 struct DepthStencilDesc {

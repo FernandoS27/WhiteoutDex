@@ -207,7 +207,10 @@ uint64_t HashRequest(const PsoRequest& r) {
         ((uint32_t(r.rtvFormat)          & 0xFFu) << 12) |
         ((uint32_t(r.dsvFormat)          & 0xFFu) << 20) |
         ((r.wireframe ? 1u : 0u)                  << 28) |
-        ((r.lhClipSpace ? 1u : 0u)                << 29);
+        ((r.lhClipSpace ? 1u : 0u)                << 29) |
+        // Depth-prepass clones differ from the color pass only in colorMask
+        // off (kDisableBit8) — fold it into the key so they cache separately.
+        ((r.material.ColorWriteEnabled() ? 0u : 1u) << 30);
     k ^= uint64_t(bits) * 0xFF51AFD7ED558CCDull;
     return k;
 }
@@ -238,6 +241,7 @@ gfx::PipelineHandle BlsPsoBuilder::GetOrBuild(const PsoRequest& request) {
     desc.inputLayout  = LayoutFor(request.layout);
     desc.topology     = request.topology;
     desc.blend        = BlendFor(request.material.alpha);
+    desc.blend.colorWrite = request.material.ColorWriteEnabled();
     desc.depthStencil = DepthFor(request.material);
     desc.rasterizer   = RasterFor(request.material, request.wireframe, request.lhClipSpace);
     desc.rtvFormat    = request.rtvFormat;

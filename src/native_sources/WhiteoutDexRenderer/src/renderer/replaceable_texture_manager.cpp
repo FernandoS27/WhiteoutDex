@@ -6,6 +6,10 @@
 #include "texture_asset_manager.h"
 #include "team_glow_data.h"
 
+#include <cstdio>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>  // OutputDebugStringA
+
 namespace WhiteoutDex {
 
 namespace {
@@ -48,10 +52,37 @@ void ReplaceableTextureManager::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
 void ReplaceableTextureManager::RegisterModelSlot(Actor&  mi,
                                                   int             textureId,
                                                   ReplaceableKind kind) {
-    if (kind == ReplaceableKind::None) return;
+    // Only the SD path bakes per-team-color pixels for replaceableId 1
+    // (TeamColor) and 2 (TeamGlow). Anything else (None, or higher ids
+    // like 11..36 which the engine handles via its generic
+    // `IModelReplaceMaterialTexture_0` registry — not modeled here) is a
+    // no-op: the BLP loaded from disk for that slot stays in place. The
+    // earlier behaviour cast every non-zero id to TeamColor and overwrote
+    // the loaded texture with a flat 4x4 swatch.
+    if (kind != ReplaceableKind::TeamColor && kind != ReplaceableKind::TeamGlow)
+        return;
     auto& list = slots_[&mi];
-    // Idempotent: skip if already registered.
-    for (auto& s : list) if (s.textureId == textureId) return;
+    // Slot key is (textureId, kind). Idempotent on the pair. A textureId
+    // shared across emitters with different `kind`s is a degenerate case
+    // — both registrations are recorded so re-bakes (SetTeamColor) hit
+    // both, but the staged pixel buffer is one-per-textureId so the
+    // last bake wins. A warning is emitted at the collision so we
+    // notice if any model relies on the unsupported pattern.
+    for (auto& s : list)
+        if (s.textureId == textureId && s.kind == kind) return;
+    for (auto& s : list)
+        if (s.textureId == textureId && s.kind != kind) {
+            // Distinct-kind collision on shared textureId. Log + still record.
+            // (No std::cerr in the renderer; OutputDebugStringA matches the
+            // texture eviction warning style elsewhere in this file.)
+            char msg[160];
+            std::snprintf(msg, sizeof(msg),
+                "[WDEX replaceable] textureId %d registered with kind %d AND %d "
+                "— second kind overwrites the first's swatch on bake.\n",
+                textureId, (int)s.kind, (int)kind);
+            OutputDebugStringA(msg);
+            break;
+        }
     list.push_back({textureId, kind});
     BakeSlot(mi, textureId, kind);
 }

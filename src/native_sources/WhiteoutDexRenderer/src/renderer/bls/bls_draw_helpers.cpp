@@ -8,19 +8,26 @@ namespace WhiteoutDex::bls {
 int BuildLightPalette(FrameInputs&                                     frame,
                       const std::vector<FrameState::LightState>&       activeLights,
                       const Matrix44f&                                 viewMatrix,
-                      const BaselineLights&                            baseline) {
+                      const BaselineLights&                            baseline,
+                      LightingMode                                     mode) {
     int count = 0;
 
-    // If the model has no authored-and-enabled lights, fall back to the
-    // caller-supplied baseline (typically a camera-attached headlight with
-    // a hand-tuned diffuse/ambient). Adding a baseline when authored lights
-    // do exist oversaturates the SD shader's saturate(diff + amb) — the
-    // engine follows the same rule so we mirror it.
+    // Pick whether the renderer's baseline (camera-attached headlight)
+    // gets injected this frame. Driver is the user's lighting-mode pick;
+    // the previous behaviour was Dynamic — baseline only when the model
+    // ships no authored light. InGame stacks them, Glue suppresses the
+    // baseline entirely.
     bool anyEnabled = false;
     for (const auto& L : activeLights) {
         if (L.enabled) { anyEnabled = true; break; }
     }
-    if (!anyEnabled) {
+    bool addBaseline = false;
+    switch (mode) {
+        case LightingMode::Dynamic: addBaseline = !anyEnabled; break;
+        case LightingMode::InGame:  addBaseline = true;        break;
+        case LightingMode::Glue:    addBaseline = false;       break;
+    }
+    if (addBaseline) {
         ShaderLight& sl = frame.lights[count++];
         sl.ambient  = { baseline.ambient.x,       baseline.ambient.y,       baseline.ambient.z,       0.0f };
         sl.diffuse  = { baseline.diffuse.x,       baseline.diffuse.y,       baseline.diffuse.z,       0.0f };

@@ -24,6 +24,19 @@ enum class RenderMode : uint8_t {
     HD = 1,
 };
 
+// Driver for how the renderer's baseline (camera-attached headlight) mixes
+// with the model's authored MDX lights. Read by BuildLightPalette.
+//   InGame  — baseline always present, authored lights stack on top of it.
+//   Glue    — only authored lights; no baseline. Models with no lights
+//             render flat (matches Blizzard's glue-screen viewer).
+//   Dynamic — baseline only when no authored light is enabled; otherwise
+//             authored lights take over (the previous behaviour).
+enum class LightingMode : uint8_t {
+    InGame  = 0,
+    Glue    = 1,
+    Dynamic = 2,
+};
+
 struct DisplayFlags {
     bool showGrid       = true;
     bool showParticles  = true;
