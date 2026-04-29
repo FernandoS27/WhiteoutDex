@@ -1066,6 +1066,13 @@ void RenderService::SetTeamColor(uint8_t r, uint8_t g, uint8_t b) {
     if (replaceables_) replaceables_->SetTeamColor(r, g, b);
 }
 
+void RenderService::SetBackgroundColor(uint8_t r, uint8_t g, uint8_t b) {
+    // Pack COLORREF-style (0x00BBGGRR) so the value can flow straight
+    // into the Win32 colour picker via GetBackgroundColorRaw().
+    const uint32_t packed = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
+    backgroundColor_.store(packed);
+}
+
 // ============================================================================
 // Camera Presets
 // ============================================================================
@@ -2347,14 +2354,25 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     // are baked for RGBA16F so the HDR target is the only valid sink for
     // 3D draws — if tonemap.bls failed to load we'd have already bailed
     // out of InitBlsShaders.
-    // Scene clear in linear space — written into the R11G11B10F HDR
-    // target, then ACES + sRGB-encode at tonemap time. The historic
-    // Magos value (0.39, 0.39, 0.40) is the LDR byte the previous
-    // non-sRGB pipeline produced; in linear-HDR-space those numbers
-    // come out far too bright after ACES rolloff. Pick a dark,
-    // slightly cool gray so the post-tonemap display photons sit in
-    // the "darker bluish gray" range the eye expects behind a model.
-    float clearColor[4] = {0.06f, 0.07f, 0.10f, 1.0f};
+    // Scene clear written into the R11G11B10F HDR target, then ACES +
+    // sRGB-encoded at tonemap time. The user picks an sRGB colour via
+    // the toolbar background-color picker (default ≈ dark cool gray);
+    // we convert sRGB→linear here so the post-tonemap pixel matches
+    // the picked swatch closely (small sRGB values fall in the linear
+    // ramp and survive ACES with minimal compression).
+    auto srgbByteToLinear = [](uint8_t b) {
+        // Standard piecewise sRGB EOTF.
+        const float f = b / 255.0f;
+        return (f <= 0.04045f) ? (f / 12.92f)
+                               : std::pow((f + 0.055f) / 1.055f, 2.4f);
+    };
+    const uint32_t bg = backgroundColor_.load();
+    float clearColor[4] = {
+        srgbByteToLinear((uint8_t)(bg        & 0xFF)),  // R
+        srgbByteToLinear((uint8_t)((bg >> 8) & 0xFF)),  // G
+        srgbByteToLinear((uint8_t)((bg >> 16) & 0xFF)), // B
+        1.0f,
+    };
     cmd->BeginRenderPass(target.hdrColor, target.depth, clearColor, 1.0f, 0);
     cmd->SetViewport({0, 0, (float)target.width, (float)target.height, 0, 1});
 

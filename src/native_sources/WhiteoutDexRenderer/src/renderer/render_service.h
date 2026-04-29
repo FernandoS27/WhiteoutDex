@@ -157,6 +157,14 @@ public:
     void         SetLightingMode(LightingMode m) { lightingMode_.store(static_cast<uint8_t>(m)); }
     LightingMode GetLightingMode() const         { return static_cast<LightingMode>(lightingMode_.load()); }
 
+    // Scene clear color. Stored as sRGB bytes packed COLORREF-style
+    // (0x00BBGGRR) for direct interop with the Win32 colour picker.
+    // The render thread converts to linear floats before clearing the
+    // HDR scene target. Default mirrors the previous hard-coded
+    // (0.06, 0.07, 0.10) linear value.
+    void     SetBackgroundColor(uint8_t r, uint8_t g, uint8_t b);
+    uint32_t GetBackgroundColorRaw() const { return backgroundColor_.load(); }
+
     // Swap the HD IBL probe at runtime. `relPath` is the CASC-relative
     // path ("environment/environmentmap/.../foo_ibl.dds"). Empty or a
     // load failure reverts to the built-in debug probe so HAS_IBL
@@ -382,6 +390,11 @@ private:
     // keep the atomic lock-free across all ABIs while the public API
     // exposes the LightingMode enum.
     std::atomic<uint8_t>  lightingMode_{static_cast<uint8_t>(LightingMode::InGame)};
+    // sRGB clear colour packed COLORREF-style (0x00BBGGRR). Render
+    // thread reads it once per frame and converts to linear. Default:
+    // the prior hard-coded scene clear (linear 0.06,0.07,0.10) →
+    // sRGB ≈ (70, 76, 92) → 0x005C4C46.
+    std::atomic<uint32_t> backgroundColor_{0x005C4C46u};
 
     // ---- Scene state ----
     // Phase 5: SceneManager owns actors, focus, camera, camera presets,

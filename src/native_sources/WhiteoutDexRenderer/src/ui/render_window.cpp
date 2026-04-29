@@ -316,6 +316,19 @@ bool RenderWindow::Create(int w, int h) {
                  static_cast<WPARAM>(service_.GetLightingMode()), 0);
     x += 108;
 
+    // --- Background color swatch ---
+    // Mirrors the Team color button: BS_OWNERDRAW paints with the
+    // current sRGB pick, click opens ChooseColor and pushes the result
+    // into RenderService::SetBackgroundColor.
+    CreateWindowW(L"STATIC", L"Background:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        x, 4, 80, 20, hwnd_, nullptr, hInst, nullptr);
+    x += 84;
+    btnBgColor_ = CreateWindowW(L"BUTTON", L"",
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        x, 4, 22, 20, hwnd_, (HMENU)(INT_PTR)IDC_BGCOLOR, hInst, nullptr);
+    x += 30;
+
     return true;
 }
 
@@ -462,6 +475,12 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             FillRect(dis->hDC, &dis->rcItem, brush);
             DeleteObject(brush);
             DrawEdge(dis->hDC, &dis->rcItem, EDGE_SUNKEN, BF_RECT);
+        } else if (dis->CtlID == IDC_BGCOLOR) {
+            COLORREF bc = service_.GetBackgroundColorRaw();
+            HBRUSH brush = CreateSolidBrush(bc);
+            FillRect(dis->hDC, &dis->rcItem, brush);
+            DeleteObject(brush);
+            DrawEdge(dis->hDC, &dis->rcItem, EDGE_SUNKEN, BF_RECT);
         }
         return TRUE;
     }
@@ -561,6 +580,23 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     int sel = (int)SendMessageW(cmbLighting_, CB_GETCURSEL, 0, 0);
                     if (sel >= 0 && sel <= 2)
                         service_.SetLightingMode(static_cast<LightingMode>(sel));
+                }
+                break;
+            }
+            case IDC_BGCOLOR: {
+                CHOOSECOLORW cc = {};
+                static COLORREF customColors[16] = {};
+                cc.lStructSize  = sizeof(cc);
+                cc.hwndOwner    = hwnd_;
+                cc.rgbResult    = service_.GetBackgroundColorRaw();
+                cc.lpCustColors = customColors;
+                cc.Flags        = CC_FULLOPEN | CC_RGBINIT;
+                if (ChooseColorW(&cc)) {
+                    service_.SetBackgroundColor(
+                        GetRValue(cc.rgbResult),
+                        GetGValue(cc.rgbResult),
+                        GetBValue(cc.rgbResult));
+                    InvalidateRect(btnBgColor_, nullptr, TRUE);
                 }
                 break;
             }
