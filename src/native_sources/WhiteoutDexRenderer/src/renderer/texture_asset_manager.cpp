@@ -23,7 +23,15 @@ TextureAssetManager::TextureAssetManager(gfx::IGFXDevice& gfx) : gfx_(gfx) {
     // Pixel layouts are little-endian R8G8B8A8 — least-significant byte is R.
     defaults_.White       = Make1x1(gfx_, 0xFFFFFFFFu);
     defaults_.Black       = Make1x1(gfx_, 0x00000000u);
-    defaults_.FlatNormal  = Make1x1(gfx_, 0xFF808080u);   // (128,128,128,255) — see note in header
+    // (0.5, 0.5, 0, 1) — decodeNormalMap reads R, G, A only; B is unused.
+    // R=A=0.5 → nx = 2·R·A − 1 = 0; G=0.5 → ny = −(2·G − 1) = 0;
+    // nz = √(1 − 0 − 0) = 1 → flat (0, 0, 1) tangent-space normal.
+    defaults_.FlatNormal  = Make1x1(gfx_, 0xFF008080u);   // (128,128,0,255)
+    // (1, 1, 0, 0) — full AO, full roughness, no metal, no team-colour
+    // blend. Critical for the team-colour blend: t_orm.w == 0 turns
+    // off team tint when a layer ships no ORM map. Roughness=1 keeps
+    // the IBL horizon from showing up as a sharp seam (mirror-finish
+    // unauthored materials).
     defaults_.NeutralOrm  = Make1x1(gfx_, 0x0000FFFFu);   // (255,255,0,0)
     defaults_.Missing     = Make1x1(gfx_, 0xFFFF00FFu);   // magenta (255,0,255,255)
 }

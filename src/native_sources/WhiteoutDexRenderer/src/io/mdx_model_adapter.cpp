@@ -386,9 +386,16 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     std::fprintf(stderr, "  [tex %d] NOT FOUND: '%s' (base: %s)\n",
                  textureId, path.c_str(), reinterpret_cast<const char*>(u8base.data()));
 
-    // Fallback: 4x4 magenta square.
-    td.width = td.height = 4;
-    FillSolidRGBA(td.pixels, 4, 4, 255, 0, 255, 255);
+    // Leave the TextureData invalid (width = height = 0, no pixels).
+    // UploadStagedTextures sees the zero-size and skips the upload, so
+    // the per-actor ModelScope::Get(id) returns gfx::TextureHandle::
+    // Invalid at draw time. `bindMaterialTex` then falls through to the
+    // slot-specific default (White for t0 albedo, FlatNormal for t1,
+    // NeutralOrm for t2, Black for t3/t4) — which means a missing ORM
+    // file gives the engine-faithful (1,1,0,0) instead of magenta
+    // (which the multi-layer-blend math would otherwise read as
+    // metal=1, teamBlend=1 and turn the surface into a chrome-finish
+    // team-coloured mirror).
     return td;
 }
 

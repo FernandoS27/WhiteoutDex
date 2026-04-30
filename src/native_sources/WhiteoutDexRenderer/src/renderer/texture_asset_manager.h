@@ -188,9 +188,13 @@ public:
     //                                            fallback (t3 / t4): RGBA
     //                                            (0,0,0,0) so multiLayerBlend
     //                                            sees zero contribution.
-    //   FlatNormal  — 1x1 (128,128,255,255).     decodeNormalMap reads
-    //                                            r=0.5, a=1.0 → (0,0,1).
-    //   NeutralOrm  — 1x1 (255,255,0,0).         occlusion=1, roughness=1
+    //   FlatNormal  — 1x1 (128,128,0,255) = (0.5,0.5,0,1).
+    //                                            decodeNormalMap reads
+    //                                            R, G, A only (B unused);
+    //                                            R=A=0.5, G=0.5 →
+    //                                            tangent-space (0,0,1).
+    //   NeutralOrm  — 1x1 (255,255,0,0) = (1,1,0,0).
+    //                                            occlusion=1, roughness=1
     //                                            (must — 0 turns every
     //                                            unauthored-ORM HD layer
     //                                            into a perfect mirror and
