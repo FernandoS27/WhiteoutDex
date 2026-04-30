@@ -642,11 +642,15 @@ private:
     static constexpr gfx::Format kHdrSceneFormat = gfx::Format::R11G11B10_FLOAT;
 
     // SD pipeline renders straight to the LDR back-buffer (no HDR
-    // intermediate, no tonemap). Engine-faithful: classic SD outputs
-    // are display-ready sRGB-encoded bytes, so the RTV view must be
-    // non-sRGB (no hardware re-encode) — `target.colorLinear` holds
-    // that aliased view of the swap-chain resource.
-    static constexpr gfx::Format kSdSceneFormat  = gfx::Format::R8G8B8A8_UNORM;
+    // intermediate, no tonemap). Engine parity: classic SD textures
+    // (albedo / _Diffuse usage) are sRGB-promoted by ApplySrgbPolicy
+    // and therefore arrive in the shader as LINEAR values — the SD PS
+    // does its multiplications in linear space and writes a linear
+    // result. The RTV view must therefore be sRGB-encoding so the
+    // hardware encodes the linear store back to a display-ready sRGB
+    // byte. Mirrors preview.exe's classic-mode rendering, which the
+    // user verified does an sRGB conversion before display.
+    static constexpr gfx::Format kSdSceneFormat  = gfx::Format::R8G8B8A8_UNORM_SRGB;
     bls::BlsShader*         blsSpriteVs_     = nullptr; // shared fullscreen VS (Sprite.bls)
     bls::BlsShader*         blsTonemapPs_    = nullptr;
     gfx::BufferHandle       tonemapVB_       = gfx::BufferHandle::Invalid; // 3 verts: clip-space pos + uv

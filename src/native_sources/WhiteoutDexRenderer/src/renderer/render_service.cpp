@@ -2493,11 +2493,13 @@ RenderTargetId RenderService::CreateOffscreenTarget(int w, int h) {
 
     RenderTarget target;
     target.id          = nextTargetId_++;
-    target.color       = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM);
-    // Off-screen targets aren't sRGB-aware to begin with — `color`
-    // already stores raw bytes. The linear alias points at the same
-    // texture; SD draws hit it without the back-buffer swap-chain
-    // detour but still see the same RTV format.
+    // Match the swap-chain's sRGB-encoding RTV: SD writes linear and
+    // expects the hardware to encode → sRGB byte on store, and the HD
+    // tonemap path also targets sRGB. Off-screen targets are sampled
+    // by callers as raw bytes (icon extraction etc.), so storing the
+    // already-encoded sRGB byte gives them the same display-ready
+    // pixel they'd see on the swap-chain.
+    target.color       = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM_SRGB);
     target.colorLinear = target.color;
     target.hdrColor    = gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
     target.depth       = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
@@ -2542,7 +2544,7 @@ void RenderService::ResizeRenderTarget(RenderTargetId id, int w, int h) {
         t.colorLinear = gfx_->GetSwapChainBackBufferLinear(t.swap);
     } else {
         gfx_->Destroy(t.color);
-        t.color       = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM);
+        t.color       = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM_SRGB);
         t.colorLinear = t.color;
     }
 
@@ -2739,26 +2741,24 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     // 3D pass: render every mesh / particle / ribbon / debug overlay
     // into the active scene target.
     //   * HD mode → target.hdrColor (R11G11B10F linear-HDR), then a
-    //     fullscreen ACES tonemap resolves to target.color (LDR).
-    //   * SD mode → target.color (R8G8B8A8_UNORM) directly. WC3's
-    //     classic SD pipeline never had HDR — its layer outputs are
-    //     already display-ready, so we skip the tonemap pass and pay
-    //     no precision loss in that path.
+    //     fullscreen ACES tonemap resolves to target.color (sRGB RTV).
+    //   * SD mode → target.color (sRGB RTV) directly. The SD PS samples
+    //     albedo as sRGB (decoded to linear by the sampler) and writes
+    //     a linear result; the sRGB RTV encodes the store back to a
+    //     display-ready byte. Skipping the tonemap keeps the SD path
+    //     LDR end-to-end with no precision loss vs. the HD route.
     // The PSO builder hashes rtvFormat into its cache key, so per-mode
     // switches automatically produce distinct PSOs on first use.
     const bool useHdr = (renderMode_ == RenderMode::HD);
-    // SD picks the LINEAR (non-sRGB) RTV view of the back-buffer so
-    // display-ready bytes from the SD shader land verbatim in memory
-    // — `colorLinear` aliases the same physical resource as `color`,
-    // only the RTV format differs. HD's tonemap output still targets
-    // `color` (sRGB-encoding RTV).
-    const gfx::TextureHandle sceneTarget = useHdr ? target.hdrColor : target.colorLinear;
+    const gfx::TextureHandle sceneTarget = useHdr ? target.hdrColor : target.color;
 
     // Clear colour. The user picks sRGB bytes via the Background swatch.
     // We want both pipelines to display the *exact* picked byte:
     //
-    //   * SD writes the picked byte straight through to the LDR target
-    //     (no tonemap, no encoding) — that side is trivially exact.
+    //   * SD's clear lands in the sRGB-encoding RTV view, so the value
+    //     we hand to ClearRenderTarget must be LINEAR — the hardware
+    //     encodes linear → sRGB byte on store, recovering the picker
+    //     byte exactly.
     //
     //   * HD's clear lands in the R11G11B10F intermediate, then ACES +
     //     exposure scales every pixel before the sRGB-aware tonemap
@@ -2806,11 +2806,10 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
                                 ? 1.0f / tonemapExposure_ : 1.0f;
         return acesInverse(linTarget) * invExp;
     };
-    // SD targets the LINEAR (non-sRGB) RTV view of the swap-chain — no
-    // hardware encode on store. The bytes we write end up verbatim in
-    // memory, exactly matching what the user picked.
+    // SD targets the sRGB-encoding RTV view: clear values must be
+    // linear so hardware encodes them back to the picker byte on store.
     auto sdClear = [&](uint8_t byte) {
-        return byte / 255.0f;
+        return srgbByteToLinear(byte);
     };
     float clearColor[4] = {
         useHdr ? hdrClear(rB) : sdClear(rB),
