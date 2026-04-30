@@ -37,6 +37,15 @@ public:
     // distance attenuation against entry.minDistance / maxDistance /
     // distanceCutoff, and managing voice lifetimes.
     virtual void Play(const io::SndEntry& entry, const Vector3f& worldPos) = 0;
+
+    // Per-emitter master gain in [0, 1]. Default is 1.0 (full volume).
+    // Backends are expected to multiply this against any per-sample /
+    // per-row gain. NullSoundEmitter ignores the value (it never plays);
+    // backends that can't honour gain at all may also no-op. Get/Set
+    // are virtual so RenderService can route a UI slider through here
+    // without leaking the concrete backend type.
+    virtual void  SetVolume(float /*v*/) {}
+    virtual float GetVolume() const { return 1.0f; }
 };
 
 // Default no-op implementation. Used by RenderService when no host has

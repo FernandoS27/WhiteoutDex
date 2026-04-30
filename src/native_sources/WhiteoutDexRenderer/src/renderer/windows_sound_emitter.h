@@ -26,6 +26,7 @@
 
 #include "sound_emitter.h"
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -44,6 +45,16 @@ public:
 
     void Play(const io::SndEntry& entry, const Vector3f& worldPos) override;
 
+    // Master gain applied to the PCM samples before PlaySound takes the
+    // buffer. PlaySoundW has no per-call volume control — the only
+    // working knobs are the system master mixer and the per-process
+    // session, and neither is appropriate to drag with a UI slider —
+    // so we scale the PCM in-place. PCM 16-bit / 8-bit are supported;
+    // non-PCM (float, ADPCM, …) is left untouched. Atomic so the UI
+    // thread's slider drag doesn't tear with the render thread's Play.
+    void  SetVolume(float v) override;
+    float GetVolume() const override;
+
 private:
     const IContentProvider* content_ = nullptr;
 
@@ -53,8 +64,9 @@ private:
     // overwrites it or replaces it. Mutex serialises swaps so the
     // previous sound's borrow is safely cancelled before the next
     // one starts.
-    std::mutex           mu_;
-    std::vector<uint8_t> currentBuffer_;
+    std::mutex                 mu_;
+    std::vector<uint8_t>       currentBuffer_;
+    std::atomic<float>         volume_{1.0f};
 };
 
 } // namespace WhiteoutDex

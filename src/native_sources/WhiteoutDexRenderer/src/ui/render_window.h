@@ -63,10 +63,17 @@ public:
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK RenderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    LRESULT HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     // Render thread function (owned by this window)
     void ThreadFunc(int width, int height, gfx::GfxApi api);
+
+    // Lazily build the Settings popup the first time the menu item is
+    // clicked. The window is hidden on close instead of destroyed so
+    // re-opening is instant and the controls keep their state.
+    void EnsureSettingsWindow();
 
     RenderService& service_;
 
@@ -85,6 +92,8 @@ private:
     HWND btnBgColor_   = nullptr;
     HWND sldExposure_  = nullptr;
     HWND lblExposure_  = nullptr;
+    HWND sldSndVolume_ = nullptr;
+    HWND lblSndVolume_ = nullptr;
     HMENU hMenuBar_      = nullptr;
     HMENU hMenuView_     = nullptr;
     HMENU hMenuProbe_    = nullptr;
@@ -92,6 +101,13 @@ private:
     HMENU hMenuDebug_    = nullptr;
     HMENU hMenuDebugVis_ = nullptr;
     HMENU hMenuLod_      = nullptr;
+
+    // Settings popup — owns the Background colour swatch + Exposure slider
+    // controls (moved off the toolbar so the toolbar only carries the
+    // live, frame-touched controls). Created lazily on first click of
+    // the &Settings menu entry; hidden on close, never destroyed until
+    // the parent window itself goes away.
+    HWND hwndSettings_ = nullptr;
 
     // Menu item IDs. Ranged enums for the two submenu groups so the
     // WM_COMMAND handler can dispatch by range instead of a case per
@@ -103,6 +119,7 @@ private:
         IDC_LIGHTING,
         IDC_BGCOLOR,
         IDC_EXPOSURE,
+        IDC_SND_VOLUME,
         // View menu toggles
         IDM_VIEW_GRID      = 1100,
         IDM_VIEW_PARTICLES,
@@ -124,6 +141,9 @@ private:
         // LOD submenu: [0]=Auto, [1]=Force 0, [2]=Force 1, [3]=Force 2, [4]=Force 3
         IDM_LOD_BASE       = 1500,
         IDM_LOD_LAST       = IDM_LOD_BASE + 4,
+        // Top-level &Settings menu entry (clickable, no popup) — opens
+        // the Settings window for Background colour + Exposure.
+        IDM_SETTINGS       = 1600,
     };
 
     // Mouse state

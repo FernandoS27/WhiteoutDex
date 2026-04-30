@@ -10,7 +10,9 @@
 #include "renderer/model_template.h"   // for cameraPresets accessor
 #include "renderer/windows_sound_emitter.h"
 #include "ui/render_window.h"
+#include "ui/settings_ini.h"           // LoadSettingsIni — restores bg/exposure
 #include "gfx/gfx_types.h"
+#include "io/path_utf8.h"              // PathToUtf8 — UTF-8 round-trip from fs::path
 
 #include <chrono>
 #include <filesystem>
@@ -70,7 +72,9 @@ int wmain(int argc, wchar_t* argv[]) {
         }
     }
     if (!std::filesystem::exists(mdxPath)) {
-        std::cerr << "File not found: " << mdxPath.string() << "\n";
+        // PathToUtf8 (not .string()) preserves CJK characters: path::string()
+        // narrows to the ANSI code page on Windows.
+        std::cerr << "File not found: " << WhiteoutDex::PathToUtf8(mdxPath) << "\n";
         return 1;
     }
 
@@ -81,6 +85,13 @@ int wmain(int argc, wchar_t* argv[]) {
     // outlive the renderer (the renderer holds a non-owning pointer).
     WhiteoutDex::SceneManager  scene;
     WhiteoutDex::RenderService renderer(scene);
+
+    // Restore persisted Background colour + Exposure before the window
+    // opens so the toolbar / Settings popup pre-populate from the saved
+    // values rather than the compile-time defaults. Best-effort — a
+    // missing INI leaves the defaults in place.
+    WhiteoutDex::LoadSettingsIni(renderer);
+
     WhiteoutDex::RenderWindow  renderWindow(renderer);
     if (!renderWindow.Open(1024, 768, backend)) {
         std::cerr << "Failed to open renderer window\n";
@@ -103,8 +114,10 @@ int wmain(int argc, wchar_t* argv[]) {
     // ModelTemplate (geometry + skinning + materials + sequences + camera
     // presets), spawns an Actor, binds its AnimationDriver to the parsed
     // adapter, and sets focus. ~80 lines of legacy boilerplate collapse here.
-    std::cout << "Loading " << mdxPath.filename().generic_string() << "...\n";
-    WhiteoutDex::Actor* hero = renderer.LoadActorFromMdx(mdxPath.string());
+    // PathToUtf8 keeps CJK characters intact across the std::string boundary;
+    // every downstream `std::string` path in the renderer is treated as UTF-8.
+    std::cout << "Loading " << WhiteoutDex::PathToUtf8(mdxPath.filename()) << "...\n";
+    WhiteoutDex::Actor* hero = renderer.LoadActorFromMdx(WhiteoutDex::PathToUtf8(mdxPath));
     if (!hero) {
         std::cerr << "Failed to load MDX.\n";
         return 1;

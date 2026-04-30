@@ -7,6 +7,7 @@
 #include "../io/content_provider.h"
 #include "../io/event_data.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <random>
@@ -82,10 +83,103 @@ std::optional<std::vector<uint8_t>> ResolveSoundBytes(
     return std::nullopt;
 }
 
+// Scan a WAV byte buffer for the data chunk and scale every PCM sample
+// in place by `gain`. Touches only PCM 8-bit (unsigned, 128 = silence)
+// and PCM 16-bit (signed) — the common formats for WC3 SND samples.
+// Non-PCM (formatTag != 1: float, ADPCM, …) and unknown bit depths are
+// left as-is; the user just won't hear the gain on those rare assets.
+//
+// WAV layout (little-endian):
+//   0..3   "RIFF"
+//   4..7   file size − 8 (uint32)
+//   8..11  "WAVE"
+//   then a sequence of chunks:
+//     0..3   chunk id (e.g. "fmt ", "data", "LIST", "JUNK")
+//     4..7   chunk size (uint32)
+//     8..    chunk payload (padded to even length)
+//
+// We rely on the layout being well-formed; PlaySound itself will reject
+// malformed buffers, so a partial parse just leaves the bytes alone.
+void ScalePcmGain(uint8_t* buf, size_t size, float gain) {
+    if (gain == 1.0f || size < 44) return;
+    if (std::memcmp(buf, "RIFF", 4) != 0) return;
+    if (std::memcmp(buf + 8, "WAVE", 4) != 0) return;
+
+    uint16_t formatTag    = 0;
+    uint16_t bitsPerSample = 0;
+
+    auto rd_u32 = [](const uint8_t* p) {
+        return static_cast<uint32_t>(p[0])
+             | (static_cast<uint32_t>(p[1]) << 8)
+             | (static_cast<uint32_t>(p[2]) << 16)
+             | (static_cast<uint32_t>(p[3]) << 24);
+    };
+    auto rd_u16 = [](const uint8_t* p) {
+        return static_cast<uint16_t>(
+            static_cast<uint16_t>(p[0]) |
+            (static_cast<uint16_t>(p[1]) << 8));
+    };
+
+    size_t pos = 12;
+    while (pos + 8 <= size) {
+        const uint8_t* hdr  = buf + pos;
+        const uint32_t csz  = rd_u32(hdr + 4);
+        const size_t   next = pos + 8 + ((csz + 1u) & ~1u);  // pad to even
+
+        if (std::memcmp(hdr, "fmt ", 4) == 0 && csz >= 16 && pos + 8 + 16 <= size) {
+            formatTag     = rd_u16(hdr + 8);
+            bitsPerSample = rd_u16(hdr + 8 + 14);
+        } else if (std::memcmp(hdr, "data", 4) == 0) {
+            // Bail if we never saw a fmt chunk or it's not raw PCM.
+            if (formatTag != 1) return;
+            const size_t dataOff = pos + 8;
+            if (dataOff > size) return;
+            const size_t dataSz = std::min(static_cast<size_t>(csz), size - dataOff);
+
+            if (bitsPerSample == 16) {
+                int16_t* samples = reinterpret_cast<int16_t*>(buf + dataOff);
+                const size_t n   = dataSz / sizeof(int16_t);
+                for (size_t i = 0; i < n; ++i) {
+                    int s = static_cast<int>(static_cast<float>(samples[i]) * gain);
+                    if (s >  32767) s =  32767;
+                    if (s < -32768) s = -32768;
+                    samples[i] = static_cast<int16_t>(s);
+                }
+            } else if (bitsPerSample == 8) {
+                // 8-bit PCM is unsigned with 128 as silence; centre,
+                // scale, re-bias.
+                uint8_t* samples = buf + dataOff;
+                for (size_t i = 0; i < dataSz; ++i) {
+                    int centred = static_cast<int>(samples[i]) - 128;
+                    int scaled  = static_cast<int>(static_cast<float>(centred) * gain);
+                    int out     = scaled + 128;
+                    if (out > 255) out = 255;
+                    if (out <   0) out =   0;
+                    samples[i] = static_cast<uint8_t>(out);
+                }
+            }
+            return;
+        }
+
+        if (next <= pos) return;   // malformed: zero/negative chunk
+        pos = next;
+    }
+}
+
 } // namespace
 
 WindowsSoundEmitter::WindowsSoundEmitter(const IContentProvider* content)
     : content_(content) {}
+
+void WindowsSoundEmitter::SetVolume(float v) {
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    volume_.store(v, std::memory_order_relaxed);
+}
+
+float WindowsSoundEmitter::GetVolume() const {
+    return volume_.load(std::memory_order_relaxed);
+}
 
 WindowsSoundEmitter::~WindowsSoundEmitter() {
     // Stop any in-flight playback so the OS doesn't keep reading from
@@ -124,6 +218,12 @@ void WindowsSoundEmitter::Play(const io::SndEntry& entry,
     std::lock_guard<std::mutex> lk(mu_);
     PlaySoundW(nullptr, nullptr, SND_PURGE);   // cancel any prior borrow
     currentBuffer_ = std::move(*bytes);
+
+    // Apply the master gain. Skipped (and ScalePcmGain returns
+    // immediately) when volume == 1.0, so the common case is free.
+    ScalePcmGain(currentBuffer_.data(), currentBuffer_.size(),
+                 volume_.load(std::memory_order_relaxed));
+
     PlaySoundW(reinterpret_cast<LPCWSTR>(currentBuffer_.data()),
                nullptr,
                SND_MEMORY | SND_ASYNC | SND_NODEFAULT);

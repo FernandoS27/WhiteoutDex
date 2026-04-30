@@ -1149,6 +1149,18 @@ void RenderService::SetSoundEmitter(std::unique_ptr<ISoundEmitter> emitter) {
     // soundEmitter_->Play() unconditionally.
     std::lock_guard<std::mutex> lock(dataMutex_);
     soundEmitter_ = emitter ? std::move(emitter) : MakeNullSoundEmitter();
+    // Re-apply the cached gain to the new backend so settings persisted
+    // before the host installed its concrete emitter (the typical
+    // standalone path) take effect.
+    soundEmitter_->SetVolume(soundVolume_);
+}
+
+void RenderService::SetSoundVolume(float v) {
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    soundVolume_ = v;
+    if (soundEmitter_) soundEmitter_->SetVolume(v);
 }
 
 // ============================================================================

@@ -5,6 +5,7 @@
 
 #include "render_window.h"
 #include "render_service.h"
+#include "settings_ini.h"                             // SaveSettingsIni
 #include "../renderer/debug/debug_renderer.h"        // service_.Debug() return type
 #include "../renderer/replaceable_texture_manager.h" // service_.Replaceables() return type
 #include "../io/replaceable_paths.h"                 // Tileset enum + setter
@@ -20,9 +21,10 @@
 
 namespace WhiteoutDex {
 
-static const wchar_t* WINDOW_CLASS  = L"WhiteoutDexRendererClass";
-static const wchar_t* RENDER_CLASS  = L"WhiteoutDexRenderSurface";
-static const wchar_t* WINDOW_TITLE  = L"WhiteoutFlakes";
+static const wchar_t* WINDOW_CLASS   = L"WhiteoutDexRendererClass";
+static const wchar_t* RENDER_CLASS   = L"WhiteoutDexRenderSurface";
+static const wchar_t* SETTINGS_CLASS = L"WhiteoutDexSettingsWindow";
+static const wchar_t* WINDOW_TITLE   = L"WhiteoutFlakes";
 
 // ============================================================================
 // Construction / Destruction
@@ -281,6 +283,9 @@ bool RenderWindow::Create(int w, int h) {
 
     AppendMenuW(hMenuBar_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuView_,  L"&View");
     AppendMenuW(hMenuBar_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuDebug_, L"&Debug");
+    // Top-level clickable entry — no submenu, fires WM_COMMAND with
+    // IDM_SETTINGS straight from the menu bar.
+    AppendMenuW(hMenuBar_, MF_STRING, IDM_SETTINGS, L"&Settings");
 
     // Create parent window (menu bar adds its own height — pass TRUE).
     RECT adj = {0, 0, w, h + kToolbarH};
@@ -352,53 +357,31 @@ bool RenderWindow::Create(int w, int h) {
                  static_cast<WPARAM>(service_.GetLightingMode()), 0);
     x += 108;
 
-    // --- Background color swatch ---
-    // Mirrors the Team color button: BS_OWNERDRAW paints with the
-    // current sRGB pick, click opens ChooseColor and pushes the result
-    // into RenderService::SetBackgroundColor.
-    CreateWindowW(L"STATIC", L"Background:",
-        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
-        x, 4, 80, 20, hwnd_, nullptr, hInst, nullptr);
-    x += 84;
-    btnBgColor_ = CreateWindowW(L"BUTTON", L"",
-        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-        x, 4, 22, 20, hwnd_, (HMENU)(INT_PTR)IDC_BGCOLOR, hInst, nullptr);
-    x += 30;
-
-    // --- Tonemap exposure slider ---
-    // Drives RenderService::SetTonemapExposure (PS b1 in the engine's
-    // ApplyTonemap path). Range 0.00..3.00 stored as 0..300 so the
-    // trackbar can step in 0.01 increments. Numeric label after the
-    // slider mirrors the live value.
-    CreateWindowW(L"STATIC", L"Exposure:",
-        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
-        x, 4, 60, 20, hwnd_, nullptr, hInst, nullptr);
-    x += 62;
-    sldExposure_ = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
-        WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS,
-        x, 4, 110, 20, hwnd_, (HMENU)(INT_PTR)IDC_EXPOSURE, hInst, nullptr);
-    SendMessageW(sldExposure_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 300));
-    SendMessageW(sldExposure_, TBM_SETPOS,   TRUE,
-                 (LPARAM)(int)(service_.GetTonemapExposure() * 100.0f));
-    x += 114;
-    {
-        wchar_t buf[16];
-        swprintf_s(buf, L"%.2f", service_.GetTonemapExposure());
-        lblExposure_ = CreateWindowW(L"STATIC", buf,
-            WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
-            x, 4, 40, 20, hwnd_, nullptr, hInst, nullptr);
-    }
-    x += 44;
+    // Background colour swatch + Exposure slider live in the Settings
+    // popup now (see EnsureSettingsWindow). The toolbar carries only
+    // controls the user manipulates frame-to-frame — Team / Camera /
+    // Animation / Lighting.
 
     return true;
 }
 
 void RenderWindow::Destroy() {
+    // Owned windows go away with the parent — null the cached HWND so a
+    // re-open call to EnsureSettingsWindow rebuilds rather than handing
+    // out a stale handle. The child controls (btnBgColor_/sldExposure_/
+    // lblExposure_) destroy with their parent too; null them here.
+    hwndSettings_ = nullptr;
+    btnBgColor_   = nullptr;
+    sldExposure_  = nullptr;
+    lblExposure_  = nullptr;
+    sldSndVolume_ = nullptr;
+    lblSndVolume_ = nullptr;
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
     hwndRender_ = nullptr;
     if (icon_) { DestroyIcon(icon_); icon_ = nullptr; }
-    UnregisterClassW(WINDOW_CLASS, GetModuleHandle(nullptr));
-    UnregisterClassW(RENDER_CLASS, GetModuleHandle(nullptr));
+    UnregisterClassW(WINDOW_CLASS,   GetModuleHandle(nullptr));
+    UnregisterClassW(RENDER_CLASS,   GetModuleHandle(nullptr));
+    UnregisterClassW(SETTINGS_CLASS, GetModuleHandle(nullptr));
 }
 
 void RenderWindow::Show() {
@@ -459,6 +442,23 @@ LRESULT CALLBACK RenderWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         self = reinterpret_cast<RenderWindow*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
     }
     if (self) return self->HandleMessage(hwnd, msg, wParam, lParam);
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+// Settings popup WndProc. Same pointer-bootstrap pattern as the parent
+// WndProc — `lpCreateParams` carries the owning RenderWindow and we
+// stash it in GWLP_USERDATA so subsequent messages can route to the
+// member handler.
+LRESULT CALLBACK RenderWindow::SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    RenderWindow* self = nullptr;
+    if (msg == WM_NCCREATE) {
+        auto cs = reinterpret_cast<CREATESTRUCT*>(lParam);
+        self = static_cast<RenderWindow*>(cs->lpCreateParams);
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+    } else {
+        self = reinterpret_cast<RenderWindow*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+    }
+    if (self) return self->HandleSettingsMessage(hwnd, msg, wParam, lParam);
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
@@ -528,33 +528,14 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_KEYDOWN: {
         return 0;
     }
-    case WM_HSCROLL: {
-        // Trackbar drag/keypress notifications come in as WM_HSCROLL with
-        // the control HWND in lParam. Only the exposure slider feeds it.
-        if ((HWND)lParam == sldExposure_ && sldExposure_) {
-            int pos = (int)SendMessageW(sldExposure_, TBM_GETPOS, 0, 0);
-            float exposure = (float)pos / 100.0f;
-            service_.SetTonemapExposure(exposure);
-            if (lblExposure_) {
-                wchar_t buf[16];
-                swprintf_s(buf, L"%.2f", exposure);
-                SetWindowTextW(lblExposure_, buf);
-            }
-            return 0;
-        }
-        break;
-    }
     case WM_DRAWITEM: {
+        // Only the toolbar's Team-colour button still owner-draws here
+        // — the Background swatch lives on the Settings popup and its
+        // WM_DRAWITEM is handled in SettingsWndProc.
         DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
         if (dis->CtlID == IDC_TEAMCOLOR) {
             COLORREF tc = service_.Replaceables().GetTeamColorRaw();
             HBRUSH brush = CreateSolidBrush(tc);
-            FillRect(dis->hDC, &dis->rcItem, brush);
-            DeleteObject(brush);
-            DrawEdge(dis->hDC, &dis->rcItem, EDGE_SUNKEN, BF_RECT);
-        } else if (dis->CtlID == IDC_BGCOLOR) {
-            COLORREF bc = service_.GetBackgroundColorRaw();
-            HBRUSH brush = CreateSolidBrush(bc);
             FillRect(dis->hDC, &dis->rcItem, brush);
             DeleteObject(brush);
             DrawEdge(dis->hDC, &dis->rcItem, EDGE_SUNKEN, BF_RECT);
@@ -574,6 +555,16 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             CheckMenuItem(hMenuBar_, menuId, MF_BYCOMMAND | (v ? MF_CHECKED : MF_UNCHECKED));
             service_.SetDisplayFlags(df);
         };
+        // Top-level &Settings menu entry — open the lazily-created popup
+        // and bring it forward.
+        if (id == IDM_SETTINGS) {
+            EnsureSettingsWindow();
+            if (hwndSettings_) {
+                ShowWindow(hwndSettings_, SW_SHOW);
+                SetForegroundWindow(hwndSettings_);
+            }
+            return 0;
+        }
         if (id == IDM_VIEW_GRID)        { toggleView(id, &DisplayFlags::showGrid);       return 0; }
         if (id == IDM_VIEW_PARTICLES)   { toggleView(id, &DisplayFlags::showParticles);  return 0; }
         if (id == IDM_VIEW_RIBBONS)     { toggleView(id, &DisplayFlags::showRibbons);    return 0; }
@@ -672,23 +663,9 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 }
                 break;
             }
-            case IDC_BGCOLOR: {
-                CHOOSECOLORW cc = {};
-                static COLORREF customColors[16] = {};
-                cc.lStructSize  = sizeof(cc);
-                cc.hwndOwner    = hwnd_;
-                cc.rgbResult    = service_.GetBackgroundColorRaw();
-                cc.lpCustColors = customColors;
-                cc.Flags        = CC_FULLOPEN | CC_RGBINIT;
-                if (ChooseColorW(&cc)) {
-                    service_.SetBackgroundColor(
-                        GetRValue(cc.rgbResult),
-                        GetGValue(cc.rgbResult),
-                        GetBValue(cc.rgbResult));
-                    InvalidateRect(btnBgColor_, nullptr, TRUE);
-                }
-                break;
-            }
+            // IDC_BGCOLOR / IDC_EXPOSURE are wired by SettingsWndProc —
+            // their controls are children of hwndSettings_, so messages
+            // never reach the parent's HandleMessage.
         }
         return 0;
     }
@@ -747,6 +724,199 @@ void RenderWindow::InvalidateTeamColorSwatch() {
 
 int RenderWindow::GetActiveCameraIndex() const {
     return cmbCamera_ ? (int)SendMessageW(cmbCamera_, CB_GETCURSEL, 0, 0) : 0;
+}
+
+// ============================================================================
+// Settings popup
+// ============================================================================
+//
+// Lazily build a small modeless tool window the first time the &Settings
+// menu entry fires. Subsequent opens just ShowWindow the cached HWND.
+// Layout is fixed-pixel (no resize) — Background swatch on top, Exposure
+// slider below — to mirror what was on the toolbar.
+
+void RenderWindow::EnsureSettingsWindow() {
+    if (hwndSettings_) return;
+
+    HMODULE hMod = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                       (LPCWSTR)&RenderWindow::SettingsWndProc, &hMod);
+    HINSTANCE hInst = hMod ? (HINSTANCE)hMod : GetModuleHandle(nullptr);
+
+    // Register the popup's window class. Reusing the parent's class would
+    // route messages to the parent's WndProc — we want a separate proc so
+    // its WM_DRAWITEM / WM_HSCROLL / WM_COMMAND can stay scoped to the
+    // popup's controls.
+    WNDCLASSEXW sc = {};
+    sc.cbSize        = sizeof(sc);
+    sc.style         = CS_HREDRAW | CS_VREDRAW;
+    sc.lpfnWndProc   = RenderWindow::SettingsWndProc;
+    sc.hInstance     = hInst;
+    sc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+    sc.hIcon         = icon_;
+    sc.hIconSm       = icon_;
+    sc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    sc.lpszClassName = SETTINGS_CLASS;
+    if (!RegisterClassExW(&sc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        return;
+
+    // Fixed client size — tall enough for three rows of label+control
+    // (Background colour, Exposure, SND Volume).
+    constexpr int kClientW = 320;
+    constexpr int kClientH = 150;
+    RECT rc = {0, 0, kClientW, kClientH};
+    // WS_POPUPWINDOW gives us a thin frame + close box without resize
+    // grippers; WS_CAPTION puts a title bar on top.
+    const DWORD style   = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+    const DWORD exStyle = WS_EX_TOOLWINDOW;  // small caption, omit from taskbar
+    AdjustWindowRectEx(&rc, style, FALSE, exStyle);
+
+    // Spawn near the parent's top-left corner, just below the menu.
+    int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
+    if (hwnd_) {
+        RECT pr{};
+        GetWindowRect(hwnd_, &pr);
+        x = pr.left + 60;
+        y = pr.top  + 60;
+    }
+
+    hwndSettings_ = CreateWindowExW(exStyle, SETTINGS_CLASS, L"Settings",
+                                    style, x, y,
+                                    rc.right - rc.left, rc.bottom - rc.top,
+                                    hwnd_, nullptr, hInst, this);
+    if (!hwndSettings_) return;
+
+    // --- Row 1: Background colour ---
+    int rowY = 12;
+    CreateWindowW(L"STATIC", L"Background:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        12, rowY, 90, 22, hwndSettings_, nullptr, hInst, nullptr);
+    btnBgColor_ = CreateWindowW(L"BUTTON", L"",
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        108, rowY + 1, 28, 20, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_BGCOLOR, hInst, nullptr);
+
+    // --- Row 2: Exposure ---
+    rowY += 38;
+    CreateWindowW(L"STATIC", L"Exposure:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        12, rowY, 90, 22, hwndSettings_, nullptr, hInst, nullptr);
+    sldExposure_ = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
+        WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS,
+        108, rowY, 150, 24, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_EXPOSURE, hInst, nullptr);
+    SendMessageW(sldExposure_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 300));
+    SendMessageW(sldExposure_, TBM_SETPOS,   TRUE,
+                 (LPARAM)(int)(service_.GetTonemapExposure() * 100.0f));
+    {
+        wchar_t buf[16];
+        swprintf_s(buf, L"%.2f", service_.GetTonemapExposure());
+        lblExposure_ = CreateWindowW(L"STATIC", buf,
+            WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+            264, rowY, 44, 22, hwndSettings_, nullptr, hInst, nullptr);
+    }
+
+    // --- Row 3: SND EventObject volume ---
+    // Drives RenderService::SetSoundVolume → ISoundEmitter::SetVolume
+    // (WindowsSoundEmitter pre-scales PCM samples). Range 0..100 →
+    // 0.00..1.00 so the trackbar steps in 0.01.
+    rowY += 38;
+    CreateWindowW(L"STATIC", L"SND Volume:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        12, rowY, 90, 22, hwndSettings_, nullptr, hInst, nullptr);
+    sldSndVolume_ = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
+        WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS,
+        108, rowY, 150, 24, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_SND_VOLUME, hInst, nullptr);
+    SendMessageW(sldSndVolume_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
+    SendMessageW(sldSndVolume_, TBM_SETPOS,   TRUE,
+                 (LPARAM)(int)(service_.GetSoundVolume() * 100.0f));
+    {
+        wchar_t buf[16];
+        swprintf_s(buf, L"%.2f", service_.GetSoundVolume());
+        lblSndVolume_ = CreateWindowW(L"STATIC", buf,
+            WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+            264, rowY, 44, 22, hwndSettings_, nullptr, hInst, nullptr);
+    }
+}
+
+LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CLOSE:
+        // Hide instead of destroy so the next open is instant and the
+        // controls' transient state (focus, slider drag, etc.) survives.
+        ShowWindow(hwnd, SW_HIDE);
+        return 0;
+
+    case WM_DRAWITEM: {
+        DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
+        if (dis->CtlID == IDC_BGCOLOR) {
+            COLORREF bc = service_.GetBackgroundColorRaw();
+            HBRUSH brush = CreateSolidBrush(bc);
+            FillRect(dis->hDC, &dis->rcItem, brush);
+            DeleteObject(brush);
+            DrawEdge(dis->hDC, &dis->rcItem, EDGE_SUNKEN, BF_RECT);
+        }
+        return TRUE;
+    }
+
+    case WM_HSCROLL: {
+        // Trackbar drag / keypress messages — dispatched per slider.
+        const HWND src = (HWND)lParam;
+        if (src == sldExposure_ && sldExposure_) {
+            int pos = (int)SendMessageW(sldExposure_, TBM_GETPOS, 0, 0);
+            float exposure = (float)pos / 100.0f;
+            service_.SetTonemapExposure(exposure);
+            if (lblExposure_) {
+                wchar_t buf[16];
+                swprintf_s(buf, L"%.2f", exposure);
+                SetWindowTextW(lblExposure_, buf);
+            }
+            // Persist on every drag tick. INI writes are cheap enough
+            // that debouncing isn't worth the complexity for a small
+            // file; if profiling ever shows it, gate on TB_ENDTRACK.
+            SaveSettingsIni(service_);
+            return 0;
+        }
+        if (src == sldSndVolume_ && sldSndVolume_) {
+            int pos = (int)SendMessageW(sldSndVolume_, TBM_GETPOS, 0, 0);
+            float volume = (float)pos / 100.0f;
+            service_.SetSoundVolume(volume);
+            if (lblSndVolume_) {
+                wchar_t buf[16];
+                swprintf_s(buf, L"%.2f", volume);
+                SetWindowTextW(lblSndVolume_, buf);
+            }
+            SaveSettingsIni(service_);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_COMMAND: {
+        const int id = LOWORD(wParam);
+        if (id == IDC_BGCOLOR) {
+            CHOOSECOLORW cc = {};
+            static COLORREF customColors[16] = {};
+            cc.lStructSize  = sizeof(cc);
+            cc.hwndOwner    = hwnd;
+            cc.rgbResult    = service_.GetBackgroundColorRaw();
+            cc.lpCustColors = customColors;
+            cc.Flags        = CC_FULLOPEN | CC_RGBINIT;
+            if (ChooseColorW(&cc)) {
+                service_.SetBackgroundColor(
+                    GetRValue(cc.rgbResult),
+                    GetGValue(cc.rgbResult),
+                    GetBValue(cc.rgbResult));
+                if (btnBgColor_) InvalidateRect(btnBgColor_, nullptr, TRUE);
+                SaveSettingsIni(service_);
+            }
+            return 0;
+        }
+        break;
+    }
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 } // namespace WhiteoutDex

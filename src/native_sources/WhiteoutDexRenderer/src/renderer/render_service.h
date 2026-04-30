@@ -202,6 +202,14 @@ public:
     // when shutting an audio device down before destroying the host).
     void SetSoundEmitter(std::unique_ptr<ISoundEmitter> emitter);
 
+    // Master gain for SND EventObjects (range [0, 1]). Forwarded to the
+    // active ISoundEmitter via its SetVolume; the value is cached on
+    // RenderService so SetSoundEmitter can re-apply it to a fresh
+    // backend (the standalone swaps in WindowsSoundEmitter after the
+    // service is constructed, well after LoadSettingsIni runs).
+    void  SetSoundVolume(float v);
+    float GetSoundVolume() const { return soundVolume_; }
+
     // Resize the primary render target (called from WM_SIZE handler)
     void ResizePrimaryTarget(int width, int height);
 
@@ -399,6 +407,14 @@ private:
     particle::SplatService    splatService_;
     std::unique_ptr<SpnSpawner>     spnSpawner_;
     std::unique_ptr<ISoundEmitter>  soundEmitter_;
+    // Cached master gain so SetSoundEmitter can re-apply across backend
+    // swaps. The active emitter holds its own copy too (atomic for the
+    // render-thread Play); this field is the source of truth the UI
+    // queries via GetSoundVolume() and the INI persists. Default of
+    // 0.2 keeps WC3 SND samples (often authored hot for mixing in the
+    // game's own bus) from blowing out a model preview's listening
+    // level — users can crank it up via the Settings slider.
+    float                           soundVolume_ = 0.2f;
 
     // Sync
     mutable std::mutex    dataMutex_;
@@ -432,10 +448,14 @@ private:
     // exposes the LightingMode enum.
     std::atomic<uint8_t>  lightingMode_{static_cast<uint8_t>(LightingMode::InGame)};
     // sRGB clear colour packed COLORREF-style (0x00BBGGRR). Render
-    // thread reads it once per frame and converts to linear. Default:
-    // the prior hard-coded scene clear (linear 0.06,0.07,0.10) →
-    // sRGB ≈ (70, 76, 92) → 0x005C4C46.
-    std::atomic<uint32_t> backgroundColor_{0x005C4C46u};
+    // thread reads it once per frame and converts to linear. The prior
+    // default of linear (0.06, 0.07, 0.10) was tuned alongside the old
+    // 0.6 default exposure; raising exposure to 1.0 (engine-faithful)
+    // would brighten the background ~67%, so we pre-attenuate the
+    // linear values by 0.6 to keep the post-tonemap appearance the
+    // same. Linear (0.036, 0.042, 0.06) → sRGB (53, 58, 69) → COLORREF
+    // 0x00453A35.
+    std::atomic<uint32_t> backgroundColor_{0x00453A35u};
 
     // ---- Scene state ----
     // Phase 5: SceneManager owns actors, focus, camera, camera presets,
@@ -604,14 +624,12 @@ private:
     gfx::BufferHandle       tonemapVB_       = gfx::BufferHandle::Invalid; // 3 verts: clip-space pos + uv
     gfx::BufferHandle       tonemapPsCb_     = gfx::BufferHandle::Invalid; // b1: { float exposure; pad×3 }
     gfx::SamplerHandle      tonemapSampler_  = gfx::SamplerHandle::Invalid; // s0: linear-clamp
-    // Engine default is 1.0 (Preview RE: s_tonemapParams initial bytes
-    // 00 00 80 3F = 1.0f at 0x7ff60acb54a8). We start at 0.6 because
-    // our HD pipeline runs the lighting CB defaults without the
-    // engine's per-scene exposure tuning, so unmodified HD content
-    // sits well above ACES's mid-grey knee. Lowering the multiplier
-    // pulls brights into the rolloff range without crushing shadows.
-    // SetTonemapExposure() exposes a runtime knob.
-    float                   tonemapExposure_ = 0.6f;
+    // Default 1.0 — matches the engine's s_tonemapParams initial value
+    // (Preview RE: bytes 00 00 80 3F = 1.0f at 0x7ff60acb54a8). The
+    // Settings window's slider exposes a runtime knob via
+    // SetTonemapExposure() if a model needs the brights pulled into
+    // ACES's rolloff range.
+    float                   tonemapExposure_ = 1.0f;
     void RunTonemapPass(const RenderTarget& target);
 
     bool InitBlsShaders();

@@ -7,6 +7,7 @@
 #include "../gfx/gfx.h"
 #include "../io/content_provider.h"
 #include "../io/mdx_model_adapter.h"
+#include "../io/path_utf8.h"       // FsPathFromUtf8 — UTF-8 → fs::path
 #include "animation.h"             // SkinningData
 #include <whiteout/models/mdx/parser.h>
 
@@ -179,8 +180,11 @@ ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
     }
 
     namespace fs = std::filesystem;
+    // mdxPath is UTF-8 (codebase convention); fs::path's narrow ctor would
+    // re-interpret it through the platform code page on Windows and lose
+    // CJK chars in the parent dir.
     fs::path texBasePath =
-        basePath_.empty() ? fs::path(mdxPath).parent_path() : basePath_;
+        basePath_.empty() ? FsPathFromUtf8(mdxPath).parent_path() : basePath_;
 
     auto tmpl    = std::make_shared<ModelTemplate>();
     auto adapter = std::make_shared<MdxModelAdapter>(

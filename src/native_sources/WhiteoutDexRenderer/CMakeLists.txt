@@ -138,6 +138,7 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/coordinate_system.cpp
     src/renderer/debug/debug_renderer.cpp
     src/ui/render_window.cpp
+    src/ui/settings_ini.cpp
     src/renderer/ribbon.cpp
     src/renderer/pe1_system.cpp
     src/renderer/particle/rnd_seed.cpp
