@@ -6,6 +6,7 @@
 
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
+#include "renderer/camera.h"           // Camera::Mode for the walk-drift gate
 #include "renderer/model_instance.h"   // Actor
 #include "renderer/model_template.h"   // for cameraPresets accessor
 #include "renderer/windows_sound_emitter.h"
@@ -14,6 +15,7 @@
 #include "gfx/gfx_types.h"
 #include "io/path_utf8.h"              // PathToUtf8 — UTF-8 round-trip from fs::path
 
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
@@ -151,6 +153,76 @@ int wmain(int argc, wchar_t* argv[]) {
     if (hero->sourceTemplate && !hero->sourceTemplate->cameraPresets.empty())
         scene.SetCameraPresets(hero->sourceTemplate->cameraPresets);
 
+    // ---- Walk-cycle locomotion drift ----
+    // When a Walk / Run sequence carries `moveSpeed != 0` (sourced from
+    // the MDX SEQS chunk), translate the actor + free-camera target
+    // along world +X by `moveSpeed * dt` so world-space splats /
+    // particles fall behind, giving the illusion of forward motion.
+    // The engine's preview tool gets the same perception by scrolling
+    // the legacy reference grid instead — same relative motion, but
+    // anchoring on the actor side keeps shadows / IBL probes /
+    // model-attached emitters in sync without a special grid path.
+    //
+    // Rules:
+    //   1. Only Orbital (free) camera mode drifts. Direct (MDX preset
+    //      / scripted shot) framing is authored-faithful — leaving
+    //      the actor at origin keeps the preset's eye→target vector
+    //      centred on the model.
+    //   2. On every active-sequence change, undo the accumulated
+    //      drift in one step so the next animation always starts
+    //      from the model's authored origin.
+    //   3. We add deltas — never overwrite — so user pan / zoom on
+    //      the camera target survives mid-walk.
+    struct WalkDrift {
+        int   prevSeqIdx  = -1;
+        float accumulated = 0.0f;
+    };
+    WalkDrift drift;
+    // Walk-by-name fallback: artists frequently ship Walk cycles with
+    // moveSpeed=0 in the SEQS chunk (the in-game movement code reads
+    // it elsewhere or supplies a default). To keep the perception
+    // consistent across those models, we treat any sequence whose
+    // name contains "walk" (case-insensitive) as a 100 game-units/s
+    // walker when its authored moveSpeed is missing.
+    constexpr float kDefaultWalkSpeed = 100.0f;
+    auto containsWalk = [](const std::string& s) {
+        for (size_t i = 0; i + 4 <= s.size(); ++i) {
+            const auto lc = [](char c) {
+                return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            };
+            if (lc(s[i]) == 'w' && lc(s[i+1]) == 'a' && lc(s[i+2]) == 'l' && lc(s[i+3]) == 'k')
+                return true;
+        }
+        return false;
+    };
+    auto effectiveMoveSpeed = [&](const WhiteoutDex::SequenceInfo& s) {
+        if (s.moveSpeed != 0.0f) return s.moveSpeed;
+        return containsWalk(s.name) ? kDefaultWalkSpeed : 0.0f;
+    };
+    auto applyWalkDrift = [&](float dt) {
+        if (!hero) return;
+        if (scene.Camera().GetMode() != WhiteoutDex::Camera::Mode::Orbital) return;
+        const int   idx  = hero->animation.ActiveSequenceIndex();
+        const auto& seqs = scene.SequenceRanges();
+        float delta = 0.0f;
+        if (idx != drift.prevSeqIdx) {
+            // Sequence change → snap actor + camera target back to
+            // the unwalked pose. delta=-accumulated cancels every
+            // prior frame's drift in one tick (zero on the very first
+            // tick, when accumulated is still 0).
+            delta = -drift.accumulated;
+            drift.prevSeqIdx = idx;
+        } else if (idx >= 0 && idx < (int)seqs.size()) {
+            const float ms = effectiveMoveSpeed(seqs[idx]);
+            if (ms != 0.0f) delta = ms * dt;
+        }
+        if (delta == 0.0f) return;
+        drift.accumulated += delta;
+        hero->worldTransform.data[3][0] += delta;
+        const auto t = scene.Camera().GetTarget();
+        scene.Camera().SetTarget(t.x + delta, t.y, t.z);
+    };
+
     // ---- Main loop ----
     // SceneManager::Update advances the global animation clock, runs the
     // sequence-loop math per actor, and updates each animation cursor.
@@ -165,6 +237,7 @@ int wmain(int argc, wchar_t* argv[]) {
         float dt  = std::chrono::duration<float>(now - last).count();
         last = now;
         scene.Update(dt);
+        applyWalkDrift(dt);
         Sleep(16); // ~60 FPS
     }
 

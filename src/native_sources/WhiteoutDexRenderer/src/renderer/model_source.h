@@ -38,6 +38,18 @@ struct SequenceInfo {
     std::string name;
     int         startMs = 0;
     int         endMs   = 0;
+    // Game-units per second the unit covers when this sequence plays at
+    // 1× speed. Sourced verbatim from the MDX SEQS chunk's `moveSpeed`
+    // — Blizzard authors it on Walk / Run cycles so the in-game
+    // movement code can sync foot-plant timing to actual displacement.
+    // 0 = stationary (Stand, Attack, Death, ...).
+    // Hosts that want to visualise locomotion can drift the actor +
+    // camera target by `moveSpeed * dt` each tick while a non-zero
+    // sequence is active, leaving world-space splats / particles to
+    // fall behind. Engine reference: preview.exe scrolls the legacy
+    // reference grid by this value instead of moving the actor; same
+    // perception, opposite frame.
+    float       moveSpeed = 0.0f;
 };
 
 // ----------------------------------------------------------------------------
