@@ -24,6 +24,7 @@
 
 #include "../gfx/gfx.h"
 #include "model_types.h"
+#include "texture_asset_manager.h"   // ModelScope (nested) for template-lifetime texture borrows
 
 #include <memory>
 #include <string>
@@ -76,6 +77,16 @@ struct ModelTemplate {
     // pointing at this template hits ProcessStagedData.
     bool                               gpuUploaded = false;
     std::vector<SharedGeoset>          sharedGeosets;
+
+    // Template-lifetime borrows on shared cross-model textures. Seeded
+    // by uploadTemplateGpu; released on template destruction. Holds a
+    // refcount on every entry the adapter put into the renderer's
+    // shared cache so the entry can't be evicted while *any* actor
+    // pointing at this template is alive — which closes the eviction
+    // race that previously made per-actor BindShared return Invalid
+    // when all live actors of the same template died simultaneously
+    // and the next spawn re-staged before the cache was reseeded.
+    std::unique_ptr<TextureAssetManager::ModelScope> templateTextures;
 
     ModelTemplate();
     ~ModelTemplate();

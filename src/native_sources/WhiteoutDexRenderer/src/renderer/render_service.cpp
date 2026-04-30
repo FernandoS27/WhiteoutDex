@@ -1438,6 +1438,45 @@ void RenderService::uploadTemplateGpu(ModelTemplate& tmpl) {
 
         tmpl.sharedGeosets.push_back(sg);
     }
+
+    // Take a template-lifetime borrow on every shared cross-model texture
+    // the adapter exposed. This pins the entry in the TextureAssetManager
+    // cache for as long as the template is alive, so per-actor BindShared
+    // calls during stageModelFromTemplate can never lose the eviction
+    // race that fires when all live actors of this template die in the
+    // same frame and a new spawn arrives before another actor reseeds the
+    // cache. Pixels-empty path covers the cross-template adapter-skip
+    // case: BindShared just bumps the refcount on a sibling template's
+    // already-cached entry; if every sibling died too we accept Invalid
+    // and let the actor render with the default fallback (same as today).
+    if (!tmpl.templateTextures) tmpl.templateTextures = textures_->CreateModelScope();
+    for (auto& tex : tmpl.textures) {
+        if (tex.sharedKey.empty()) continue;       // owned / procedural — per-actor
+        if (tex.replaceableId != 0) continue;      // TeamColor / TeamGlow — per-actor
+        if (!tex.pixels.empty() && tex.width > 0 && tex.height > 0) {
+            const gfx::Format texFormat = (tex.format == gfx::Format::Unknown)
+                                              ? gfx::Format::R8G8B8A8_UNORM
+                                              : tex.format;
+            const gfx::TextureDesc desc{
+                .width     = tex.width,
+                .height    = tex.height,
+                .mipLevels = (std::max)(1, tex.mipLevels),
+                .format    = texFormat,
+                .usage     = gfx::TextureUsage::ShaderResource,
+            };
+            tmpl.templateTextures->UploadShared(tex.textureId, tex.sharedKey,
+                                                desc, tex.pixels.data(),
+                                                tex.wrapFlags);
+        } else {
+            // Adapter skipped decode (cross-template cache hit at parse
+            // time). Borrow the existing cache entry; if it has been
+            // evicted in the meantime we leave the slot empty — actors
+            // will render the fallback for this id, matching the
+            // pre-fix behaviour for a now-narrower race window.
+            tmpl.templateTextures->BindShared(tex.textureId, tex.sharedKey,
+                                              tex.wrapFlags);
+        }
+    }
     tmpl.gpuUploaded = true;
 }
 
@@ -1848,21 +1887,21 @@ bool RenderService::RenderSplatsBls() {
     if (verts.empty()) return true;
 
     const int vertCount = (int)verts.size();
-    if (particleServiceVB_ == gfx::BufferHandle::Invalid || vertCount > particleServiceVBSize_) {
-        gfx_->Destroy(particleServiceVB_);
+    if (splatServiceVB_ == gfx::BufferHandle::Invalid || vertCount > splatServiceVBSize_) {
+        gfx_->Destroy(splatServiceVB_);
         int newSize = (std::max)(vertCount, 4096);
         gfx::BufferDesc bd;
         bd.size  = (uint32_t)(sizeof(Vertex) * newSize);
         bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-        particleServiceVB_     = gfx_->CreateBuffer(bd);
-        particleServiceVBSize_ = newSize;
+        splatServiceVB_     = gfx_->CreateBuffer(bd);
+        splatServiceVBSize_ = newSize;
     }
-    if (void* mapped = gfx_->MapBuffer(particleServiceVB_)) {
+    if (void* mapped = gfx_->MapBuffer(splatServiceVB_)) {
         memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
-        gfx_->UnmapBuffer(particleServiceVB_);
+        gfx_->UnmapBuffer(splatServiceVB_);
     }
 
-    cmd->BindVertexBuffer(0, particleServiceVB_, sizeof(Vertex));
+    cmd->BindVertexBuffer(0, splatServiceVB_, sizeof(Vertex));
 
     bls::FrameInputs frame;
     frame.world      = Matrix44f::identity();
@@ -2496,6 +2535,12 @@ void RenderService::CleanupD3D() {
         gfx_->Destroy(particleServiceVB_);
         particleServiceVB_ = gfx::BufferHandle::Invalid;
         particleServiceVBSize_ = 0;
+
+        // EventObject splat VB (separate from particles to avoid the
+        // mid-frame overwrite race; see RenderSplatsBls comment).
+        gfx_->Destroy(splatServiceVB_);
+        splatServiceVB_ = gfx::BufferHandle::Invalid;
+        splatServiceVBSize_ = 0;
 
         // Render targets
         for (auto& [id, t] : targets_) {

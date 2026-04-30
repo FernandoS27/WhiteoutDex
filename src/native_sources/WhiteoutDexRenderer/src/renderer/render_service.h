@@ -522,6 +522,16 @@ private:
     gfx::BufferHandle particleServiceVB_     = gfx::BufferHandle::Invalid;
     int               particleServiceVBSize_ = 0;
 
+    // Splats need their own VB. They render BEFORE particles in the
+    // frame's draw order; sharing particleServiceVB_ caused the
+    // particle pass to overwrite splat verts mid-frame. The GPU
+    // reads the buffer's contents at submit time (not record time),
+    // so the shared layout produced flickering wrong-texture renders
+    // — splats ended up drawing particle geometry against their own
+    // bound splat textures.
+    gfx::BufferHandle splatServiceVB_     = gfx::BufferHandle::Invalid;
+    int               splatServiceVBSize_ = 0;
+
     // Animation clock moved to SceneManager (`scene_->GetAnimationTime()`).
 
     // ---- BLS shader pipeline (docs/BLS_ShaderABI.md) ----

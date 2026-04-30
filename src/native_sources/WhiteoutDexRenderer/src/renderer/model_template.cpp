@@ -19,6 +19,9 @@ void ModelTemplate::ReleaseGPU(gfx::IGFXDevice& gfx) {
         gfx.Destroy(g.boneVb);
     }
     sharedGeosets.clear();
+    // ModelScope dtor releases every shared-texture borrow held on the
+    // template's behalf; resetting the unique_ptr triggers it.
+    templateTextures.reset();
     gpuUploaded = false;
 }
 
