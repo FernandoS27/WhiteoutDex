@@ -61,12 +61,29 @@ CollectedRenderables CollectSortedRenderables(
     return out;
 }
 
+gfx::BufferHandle PickSlot0Vb(const GPUGeoset& geo, int coordId) {
+    if (coordId == 1 && geo.unskinnedVb1 != gfx::BufferHandle::Invalid)
+        return geo.unskinnedVb1;
+    return geo.unskinnedVb;
+}
+
 bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
-                        const GPUGeoset&      geo) {
-    // Slot 0 always carries the rest-pose Vertex stream -- the SD VS
-    // blends against the bone palette when the FourBoneSkinning permute
-    // is active, or passes through unchanged when numWeights=0.
-    cmd->BindVertexBuffer(0, geo.unskinnedVb, sizeof(Vertex));
+                        const GPUGeoset&      geo,
+                        int                   coordId) {
+    // Slot 0 carries the rest-pose Vertex stream. The SD VS blends
+    // against the bone palette when the FourBoneSkinning permute is
+    // active, or passes through unchanged when numWeights=0. PickSlot0Vb
+    // selects the right VB based on the layer's CoordID -- channel 1
+    // (`unskinnedVb1`) when the template baked a sibling and the caller
+    // asked for it, otherwise channel 0 (`unskinnedVb`).
+    //
+    // Callers that issue per-layer draws will rebind slot 0 themselves
+    // before each draw to honour each layer's CoordID. We still bind
+    // here so callers that don't loop layers (e.g. simple paths in
+    // tooling) get a valid stream from a single call. The redundant
+    // rebind in the per-layer path costs one extra command-list write
+    // per geoset and is harmless.
+    cmd->BindVertexBuffer(0, PickSlot0Vb(geo, coordId), sizeof(Vertex));
     cmd->BindIndexBuffer(geo.ib, gfx::Format::R32_UINT);
 
     const bool hasBones = (geo.boneVb != gfx::BufferHandle::Invalid)
@@ -159,6 +176,7 @@ UnpackedLayer UnpackLayer(const GPUMaterial* mat, int layerIndex) {
     out.fresnelOpacity      = L.fresnelOpacity;
     out.fresnelTeamColor    = L.fresnelTeamColor;
     out.fresnelColor        = L.fresnelColor;
+    out.coordId             = L.coordId;
     return out;
 }
 

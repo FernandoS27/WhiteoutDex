@@ -41,6 +41,13 @@ struct ModelTemplate {
         int               geosetId    = -1;
         gfx::BufferHandle ib          = gfx::BufferHandle::Invalid;
         gfx::BufferHandle unskinnedVb = gfx::BufferHandle::Invalid;
+        // Sibling of `unskinnedVb` carrying UVAS channel 1 routed to TC0.
+        // Built only when the geoset has a second UV stream AND at least
+        // one of the materials referencing this geoset has a layer with
+        // `coordId == 1`. The draw path swaps to this VB instead of
+        // `unskinnedVb` for those layers; the geometry is otherwise
+        // identical (same positions, normals, etc.).
+        gfx::BufferHandle unskinnedVb1 = gfx::BufferHandle::Invalid;
         gfx::BufferHandle tangentVb   = gfx::BufferHandle::Invalid;
         gfx::BufferHandle boneVb      = gfx::BufferHandle::Invalid;
         int               indexCount  = 0;

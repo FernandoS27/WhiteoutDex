@@ -40,6 +40,11 @@ struct UnpackedLayer {
     float    fresnelOpacity      = 0.0f;
     float    fresnelTeamColor    = 0.0f;
     Vector3f fresnelColor        = {0.0f, 0.0f, 0.0f};
+    // UVAS channel selector (MDX Layer.CoordID). 0 (default) = channel 0
+    // / `unskinnedVb`; 1 = channel 1 / `unskinnedVb1` (when baked); -1 =
+    // SphereEnvMap (no shader-side UV synthesis yet — degrades to channel
+    // 0). See reference_geoset_uv_channels.md.
+    int      coordId             = 0;
 };
 
 // Returns the layer at `layerIndex` unpacked, or a default-constructed
@@ -96,14 +101,24 @@ CollectedRenderables CollectSortedRenderables(
     int selectedLod);
 
 // Binds the SD-mesh input for native VS skinning:
-//   slot 0 = geo.unskinnedVb  (rest-pose Vertex, 48 B stride)
+//   slot 0 = geo.unskinnedVb  (rest-pose Vertex, 48 B stride)  OR
+//            geo.unskinnedVb1 if `coordId == 1` AND that VB exists
 //   slot 1 = geo.boneVb       (BoneVertex, 8 B) -- iff bones are present
 //   vsCB3  = geo.bonePaletteCb                   -- iff bones are present
 // Plus the R32_UINT index buffer. Returns true when the bone stream
 // was bound; caller then picks numWeights=4 + ParticleSDSkinned layout
 // so the SD VS selects the FourBoneSkinning permute.
 bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
-                        const GPUGeoset&      geo);
+                        const GPUGeoset&      geo,
+                        int                   coordId = 0);
+
+// Resolves which slot-0 vertex buffer to bind for a given UV channel
+// selector. Returns `geo.unskinnedVb1` only when the layer asked for
+// channel 1 AND the template baked a sibling for it; falls back to
+// `geo.unskinnedVb` (channel 0) for every other case (including
+// SphereEnvMap layers, which want shader-side UV synthesis but we
+// currently degrade to channel 0).
+gfx::BufferHandle PickSlot0Vb(const GPUGeoset& geo, int coordId);
 
 // Binds `textureId`'s GPU texture to pixel-stage slot `slot` with the
 // matching wrap sampler resolved through `samplers`. Falls back to

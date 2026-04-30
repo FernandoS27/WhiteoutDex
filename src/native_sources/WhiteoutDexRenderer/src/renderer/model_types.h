@@ -149,6 +149,13 @@ struct MeshData {
     std::vector<Vector3f> positions;
     std::vector<Vector3f> normals;
     std::vector<Vector2f> uvs;
+    // UVAS channel 1. Empty unless the source geoset declared a second
+    // texCoord array. The MDX `Layer.CoordID` selects which channel a
+    // given material layer samples; Previewd's CreateVertexAndIndexBuffers
+    // (@0x7ff609af8af0) caps at 2 streams in the VB, so we mirror that
+    // and only carry channels 0 and 1. Layers with CoordID >= 2 (rare in
+    // shipping content) fall back to channel 0.
+    std::vector<Vector2f> uvs1;
     // Per-vertex tangent frame. .xyz = world-space tangent direction,
     // .w = handedness sign for bitangent reconstruction (see
     // tangentToWorld in wc3_shaders/math/normal.slang). Empty when the
@@ -204,6 +211,14 @@ struct MaterialLayerData {
     float alpha;
     int flags;  // MAT_TWO_SIDED, MAT_UNSHADED, etc. (from FilterMode/MaterialFlags enums)
     int textureAnimationId = -1;  // -1 = none; else index into model's TXAN table
+    // UV channel selector (MDX Layer.CoordID). Picks which of the
+    // geoset's UVAS channels feeds TEXCOORD0 for this layer's draw.
+    // -1 means SphereEnvMap (MDX layer flag 0x2): the engine forces
+    // procedural UVs from the normal/eye in the shader and never
+    // samples the geoset's UV stream — see ProcessTexLayers
+    // @0x7ff609b69e40 in Previewd. Default 0 covers the 99% case
+    // where layers want channel 0.
+    int coordId = 0;
     // MDX layer shader id (Layer::ShaderType). 0 = SD, 1 = HD, 2 = SDOnHD,
     // 24 = Crystal; other values are non-mesh shaders that shouldn't appear on
     // a real layer but we preserve the raw integer so the render path can

@@ -1405,6 +1405,43 @@ void RenderService::uploadTemplateGpu(ModelTemplate& tmpl) {
             .usage = gfx::BufferUsage::Vertex,
         }, vertices.data());
 
+        // Sibling VB with UVAS channel 1 routed to TC0. Built only when:
+        //   (a) the source geoset declared a second UV stream (mesh.uvs1
+        //       length matches vertex count), AND
+        //   (b) the material this geoset uses has at least one layer with
+        //       `coordId == 1` — i.e. some draw call would actually pick
+        //       channel 1.
+        // Guards against wasting GPU memory on multi-channel data nobody
+        // samples (common: an exporter dumps a UV1 atlas the artist forgot
+        // to remove). Previewd's CreateVertexAndIndexBuffers caps at 2 UV
+        // streams — see reference_geoset_uv_channels.md.
+        const bool hasUv1Data =
+            (int)mesh.uvs1.size() == sg.vertexCount && sg.vertexCount > 0;
+        bool wantsUv1 = false;
+        if (hasUv1Data && mesh.materialId >= 0) {
+            for (const auto& mat : tmpl.materials) {
+                if (mat.materialId != mesh.materialId) continue;
+                for (const auto& lay : mat.layers) {
+                    if (lay.coordId == 1) { wantsUv1 = true; break; }
+                }
+                break;
+            }
+        }
+        if (wantsUv1) {
+            std::vector<Vertex> verticesUv1(sg.vertexCount);
+            for (int i = 0; i < sg.vertexCount; i++) {
+                verticesUv1[i].position = mesh.positions[i];
+                verticesUv1[i].normal   = (i < (int)mesh.normals.size())
+                                          ? mesh.normals[i] : Vector3f{0, 0, 1};
+                verticesUv1[i].uv       = mesh.uvs1[i];
+                verticesUv1[i].color    = {1.0f, 1.0f, 1.0f, 1.0f};
+            }
+            sg.unskinnedVb1 = gfx_->CreateBuffer({
+                .size  = (uint32_t)(sizeof(Vertex) * sg.vertexCount),
+                .usage = gfx::BufferUsage::Vertex,
+            }, verticesUv1.data());
+        }
+
         sg.ib = gfx_->CreateBuffer({
             .size  = (uint32_t)(sizeof(uint32_t) * sg.indexCount),
             .usage = gfx::BufferUsage::Index,
@@ -1495,7 +1532,8 @@ void RenderService::UploadStagedGeosets(Actor& mi) {
                 gg.materialId  = shared.materialId;
                 gg.lod         = shared.lod;
                 gg.ib          = shared.ib;
-                gg.unskinnedVb = shared.unskinnedVb;
+                gg.unskinnedVb  = shared.unskinnedVb;
+                gg.unskinnedVb1 = shared.unskinnedVb1;
                 gg.tangentVb   = shared.tangentVb;
                 gg.boneVb      = shared.boneVb;
                 gg.indexCount  = shared.indexCount;
@@ -2904,6 +2942,15 @@ public:
             if (pso == gfx::PipelineHandle::Invalid) return;
             cmd->BindPipeline(pso);
 
+            // Re-bind slot 0 with the layer's chosen UV channel. PickSlot0Vb
+            // returns `unskinnedVb1` only when the layer asked for channel 1
+            // and the template baked the sibling, otherwise channel 0. This
+            // is a simple buffer-handle swap on the command list; no shader
+            // permute is involved.
+            cmd->BindVertexBuffer(0,
+                render_detail::PickSlot0Vb(geo, job.layer.coordId),
+                sizeof(Vertex));
+
             frame.world = view_.worldTransform;
 
             if (auto vs = bls::ScopedCb<bls::SdVsCbA>(rs_.gfx_.get(), rs_.blsSdVsCb_)) {
@@ -3066,11 +3113,12 @@ public:
         int numLayers = mat ? (int)mat->cpu.layers.size() : 0;
         if (numLayers <= 0) numLayers = 1;
 
-        // HD path uses vs/hd.bls with FourBoneSkinning — bind the rest-pose
-        // vertex stream on slot 0. The VS blends against vsCB3's bone
+        // HD path uses vs/hd.bls with FourBoneSkinning — slot 0 is the
+        // rest-pose vertex stream (the VS blends against vsCB3's bone
         // palette when numWeights>0, or passes geometry through unchanged
-        // for static geosets.
-        cmd->BindVertexBuffer(0, geo.unskinnedVb, sizeof(Vertex));
+        // for static geosets). Slot 0 is rebound per-layer inside
+        // issueHdDraw to honour the layer's CoordID; the index buffer
+        // stays the same across all layers of a geoset.
         cmd->BindIndexBuffer(geo.ib, gfx::Format::R32_UINT);
 
         // Tangent side-stream (ATTR7 on slot 1). Required by the HD VS
@@ -3226,6 +3274,13 @@ public:
             auto pso = rs_.blsPsoBuilder_->GetOrBuild(req);
             if (pso == gfx::PipelineHandle::Invalid) return;
             cmd->BindPipeline(pso);
+
+            // Re-bind slot 0 with the layer's chosen UV channel. PickSlot0Vb
+            // returns `unskinnedVb1` only when the layer asked for channel 1
+            // and the template baked the sibling, otherwise channel 0.
+            cmd->BindVertexBuffer(0,
+                render_detail::PickSlot0Vb(geo, layer.coordId),
+                sizeof(Vertex));
 
             frame.world = view_.worldTransform;
 

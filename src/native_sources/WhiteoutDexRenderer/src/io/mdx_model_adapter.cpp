@@ -251,6 +251,14 @@ std::vector<MeshData> MdxModelAdapter::GetMeshes() {
         const bool hasTangents = (int)gs.tangents.size() == vc;
         if (hasTangents) mesh.tangents.resize(vc);
 
+        // Second UVAS channel: only present when the MDX geoset declared
+        // it (UVAS numChannels >= 2). Layers with CoordID == 1 sample
+        // from this stream; the renderer bakes a sibling VB at template
+        // upload only when some material layer actually targets it.
+        const bool hasUv1 = gs.textureCoordinateSets.size() >= 2
+                         && (int)gs.textureCoordinateSets[1].size() == vc;
+        if (hasUv1) mesh.uvs1.resize(vc);
+
         // Positions, normals, and tangents are already in our default coord
         // space — TransformMdxModelToMaxCoords ran at load time, so a plain
         // copy preserves W (handedness) and world-space XYZ.
@@ -262,6 +270,10 @@ std::vector<MeshData> MdxModelAdapter::GetMeshes() {
                 v < (int)gs.textureCoordinateSets[0].size()) {
                 mesh.uvs[v] = {gs.textureCoordinateSets[0][v].x,
                                gs.textureCoordinateSets[0][v].y};
+            }
+            if (hasUv1) {
+                mesh.uvs1[v] = {gs.textureCoordinateSets[1][v].x,
+                                gs.textureCoordinateSets[1][v].y};
             }
             if (hasTangents) mesh.tangents[v] = gs.tangents[v];
         }
@@ -468,6 +480,19 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
             ld.textureAnimationId = ((int32_t)layer.textureAnimationId < 0
                                      || (int32_t)layer.textureAnimationId >= (int)model_.textureAnimations.size())
                                     ? -1 : (int)layer.textureAnimationId;
+            // CoordID maps the layer to one of the geoset's UVAS channels.
+            // SphereEnvMap (Layer::ShadingFlag::SphereEnvMap = 0x2) tells the
+            // engine to compute UVs procedurally from normal/eye instead of
+            // sampling — Previewd's ProcessTexLayers (@0x7ff609b69e40) writes
+            // -1 into the runtime layer in that case. We mirror that
+            // sentinel; the draw path treats coordId == -1 as "synthesise"
+            // (currently falls back to channel 0 since no env-map shader
+            // permute is wired yet).
+            if (hasFlag((u32)layer.shadingFlags, Layer::ShadingFlag::SphereEnvMap)) {
+                ld.coordId = -1;
+            } else {
+                ld.coordId = static_cast<int>(layer.coordId);
+            }
             // MDX layer shader id (Layer::ShaderType). Cast through uint32_t
             // so non-mesh / future values round-trip unchanged; the draw path
             // treats unknown ids as SDLegacy (0), matching Previewd's MDL

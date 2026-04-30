@@ -91,6 +91,12 @@ struct GPUGeoset {
     // consume this; FourBoneSkinning happens in the VS when a bone
     // stream is bound on slot 1 and vsCB3 is populated.
     gfx::BufferHandle unskinnedVb = gfx::BufferHandle::Invalid;
+    // Sibling of `unskinnedVb` with UVAS channel 1 baked into TC0. Bound
+    // instead of `unskinnedVb` for layers whose CoordID picked channel 1.
+    // Invalid when the source geoset has no second UV stream or when no
+    // layer of the geoset's material references it — common case keeps
+    // zero overhead. See reference_geoset_uv_channels.md.
+    gfx::BufferHandle unskinnedVb1 = gfx::BufferHandle::Invalid;
     // Side-stream tangent buffer (ATTR7). Bound to slot 1 for HD draws
     // whose source geoset authored tangents; left Invalid otherwise so
     // the HD VS picks the no-tangent permute.
@@ -124,12 +130,14 @@ struct GPUGeoset {
         if (freeSharedBuffers) {
             gfx.Destroy(ib);
             gfx.Destroy(unskinnedVb);
+            gfx.Destroy(unskinnedVb1);
             gfx.Destroy(tangentVb);
             gfx.Destroy(boneVb);
         }
         gfx.Destroy(bonePaletteCb);
         ib = gfx::BufferHandle::Invalid;
         unskinnedVb = gfx::BufferHandle::Invalid;
+        unskinnedVb1 = gfx::BufferHandle::Invalid;
         tangentVb = gfx::BufferHandle::Invalid;
         boneVb = gfx::BufferHandle::Invalid;
         bonePaletteCb = gfx::BufferHandle::Invalid;
