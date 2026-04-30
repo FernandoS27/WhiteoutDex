@@ -78,11 +78,8 @@ std::string JoinDirFile(std::string_view dir, std::string_view file, std::string
     return out;
 }
 
-void LogHeaders(const char* label, const SlkTable& t) {
-    if (t.rows.empty()) return;
-    std::fprintf(stdout, "[WDEX replaceable] %s columns:", label);
-    for (auto& h : t.rows[0]) std::fprintf(stdout, " %s", h.c_str());
-    std::fputc('\n', stdout);
+void LogHeaders(const char* /*label*/, const SlkTable& /*t*/) {
+    // Header dump suppressed — re-enable for SLK schema diagnosis.
 }
 
 // Try a small set of plausible column names so a Reforged update that

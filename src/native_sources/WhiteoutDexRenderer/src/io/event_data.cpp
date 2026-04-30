@@ -22,11 +22,8 @@ namespace {
 // their own per-table column probing and the helper signatures are
 // trivial.
 
-void LogHeaders(const char* label, const SlkTable& t) {
-    if (t.rows.empty()) return;
-    std::fprintf(stdout, "[WDEX events] %s columns:", label);
-    for (auto& h : t.rows[0]) std::fprintf(stdout, " %s", h.c_str());
-    std::fputc('\n', stdout);
+void LogHeaders(const char* /*label*/, const SlkTable& /*t*/) {
+    // Header dump suppressed — re-enable for SLK schema diagnosis.
 }
 
 int FindAny(const SlkTable& t, std::initializer_list<const char*> names) {
@@ -295,9 +292,6 @@ void LoadEventDataFiles(IContentProvider* cp, bool force) {
     LoadUberSplatData(*cp, c);
     LoadAnimSounds   (*cp, c);
     c.loaded = true;
-    std::fprintf(stdout,
-        "[WDEX events] loaded SPN=%zu SPL=%zu UBR=%zu SND=%zu\n",
-        c.spn.size(), c.spl.size(), c.ubr.size(), c.snd.size());
 }
 
 const SpnEntry* FindSpn(std::string_view id) {

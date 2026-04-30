@@ -367,9 +367,6 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     // 1. Try local disk via FileResolver.
     fs::path resolved = resolver_.ResolveTexture(path);
     if (!resolved.empty() && tryParsePath(resolved)) {
-        auto u8resolved = resolved.u8string();
-        std::fprintf(stdout, "  [tex %d] loaded %s\n", textureId,
-                     reinterpret_cast<const char*>(u8resolved.data()));
         return td;
     }
 
@@ -380,8 +377,6 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
         if (data) {
             if (foundExt.empty()) foundExt = ExtensionLower(fs::path(path));
             if (tryParseBuffer(*data, foundExt)) {
-                std::fprintf(stdout, "  [tex %d] loaded from archive: %s\n",
-                             textureId, path.c_str());
                 return td;
             }
         }
@@ -469,8 +464,6 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
         md.priorityPlane = (int)mat.priorityPlane;
         md.sortOrder     = 0;
 
-        std::fprintf(stdout, "  [mat %d] %d layer(s)\n", i, (int)mat.layers.size());
-
         for (int li = 0; li < (int)mat.layers.size(); ++li) {
             const auto& layer = mat.layers[li];
             MaterialLayerData ld;
@@ -519,48 +512,42 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
             //     only sample the diffuse map, so grab the DiffuseMap slot;
             //     if no DiffuseMap is present fall back to subTextures[0].
             if (!layer.subTextures.empty()) {
-                // Reforged multi-texture layout: each subtexture is tagged
-                // by its SlotType. Pluck out every slot the HD PS reads
-                // (DiffuseMap / NormalMap / ORMMap / EmissiveMap / TeamColor)
-                // so the renderer can bind them to t0..t4 respectively.
-                int diffuseTex = (int)layer.subTextures[0].textureId;
-                for (const auto& sub : layer.subTextures) {
-                    const int tex = static_cast<int>(sub.textureId);
-                    switch (sub.slot) {
-                        case Layer::SlotType::DiffuseMap:  diffuseTex        = tex; break;
-                        case Layer::SlotType::NormalMap:   ld.normalMapId    = tex; break;
-                        case Layer::SlotType::ORMMap:      ld.ormMapId       = tex; break;
-                        case Layer::SlotType::EmissiveMap: ld.emissiveMapId  = tex; break;
-                        case Layer::SlotType::TeamColor:
-                            // The TeamColor sub-texture can be either:
-                            //   (a) a Wc3 replaceableId=1 placeholder — author
-                            //       intent is "fill at runtime with the live UI
-                            //       swatch". Map to kHdTeamColorActive so the
-                            //       HD draw binds GetHdSwatchTexture() at t4.
-                            //   (b) a regular authored texture (e.g. a custom
-                            //       mask BLP / DDS the artist dropped in this
-                            //       slot). Carry the real texture id through
-                            //       so the HD draw binds it like any other
-                            //       material slot.
-                            if (tex >= 0 && tex < (int)model_.textures.size()
-                                && model_.textures[tex].replaceableId == 1) {
-                                ld.teamColorMapId = kHdTeamColorActive;
-                            } else {
-                                ld.teamColorMapId = tex;
-                            }
-                            break;
-                        default: break;
+                // Reforged multi-texture layout: subtextures bind to t0..t5
+                // by ARRAY POSITION, not by their `slot` (texSemantic) tag.
+                // Previewd's ProcessTexLayers (@0x7ff609b69e40) calls
+                // `CWar3Mat::SetTexture(mat, subIdx, tex, semantic)` where
+                // `subIdx` is the loop counter — the semantic is metadata,
+                // never the actual GPU register. Authored content can (and
+                // does) tag sibling subtextures with the same SlotType
+                // (e.g. berserkelemental.mdx mat 3 has sub[0] and sub[1]
+                // both tagged DiffuseMap, with sub[1] supplying the normal
+                // map by position). Switching on slot would route both into
+                // the diffuse field; binding by index matches the engine.
+                auto subAt = [&](size_t pos) -> int {
+                    return pos < layer.subTextures.size()
+                               ? (int)layer.subTextures[pos].textureId : -1;
+                };
+                ld.textureId      = subAt(0);   // t0 albedo
+                ld.normalMapId    = subAt(1);   // t1 normal
+                ld.ormMapId       = subAt(2);   // t2 ORM
+                ld.emissiveMapId  = subAt(3);   // t3 emissive
+                // t4 team-colour: live-swatch sentinel logic still applies,
+                // but the resolution key is "what's at position 4", not
+                // "the SlotType::TeamColor subtexture".
+                if (layer.subTextures.size() > 4) {
+                    const int tex = (int)layer.subTextures[4].textureId;
+                    if (tex >= 0 && tex < (int)model_.textures.size()
+                        && model_.textures[tex].replaceableId == 1) {
+                        ld.teamColorMapId = kHdTeamColorActive;
+                    } else {
+                        ld.teamColorMapId = tex;
                     }
                 }
-                ld.textureId = diffuseTex;
+                // Position 5 (typically EnvironmentMap) currently has no
+                // bind site in our HD draw path — drop it here.
             } else {
                 ld.textureId = (int)layer.textureId;
             }
-
-            std::fprintf(stdout,
-                "    layer %d: fm=%d tex=%d alpha=%.2f flags=0x%x is_hd=%d subTex=%d\n",
-                li, (int)layer.filterMode, ld.textureId, ld.alpha, ld.flags,
-                (int)layer.is_hd, (int)layer.subTextures.size());
 
             md.layers.push_back(ld);
         }
@@ -1219,35 +1206,62 @@ FrameState MdxModelAdapter::Evaluate(int sequenceIdx, int timeMs, int globalTime
         }
     }
 
-    // Layer texture ID (KMTF) evaluation — animated texture swap per layer
-    // Classic (v800-v1100): KMTF track lives on layer.textureIdTracks.
-    // Reforged (v1200+): parser moves KMTF into subTexture.tracks; we evaluate
-    //   the DiffuseMap subtexture's track (falling back to subTextures[0]).
+    // Layer texture ID (KMTF) evaluation — animated texture swap per layer.
+    //
+    // Classic (v800-v1100): KMTF lives on layer.textureIdTracks and only
+    // animates the (single) diffuse texture. One state emitted, slot=Diffuse.
+    //
+    // Reforged (v1200+): every SubTexture carries its own KMTF track. Each
+    // animated slot — Normal/ORM/Emissive/TeamColor as well as Diffuse —
+    // emits an independent state so the per-slot bind in the HD draw path
+    // can pick up animated normal/ORM/emissive/team swaps, not just diffuse.
+    // ApplyLayerStates routes the state into the matching *MapId field by
+    // slot; states for slots we don't render (EnvironmentMap and beyond)
+    // are dropped there.
     for (int mi = 0; mi < (int)model_.materials.size(); mi++) {
         const auto& mat = model_.materials[mi];
         for (int li = 0; li < (int)mat.layers.size(); li++) {
             const auto& layer = mat.layers[li];
 
-            const Track<u32>* kmtf = nullptr;
-            u32 defaultTexId = layer.textureId;
-
+            // Classic path: single track on the layer itself.
             if (layer.textureIdTracks.isUsed) {
-                // Classic path
-                kmtf = &layer.textureIdTracks;
-            } else if (const auto* diffuse = FindDiffuseSubTexture(layer.subTextures);
-                       diffuse && diffuse->tracks.isUsed) {
-                // Reforged path: parser moves KMTF into the diffuse subtexture.
-                kmtf         = &diffuse->tracks;
-                defaultTexId = diffuse->textureId;
+                FrameState::LayerTextureIdState lts;
+                lts.materialId = mi;
+                lts.layerIndex = li;
+                lts.slot       = FrameState::LayerTexSlot::Diffuse;
+                lts.textureId  = (int)evalU32(layer.textureIdTracks, layer.textureId);
+                fs.layerTextureIds.push_back(lts);
+                continue;
             }
 
-            if (!kmtf) continue;
-
-            FrameState::LayerTextureIdState lts;
-            lts.materialId = mi;
-            lts.layerIndex = li;
-            lts.textureId  = (int)evalU32(*kmtf, defaultTexId);
-            fs.layerTextureIds.push_back(lts);
+            // Reforged path: walk every subtexture for an animated track.
+            // The runtime slot is the subtexture's ARRAY INDEX, not its
+            // `slot` (texSemantic) tag — Previewd's ProcessTexLayers binds
+            // by position, and shipping content sometimes mistags siblings
+            // (e.g. berserkelemental.mdx mat 3 has both sub[0] and sub[1]
+            // tagged DiffuseMap, with sub[1] actually feeding t1/normal).
+            // Position 5 (typically EnvironmentMap) has no bind site so
+            // we skip it here rather than emit a state the apply step
+            // would silently drop.
+            for (size_t k = 0; k < layer.subTextures.size(); ++k) {
+                const auto& sub = layer.subTextures[k];
+                if (!sub.tracks.isUsed) continue;
+                FrameState::LayerTexSlot slot;
+                switch (k) {
+                    case 0: slot = FrameState::LayerTexSlot::Diffuse;   break;
+                    case 1: slot = FrameState::LayerTexSlot::Normal;    break;
+                    case 2: slot = FrameState::LayerTexSlot::ORM;       break;
+                    case 3: slot = FrameState::LayerTexSlot::Emissive;  break;
+                    case 4: slot = FrameState::LayerTexSlot::TeamColor; break;
+                    default: continue;                  // position 5+ (EnvMap) — no bind
+                }
+                FrameState::LayerTextureIdState lts;
+                lts.materialId = mi;
+                lts.layerIndex = li;
+                lts.slot       = slot;
+                lts.textureId  = (int)evalU32(sub.tracks, sub.textureId);
+                fs.layerTextureIds.push_back(lts);
+            }
         }
     }
 

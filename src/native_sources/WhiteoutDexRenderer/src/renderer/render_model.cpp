@@ -56,12 +56,31 @@ void RenderModel::ApplyLayerStates(const FrameState& state) {
         }
     }
 
-    // Per-layer texture ID animation (KMTF tracks)
+    // Per-layer texture ID animation (KMTF tracks). Reforged HD layers
+    // carry an independent KMTF track per subtexture slot, so route the
+    // animated id into the matching *MapId field by slot. Pre-Reforged
+    // layers always emit slot=Diffuse → updates `textureId` exactly as
+    // before.
     for (auto& lt : state.layerTextureIds) {
-        if (lt.materialId >= 0 && lt.materialId < (int)gpuMaterials.size()) {
-            auto& layers = gpuMaterials[lt.materialId].cpu.layers;
-            if (lt.layerIndex >= 0 && lt.layerIndex < (int)layers.size())
-                layers[lt.layerIndex].textureId = lt.textureId;
+        if (lt.materialId < 0 || lt.materialId >= (int)gpuMaterials.size()) continue;
+        auto& layers = gpuMaterials[lt.materialId].cpu.layers;
+        if (lt.layerIndex < 0 || lt.layerIndex >= (int)layers.size()) continue;
+        auto& L = layers[lt.layerIndex];
+        switch (lt.slot) {
+            case FrameState::LayerTexSlot::Diffuse:   L.textureId       = lt.textureId; break;
+            case FrameState::LayerTexSlot::Normal:    L.normalMapId     = lt.textureId; break;
+            case FrameState::LayerTexSlot::ORM:       L.ormMapId        = lt.textureId; break;
+            case FrameState::LayerTexSlot::Emissive:  L.emissiveMapId   = lt.textureId; break;
+            case FrameState::LayerTexSlot::TeamColor:
+                // Preserve the kHdTeamColorActive sentinel (-2): the layer
+                // is asking for the live UI swatch, not a per-frame texture
+                // id swap. KMTF on a TeamColor slot only makes sense when
+                // the artist authored real masks; in that case the static
+                // teamColorMapId was already set to the diffuse id by the
+                // adapter, and we overwrite with the animated value here.
+                if (L.teamColorMapId != kHdTeamColorActive)
+                    L.teamColorMapId = lt.textureId;
+                break;
         }
     }
 

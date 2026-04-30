@@ -387,11 +387,28 @@ struct FrameState {
     };
     std::vector<LayerAlphaState> layerAlphas;
 
-    // Per-layer animated texture ID (KMTF tracks)
+    // Per-layer animated texture ID (KMTF tracks). Reforged HD layers
+    // (v1200+) can carry an independent KMTF track per subtexture slot —
+    // animating the normal map, ORM, emissive, or team-colour mask
+    // separately from the diffuse — so each animated slot emits its
+    // own state. Classic v800-v1100 layers only animate diffuse and
+    // emit a single Diffuse-tagged entry, preserving the original
+    // behaviour. Slot numbering matches MDX `Layer::SlotType` so the
+    // adapter can `static_cast` directly. Anything beyond TeamColor
+    // (e.g. EnvironmentMap=5) currently has no rendered slot — those
+    // states are dropped at apply time, not at evaluate time.
+    enum class LayerTexSlot : uint8_t {
+        Diffuse   = 0,
+        Normal    = 1,
+        ORM       = 2,
+        Emissive  = 3,
+        TeamColor = 4,
+    };
     struct LayerTextureIdState {
-        int materialId;
-        int layerIndex;
-        int textureId;
+        int          materialId;
+        int          layerIndex;
+        LayerTexSlot slot       = LayerTexSlot::Diffuse;
+        int          textureId;
     };
     std::vector<LayerTextureIdState> layerTextureIds;
 
