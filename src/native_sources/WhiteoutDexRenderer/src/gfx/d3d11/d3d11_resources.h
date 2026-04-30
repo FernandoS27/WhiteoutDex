@@ -199,9 +199,15 @@ struct SwapChainEntry {
     // RTV-view DXGI format. May differ from the swap-chain resource format
     // when a sRGB variant was requested; CreateSwapChainViews uses this on
     // every CreateRenderTargetView call so writes are gamma-encoded.
-    DXGI_FORMAT        rtvDxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-    // The back-buffer texture handle in the texture slot-map
-    uint64_t           backBufferTexHandle = 0;
+    DXGI_FORMAT        rtvDxgiFormat       = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    // Linear (non-sRGB) format used by the second RTV view of the same
+    // back-buffer resource — see d3d12 swap-chain comment for rationale.
+    DXGI_FORMAT        rtvDxgiFormatLinear = DXGI_FORMAT_R8G8B8A8_UNORM;
+    // sRGB-encoding RTV proxy + non-sRGB linear RTV proxy. Both alias
+    // the same physical back-buffer resource; only the RTV format
+    // differs.
+    uint64_t           backBufferTexHandle       = 0;
+    uint64_t           backBufferTexHandleLinear = 0;
 
     void ReleaseBackBuffer() {
         SafeRelease(backBuffer);

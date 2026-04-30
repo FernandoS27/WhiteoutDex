@@ -1844,10 +1844,13 @@ bool RenderService::RenderParticlesBls() {
         rs.lightingEnabled= false;
         auto perm = bls::SelectPermutes(rs);
 
-        // Build + bind PSO.
-        const auto req = bls::MakePsoRequest(blsSdProgram_,
-                                             bls::VertexLayoutKind::ParticleSD,
-                                             mp, perm);
+        // Build + bind PSO. rtvFormat tracks the active scene target so
+        // SD frames (no HDR intermediate) and HD frames (R11G11B10F)
+        // each get a PSO baked for the right RTV format.
+        auto req = bls::MakePsoRequest(blsSdProgram_,
+                                       bls::VertexLayoutKind::ParticleSD,
+                                       mp, perm);
+        req.rtvFormat = SceneTargetFormat();
         auto pso = blsPsoBuilder_->GetOrBuild(req);
         if (pso == gfx::PipelineHandle::Invalid) continue;
         cmd->BindPipeline(pso);
@@ -1991,9 +1994,10 @@ bool RenderService::RenderSplatsBls() {
         rs.lightingEnabled = false;
         auto perm = bls::SelectPermutes(rs);
 
-        const auto req = bls::MakePsoRequest(blsSdProgram_,
-                                             bls::VertexLayoutKind::ParticleSD,
-                                             mp, perm);
+        auto req = bls::MakePsoRequest(blsSdProgram_,
+                                       bls::VertexLayoutKind::ParticleSD,
+                                       mp, perm);
+        req.rtvFormat = SceneTargetFormat();
         auto pso = blsPsoBuilder_->GetOrBuild(req);
         if (pso == gfx::PipelineHandle::Invalid) continue;
         cmd->BindPipeline(pso);
@@ -2143,9 +2147,10 @@ void RenderService::RenderRibbons() {
 
         bls::RenderState rs = bls::MakeSdMeshRenderState(mp, 0, /*unlit*/true, /*hasBones*/false);
         auto perm = bls::SelectPermutes(rs);
-        const auto req = bls::MakePsoRequest(blsSdProgram_,
-                                             bls::VertexLayoutKind::ParticleSD,
-                                             mp, perm);
+        auto req = bls::MakePsoRequest(blsSdProgram_,
+                                       bls::VertexLayoutKind::ParticleSD,
+                                       mp, perm);
+        req.rtvFormat = SceneTargetFormat();
         auto pso = blsPsoBuilder_->GetOrBuild(req);
         if (pso == gfx::PipelineHandle::Invalid) continue;
         cmd->BindPipeline(pso);
@@ -2471,11 +2476,12 @@ RenderTargetId RenderService::CreateSwapChainTarget(void* nativeWindowHandle, in
     target.swap  = gfx_->CreateSwapChain(nativeWindowHandle, w, h);
     if (target.swap == gfx::SwapChainHandle::Invalid) return 0;
 
-    target.color    = gfx_->GetSwapChainBackBuffer(target.swap);
-    target.hdrColor = gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
-    target.depth    = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
-    target.width    = w;
-    target.height   = h;
+    target.color       = gfx_->GetSwapChainBackBuffer(target.swap);
+    target.colorLinear = gfx_->GetSwapChainBackBufferLinear(target.swap);
+    target.hdrColor    = gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
+    target.depth       = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
+    target.width       = w;
+    target.height      = h;
 
     RenderTargetId id = target.id;
     targets_[id] = target;
@@ -2486,12 +2492,17 @@ RenderTargetId RenderService::CreateOffscreenTarget(int w, int h) {
     if (!gfx_) return 0;
 
     RenderTarget target;
-    target.id       = nextTargetId_++;
-    target.color    = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM);
-    target.hdrColor = gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
-    target.depth    = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
-    target.width    = w;
-    target.height   = h;
+    target.id          = nextTargetId_++;
+    target.color       = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM);
+    // Off-screen targets aren't sRGB-aware to begin with — `color`
+    // already stores raw bytes. The linear alias points at the same
+    // texture; SD draws hit it without the back-buffer swap-chain
+    // detour but still see the same RTV format.
+    target.colorLinear = target.color;
+    target.hdrColor    = gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
+    target.depth       = gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
+    target.width       = w;
+    target.height      = h;
 
     if (target.color == gfx::TextureHandle::Invalid) return 0;
 
@@ -2527,10 +2538,12 @@ void RenderService::ResizeRenderTarget(RenderTargetId id, int w, int h) {
 
     if (t.swap != gfx::SwapChainHandle::Invalid) {
         gfx_->ResizeSwapChain(t.swap, w, h);
-        t.color = gfx_->GetSwapChainBackBuffer(t.swap);
+        t.color       = gfx_->GetSwapChainBackBuffer(t.swap);
+        t.colorLinear = gfx_->GetSwapChainBackBufferLinear(t.swap);
     } else {
         gfx_->Destroy(t.color);
-        t.color = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM);
+        t.color       = gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM);
+        t.colorLinear = t.color;
     }
 
     t.hdrColor = gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
@@ -2558,7 +2571,8 @@ void RenderService::CleanupD3D() {
         // owns its own shader cache (released in ShutdownBlsShaders
         // above) and DebugRenderer owns viewcube.slang.
         gfx_->Destroy(lineVS_);  gfx_->Destroy(linePS_);
-        gfx_->Destroy(linePSO_);
+        gfx_->Destroy(linePSOHdr_);
+        gfx_->Destroy(linePSOSd_);
         gfx_->Destroy(tonemapPSO_);
         gfx_->Destroy(tonemapVB_);
         gfx_->Destroy(tonemapPsCb_);
@@ -2638,11 +2652,14 @@ bool RenderService::CreatePipelines() {
         {"COLOR",    0, Format::R32G32B32A32_FLOAT, 12},
     };
 
-    // Line PSO (grid, collision wireframes, light markers, ViewCube edges).
-    // Drawn into the HDR scene target alongside the mesh passes, so
-    // `rtvFormat` matches `kHdrSceneFormat` — the line color is just a
-    // float4 the PS writes verbatim, so ACES on the tonemap pass leaves
-    // it visually identical.
+    // Line PSO (grid, collision wireframes, light markers, ViewCube
+    // edges). Built once for each scene-target format because D3D12
+    // PSOs bind to a specific RTV format — `kHdrSceneFormat` for the
+    // HD path (drawn into target.hdrColor before tonemap) and
+    // `kSdSceneFormat` for the SD path (drawn straight into the LDR
+    // back-buffer, no tonemap). The line PS writes the colour verbatim
+    // so the visual result is identical between the two; we just need
+    // a PSO whose RTV format matches the bound render target.
     GraphicsPipelineDesc desc;
     desc.vs          = lineVS_;
     desc.ps          = linePS_;
@@ -2652,13 +2669,22 @@ bool RenderService::CreatePipelines() {
     desc.depthStencil = {};  // defaults: test+write, LessEqual
     desc.rasterizer.cull     = CullMode::None;
     desc.rasterizer.frontCCW = true;
-    desc.rtvFormat   = kHdrSceneFormat;
-    linePSO_ = gfx_->CreateGraphicsPipeline(desc);
+
+    desc.rtvFormat = kHdrSceneFormat;
+    linePSOHdr_    = gfx_->CreateGraphicsPipeline(desc);
+
+    desc.rtvFormat = kSdSceneFormat;
+    linePSOSd_     = gfx_->CreateGraphicsPipeline(desc);
 
     // The tonemap PSO is built in InitBlsShaders — it can't be built
     // here because its PS comes from the BLS shader cache, and
     // InitBlsShaders runs *after* CreatePipelines in InitDevice.
-    return linePSO_ != PipelineHandle::Invalid;
+    return linePSOHdr_ != PipelineHandle::Invalid
+        && linePSOSd_  != PipelineHandle::Invalid;
+}
+
+gfx::PipelineHandle RenderService::CurrentLinePSO() const {
+    return renderMode_ == RenderMode::HD ? linePSOHdr_ : linePSOSd_;
 }
 
 // ============================================================================
@@ -2710,32 +2736,89 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     }
 
     auto* cmd = gfx_->GetImmediateContext();
-    // 3D pass: render every mesh / particle / ribbon / debug overlay into
-    // the linear-HDR scene target. The tonemap pass at the end of this
-    // function samples it and writes the LDR back-buffer. The BLS PSOs
-    // are baked for RGBA16F so the HDR target is the only valid sink for
-    // 3D draws — if tonemap.bls failed to load we'd have already bailed
-    // out of InitBlsShaders.
-    // Scene clear written into the R11G11B10F HDR target, then ACES +
-    // sRGB-encoded at tonemap time. The user picks an sRGB colour via
-    // the toolbar background-color picker (default ≈ dark cool gray);
-    // we convert sRGB→linear here so the post-tonemap pixel matches
-    // the picked swatch closely (small sRGB values fall in the linear
-    // ramp and survive ACES with minimal compression).
+    // 3D pass: render every mesh / particle / ribbon / debug overlay
+    // into the active scene target.
+    //   * HD mode → target.hdrColor (R11G11B10F linear-HDR), then a
+    //     fullscreen ACES tonemap resolves to target.color (LDR).
+    //   * SD mode → target.color (R8G8B8A8_UNORM) directly. WC3's
+    //     classic SD pipeline never had HDR — its layer outputs are
+    //     already display-ready, so we skip the tonemap pass and pay
+    //     no precision loss in that path.
+    // The PSO builder hashes rtvFormat into its cache key, so per-mode
+    // switches automatically produce distinct PSOs on first use.
+    const bool useHdr = (renderMode_ == RenderMode::HD);
+    // SD picks the LINEAR (non-sRGB) RTV view of the back-buffer so
+    // display-ready bytes from the SD shader land verbatim in memory
+    // — `colorLinear` aliases the same physical resource as `color`,
+    // only the RTV format differs. HD's tonemap output still targets
+    // `color` (sRGB-encoding RTV).
+    const gfx::TextureHandle sceneTarget = useHdr ? target.hdrColor : target.colorLinear;
+
+    // Clear colour. The user picks sRGB bytes via the Background swatch.
+    // We want both pipelines to display the *exact* picked byte:
+    //
+    //   * SD writes the picked byte straight through to the LDR target
+    //     (no tonemap, no encoding) — that side is trivially exact.
+    //
+    //   * HD's clear lands in the R11G11B10F intermediate, then ACES +
+    //     exposure scales every pixel before the sRGB-aware tonemap
+    //     output encodes it back to bytes. ACES isn't identity even
+    //     for small linear values, and exposure ≠ 1 amplifies the
+    //     mismatch. To make HD's post-tonemap pixel match the picker
+    //     byte, we pre-bias the clear by inverse-ACES (and divide by
+    //     exposure) so:
+    //
+    //         finalByte = sRGBEncode(ACES(clear * exposure))
+    //                   = sRGBEncode(ACES(ACES⁻¹(linear) / exposure * exposure))
+    //                   = sRGBEncode(linear)
+    //                   = pickerByte.
     auto srgbByteToLinear = [](uint8_t b) {
-        // Standard piecewise sRGB EOTF.
         const float f = b / 255.0f;
         return (f <= 0.04045f) ? (f / 12.92f)
                                : std::pow((f + 0.055f) / 1.055f, 2.4f);
     };
+    // Inverse Narkowicz ACES filmic. Solves
+    //   y = (x*(2.51x + 0.03)) / (x*(2.43x + 0.59) + 0.14)
+    // for x. Quadratic with A = 2.43y - 2.51 (negative for y < ~1.033),
+    // so the non-negative root is (-B - sqrt(B² - 4AC)) / (2A).
+    auto acesInverse = [](float y) {
+        if (y <= 0.0f) return 0.0f;
+        if (y >= 1.0f) y = 0.9999f;            // saturation singularity guard
+        const float A = 2.43f * y - 2.51f;
+        const float B = 0.59f * y - 0.03f;
+        const float C = 0.14f * y;
+        if (std::abs(A) < 1e-6f) {
+            return (std::abs(B) > 1e-6f) ? -C / B : 0.0f;
+        }
+        const float disc = B * B - 4.0f * A * C;
+        if (disc < 0.0f) return 0.0f;
+        const float r = std::sqrt(disc);
+        const float x = (-B - r) / (2.0f * A);
+        return x > 0.0f ? x : 0.0f;
+    };
     const uint32_t bg = backgroundColor_.load();
+    const uint8_t  rB = static_cast<uint8_t>(bg        & 0xFF);
+    const uint8_t  gB = static_cast<uint8_t>((bg >> 8) & 0xFF);
+    const uint8_t  bB = static_cast<uint8_t>((bg >> 16) & 0xFF);
+    auto hdrClear = [&](uint8_t byte) {
+        const float linTarget = srgbByteToLinear(byte);   // what we want post-ACES
+        const float invExp    = (tonemapExposure_ > 1e-6f)
+                                ? 1.0f / tonemapExposure_ : 1.0f;
+        return acesInverse(linTarget) * invExp;
+    };
+    // SD targets the LINEAR (non-sRGB) RTV view of the swap-chain — no
+    // hardware encode on store. The bytes we write end up verbatim in
+    // memory, exactly matching what the user picked.
+    auto sdClear = [&](uint8_t byte) {
+        return byte / 255.0f;
+    };
     float clearColor[4] = {
-        srgbByteToLinear((uint8_t)(bg        & 0xFF)),  // R
-        srgbByteToLinear((uint8_t)((bg >> 8) & 0xFF)),  // G
-        srgbByteToLinear((uint8_t)((bg >> 16) & 0xFF)), // B
+        useHdr ? hdrClear(rB) : sdClear(rB),
+        useHdr ? hdrClear(gB) : sdClear(gB),
+        useHdr ? hdrClear(bB) : sdClear(bB),
         1.0f,
     };
-    cmd->BeginRenderPass(target.hdrColor, target.depth, clearColor, 1.0f, 0);
+    cmd->BeginRenderPass(sceneTarget, target.depth, clearColor, 1.0f, 0);
     cmd->SetViewport({0, 0, (float)target.width, (float)target.height, 0, 1});
 
     Matrix44f view, proj;
@@ -2778,8 +2861,9 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
     debug_->RenderViewCube();
     cmd->EndRenderPass();
 
-    // Tonemap pass: HDR scene → LDR back-buffer.
-    RunTonemapPass(target);
+    // Tonemap pass: HDR scene → LDR back-buffer. SD mode already wrote
+    // straight to the back-buffer above, so there's nothing to resolve.
+    if (useHdr) RunTonemapPass(target);
 }
 
 void RenderService::RunTonemapPass(const RenderTarget& target) {
@@ -2947,9 +3031,14 @@ public:
 
             const auto rsLocal   = bls::MakeSdMeshRenderState(matParams, job.activeN, job.unlit, hasBones);
             const auto permLocal = bls::SelectPermutes(rsLocal);
-            const auto reqLocal  = bls::MakePsoRequest(rs_.blsSdProgram_,
+            auto reqLocal        = bls::MakePsoRequest(rs_.blsSdProgram_,
                                                        layout,
                                                        matParams, permLocal);
+            // SD mesh draws into the active scene target. SD mode skips
+            // the HDR intermediate entirely (no tonemap pass), so the
+            // PSO's RTV format must match whichever target the frame is
+            // bound to.
+            reqLocal.rtvFormat = rs_.SceneTargetFormat();
             auto pso = rs_.blsPsoBuilder_->GetOrBuild(reqLocal);
             if (pso == gfx::PipelineHandle::Invalid) return;
             cmd->BindPipeline(pso);

@@ -186,6 +186,22 @@ public:
     // draws keep sampling something valid.
     void SetEnvProbe(const std::string& relPath);
 
+    // Format / texture used as the colour render target for the active
+    // render mode. HD goes through `target.hdrColor` (R11G11B10F) and is
+    // ACES-tonemapped onto `target.color` afterwards; SD writes directly
+    // to `target.color` (R8G8B8A8_UNORM) and skips the tonemap pass.
+    // The PSO builder hashes rtvFormat into its cache key so per-mode
+    // switches transparently produce distinct PSOs on first use.
+    gfx::Format         SceneTargetFormat() const {
+        return renderMode_ == RenderMode::HD ? kHdrSceneFormat : kSdSceneFormat;
+    }
+
+    // Pick the static line PSO matching the current scene target. Used
+    // by DebugRenderer's grid / wireframe / viewcube outline draws, and
+    // by anything else that wants to draw line lists into the scene RT
+    // without going through the BLS PSO cache.
+    gfx::PipelineHandle CurrentLinePSO() const;
+
     // Tonemap exposure — pre-ACES multiplier the engine uploads at PS b1
     // (CGxDevice::ApplyTonemap @0x7ff609aff760 → tonemapPsCB1.exposure).
     // Larger = brighter image, smaller = darker. Engine default is 1.0;
@@ -516,7 +532,12 @@ private:
     gfx::ShaderHandle linePS_     = gfx::ShaderHandle::Invalid;
 
     // ---- GFX Pipelines ----
-    gfx::PipelineHandle linePSO_     = gfx::PipelineHandle::Invalid;
+    // Two line PSO variants — D3D12 PSOs are baked against a specific
+    // RTV format, so we keep one per scene-target format and pick the
+    // matching one each frame via CurrentLinePSO(). Both are built at
+    // device init; switching render modes never has to rebuild them.
+    gfx::PipelineHandle linePSOHdr_  = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle linePSOSd_   = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle tonemapPSO_  = gfx::PipelineHandle::Invalid;
 
     // ---- GFX Resources ----
@@ -619,6 +640,13 @@ private:
     //   "negative-clamped to zero" invariant the tonemap was designed
     //   against.
     static constexpr gfx::Format kHdrSceneFormat = gfx::Format::R11G11B10_FLOAT;
+
+    // SD pipeline renders straight to the LDR back-buffer (no HDR
+    // intermediate, no tonemap). Engine-faithful: classic SD outputs
+    // are display-ready sRGB-encoded bytes, so the RTV view must be
+    // non-sRGB (no hardware re-encode) — `target.colorLinear` holds
+    // that aliased view of the swap-chain resource.
+    static constexpr gfx::Format kSdSceneFormat  = gfx::Format::R8G8B8A8_UNORM;
     bls::BlsShader*         blsSpriteVs_     = nullptr; // shared fullscreen VS (Sprite.bls)
     bls::BlsShader*         blsTonemapPs_    = nullptr;
     gfx::BufferHandle       tonemapVB_       = gfx::BufferHandle::Invalid; // 3 verts: clip-space pos + uv

@@ -50,17 +50,20 @@ struct DisplayFlags {
 struct RenderTarget {
     RenderTargetId        id     = 0;
     gfx::SwapChainHandle  swap   = gfx::SwapChainHandle::Invalid;   // Invalid = offscreen
-    // LDR final target. For swap-chain targets this aliases the back-buffer
-    // (recreated by ResizeRenderTarget after each ResizeSwapChain); for
-    // off-screen targets it's owned R8G8B8A8_UNORM. The tonemap pass writes
-    // here at the end of every RenderFrame.
+    // LDR final target with the sRGB-encoding RTV view. HD's tonemap
+    // pass writes linear values here; hardware encodes linear → sRGB
+    // on store. Aliases the back-buffer for swap-chain targets.
     gfx::TextureHandle    color  = gfx::TextureHandle::Invalid;
-    // Linear-HDR scene target. All 3D mesh / particle / ribbon / debug
-    // draws render into this; the tonemap pass then samples it at t0
-    // and writes the LDR result to `color`. RGBA16F gives the HD lighting
-    // pass real headroom (Blizzard's CGxDevRenderer::CreateMainTarget
-    // does the same — without this the HD pixel shader's filmic exposure
-    // saturates against the [0,1] cap of the 8-bit back-buffer).
+    // Linear (non-sRGB) RTV view of the SAME physical resource as
+    // `color`. SD rendering writes display-ready sRGB-byte outputs
+    // here so they're stored verbatim — no hardware re-encode, no
+    // double gamma. Both RTVs sit on the same back-buffer; only the
+    // view format differs. See gfx::IGFXDevice::GetSwapChainBackBuffer
+    // / GetSwapChainBackBufferLinear.
+    gfx::TextureHandle    colorLinear = gfx::TextureHandle::Invalid;
+    // Linear-HDR scene target. All HD-mode 3D draws render here; the
+    // tonemap pass samples it at t0 and writes ACES-encoded results
+    // to `color`. RGBA16F gives the HD lighting pass real headroom.
     gfx::TextureHandle    hdrColor = gfx::TextureHandle::Invalid;
     gfx::TextureHandle    depth  = gfx::TextureHandle::Invalid;
     int                   width  = 0;

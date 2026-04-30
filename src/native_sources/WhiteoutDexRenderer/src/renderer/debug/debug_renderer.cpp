@@ -40,7 +40,8 @@ void DebugRenderer::DestroyResources() {
     // ViewCube atlas lifetime owned by TextureAssetManager.
     if (rs_.textures_) rs_.textures_->ReleaseOwned(kViewCubeFaceTexName);
     vcFaceTex_   = gfx::TextureHandle::Invalid;
-    rs_.gfx_->Destroy(viewCubePSO_);   viewCubePSO_ = gfx::PipelineHandle::Invalid;
+    rs_.gfx_->Destroy(viewCubePSOHdr_); viewCubePSOHdr_ = gfx::PipelineHandle::Invalid;
+    rs_.gfx_->Destroy(viewCubePSOSd_);  viewCubePSOSd_  = gfx::PipelineHandle::Invalid;
     rs_.gfx_->Destroy(viewCubeVS_);    viewCubeVS_  = gfx::ShaderHandle::Invalid;
     rs_.gfx_->Destroy(viewCubePS_);    viewCubePS_  = gfx::ShaderHandle::Invalid;
     gridVertCount_ = 0;
@@ -204,17 +205,22 @@ bool DebugRenderer::CreateViewCubeResources() {
     // (None so the cube is drawable from any angle) and the CCW convention.
     vcDesc.rasterizer.cull     = gfx::CullMode::None;
     vcDesc.rasterizer.frontCCW = true;
-    // ViewCube draws into the HDR scene target (alongside the mesh /
-    // particle passes); the tonemap pass resolves the whole frame to
-    // LDR. Color values are well under 1.0 so ACES is approximately
-    // identity for the cube faces.
+    // ViewCube draws into the active scene target — the HD path uses
+    // the HDR R11G11B10F intermediate (tonemapped to LDR afterwards),
+    // the SD path writes straight to the R8G8B8A8 back-buffer with no
+    // tonemap. Build a PSO for each format; RenderViewCube picks the
+    // matching one from rs_.renderMode_.
     vcDesc.rtvFormat = RenderService::kHdrSceneFormat;
-    viewCubePSO_ = rs_.gfx_->CreateGraphicsPipeline(vcDesc);
+    viewCubePSOHdr_  = rs_.gfx_->CreateGraphicsPipeline(vcDesc);
 
-    return vcCubeVB_    != gfx::BufferHandle::Invalid &&
-           vcCubeIB_    != gfx::BufferHandle::Invalid &&
-           vcOutlineVB_ != gfx::BufferHandle::Invalid &&
-           viewCubePSO_ != gfx::PipelineHandle::Invalid;
+    vcDesc.rtvFormat = RenderService::kSdSceneFormat;
+    viewCubePSOSd_   = rs_.gfx_->CreateGraphicsPipeline(vcDesc);
+
+    return vcCubeVB_       != gfx::BufferHandle::Invalid &&
+           vcCubeIB_       != gfx::BufferHandle::Invalid &&
+           vcOutlineVB_    != gfx::BufferHandle::Invalid &&
+           viewCubePSOHdr_ != gfx::PipelineHandle::Invalid &&
+           viewCubePSOSd_  != gfx::PipelineHandle::Invalid;
 }
 
 // ============================================================================
@@ -224,7 +230,7 @@ bool DebugRenderer::CreateViewCubeResources() {
 void DebugRenderer::RenderGrid() {
     if (gridVB_ == gfx::BufferHandle::Invalid) return;
     auto* cmd = rs_.gfx_->GetImmediateContext();
-    cmd->BindPipeline(rs_.linePSO_);
+    cmd->BindPipeline(rs_.CurrentLinePSO());
     cmd->BindVertexBuffer(0, gridVB_, sizeof(LineVertex));
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.cbPerFrame_);
     cmd->Draw(gridVertCount_, 0);
@@ -248,7 +254,7 @@ void DebugRenderer::RenderCollisions() {
     }
 
     auto* cmd = rs_.gfx_->GetImmediateContext();
-    cmd->BindPipeline(rs_.linePSO_);
+    cmd->BindPipeline(rs_.CurrentLinePSO());
 
     struct LV { Vector3f pos; Vector4f col; };
     Vector4f col = {0.0f, 1.0f, 0.3f, 1.0f};
@@ -392,7 +398,7 @@ void DebugRenderer::RenderLightMarkers() {
     }
 
     auto* cmd = rs_.gfx_->GetImmediateContext();
-    cmd->BindPipeline(rs_.linePSO_);
+    cmd->BindPipeline(rs_.CurrentLinePSO());
 
     struct LV { Vector3f pos; Vector4f col; };
     std::vector<LV> verts;
@@ -501,7 +507,11 @@ void DebugRenderer::RenderViewCube() {
         render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
     }
 
-    cmd->BindPipeline(viewCubePSO_);
+    // Pick the PSO whose RTV format matches the scene target the
+    // ViewCube is being drawn into (HDR for HD mode, LDR for SD).
+    const auto vcPso = (rs_.renderMode_ == RenderMode::HD)
+                       ? viewCubePSOHdr_ : viewCubePSOSd_;
+    cmd->BindPipeline(vcPso);
     cmd->BindVertexBuffer(0, vcCubeVB_, sizeof(Vertex));
     cmd->BindIndexBuffer(vcCubeIB_, gfx::Format::R32_UINT);
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.cbPerFrame_);
@@ -513,7 +523,7 @@ void DebugRenderer::RenderViewCube() {
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, rs_.textures_->GetDefaults().White);
     cmd->DrawIndexed(36, 0, 0);
 
-    cmd->BindPipeline(rs_.linePSO_);
+    cmd->BindPipeline(rs_.CurrentLinePSO());
     cmd->BindVertexBuffer(0, vcOutlineVB_, sizeof(LineVertex));
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.cbPerFrame_);
     cmd->Draw(24, 0);

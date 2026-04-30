@@ -519,6 +519,15 @@ SwapChainHandle D3D11Device::CreateSwapChain(void* nativeWindowHandle,
     // sRGB-encoded RTV format on the entry so any view recreated by
     // ResizeSwapChain ends up gamma-encoding on write.
     DXGI_FORMAT rtvDxgi = ToDXGI(colorFormat);
+    // Strip the sRGB suffix (if any) to get the matching linear-RTV
+    // format. SD writes through this view so display-ready bytes are
+    // stored verbatim — see CreateSwapChain comment in d3d12_device.
+    DXGI_FORMAT rtvDxgiLinear = rtvDxgi;
+    switch (rtvDxgi) {
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: rtvDxgiLinear = DXGI_FORMAT_R8G8B8A8_UNORM; break;
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: rtvDxgiLinear = DXGI_FORMAT_B8G8R8A8_UNORM; break;
+        default: break;
+    }
 
     DXGI_SWAP_CHAIN_DESC scd{};
     scd.BufferCount       = 1;
@@ -531,7 +540,8 @@ SwapChainHandle D3D11Device::CreateSwapChain(void* nativeWindowHandle,
     scd.Windowed          = TRUE;
 
     SwapChainEntry entry{};
-    entry.rtvDxgiFormat = rtvDxgi;
+    entry.rtvDxgiFormat       = rtvDxgi;
+    entry.rtvDxgiFormatLinear = rtvDxgiLinear;
     HRESULT hr = factory_->CreateSwapChain(device_, &scd, &entry.swapChain);
     if (FAILED(hr)) return SwapChainHandle::Invalid;
 
@@ -545,23 +555,29 @@ SwapChainHandle D3D11Device::CreateSwapChain(void* nativeWindowHandle,
 
 void D3D11Device::CreateSwapChainViews(SwapChainEntry& sc) {
     sc.ReleaseBackBuffer();
-    // Also remove old texture entry if it exists
-    if (sc.backBufferTexHandle != 0) {
-        auto* te = textures_.Get(sc.backBufferTexHandle);
-        if (te) {
-            // Only release the RTV — the texture itself is owned by the swap chain
+    // Drop both old proxy entries if present.
+    auto dropProxy = [&](uint64_t& h) {
+        if (h == 0) return;
+        if (auto* te = textures_.Get(h)) {
             SafeRelease(te->rtv);
             SafeRelease(te->srv);
-            te->tex = nullptr;  // don't release — owned by swap chain
+            te->tex = nullptr;   // owned by swap chain
         }
-        textures_.Remove(sc.backBufferTexHandle);
-        sc.backBufferTexHandle = 0;
-    }
+        textures_.Remove(h);
+        h = 0;
+    };
+    dropProxy(sc.backBufferTexHandle);
+    dropProxy(sc.backBufferTexHandleLinear);
 
     sc.swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D),
                             reinterpret_cast<void**>(&sc.backBuffer));
-    if (sc.backBuffer)
-        sc.backBufferTexHandle = static_cast<uint64_t>(RegisterBackBuffer(sc.backBuffer, sc.rtvDxgiFormat));
+    if (sc.backBuffer) {
+        // Two RTV views on the same physical back-buffer resource —
+        // sRGB-encoding for HD's tonemap output, plain UNORM for SD's
+        // direct draws. Both proxies AddRef the same ID3D11Texture2D.
+        sc.backBufferTexHandle       = static_cast<uint64_t>(RegisterBackBuffer(sc.backBuffer, sc.rtvDxgiFormat));
+        sc.backBufferTexHandleLinear = static_cast<uint64_t>(RegisterBackBuffer(sc.backBuffer, sc.rtvDxgiFormatLinear));
+    }
 }
 
 TextureHandle D3D11Device::RegisterBackBuffer(ID3D11Texture2D* bb, DXGI_FORMAT rtvFormat) {
@@ -592,17 +608,21 @@ void D3D11Device::ResizeSwapChain(SwapChainHandle h, int width, int height) {
     // Unbind render targets before resize to release back buffer references
     context_->OMSetRenderTargets(0, nullptr, nullptr);
 
-    // Must release all references before resize
-    if (sc->backBufferTexHandle != 0) {
-        auto* te = textures_.Get(sc->backBufferTexHandle);
-        if (te) {
+    // Must release all references before resize. CreateSwapChainViews
+    // re-acquires both proxies after ResizeBuffers; here we just drop
+    // them so the resource refcount reaches zero.
+    auto dropProxy = [&](uint64_t& h) {
+        if (h == 0) return;
+        if (auto* te = textures_.Get(h)) {
             SafeRelease(te->rtv);
             SafeRelease(te->srv);
             te->tex = nullptr;
         }
-        textures_.Remove(sc->backBufferTexHandle);
-        sc->backBufferTexHandle = 0;
-    }
+        textures_.Remove(h);
+        h = 0;
+    };
+    dropProxy(sc->backBufferTexHandle);
+    dropProxy(sc->backBufferTexHandleLinear);
     sc->ReleaseBackBuffer();
 
     sc->swapChain->ResizeBuffers(0, static_cast<UINT>(width), static_cast<UINT>(height),
@@ -614,15 +634,17 @@ void D3D11Device::DestroySwapChain(SwapChainHandle h) {
     if (h == SwapChainHandle::Invalid) return;
     auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
     if (sc) {
-        if (sc->backBufferTexHandle != 0) {
-            auto* te = textures_.Get(sc->backBufferTexHandle);
-            if (te) {
+        auto dropProxy = [&](uint64_t handle) {
+            if (handle == 0) return;
+            if (auto* te = textures_.Get(handle)) {
                 SafeRelease(te->rtv);
                 SafeRelease(te->srv);
                 te->tex = nullptr;
             }
-            textures_.Remove(sc->backBufferTexHandle);
-        }
+            textures_.Remove(handle);
+        };
+        dropProxy(sc->backBufferTexHandle);
+        dropProxy(sc->backBufferTexHandleLinear);
         sc->Release();
     }
     swapChains_.Remove(static_cast<uint64_t>(h));
@@ -638,6 +660,12 @@ TextureHandle D3D11Device::GetSwapChainBackBuffer(SwapChainHandle h) {
     auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
     if (!sc) return TextureHandle::Invalid;
     return static_cast<TextureHandle>(sc->backBufferTexHandle);
+}
+
+TextureHandle D3D11Device::GetSwapChainBackBufferLinear(SwapChainHandle h) {
+    auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
+    if (!sc) return TextureHandle::Invalid;
+    return static_cast<TextureHandle>(sc->backBufferTexHandleLinear);
 }
 
 // ============================================================================

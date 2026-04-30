@@ -118,7 +118,11 @@ private:
     // other code in the renderer should ever reach for these.
     gfx::ShaderHandle   viewCubeVS_  = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle   viewCubePS_  = gfx::ShaderHandle::Invalid;
-    gfx::PipelineHandle viewCubePSO_ = gfx::PipelineHandle::Invalid;
+    // Two PSOs — one for the HD scene target (R11G11B10F) and one for
+    // the LDR back-buffer (R8G8B8A8_UNORM); RenderViewCube picks the
+    // one matching the current renderMode_.
+    gfx::PipelineHandle viewCubePSOHdr_ = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle viewCubePSOSd_  = gfx::PipelineHandle::Invalid;
     bool                vcHovered_   = false;
 };
 

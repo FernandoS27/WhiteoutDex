@@ -1088,29 +1088,49 @@ SwapChainHandle D3D12Device::CreateSwapChain(void* nativeWindowHandle,
 
     factory_->MakeWindowAssociation(entry.hwnd, DXGI_MWA_NO_ALT_ENTER);
 
-    // Cache the sRGB RTV format so resize re-creates RTVs with the same
-    // gamma-encoding behaviour.
-    entry.rtvDxgiFormat = rtvDxgi;
+    // Cache both RTV format variants so resize re-creates RTVs with the
+    // same encoding behaviours.
+    entry.rtvDxgiFormat       = rtvDxgi;        // sRGB (or whatever caller asked for)
+    entry.rtvDxgiFormatLinear = resourceDxgi;   // always non-sRGB equivalent
 
-    // Pre-allocate the proxy texture slot (contents populated by RefreshProxyTexture).
+    // Pre-allocate two proxy texture slots — one for each RTV view of
+    // the same back-buffer resource. Renderer uses the sRGB proxy for
+    // HD's tonemap output (hardware encodes), and the linear proxy for
+    // SD's direct draws (display-ready bytes stored verbatim).
     TextureEntry proxy{};
     proxy.ownsResource = false;
     proxy.desc.width  = width;
     proxy.desc.height = height;
     proxy.desc.format = colorFormat;
     proxy.desc.usage  = TextureUsage::RenderTarget;
-    entry.proxyTexHandle = textures_.Insert(std::move(proxy));
+    entry.proxyTexHandle = textures_.Insert(TextureEntry(proxy));
 
-    // Acquire per-buffer resources + RTVs. We pass an explicit RTV desc so
-    // the view's format is the *sRGB* variant even though the resource is
-    // linear — gives us hardware linear→sRGB encoding on every write.
+    TextureEntry proxyLinear = proxy;
+    // Translate the linear DXGI back to the gfx Format for the proxy's
+    // metadata. Currently only the two RGBA8 variants strip; everything
+    // else passes through unchanged.
+    if (colorFormat == Format::R8G8B8A8_UNORM_SRGB)
+        proxyLinear.desc.format = Format::R8G8B8A8_UNORM;
+    // (B8G8R8A8_UNORM_SRGB isn't in the gfx::Format enum yet; if it's
+    // ever added the strip-suffix branch above already handles the
+    // DXGI side, mirror it here.)
+    entry.proxyTexHandleLinear = textures_.Insert(std::move(proxyLinear));
+
+    // Acquire per-buffer resources + both RTVs. The sRGB-format RTV
+    // engages hardware encoding; the linear-format RTV stores writes
+    // verbatim. Both alias the same DXGI back-buffer resource.
     D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
-    rtvDesc.Format        = rtvDxgi;
     rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     for (UINT i = 0; i < kFramesInFlight; ++i) {
         entry.swapChain->GetBuffer(i, IID_PPV_ARGS(&entry.backBuffers[i]));
-        entry.backBufferRtvs[i] = rtvPool_.Allocate();
+
+        rtvDesc.Format            = rtvDxgi;
+        entry.backBufferRtvs[i]   = rtvPool_.Allocate();
         device_->CreateRenderTargetView(entry.backBuffers[i], &rtvDesc, entry.backBufferRtvs[i]);
+
+        rtvDesc.Format                  = entry.rtvDxgiFormatLinear;
+        entry.backBufferRtvsLinear[i]   = rtvPool_.Allocate();
+        device_->CreateRenderTargetView(entry.backBuffers[i], &rtvDesc, entry.backBufferRtvsLinear[i]);
     }
 
     entry.currentBackBufferIndex = entry.swapChain->GetCurrentBackBufferIndex();
@@ -1121,14 +1141,23 @@ SwapChainHandle D3D12Device::CreateSwapChain(void* nativeWindowHandle,
 }
 
 void D3D12Device::RefreshProxyTexture(SwapChainEntry& sc) {
-    auto* proxy = textures_.Get(sc.proxyTexHandle);
-    if (!proxy) return;
-    UINT idx          = sc.currentBackBufferIndex;
-    proxy->resource   = sc.backBuffers[idx];
-    proxy->rtvCpu     = sc.backBufferRtvs[idx];
-    proxy->hasRtv     = true;
-    // After Present, DXGI puts the newly-acquired back buffer in PRESENT state.
-    proxy->currentState = D3D12_RESOURCE_STATE_PRESENT;
+    UINT idx = sc.currentBackBufferIndex;
+    if (auto* proxy = textures_.Get(sc.proxyTexHandle)) {
+        proxy->resource     = sc.backBuffers[idx];
+        proxy->rtvCpu       = sc.backBufferRtvs[idx];
+        proxy->hasRtv       = true;
+        // After Present, DXGI puts the newly-acquired back buffer in PRESENT state.
+        proxy->currentState = D3D12_RESOURCE_STATE_PRESENT;
+    }
+    // Linear proxy aliases the same underlying resource — share state so
+    // the command list's ResourceBarrier tracking on either handle
+    // tracks the back buffer correctly.
+    if (auto* proxy = textures_.Get(sc.proxyTexHandleLinear)) {
+        proxy->resource     = sc.backBuffers[idx];
+        proxy->rtvCpu       = sc.backBufferRtvsLinear[idx];
+        proxy->hasRtv       = true;
+        proxy->currentState = D3D12_RESOURCE_STATE_PRESENT;
+    }
 }
 
 void D3D12Device::ResizeSwapChain(SwapChainHandle h, int width, int height) {
@@ -1137,11 +1166,15 @@ void D3D12Device::ResizeSwapChain(SwapChainHandle h, int width, int height) {
 
     FlushGpu();
 
-    // Detach proxy, release back buffers, resize, re-acquire.
+    // Detach both proxies, release back buffers, resize, re-acquire.
     auto* proxy = textures_.Get(sc->proxyTexHandle);
     if (proxy) {
         proxy->resource = nullptr;
         proxy->hasRtv   = false;
+    }
+    if (auto* lp = textures_.Get(sc->proxyTexHandleLinear)) {
+        lp->resource = nullptr;
+        lp->hasRtv   = false;
     }
     sc->ReleaseBackBuffers();
 
@@ -1152,11 +1185,13 @@ void D3D12Device::ResizeSwapChain(SwapChainHandle h, int width, int height) {
     if (FAILED(hr)) return;
 
     D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
-    rtvDesc.Format        = sc->rtvDxgiFormat;
     rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     for (UINT i = 0; i < kFramesInFlight; ++i) {
         sc->swapChain->GetBuffer(i, IID_PPV_ARGS(&sc->backBuffers[i]));
+        rtvDesc.Format = sc->rtvDxgiFormat;
         device_->CreateRenderTargetView(sc->backBuffers[i], &rtvDesc, sc->backBufferRtvs[i]);
+        rtvDesc.Format = sc->rtvDxgiFormatLinear;
+        device_->CreateRenderTargetView(sc->backBuffers[i], &rtvDesc, sc->backBufferRtvsLinear[i]);
     }
     sc->currentBackBufferIndex = sc->swapChain->GetCurrentBackBufferIndex();
 
@@ -1178,9 +1213,16 @@ void D3D12Device::DestroySwapChain(SwapChainHandle h) {
     auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
     if (sc) {
         FlushGpu();
-        auto* proxy = textures_.Get(sc->proxyTexHandle);
-        if (proxy) { proxy->resource = nullptr; proxy->hasRtv = false; }
+        if (auto* proxy = textures_.Get(sc->proxyTexHandle)) {
+            proxy->resource = nullptr;
+            proxy->hasRtv   = false;
+        }
+        if (auto* proxy = textures_.Get(sc->proxyTexHandleLinear)) {
+            proxy->resource = nullptr;
+            proxy->hasRtv   = false;
+        }
         textures_.Remove(sc->proxyTexHandle);
+        textures_.Remove(sc->proxyTexHandleLinear);
         sc->Release();
     }
     swapChains_.Remove(static_cast<uint64_t>(h));
@@ -1259,6 +1301,12 @@ TextureHandle D3D12Device::GetSwapChainBackBuffer(SwapChainHandle h) {
     auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
     if (!sc) return TextureHandle::Invalid;
     return static_cast<TextureHandle>(sc->proxyTexHandle);
+}
+
+TextureHandle D3D12Device::GetSwapChainBackBufferLinear(SwapChainHandle h) {
+    auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
+    if (!sc) return TextureHandle::Invalid;
+    return static_cast<TextureHandle>(sc->proxyTexHandleLinear);
 }
 
 // ============================================================================

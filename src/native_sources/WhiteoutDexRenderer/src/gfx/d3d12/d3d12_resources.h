@@ -260,13 +260,27 @@ struct SwapChainEntry {
     UINT                                      currentBackBufferIndex = 0;
 
     // One real back-buffer resource per swap-chain buffer.
-    std::array<ID3D12Resource*,           kFramesInFlight> backBuffers{};
+    std::array<ID3D12Resource*,             kFramesInFlight> backBuffers{};
+    // sRGB-encoding RTV (rtvDxgiFormat above — usually `_UNORM_SRGB`).
+    // Hardware encodes linear → sRGB on write; the HD tonemap output
+    // targets these.
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kFramesInFlight> backBufferRtvs{};
+    // Linear (raw UNORM) RTV view of the same back-buffer resource. SD
+    // draws target these so display-ready sRGB-byte outputs land
+    // verbatim in memory (no hardware re-encode). Same lifetime as the
+    // sRGB RTVs — both come from rtvPool_ and are freed via FreeAll on
+    // ReleaseBackBuffers / DestroySwapChain.
+    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, kFramesInFlight> backBufferRtvsLinear{};
+    // Linear DXGI format for the second RTV view. Computed from the
+    // caller's colorFormat by stripping the sRGB suffix; equal to
+    // `rtvDxgiFormat` when the caller already asked for a linear view.
+    DXGI_FORMAT                             rtvDxgiFormatLinear = DXGI_FORMAT_R8G8B8A8_UNORM;
 
     // Stable proxy texture handle handed out to the renderer. Its internal
     // resource/rtv/state fields are rewritten each Present to track the
     // current back-buffer index.
-    uint64_t proxyTexHandle = 0;
+    uint64_t proxyTexHandle       = 0;
+    uint64_t proxyTexHandleLinear = 0;   // alias with the linear RTV
 
     void ReleaseBackBuffers() {
         for (auto& bb : backBuffers) SafeRelease(bb);

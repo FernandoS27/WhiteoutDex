@@ -43,6 +43,7 @@ public:
     void          DestroySwapChain(SwapChainHandle) override;
     void          Present         (SwapChainHandle) override;
     TextureHandle GetSwapChainBackBuffer(SwapChainHandle) override;
+    TextureHandle GetSwapChainBackBufferLinear(SwapChainHandle) override;
 
     TextureHandle CreateColorTarget(int w, int h, Format f) override;
     TextureHandle CreateDepthTarget(int w, int h, Format f) override;

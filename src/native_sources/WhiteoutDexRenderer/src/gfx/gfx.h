@@ -138,6 +138,15 @@ public:
     virtual void          Present         (SwapChainHandle) = 0;
     virtual TextureHandle GetSwapChainBackBuffer(SwapChainHandle) = 0;
 
+    // Linear (non-sRGB) RTV view of the same physical back-buffer. Both
+    // proxy handles share the underlying DXGI buffer, but their RTV
+    // descriptors carry different formats — sRGB for the HD tonemap
+    // output (hardware encodes on write), non-sRGB for the SD pipeline
+    // (display-ready bytes from the SD shader stored verbatim, no
+    // double-encoding). When the caller's `colorFormat` was already a
+    // linear UNORM, this returns the same proxy as GetSwapChainBackBuffer.
+    virtual TextureHandle GetSwapChainBackBufferLinear(SwapChainHandle) = 0;
+
     // Off-screen render targets
     virtual TextureHandle CreateColorTarget(int w, int h, Format f) = 0;
     virtual TextureHandle CreateDepthTarget(int w, int h, Format f) = 0;
