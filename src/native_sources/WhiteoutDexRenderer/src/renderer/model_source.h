@@ -50,6 +50,14 @@ struct SequenceInfo {
     // reference grid by this value instead of moving the actor; same
     // perception, opposite frame.
     float       moveSpeed = 0.0f;
+    // True when the MDX SEQS-chunk flag bit 0 (NonLooping) is set —
+    // the sequence plays once and holds its final frame instead of
+    // wrapping back to startMs. Convention: Death / Decay / climax
+    // poses are NonLooping; Stand / Walk / Attack loop. Hosts that
+    // want to preview a NonLooping clip in a loop (animation editing,
+    // breakdown views) override per-actor via Actor::ignoreNonLooping
+    // — see model_instance.h.
+    bool        nonLooping = false;
 };
 
 // ----------------------------------------------------------------------------

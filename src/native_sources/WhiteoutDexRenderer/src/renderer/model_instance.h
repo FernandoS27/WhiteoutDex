@@ -67,6 +67,16 @@ struct Actor {
     // false and ride on the auto-evaluate path.
     bool externallyDriven = false;
 
+    // When true, the actor loops every sequence regardless of the
+    // SEQS-chunk NonLooping flag — useful for animation-editing
+    // previews where holding the death pose forever isn't what you
+    // want. Default false matches the engine's "play once, freeze on
+    // last frame" behaviour. Per-actor only — never propagated to
+    // PE1 / attachment children: each spawned child keeps its own
+    // default-false flag so a parent's loop choice doesn't leak into
+    // emitted decals or particle children.
+    bool ignoreNonLooping = false;
+
     // ---- Attachments with child models ----
     struct AttachmentSlot {
         AttachmentConfig config;

@@ -210,6 +210,16 @@ public:
     void  SetTonemapExposure(float exposure) { tonemapExposure_ = exposure; }
     float GetTonemapExposure() const         { return tonemapExposure_; }
 
+    // Global "force NonLooping animations to loop" toggle. Stamps the
+    // matching `Actor::ignoreNonLooping` flag onto every existing
+    // top-level (non-PE1, non-attachment) actor and onto every actor
+    // freshly spawned through Load/SpawnActor*. PE1 / attachment
+    // children are intentionally skipped — their own per-actor flag
+    // stays at its default false so a parent's loop choice doesn't
+    // leak into emitted decals or particle children.
+    void SetIgnoreNonLooping(bool on);
+    bool GetIgnoreNonLooping() const { return ignoreNonLooping_; }
+
     // Host-supplied audio backend for MDX SND EventObjects. Default is
     // a NullSoundEmitter that drops every fire — the renderer library
     // itself ships no platform audio dependencies. Standalone exe and
@@ -662,6 +672,16 @@ private:
     // SetTonemapExposure() if a model needs the brights pulled into
     // ACES's rolloff range.
     float                   tonemapExposure_ = 1.0f;
+    // Global "force NonLooping → loop" toggle (Settings window).
+    // Stamped onto every fresh top-level actor + fanned out to live
+    // actors through SetIgnoreNonLooping. PE1 / attachment children
+    // ignore this — they keep their own default-false flag.
+    // Default true: this is a model-preview tool, not the in-game
+    // engine; users almost always want Death / climax poses to loop
+    // so they can see the clip without re-selecting the sequence.
+    // The Actor-side per-instance flag still defaults to false, so
+    // children spawned by an emitter remain engine-faithful.
+    bool                    ignoreNonLooping_ = true;
     void RunTonemapPass(const RenderTarget& target);
 
     bool InitBlsShaders();

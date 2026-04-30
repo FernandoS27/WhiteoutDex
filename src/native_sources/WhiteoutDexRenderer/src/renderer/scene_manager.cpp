@@ -7,6 +7,8 @@
 #include "model_instance.h"
 #include "model_source.h"   // SequenceInfo
 
+#include <algorithm>        // std::min for the NonLooping clamp
+
 namespace WhiteoutDex {
 
 void SceneManager::Update(float dtSec) {
@@ -41,10 +43,19 @@ void SceneManager::Update(float dtSec) {
         const int   duration = seq.endMs - seq.startMs;
         int elapsed = now - mi->sequenceStartTimeMs;
         if (elapsed < 0) elapsed = 0;
-        const int looped = (duration > 0)
-                             ? seq.startMs + (elapsed % duration)
-                             : seq.startMs;
-        mi->animation.SetTimeMs(looped);
+        // NonLooping sequences (Death / climax / Decay) clamp at the
+        // last frame instead of wrapping back to startMs. The
+        // per-actor `ignoreNonLooping` overrides this — useful for
+        // animation editors that want to preview the clip in a loop.
+        int frameMs;
+        if (duration <= 0) {
+            frameMs = seq.startMs;
+        } else if (seq.nonLooping && !mi->ignoreNonLooping) {
+            frameMs = seq.startMs + (std::min)(elapsed, duration);
+        } else {
+            frameMs = seq.startMs + (elapsed % duration);
+        }
+        mi->animation.SetTimeMs(frameMs);
     }
 }
 

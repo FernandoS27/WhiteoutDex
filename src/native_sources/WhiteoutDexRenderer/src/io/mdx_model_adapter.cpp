@@ -1616,8 +1616,11 @@ std::vector<SequenceInfo> MdxModelAdapter::GetSequences() const {
     std::vector<SequenceInfo> result;
     result.reserve(model_.sequences.size());
     for (const auto& seq : model_.sequences) {
+        const bool nonLoop =
+            (seq.flags & whiteout::mdx::Sequence::Flag::NonLooping)
+                != whiteout::mdx::Sequence::Flag::None;
         result.push_back({seq.name, (int)seq.intervalStart, (int)seq.intervalEnd,
-                          seq.moveSpeed});
+                          seq.moveSpeed, nonLoop});
     }
     return result;
 }

@@ -760,10 +760,10 @@ void RenderWindow::EnsureSettingsWindow() {
     if (!RegisterClassExW(&sc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
         return;
 
-    // Fixed client size — tall enough for three rows of label+control
-    // (Background colour, Exposure, SND Volume).
+    // Fixed client size — tall enough for four rows of label+control
+    // (Background colour, Exposure, SND Volume, Loop NonLooping).
     constexpr int kClientW = 320;
-    constexpr int kClientH = 150;
+    constexpr int kClientH = 188;
     RECT rc = {0, 0, kClientW, kClientH};
     // WS_POPUPWINDOW gives us a thin frame + close box without resize
     // grippers; WS_CAPTION puts a title bar on top.
@@ -838,6 +838,21 @@ void RenderWindow::EnsureSettingsWindow() {
             WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
             264, rowY, 44, 22, hwndSettings_, nullptr, hInst, nullptr);
     }
+
+    // --- Row 4: Loop NonLooping animations ---
+    // Drives RenderService::SetIgnoreNonLooping. When checked, every
+    // top-level actor's `ignoreNonLooping` flag flips on, so MDX
+    // sequences with the SEQS NonLooping bit (Death / Decay / climax
+    // poses) wrap back to startMs instead of holding their last frame
+    // — handy for animation editors that want to see the clip cycle.
+    rowY += 38;
+    chkLoopNonLoop_ = CreateWindowW(L"BUTTON",
+        L"Loop NonLooping animations",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        12, rowY, 280, 22, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_LOOP_NONLOOP, hInst, nullptr);
+    SendMessageW(chkLoopNonLoop_, BM_SETCHECK,
+                 service_.GetIgnoreNonLooping() ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -911,6 +926,13 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
                 if (btnBgColor_) InvalidateRect(btnBgColor_, nullptr, TRUE);
                 SaveSettingsIni(service_);
             }
+            return 0;
+        }
+        if (id == IDC_LOOP_NONLOOP) {
+            const bool on = chkLoopNonLoop_
+                && SendMessageW(chkLoopNonLoop_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            service_.SetIgnoreNonLooping(on);
+            SaveSettingsIni(service_);
             return 0;
         }
         break;

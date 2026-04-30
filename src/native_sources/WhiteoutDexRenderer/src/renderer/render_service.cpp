@@ -78,6 +78,19 @@ RenderService::~RenderService() = default;   // ownedScene_ (if any) joins its t
 Actor* RenderService::focusModel() const { return scene_->FocusActor(); }
 Actor* RenderService::getModel(uint32_t h) const { return scene_->Actors().Find(h); }
 
+void RenderService::SetIgnoreNonLooping(bool on) {
+    ignoreNonLooping_ = on;
+    // Fan out to live top-level actors. PE1 children + attachment
+    // children are skipped so spawned decals / particle copies retain
+    // their default-false flag (engine-faithful "play once" for any
+    // NonLooping clip the parent emits into them).
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    for (auto& [h, mi] : scene_->Actors().All()) {
+        if (mi->isPE1Child) continue;
+        mi->ignoreNonLooping = on;
+    }
+}
+
 // ============================================================================
 // Model Data Input (called from API/MaxScript thread)
 // ============================================================================
@@ -409,8 +422,19 @@ void RenderService::EvaluatePE1Children() {
             const int seqIdx = mi->animation.ActiveSequenceIndex();
             if (!seqs.empty()) {
                 const int boundedSeq = seqIdx % (int)seqs.size();
-                int dur = seqs[boundedSeq].endMs - seqs[boundedSeq].startMs;
-                if (dur > 0) localTime = seqs[boundedSeq].startMs + (localTime % dur);
+                const auto& seq = seqs[boundedSeq];
+                const int dur = seq.endMs - seq.startMs;
+                if (dur > 0) {
+                    // NonLooping clamp: Death / Decay / climax poses
+                    // freeze on the final frame instead of wrapping.
+                    // `mi->ignoreNonLooping` is per-child — a parent
+                    // setting it to true does not propagate, so PE1
+                    // children stay engine-faithful by default.
+                    if (seq.nonLooping && !mi->ignoreNonLooping)
+                        localTime = seq.startMs + (std::min)(localTime, dur);
+                    else
+                        localTime = seq.startMs + (localTime % dur);
+                }
             }
             toEval.push_back({h, mi->animation.Source(), localTime, seqIdx,
                               globalTime, mi->worldTransform});
@@ -678,7 +702,12 @@ Actor* RenderService::SpawnActorFromMdx(const std::string& mdxPath) {
 Actor* RenderService::LoadActorFromMdx(const std::string& mdxPath) {
     const uint32_t h = LoadModelByPath(mdxPath);
     if (h == 0) return nullptr;
-    return scene_->Actors().Find(h);
+    Actor* actor = scene_->Actors().Find(h);
+    // Inherit the global "force loop NonLooping" toggle so the new
+    // top-level actor immediately reflects the Settings checkbox
+    // without the host having to re-apply it after every load.
+    if (actor) actor->ignoreNonLooping = ignoreNonLooping_;
+    return actor;
 }
 
 Actor* RenderService::SpawnActorFromLiveSource(std::shared_ptr<IModelSource> source) {
@@ -707,6 +736,9 @@ Actor* RenderService::SpawnActorFromLiveSource(std::shared_ptr<IModelSource> sou
     // render-thread auto-eval skips it; the host calls EvaluateAndApply
     // explicitly from the right thread.
     actor->externallyDriven = true;
+    // Same NonLooping override as LoadActorFromMdx — pick up the
+    // Settings checkbox state at spawn time.
+    actor->ignoreNonLooping = ignoreNonLooping_;
 
     // Fold attachment + PE1 configs into the spawn so callers don't have to
     // chase the actor handle just to set them.

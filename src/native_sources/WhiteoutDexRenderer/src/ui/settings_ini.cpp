@@ -101,6 +101,14 @@ void LoadSettingsIni(RenderService& service) {
             }
         }
     }
+
+    // LoopNonLooping — boolean stored as "0"/"1". Toggles the
+    // per-actor ignoreNonLooping override globally.
+    {
+        const int v = ::GetPrivateProfileIntW(kSection, L"LoopNonLooping",
+                                              -1, iniPath.c_str());
+        if (v == 0 || v == 1) service.SetIgnoreNonLooping(v != 0);
+    }
 }
 
 void SaveSettingsIni(const RenderService& service) {
@@ -126,6 +134,11 @@ void SaveSettingsIni(const RenderService& service) {
                      static_cast<double>(service.GetSoundVolume()));
         ::WritePrivateProfileStringW(kSection, L"SoundVolume",
                                      buf, iniPath.c_str());
+    }
+    {
+        ::WritePrivateProfileStringW(kSection, L"LoopNonLooping",
+                                     service.GetIgnoreNonLooping() ? L"1" : L"0",
+                                     iniPath.c_str());
     }
 }
 

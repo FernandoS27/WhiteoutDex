@@ -94,6 +94,7 @@ private:
     HWND lblExposure_  = nullptr;
     HWND sldSndVolume_ = nullptr;
     HWND lblSndVolume_ = nullptr;
+    HWND chkLoopNonLoop_ = nullptr;
     HMENU hMenuBar_      = nullptr;
     HMENU hMenuView_     = nullptr;
     HMENU hMenuProbe_    = nullptr;
@@ -120,6 +121,7 @@ private:
         IDC_BGCOLOR,
         IDC_EXPOSURE,
         IDC_SND_VOLUME,
+        IDC_LOOP_NONLOOP,
         // View menu toggles
         IDM_VIEW_GRID      = 1100,
         IDM_VIEW_PARTICLES,
