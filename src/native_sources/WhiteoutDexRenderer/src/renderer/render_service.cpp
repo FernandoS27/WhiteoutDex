@@ -2298,6 +2298,14 @@ bool RenderService::InitBlsShaders() {
     splatService_.Configure(gfx_.get(), textures_.get(),
                             scene_->ActiveContentProvider());
 
+    // DNC service: lazily construct now that a content provider is
+    // available. Tries to acquire the default Lordaeron Unit MDL up
+    // front; failure is non-fatal (each render pass falls back to the
+    // legacy hardcoded baseline when SampleNow returns valid=false).
+    if (!dncService_) {
+        dncService_ = std::make_unique<dnc::DncService>(scene_->ActiveContentProvider());
+    }
+
     blsShaderCache_ = std::make_unique<bls::BlsShaderCache>(gfx_.get(), scene_->ActiveContentProvider());
     blsPrograms_    = std::make_unique<bls::BlsProgramCatalog>(blsShaderCache_.get());
     blsPsoBuilder_  = std::make_unique<bls::BlsPsoBuilder>(gfx_.get());
@@ -2417,12 +2425,23 @@ bool RenderService::InitBlsShaders() {
     // single-threaded, trivial compared to the first-frame shader compile).
     textures_->RegisterOwned(kIblSplitSumLutName, ibl::CreateSplitSumLutTexture(*gfx_));
 
-    // Default to the portrait-tuned probe — softer, horizontally
-    // isotropic, no sharp sun/horizon features. Avoids the "dark
-    // patches in concavities" look that Day_IBL's directional
-    // content produces on close-range preview subjects. SetEnvProbe()
-    // swaps at runtime via the UI combo.
-    SetEnvProbe(ibl::kPortraitIblPath);
+    // IBL mode dispatch. Default is Portrait — engine-faithful for the
+    // model viewer (no shadow map → Day_IBL's directional bias
+    // produces visible "dark patches in concavities" on close-range
+    // subjects, see render_target.h::IblMode). The Settings UI lets
+    // the user opt into DayNight; iblMode_ is persisted and re-applied
+    // here when InitBlsShaders runs (e.g. after a render-mode swap).
+    if (iblMode_ == IblMode::DayNight) {
+        SetDayNightProbes(ibl::kDayIblPath, ibl::kNightIblPath);
+        if (!iblDayNightLoaded_) {
+            // Pair load failed (DDS missing in this content stack) —
+            // gracefully fall back to Portrait so the HD pipeline
+            // always has a valid probe.
+            SetEnvProbe(ibl::kPortraitIblPath);
+        }
+    } else {
+        SetEnvProbe(ibl::kPortraitIblPath);
+    }
 
     // All four BLS chains are required:
     //   * SD mesh draws route through blsSdProgram_;
@@ -2464,6 +2483,69 @@ void RenderService::SetEnvProbe(const std::string& relPath) {
     }
     textures_->RegisterOwned(kIblFromProbeName, fromHandle);
     iblProbeMipEnd_ = static_cast<float>(mips - 1);
+    // Override the day/night pair: a single-probe SetEnvProbe is the
+    // user explicitly picking one IBL, so the HD pass falls back to
+    // single-probe semantics for as long as that override stands.
+    iblDayNightLoaded_ = false;
+    textures_->ReleaseOwned(kIblDayProbeName);
+    textures_->ReleaseOwned(kIblNightProbeName);
+}
+
+void RenderService::SetDayNightProbes(const std::string& dayPath,
+                                      const std::string& nightPath) {
+    if (!gfx_ || !textures_ || !scene_->ActiveContentProvider()) return;
+
+    // Drop whatever we had — both paths might be the same string for
+    // tests, so we can't shortcut by comparing against current state.
+    textures_->ReleaseOwned(kIblDayProbeName);
+    textures_->ReleaseOwned(kIblNightProbeName);
+    iblDayNightLoaded_ = false;
+    iblDayMipEnd_      = 0.0f;
+    iblNightMipEnd_    = 0.0f;
+
+    auto loadProbe = [&](const std::string& path,
+                         const char* slotName) -> int {
+        if (path.empty()) return 0;
+        auto probe = ibl::LoadEnvProbe(*gfx_, *scene_->ActiveContentProvider(), path);
+        if (probe.handle == gfx::TextureHandle::Invalid) {
+            std::fprintf(stderr, "[dnc] day/night IBL load failed: %s\n", path.c_str());
+            return 0;
+        }
+        textures_->RegisterOwned(slotName, probe.handle);
+        return probe.mipCount;
+    };
+
+    const int dayMips   = loadProbe(dayPath,   kIblDayProbeName);
+    const int nightMips = loadProbe(nightPath, kIblNightProbeName);
+    if (dayMips > 0 && nightMips > 0) {
+        iblDayMipEnd_      = static_cast<float>(dayMips - 1);
+        iblNightMipEnd_    = static_cast<float>(nightMips - 1);
+        iblDayNightLoaded_ = true;
+    } else {
+        // Partial load — keep behavior coherent by tearing both
+        // entries down so the HD pass falls back to single-probe.
+        textures_->ReleaseOwned(kIblDayProbeName);
+        textures_->ReleaseOwned(kIblNightProbeName);
+    }
+}
+
+void RenderService::SetIblMode(IblMode mode) {
+    iblMode_ = mode;
+    // Apply immediately. SetEnvProbe / SetDayNightProbes both no-op
+    // safely before gfx_/textures_ are wired (early-return on null
+    // device), so this is callable from the INI loader path before
+    // InitBlsShaders has run; InitBlsShaders re-reads iblMode_ and
+    // re-issues whichever load matches.
+    if (mode == IblMode::DayNight) {
+        SetDayNightProbes(ibl::kDayIblPath, ibl::kNightIblPath);
+        if (!iblDayNightLoaded_) {
+            // Same fallback as InitBlsShaders: don't strand the HD
+            // pipeline with no probe.
+            SetEnvProbe(ibl::kPortraitIblPath);
+        }
+    } else {
+        SetEnvProbe(ibl::kPortraitIblPath);
+    }
 }
 
 void RenderService::ShutdownBlsShaders() {
@@ -2489,8 +2571,11 @@ void RenderService::ShutdownBlsShaders() {
         if (textures_) {
             textures_->ReleaseOwned(kIblFromProbeName);
             textures_->ReleaseOwned(kIblToProbeName);
+            textures_->ReleaseOwned(kIblDayProbeName);
+            textures_->ReleaseOwned(kIblNightProbeName);
             textures_->ReleaseOwned(kIblSplitSumLutName);
         }
+        iblDayNightLoaded_ = false;
     }
     if (blsPsoBuilder_)  blsPsoBuilder_->Clear();
     if (blsPrograms_)    blsPrograms_->Clear();
@@ -2967,7 +3052,30 @@ public:
         // SD path uses only the base t0 sampler the CRTP driver already bound.
     }
 
-    bls::BaselineLights Baseline() const {
+    bls::BaselineLights Baseline(const Matrix44f& view) const {
+        // DNC override (LightingMode::InGame only): when a DNC MDL is
+        // loaded and bound, the engine's day/night-cycle light replaces
+        // the legacy headlight. preview.exe slot 0 of pixelConstants.lights
+        // is fed by CGxLightToShaderLight from the sampled DNC light;
+        // we mirror that by forwarding the sample as the BaselineLights
+        // payload BuildLightPalette consumes.
+        if (auto* dnc = rs_.GetDncService();
+            dnc && dnc->HasAsset() &&
+            rs_.GetLightingMode() == LightingMode::InGame) {
+            const auto sample = dnc->SampleNow();
+            if (sample.valid) {
+                // RH view (SD path): direction-to-source is the negated
+                // light-toward-surface direction transformed into view
+                // space. transform_normal preserves orientation across
+                // the view matrix; the negation matches the
+                // CGxLightToShaderLight directional convention
+                // (preview.exe @0x7ff609b3f1d0).
+                const Vector3f dirVS = whiteout::transform_normal(
+                    Vector3f{ -sample.worldDir.x, -sample.worldDir.y, -sample.worldDir.z },
+                    view);
+                return { sample.ambient, sample.diffuse, dirVS };
+            }
+        }
         // RH view: forward = -Z, so direction-to-source for a camera-attached
         // headlight is a constant +Z in view space (no per-pose transform).
         return {
@@ -3174,12 +3282,37 @@ public:
         // colour actually changed since the last call.
         rs_.replaceables_->GetHdSwatchTexture();
 
-        // Day at t13 / Night at t14 — envTransitionT=0.75 picks mostly day.
-        // envMipEnd clamps the roughness→mip remap; nonzero keeps sampleIBL
-        // off the "probe disabled" fast-out path.
-        frame.envFromMipEnd  = rs_.iblProbeMipEnd_;
-        frame.envToMipEnd    = rs_.iblProbeMipEnd_;
-        frame.envTransitionT = 0.75f;
+        // envMapParams selection. Two paths:
+        //
+        //   * Day/Night pair loaded AND LightingMode == InGame: pick
+        //     from/to ordering by current TOD (DncService::ComputeEnvMapBlend
+        //     mirrors preview.exe EnvironmentMapTimeOfDay @0x7ff609b116f0)
+        //     and pack the matching mip-end pair + transitionT.
+        //
+        //   * Otherwise (single-probe override, Glue mode, day/night
+        //     load failed): fall back to the legacy from/to slots with
+        //     a fixed transitionT≈0.75 — same behaviour as before.
+        //
+        // envMipEnd clamps the roughness→mip remap; nonzero keeps
+        // sampleIBL off the "probe disabled" fast-out path.
+        const bool useDayNight = rs_.iblDayNightLoaded_
+                              && rs_.GetDncService() != nullptr
+                              && rs_.GetLightingMode() == LightingMode::InGame;
+        if (useDayNight) {
+            const auto blend = rs_.GetDncService()->ComputeEnvMapBlend();
+            // Daytime: From=Day, To=Night (the next phase fading in).
+            // Nighttime: From=Night, To=Day. Mirrors the engine's
+            // primary-cubemap convention from the IDA report (§3 of
+            // DNC math notes).
+            const bool dayPrimary = blend.isDaytime;
+            frame.envFromMipEnd  = dayPrimary ? rs_.iblDayMipEnd_   : rs_.iblNightMipEnd_;
+            frame.envToMipEnd    = dayPrimary ? rs_.iblNightMipEnd_ : rs_.iblDayMipEnd_;
+            frame.envTransitionT = blend.transitionT;
+        } else {
+            frame.envFromMipEnd  = rs_.iblProbeMipEnd_;
+            frame.envToMipEnd    = rs_.iblProbeMipEnd_;
+            frame.envTransitionT = 0.75f;
+        }
 
         // Dynamic sampler table covers s0..s3. Per-layer BindSampler(0, ...)
         // overrides s0 with the wrap-appropriate variant at draw time.
@@ -3191,14 +3324,26 @@ public:
         // s13..s15 are STATIC samplers baked into the root signature, so
         // we only bind the SRVs here. Binding them via the dynamic heap
         // would overflow D3D12's 2048-entry sampler cap and TDR.
-        // Aliasing convention: when the "to" probe load failed only "from"
-        // is registered — reuse its handle for t14 so the PS's two-sample
-        // blend still has a valid SRV.
-        const gfx::TextureHandle from = rs_.textures_->GetOwned(
-            RenderService::kIblFromProbeName);
-        gfx::TextureHandle to = rs_.textures_->GetOwned(
-            RenderService::kIblToProbeName);
-        if (to == gfx::TextureHandle::Invalid) to = from;
+        //
+        // Picking from/to:
+        //   * Day/Night pair active: envMap pair is (Day, Night) or
+        //     (Night, Day) per blend.isDaytime (computed above).
+        //   * Otherwise: legacy single-probe path. Aliasing convention
+        //     when the "to" probe load failed: reuse "from" for t14 so
+        //     the PS's two-sample blend still has a valid SRV.
+        gfx::TextureHandle from = gfx::TextureHandle::Invalid;
+        gfx::TextureHandle to   = gfx::TextureHandle::Invalid;
+        if (useDayNight) {
+            const auto day   = rs_.textures_->GetOwned(RenderService::kIblDayProbeName);
+            const auto night = rs_.textures_->GetOwned(RenderService::kIblNightProbeName);
+            const auto blend = rs_.GetDncService()->ComputeEnvMapBlend();
+            from = blend.isDaytime ? day   : night;
+            to   = blend.isDaytime ? night : day;
+        } else {
+            from = rs_.textures_->GetOwned(RenderService::kIblFromProbeName);
+            to   = rs_.textures_->GetOwned(RenderService::kIblToProbeName);
+            if (to == gfx::TextureHandle::Invalid) to = from;
+        }
         if (from != gfx::TextureHandle::Invalid)
             cmd->BindShaderResource(gfx::ShaderStage::Pixel, 13, from);
         if (to   != gfx::TextureHandle::Invalid)
@@ -3209,7 +3354,21 @@ public:
             cmd->BindShaderResource(gfx::ShaderStage::Pixel, 15, lut);
     }
 
-    bls::BaselineLights Baseline() const {
+    bls::BaselineLights Baseline(const Matrix44f& view) const {
+        // DNC override (LightingMode::InGame only) — same logic as the
+        // SD pass; the only difference is the fallback baseline below
+        // and the view handedness, both already embedded in `view`.
+        if (auto* dnc = rs_.GetDncService();
+            dnc && dnc->HasAsset() &&
+            rs_.GetLightingMode() == LightingMode::InGame) {
+            const auto sample = dnc->SampleNow();
+            if (sample.valid) {
+                const Vector3f dirVS = whiteout::transform_normal(
+                    Vector3f{ -sample.worldDir.x, -sample.worldDir.y, -sample.worldDir.z },
+                    view);
+                return { sample.ambient, sample.diffuse, dirVS };
+            }
+        }
         // HD baseline key (used ONLY when the model has no authored MDX
         // lights). Camera-attached headlight: LH view has forward = +Z so
         // direction-to-source is -Z in view space regardless of camera pose.

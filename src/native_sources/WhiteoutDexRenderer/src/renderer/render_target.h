@@ -37,6 +37,27 @@ enum class LightingMode : uint8_t {
     Dynamic = 2,
 };
 
+// HD-pipeline IBL probe selection. The HD shader's diffuse-IBL combine
+// (`blizzardAmbientBlend` in ps_ibl.slang) deliberately weights the
+// shadow side toward the IBL's directional content — handy in-game
+// where a shadow map masks the bias, but in the model viewer it
+// produces visible "dark patches in concavities" with the captured
+// LordaeronSummer day/night pair.
+//
+//   Portrait — single neutral horizontally-isotropic probe
+//              (Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds).
+//              Default. No directional bias → no concavity blotches;
+//              ideal for close-range single-model preview.
+//   DayNight — engine's authored day/night pair, blended per current
+//              TOD via DncService::ComputeEnvMapBlend. Engine-faithful
+//              colour shift across the cycle, but with the
+//              accompanying directional artifact since the model
+//              viewer has no shadow-map pass to balance it.
+enum class IblMode : uint8_t {
+    Portrait = 0,
+    DayNight = 1,
+};
+
 struct DisplayFlags {
     bool showGrid       = true;
     bool showParticles  = true;

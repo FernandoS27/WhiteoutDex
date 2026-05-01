@@ -88,17 +88,19 @@ int wmain(int argc, wchar_t* argv[]) {
     WhiteoutDex::SceneManager  scene;
     WhiteoutDex::RenderService renderer(scene);
 
-    // Restore persisted Background colour + Exposure before the window
-    // opens so the toolbar / Settings popup pre-populate from the saved
-    // values rather than the compile-time defaults. Best-effort — a
-    // missing INI leaves the defaults in place.
-    WhiteoutDex::LoadSettingsIni(renderer);
-
     WhiteoutDex::RenderWindow  renderWindow(renderer);
     if (!renderWindow.Open(1024, 768, backend)) {
         std::cerr << "Failed to open renderer window\n";
         return 1;
     }
+
+    // Restore persisted Background colour + Exposure + DNC TOD AFTER
+    // the window opens. The DNC service is constructed lazily during
+    // gfx-device init (inside RenderWindow::Open), so loading earlier
+    // would silently drop the TOD-related settings. The Settings popup
+    // is created lazily on first menu click and reads the restored
+    // values then; the toolbar doesn't surface any of these knobs.
+    WhiteoutDex::LoadSettingsIni(renderer);
 
     // Base path for texture resolution + child-model lookup.
     scene.SetPE1BasePath(mdxPath.parent_path());
@@ -238,6 +240,10 @@ int wmain(int argc, wchar_t* argv[]) {
         last = now;
         scene.Update(dt);
         applyWalkDrift(dt);
+        // Advance the day/night-cycle clock. No-op when the user has
+        // the "Animate TOD" checkbox off (todScale_ defaults to 0) —
+        // the slider then controls TOD directly without auto-drift.
+        if (auto* dnc = renderer.GetDncService()) dnc->Advance(dt);
         Sleep(16); // ~60 FPS
     }
 

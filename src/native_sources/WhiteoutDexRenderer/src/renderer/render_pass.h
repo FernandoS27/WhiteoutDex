@@ -10,7 +10,7 @@
 //   bool IsAvailable() const                     // gate — program loaded?
 //   void ComputeViewProj(Matrix44f&, Matrix44f&) // RH (SD) vs LH (HD)
 //   void BindPassResources(cmd*, frame&)         // samplers, IBL, fog CB
-//   bls::BaselineLights Baseline() const         // fallback light key
+//   bls::BaselineLights Baseline(const Matrix44f& view) const  // fallback light key
 //   void DrawGeoset(ref, frame, view, cmd, lightCount)  // per-geoset body
 //
 // Legacy RenderService::RenderGeosets() stays a standalone function — it
@@ -67,7 +67,7 @@ public:
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplers_->LinearWrap());
         d.BindPassResources(cmd, frame);
 
-        const bls::BaselineLights baseline = d.Baseline();
+        const bls::BaselineLights baseline = d.Baseline(view);
 
         for (auto& ref : collected.refs) {
             // Bucket filter: renderOrder bucket 1 == opaque; >=2 ==

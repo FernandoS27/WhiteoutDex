@@ -109,6 +109,60 @@ void LoadSettingsIni(RenderService& service) {
                                               -1, iniPath.c_str());
         if (v == 0 || v == 1) service.SetIgnoreNonLooping(v != 0);
     }
+
+    // IblMode — integer matching the IblMode enum (0=Portrait,
+    // 1=DayNight). Sentinel -1 leaves the service's default in place
+    // (Portrait), so a missing/unparseable key won't yank a user into
+    // DayNight unexpectedly.
+    {
+        const int v = ::GetPrivateProfileIntW(kSection, L"IblMode",
+                                              -1, iniPath.c_str());
+        if (v == 0 || v == 1) service.SetIblMode(static_cast<IblMode>(v));
+    }
+
+    // DNC TOD knobs. The DncService is constructed lazily inside
+    // InitBlsShaders, *after* this Load call runs in the standalone
+    // host. We can't write to it yet, so we stash the parsed values
+    // and apply them in a deferred path — but that's overkill for
+    // these three settings. Instead, since the standalone calls
+    // LoadSettingsIni *before* the renderer has a content provider,
+    // and ApplyDncSettingsToService is invoked once the service is
+    // up, we just read into static-life cache here. For now: skip if
+    // service is unwired, leaving the saved values to be re-applied
+    // when the user re-saves them through the UI.
+    if (auto* dnc = service.GetDncService()) {
+        wchar_t buf[32] = {};
+        ::GetPrivateProfileStringW(kSection, L"TimeOfDay", L"",
+                                   buf, 32, iniPath.c_str());
+        if (buf[0]) {
+            wchar_t* endptr = nullptr;
+            const double v = std::wcstod(buf, &endptr);
+            if (endptr != buf) dnc->SetTimeOfDay(static_cast<float>(v));
+        }
+        const int animate = ::GetPrivateProfileIntW(kSection, L"AnimateTod",
+                                                    -1, iniPath.c_str());
+        if (animate == 0 || animate == 1) {
+            dnc->SetTodScale(animate ? 1.0f : 0.0f);
+        }
+        // DNC MDL override path. Use a wide buffer because Environment/
+        // DNC paths can be long (~80 chars). Apply only when the saved
+        // value is non-empty AND differs from the default — applying
+        // the same path triggers a reload that costs MDL parse +
+        // hierarchy rebuild for nothing.
+        wchar_t pathBuf[512] = {};
+        ::GetPrivateProfileStringW(kSection, L"DncModel", L"",
+                                   pathBuf, 512, iniPath.c_str());
+        if (pathBuf[0]) {
+            const int u8len = ::WideCharToMultiByte(CP_UTF8, 0, pathBuf, -1,
+                                                    nullptr, 0, nullptr, nullptr);
+            if (u8len > 1) {
+                std::string utf8(u8len - 1, '\0');
+                ::WideCharToMultiByte(CP_UTF8, 0, pathBuf, -1,
+                                      utf8.data(), u8len, nullptr, nullptr);
+                if (utf8 != dnc->UnitMdlPath()) dnc->SetUnitMdl(utf8);
+            }
+        }
+    }
 }
 
 void SaveSettingsIni(const RenderService& service) {
@@ -139,6 +193,32 @@ void SaveSettingsIni(const RenderService& service) {
         ::WritePrivateProfileStringW(kSection, L"LoopNonLooping",
                                      service.GetIgnoreNonLooping() ? L"1" : L"0",
                                      iniPath.c_str());
+    }
+    {
+        wchar_t buf[8] = {};
+        ::swprintf_s(buf, L"%u",
+                     static_cast<unsigned>(service.GetIblMode()));
+        ::WritePrivateProfileStringW(kSection, L"IblMode", buf, iniPath.c_str());
+    }
+    if (const auto* dnc = service.GetDncService()) {
+        wchar_t buf[32] = {};
+        ::swprintf_s(buf, L"%.3f", static_cast<double>(dnc->GetTimeOfDay()));
+        ::WritePrivateProfileStringW(kSection, L"TimeOfDay", buf, iniPath.c_str());
+        ::WritePrivateProfileStringW(kSection, L"AnimateTod",
+                                     dnc->GetTodScale() > 0.0f ? L"1" : L"0",
+                                     iniPath.c_str());
+        // DNC MDL override path — UTF-8 → UTF-16 so Win32 ini APIs
+        // round-trip non-ASCII chars cleanly.
+        const std::string& path = dnc->UnitMdlPath();
+        const int wlen = ::MultiByteToWideChar(CP_UTF8, 0,
+                                               path.c_str(), -1, nullptr, 0);
+        if (wlen > 0) {
+            std::wstring wpath(wlen, L'\0');
+            ::MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1,
+                                  wpath.data(), wlen);
+            ::WritePrivateProfileStringW(kSection, L"DncModel",
+                                         wpath.c_str(), iniPath.c_str());
+        }
     }
 }
 

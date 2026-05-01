@@ -95,6 +95,12 @@ private:
     HWND sldSndVolume_ = nullptr;
     HWND lblSndVolume_ = nullptr;
     HWND chkLoopNonLoop_ = nullptr;
+    HWND sldTimeOfDay_   = nullptr;
+    HWND lblTimeOfDay_   = nullptr;
+    HWND chkAnimateTod_  = nullptr;
+    HWND editDncPath_    = nullptr;
+    HWND btnDncReset_    = nullptr;
+    HWND cmbIblMode_     = nullptr;
     HMENU hMenuBar_      = nullptr;
     HMENU hMenuView_     = nullptr;
     HMENU hMenuProbe_    = nullptr;
@@ -122,6 +128,11 @@ private:
         IDC_EXPOSURE,
         IDC_SND_VOLUME,
         IDC_LOOP_NONLOOP,
+        IDC_TIME_OF_DAY,
+        IDC_ANIMATE_TOD,
+        IDC_DNC_PATH,
+        IDC_DNC_RESET,
+        IDC_IBL_MODE,
         // View menu toggles
         IDM_VIEW_GRID      = 1100,
         IDM_VIEW_PARTICLES,

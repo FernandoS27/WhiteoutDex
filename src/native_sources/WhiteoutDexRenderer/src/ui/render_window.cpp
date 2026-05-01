@@ -13,6 +13,7 @@
 #include <windowsx.h>
 #include <commdlg.h>
 #include <commctrl.h>
+#include <cmath>      // std::floor for the TOD HH:MM split
 #include <algorithm>
 
 #pragma comment(lib, "comctl32.lib")
@@ -760,10 +761,13 @@ void RenderWindow::EnsureSettingsWindow() {
     if (!RegisterClassExW(&sc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
         return;
 
-    // Fixed client size — tall enough for four rows of label+control
-    // (Background colour, Exposure, SND Volume, Loop NonLooping).
-    constexpr int kClientW = 320;
-    constexpr int kClientH = 188;
+    // Fixed client size — tall enough for eight rows of label+control
+    // (Background colour, Exposure, SND Volume, Loop NonLooping,
+    //  Time of Day, Animate TOD, IBL Mode, DNC Model). The DNC row
+    // is wider because the edit field needs room for full
+    // Environment/DNC/... paths (~80 chars worst case).
+    constexpr int kClientW = 380;
+    constexpr int kClientH = 350;
     RECT rc = {0, 0, kClientW, kClientH};
     // WS_POPUPWINDOW gives us a thin frame + close box without resize
     // grippers; WS_CAPTION puts a title bar on top.
@@ -853,6 +857,113 @@ void RenderWindow::EnsureSettingsWindow() {
         (HMENU)(INT_PTR)IDC_LOOP_NONLOOP, hInst, nullptr);
     SendMessageW(chkLoopNonLoop_, BM_SETCHECK,
                  service_.GetIgnoreNonLooping() ? BST_CHECKED : BST_UNCHECKED, 0);
+
+    // --- Row 5: Time of Day ---
+    // Drives DncService::SetTimeOfDay. Slider range 0..2400 → 0..24h
+    // in 0.01h steps. The label reads HH:MM. Lighting only updates
+    // when LightingMode == InGame and a DNC MDL is bound — the
+    // service falls back to the legacy hardcoded baseline otherwise,
+    // so the slider stays visible but its effect is gated.
+    rowY += 38;
+    CreateWindowW(L"STATIC", L"Time of Day:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        12, rowY, 90, 22, hwndSettings_, nullptr, hInst, nullptr);
+    sldTimeOfDay_ = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
+        WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_NOTICKS,
+        108, rowY, 150, 24, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_TIME_OF_DAY, hInst, nullptr);
+    {
+        const float hpd = service_.GetDncService()
+                              ? service_.GetDncService()->GetHoursPerDay()
+                              : 24.0f;
+        const int rangeHi = static_cast<int>(hpd * 100.0f);
+        SendMessageW(sldTimeOfDay_, TBM_SETRANGE, TRUE, MAKELPARAM(0, rangeHi));
+        const float tod = service_.GetDncService()
+                              ? service_.GetDncService()->GetTimeOfDay()
+                              : 12.0f;
+        SendMessageW(sldTimeOfDay_, TBM_SETPOS, TRUE,
+                     (LPARAM)(int)(tod * 100.0f));
+        wchar_t buf[16];
+        const int hh = static_cast<int>(tod) % 24;
+        const int mm = static_cast<int>((tod - std::floor(tod)) * 60.0f) % 60;
+        swprintf_s(buf, L"%02d:%02d", hh, mm);
+        lblTimeOfDay_ = CreateWindowW(L"STATIC", buf,
+            WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+            264, rowY, 44, 22, hwndSettings_, nullptr, hInst, nullptr);
+    }
+
+    // --- Row 6: Animate TOD ---
+    // Toggles DncService::SetTodScale between 0 (paused — slider in
+    // direct control) and 1 (real-time — TOD drifts at 1× across the
+    // configured day length). Default off for the model viewer
+    // (we're an interactive tool, not a wall-clock simulation).
+    rowY += 38;
+    chkAnimateTod_ = CreateWindowW(L"BUTTON",
+        L"Animate TOD",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        12, rowY, 280, 22, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_ANIMATE_TOD, hInst, nullptr);
+    {
+        const bool animating = service_.GetDncService()
+                                  && service_.GetDncService()->GetTodScale() > 0.0f;
+        SendMessageW(chkAnimateTod_, BM_SETCHECK,
+                     animating ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
+
+    // --- Row 7: HD IBL probe selection ---
+    // Picks between the engine's authored Day/Night pair (TOD-blended,
+    // engine-faithful colour shift) and the Portrait probe (single,
+    // horizontally isotropic, no concavity blotches). See
+    // render_target.h::IblMode for the rationale. Index order matches
+    // the enum so we can cast straight from CB_GETCURSEL.
+    rowY += 38;
+    CreateWindowW(L"STATIC", L"IBL:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        12, rowY, 90, 22, hwndSettings_, nullptr, hInst, nullptr);
+    cmbIblMode_ = CreateWindowW(L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        108, rowY, 200, 200, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_IBL_MODE, hInst, nullptr);
+    SendMessageW(cmbIblMode_, CB_ADDSTRING, 0, (LPARAM)L"Portrait");
+    SendMessageW(cmbIblMode_, CB_ADDSTRING, 0, (LPARAM)L"Day/Night");
+    SendMessageW(cmbIblMode_, CB_SETCURSEL,
+                 static_cast<WPARAM>(service_.GetIblMode()), 0);
+
+    // --- Row 8: DNC Model override ---
+    // Engine parity with JASS native SetDayNightModels(_, units).
+    // Edit field accepts any CASC path (forward-slash form); Reset
+    // reverts to dnc::DncService::kDefaultUnitMdl. Path applies on
+    // Reset click or when the user presses Enter in the edit field
+    // (WM_COMMAND: EN_CHANGE would re-load on every keystroke — too
+    // aggressive; we wait for an explicit commit).
+    rowY += 38;
+    CreateWindowW(L"STATIC", L"DNC Model:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        12, rowY, 90, 22, hwndSettings_, nullptr, hInst, nullptr);
+    editDncPath_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        108, rowY + 1, 200, 20, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_DNC_PATH, hInst, nullptr);
+    btnDncReset_ = CreateWindowW(L"BUTTON", L"Reset",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        314, rowY, 54, 22, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_DNC_RESET, hInst, nullptr);
+    if (auto* dnc = service_.GetDncService()) {
+        const std::string& path = dnc->UnitMdlPath();
+        // Widen for SetWindowTextW. ANSI→UTF-16 via MultiByteToWideChar
+        // since paths may carry non-ASCII characters in custom assets.
+        const int wlen = ::MultiByteToWideChar(CP_UTF8, 0,
+                                               path.c_str(), -1, nullptr, 0);
+        if (wlen > 0) {
+            std::wstring wpath(wlen, L'\0');
+            ::MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1,
+                                  wpath.data(), wlen);
+            // wlen includes the null terminator; SetWindowTextW expects
+            // a null-terminated string but the std::wstring's null is
+            // outside its size, so a `c_str()` works.
+            SetWindowTextW(editDncPath_, wpath.c_str());
+        }
+    }
 }
 
 LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -905,6 +1016,20 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
             SaveSettingsIni(service_);
             return 0;
         }
+        if (src == sldTimeOfDay_ && sldTimeOfDay_) {
+            const int pos = (int)SendMessageW(sldTimeOfDay_, TBM_GETPOS, 0, 0);
+            const float tod = (float)pos / 100.0f;
+            if (auto* dnc = service_.GetDncService()) dnc->SetTimeOfDay(tod);
+            if (lblTimeOfDay_) {
+                wchar_t buf[16];
+                const int hh = static_cast<int>(tod) % 24;
+                const int mm = static_cast<int>((tod - std::floor(tod)) * 60.0f) % 60;
+                swprintf_s(buf, L"%02d:%02d", hh, mm);
+                SetWindowTextW(lblTimeOfDay_, buf);
+            }
+            SaveSettingsIni(service_);
+            return 0;
+        }
         break;
     }
 
@@ -933,6 +1058,55 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
                 && SendMessageW(chkLoopNonLoop_, BM_GETCHECK, 0, 0) == BST_CHECKED;
             service_.SetIgnoreNonLooping(on);
             SaveSettingsIni(service_);
+            return 0;
+        }
+        if (id == IDC_ANIMATE_TOD) {
+            const bool on = chkAnimateTod_
+                && SendMessageW(chkAnimateTod_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            if (auto* dnc = service_.GetDncService()) dnc->SetTodScale(on ? 1.0f : 0.0f);
+            SaveSettingsIni(service_);
+            return 0;
+        }
+        if (id == IDC_IBL_MODE && HIWORD(wParam) == CBN_SELCHANGE && cmbIblMode_) {
+            const int sel = (int)SendMessageW(cmbIblMode_, CB_GETCURSEL, 0, 0);
+            if (sel >= 0) {
+                service_.SetIblMode(static_cast<IblMode>(sel));
+                SaveSettingsIni(service_);
+            }
+            return 0;
+        }
+        if (id == IDC_DNC_RESET && btnDncReset_) {
+            // Revert to the engine's default Lordaeron Unit MDL.
+            // Updates the edit field so the user sees the new path.
+            if (auto* dnc = service_.GetDncService()) {
+                dnc->SetUnitMdl(dnc::DncService::kDefaultUnitMdl);
+                if (editDncPath_) {
+                    SetWindowTextA(editDncPath_, dnc::DncService::kDefaultUnitMdl);
+                }
+                SaveSettingsIni(service_);
+            }
+            return 0;
+        }
+        if (id == IDC_DNC_PATH && HIWORD(wParam) == EN_KILLFOCUS && editDncPath_) {
+            // Commit on focus-loss (Enter on a single-line edit also
+            // sends EN_KILLFOCUS via the dialog manager, modulo our
+            // popup not being a dialog — but Enter focus-shift is fine
+            // for power users). Pull the text and apply.
+            wchar_t buf[512] = {};
+            const int n = GetWindowTextW(editDncPath_, buf, 512);
+            if (n >= 0) {
+                const int u8len = ::WideCharToMultiByte(CP_UTF8, 0, buf, n,
+                                                        nullptr, 0, nullptr, nullptr);
+                std::string utf8(u8len, '\0');
+                if (u8len > 0) {
+                    ::WideCharToMultiByte(CP_UTF8, 0, buf, n,
+                                          utf8.data(), u8len, nullptr, nullptr);
+                }
+                if (auto* dnc = service_.GetDncService()) {
+                    dnc->SetUnitMdl(utf8);
+                    SaveSettingsIni(service_);
+                }
+            }
             return 0;
         }
         break;

@@ -13,6 +13,7 @@
 #include "particle.h"
 #include "particle/particle_service.h"
 #include "particle/splat_service.h"
+#include "dnc/dnc_service.h"
 #include "ribbon.h"
 #include "sound_emitter.h"
 #include "spn_spawner.h"
@@ -186,6 +187,24 @@ public:
     // draws keep sampling something valid.
     void SetEnvProbe(const std::string& relPath);
 
+    // Load both Day and Night IBL cubemaps as a coherent pair. When
+    // both succeed and LightingMode is InGame, the HD pass binds the
+    // pair at t13/t14 (with the from/to order picked per current TOD)
+    // and packs the DncService's transitionT into the env-map CB.
+    // Either path empty / load failure leaves the legacy single-probe
+    // behaviour in place. Default paths in `dnc::DncService` resolve
+    // through the active content provider.
+    void SetDayNightProbes(const std::string& dayPath,
+                           const std::string& nightPath);
+
+    // High-level switch between Portrait probe (single, isotropic,
+    // default) and the engine's Day/Night pair (TOD-blended). Applies
+    // the change immediately by calling SetEnvProbe or
+    // SetDayNightProbes under the hood. Persists across InitBlsShaders
+    // re-init. See render_target.h for the enum's docstring.
+    void    SetIblMode(IblMode mode);
+    IblMode GetIblMode() const { return iblMode_; }
+
     // Format / texture used as the colour render target for the active
     // render mode. HD goes through `target.hdrColor` (R11G11B10F) and is
     // ACES-tonemapped onto `target.color` afterwards; SD writes directly
@@ -219,6 +238,14 @@ public:
     // leak into emitted decals or particle children.
     void SetIgnoreNonLooping(bool on);
     bool GetIgnoreNonLooping() const { return ignoreNonLooping_; }
+
+    // Day/Night-Cycle service. Constructed lazily once a content
+    // provider is available (see InitBlsShaders). Hosts use it to
+    // drive the TOD slider, query the current ambient/diffuse for
+    // tooling, or override the active DNC MDL. Returns nullptr until
+    // the service is wired up — callers should null-check.
+    dnc::DncService*       GetDncService()       { return dncService_.get(); }
+    const dnc::DncService* GetDncService() const { return dncService_.get(); }
 
     // Host-supplied audio backend for MDX SND EventObjects. Default is
     // a NullSoundEmitter that drops every fire — the renderer library
@@ -425,6 +452,12 @@ private:
     // with the legacy per-Actor ParticleSystem until Phase 6 cut-over.
     particle::ParticleService particleService_;
 
+    // Day/Night-Cycle service — owns the DNC MDL cache + active TOD
+    // value. Lazily constructed once a content provider is available
+    // (see EnsureDncService); render passes pull a sampled
+    // BaselineLights from it through GetDncService().
+    std::unique_ptr<dnc::DncService>  dncService_;
+
     // EventObject infrastructure. Splats live alongside particles (same
     // VB / shader path); the SPN spawner manages sub-MDX lifecycles in
     // sync with the PE1 path; the sound service is a logging stub by
@@ -618,7 +651,19 @@ private:
     static constexpr const char* kIblSplitSumLutName = "ibl.splitSumLut";
     static constexpr const char* kIblFromProbeName   = "ibl.fromProbe";
     static constexpr const char* kIblToProbeName     = "ibl.toProbe";
+    // Day/Night-Cycle IBL pair. When both are populated AND the
+    // LightingMode is InGame, the HD pass binds these (in the right
+    // order) at t13/t14 instead of the single-probe path. The user
+    // hits this by leaving SetEnvProbe alone (or after this opt-in
+    // call); SetEnvProbe's single-probe override clears these and
+    // reverts to the legacy from/to behaviour.
+    static constexpr const char* kIblDayProbeName    = "ibl.dayProbe";
+    static constexpr const char* kIblNightProbeName  = "ibl.nightProbe";
     float                                   iblProbeMipEnd_   = 0.0f;
+    float                                   iblDayMipEnd_     = 0.0f;
+    float                                   iblNightMipEnd_   = 0.0f;
+    bool                                    iblDayNightLoaded_ = false;
+    IblMode                                 iblMode_           = IblMode::Portrait;
 
     // Dynamic CBs, one-each for the full SD/SD_on_HD ABI. Sized for
     // numLights=8 worst case (720 B PS CB). Uploaded per draw.
