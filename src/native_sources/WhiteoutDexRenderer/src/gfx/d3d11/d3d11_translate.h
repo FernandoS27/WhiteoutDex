@@ -140,6 +140,17 @@ inline D3D11_FILTER ToD3D11Filter(Filter minF, Filter magF) {
     return D3D11_FILTER_MIN_LINEAR_MAG_MIP_POINT;
 }
 
+// Comparison-sampler variants (HLSL SamplerComparisonState).
+inline D3D11_FILTER ToD3D11FilterComparison(Filter minF, Filter magF) {
+    if (minF == Filter::Point && magF == Filter::Point)
+        return D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT;
+    if (minF == Filter::Linear && magF == Filter::Linear)
+        return D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    if (minF == Filter::Point && magF == Filter::Linear)
+        return D3D11_FILTER_COMPARISON_MIN_POINT_MAG_MIP_LINEAR;
+    return D3D11_FILTER_COMPARISON_MIN_LINEAR_MAG_MIP_POINT;
+}
+
 // ---- AddressMode ----
 inline D3D11_TEXTURE_ADDRESS_MODE ToD3D11(AddressMode a) {
     switch (a) {

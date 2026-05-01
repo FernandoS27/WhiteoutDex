@@ -112,10 +112,23 @@ void D3D12CommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
 
     if (rtv.ptr)
         cmd->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
-    if (dsv.ptr)
-        cmd->ClearDepthStencilView(dsv,
-            D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
+    if (dsv.ptr) {
+        // The CLEAR_FLAG_STENCIL bit is only valid when the bound DSV
+        // actually has a stencil component. Setting it on a
+        // stencil-less depth target (D32_FLOAT, D16_UNORM) trips
+        // D3D12 validation and the driver responds with device-
+        // removed (REMOVED_REASON: invalid clear flag). The shadow
+        // pass uses D32_FLOAT depth maps; the main pass uses
+        // D24_UNORM_S8_UINT. Pick the flag set by inspecting the
+        // resource's view format.
+        D3D12_CLEAR_FLAGS clearFlags = D3D12_CLEAR_FLAG_DEPTH;
+        if (depthEntry &&
+            depthEntry->desc.format == Format::D24_UNORM_S8_UINT) {
+            clearFlags |= D3D12_CLEAR_FLAG_STENCIL;
+        }
+        cmd->ClearDepthStencilView(dsv, clearFlags,
             clearDepth, clearStencil, 0, nullptr);
+    }
 }
 
 void D3D12CommandList::EndRenderPass() {

@@ -761,13 +761,13 @@ void RenderWindow::EnsureSettingsWindow() {
     if (!RegisterClassExW(&sc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
         return;
 
-    // Fixed client size — tall enough for eight rows of label+control
+    // Fixed client size — tall enough for nine rows of label+control
     // (Background colour, Exposure, SND Volume, Loop NonLooping,
-    //  Time of Day, Animate TOD, IBL Mode, DNC Model). The DNC row
-    // is wider because the edit field needs room for full
+    //  Time of Day, Animate TOD, IBL Mode, Shadows, DNC Model). The
+    // DNC row is wider because the edit field needs room for full
     // Environment/DNC/... paths (~80 chars worst case).
     constexpr int kClientW = 380;
-    constexpr int kClientH = 350;
+    constexpr int kClientH = 388;
     RECT rc = {0, 0, kClientW, kClientH};
     // WS_POPUPWINDOW gives us a thin frame + close box without resize
     // grippers; WS_CAPTION puts a title bar on top.
@@ -929,7 +929,33 @@ void RenderWindow::EnsureSettingsWindow() {
     SendMessageW(cmbIblMode_, CB_SETCURSEL,
                  static_cast<WPARAM>(service_.GetIblMode()), 0);
 
-    // --- Row 8: DNC Model override ---
+    // --- Row 8: Shadow cascades ---
+    // 0 cascades = service disabled (HAS_SHADOWS perm off, depth maps
+    // not allocated). 1-3 = number of active cascades. v1 ships with
+    // depth maps cleared but no draw walk — see shadow_pass.cpp's
+    // TODO. Toggle here exercises the shader-side perm + CB upload.
+    rowY += 38;
+    CreateWindowW(L"STATIC", L"Shadows:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        12, rowY, 90, 22, hwndSettings_, nullptr, hInst, nullptr);
+    cmbShadows_ = CreateWindowW(L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        108, rowY, 200, 200, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_SHADOWS, hInst, nullptr);
+    SendMessageW(cmbShadows_, CB_ADDSTRING, 0, (LPARAM)L"Off");
+    SendMessageW(cmbShadows_, CB_ADDSTRING, 0, (LPARAM)L"1 cascade");
+    SendMessageW(cmbShadows_, CB_ADDSTRING, 0, (LPARAM)L"2 cascades");
+    SendMessageW(cmbShadows_, CB_ADDSTRING, 0, (LPARAM)L"3 cascades");
+    {
+        int sel = 0;
+        if (auto* shadow = service_.GetShadowService()) {
+            sel = shadow->IsEnabled() ? shadow->Params().cascadeCount : 0;
+            if (sel < 0) sel = 0; else if (sel > 3) sel = 3;
+        }
+        SendMessageW(cmbShadows_, CB_SETCURSEL, static_cast<WPARAM>(sel), 0);
+    }
+
+    // --- Row 9: DNC Model override ---
     // Engine parity with JASS native SetDayNightModels(_, units).
     // Edit field accepts any CASC path (forward-slash form); Reset
     // reverts to dnc::DncService::kDefaultUnitMdl. Path applies on
@@ -1071,6 +1097,17 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
             const int sel = (int)SendMessageW(cmbIblMode_, CB_GETCURSEL, 0, 0);
             if (sel >= 0) {
                 service_.SetIblMode(static_cast<IblMode>(sel));
+                SaveSettingsIni(service_);
+            }
+            return 0;
+        }
+        if (id == IDC_SHADOWS && HIWORD(wParam) == CBN_SELCHANGE && cmbShadows_) {
+            const int sel = (int)SendMessageW(cmbShadows_, CB_GETCURSEL, 0, 0);
+            if (auto* shadow = service_.GetShadowService(); shadow && sel >= 0 && sel <= 3) {
+                shadow::ShadowParams p = shadow->Params();
+                p.enabled       = (sel > 0);
+                p.cascadeCount  = (sel > 0) ? sel : 1;
+                shadow->SetParams(p);
                 SaveSettingsIni(service_);
             }
             return 0;

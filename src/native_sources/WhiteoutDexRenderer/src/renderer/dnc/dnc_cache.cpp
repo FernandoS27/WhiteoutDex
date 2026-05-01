@@ -75,12 +75,21 @@ DncAsset* DncCache::Acquire(const std::string& path) {
     auto entry = std::make_unique<DncAsset>();
     entry->key = key;
 
-    // Parse: text vs binary by extension. The DNC files ship as .mdl
-    // text (preview.exe loads them through SpriteSetArt → MDL reader)
-    // but accepting .mdx keeps the door open for hosts that pre-bake
-    // their lighting into binary form.
+    // Parse: detect text vs binary via the file's MAGIC, not the
+    // extension. The engine asks for `*.mdl` paths but the content
+    // chain can transparently substitute the `.mdx` (binary) sibling
+    // — CASC's altExt fallback in particular returns the `.mdx` for a
+    // `.mdl` request when only the binary form is shipped. Trusting
+    // the extension would route a binary blob through the MDL parser
+    // and fail at "expected '{' but got ''" on the first non-ASCII
+    // byte. The MDX magic is the four-byte tag "MDLX" (FourCC); MDL
+    // text always starts with the keyword "Version" or whitespace.
+    const bool isBinaryMdx =
+        bytes->size() >= 4 &&
+        (*bytes)[0] == 'M' && (*bytes)[1] == 'D' &&
+        (*bytes)[2] == 'L' && (*bytes)[3] == 'X';
     try {
-        if (IsTextPath(key)) {
+        if (!isBinaryMdx) {
             std::string_view src(reinterpret_cast<const char*>(bytes->data()), bytes->size());
             std::vector<std::string> issues;
             entry->model = whiteout::mdx::convertMdlToModel(src, issues);

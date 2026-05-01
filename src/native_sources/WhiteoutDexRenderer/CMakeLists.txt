@@ -152,6 +152,8 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/dnc/dnc_asset.cpp
     src/renderer/dnc/dnc_cache.cpp
     src/renderer/dnc/dnc_service.cpp
+    src/renderer/shadow/shadow_service.cpp
+    src/renderer/shadow/shadow_pass.cpp
     src/renderer/event_emitter_pool.cpp
     src/renderer/windows_sound_emitter.cpp
     src/renderer/spn_spawner.cpp

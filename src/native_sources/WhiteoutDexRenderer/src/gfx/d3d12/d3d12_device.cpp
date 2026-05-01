@@ -251,17 +251,21 @@ bool D3D12Device::CreateRootSignatures() {
 
         // Static samplers for HD PS slots our dynamic sampler table (s0..s3)
         // doesn't cover:
-        //   s4  — s_teamColor: wrap-linear. Without a binding the HD PS's
-        //         t_teamColor.Sample returns undefined values, scrambling
-        //         the multi-layer blend's team-coloured regions on every
-        //         draw that uses TMat.hasMultiLayer.
-        //   s13 — s_iblFrom (env cube from, linear-clamp)
-        //   s14 — s_iblTo   (env cube to,   linear-clamp)
-        //   s15 — s_brdfLut (split-sum LUT, linear-clamp)
+        //   s4         — s_teamColor: wrap-linear. Without a binding the HD
+        //                PS's t_teamColor.Sample returns undefined values,
+        //                scrambling the multi-layer blend's team-coloured
+        //                regions on every draw that uses TMat.hasMultiLayer.
+        //   s10/11/12  — sd_s_shadow0..2 (SamplerComparisonState) for the
+        //                CSM PCF taps. Border address-mode + opaque-white
+        //                colour means out-of-frustum taps return 1.0
+        //                (fully lit), matching the engine's shadow path.
+        //   s13        — s_iblFrom (env cube from, linear-clamp)
+        //   s14        — s_iblTo   (env cube to,   linear-clamp)
+        //   s15        — s_brdfLut (split-sum LUT, linear-clamp)
         // Using static samplers keeps the dynamic sampler descriptor table
         // small (s0..s3 only), preventing the 2048-entry D3D12 sampler heap
         // from wrapping mid-frame under a heavy HD draw load.
-        D3D12_STATIC_SAMPLER_DESC staticSamplers[4] = {};
+        D3D12_STATIC_SAMPLER_DESC staticSamplers[7] = {};
         auto MakeSampler = [](UINT shaderRegister, D3D12_TEXTURE_ADDRESS_MODE addressMode) {
             D3D12_STATIC_SAMPLER_DESC s{};
             s.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -279,15 +283,35 @@ bool D3D12Device::CreateRootSignatures() {
             s.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
             return s;
         };
+        auto MakeShadowSampler = [](UINT shaderRegister) {
+            D3D12_STATIC_SAMPLER_DESC s{};
+            s.Filter           = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+            s.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            s.AddressV         = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            s.AddressW         = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            s.MipLODBias       = 0.0f;
+            s.MaxAnisotropy    = 0;
+            s.ComparisonFunc   = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+            s.BorderColor      = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+            s.MinLOD           = 0.0f;
+            s.MaxLOD           = D3D12_FLOAT32_MAX;
+            s.ShaderRegister   = shaderRegister;
+            s.RegisterSpace    = 0;
+            s.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            return s;
+        };
         staticSamplers[0] = MakeSampler(4,  D3D12_TEXTURE_ADDRESS_MODE_WRAP);   // s_teamColor
-        staticSamplers[1] = MakeSampler(13, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_iblFrom
-        staticSamplers[2] = MakeSampler(14, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_iblTo
-        staticSamplers[3] = MakeSampler(15, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_brdfLut
+        staticSamplers[1] = MakeShadowSampler(10);                              // sd_s_shadow0
+        staticSamplers[2] = MakeShadowSampler(11);                              // sd_s_shadow1
+        staticSamplers[3] = MakeShadowSampler(12);                              // sd_s_shadow2
+        staticSamplers[4] = MakeSampler(13, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_iblFrom
+        staticSamplers[5] = MakeSampler(14, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_iblTo
+        staticSamplers[6] = MakeSampler(15, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_brdfLut
 
         D3D12_ROOT_SIGNATURE_DESC rsd{};
         rsd.NumParameters     = static_cast<UINT>(GraphicsRP::Count);
         rsd.pParameters       = params;
-        rsd.NumStaticSamplers = 4;
+        rsd.NumStaticSamplers = 7;
         rsd.pStaticSamplers   = staticSamplers;
         rsd.Flags             = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -954,6 +978,9 @@ PipelineHandle D3D12Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     rs.AntialiasedLineEnable = TRUE;
     rs.MultisampleEnable     = FALSE;
     rs.ConservativeRaster    = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+    rs.DepthBias             = desc.rasterizer.depthBias;
+    rs.SlopeScaledDepthBias  = desc.rasterizer.slopeScaledDepthBias;
+    rs.DepthBiasClamp        = desc.rasterizer.depthBiasClamp;
     pd.RasterizerState = rs;
 
     // Depth-stencil
@@ -968,8 +995,16 @@ PipelineHandle D3D12Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     pd.InputLayout.pInputElementDescs = elems.data();
     pd.InputLayout.NumElements        = static_cast<UINT>(elems.size());
     pd.PrimitiveTopologyType          = ToD3D12TopologyType(desc.topology);
-    pd.NumRenderTargets               = 1;
-    pd.RTVFormats[0]                  = ToDXGI(desc.rtvFormat);
+    // Format::Unknown for the rtvFormat → depth-only PSO. Used by the
+    // shadow-cascade render pass which writes only the DSV. D3D12
+    // validation requires NumRenderTargets == 0 in this case;
+    // requesting an RTV with format=DXGI_FORMAT_UNKNOWN is invalid.
+    if (desc.rtvFormat == Format::Unknown) {
+        pd.NumRenderTargets = 0;
+    } else {
+        pd.NumRenderTargets = 1;
+        pd.RTVFormats[0]    = ToDXGI(desc.rtvFormat);
+    }
     pd.DSVFormat                      = ToDXGI(desc.dsvFormat);
     pd.SampleDesc.Count               = 1;
 
@@ -1012,13 +1047,26 @@ void D3D12Device::Destroy(PipelineHandle h) {
 
 SamplerHandle D3D12Device::CreateSampler(const SamplerDesc& desc) {
     D3D12_SAMPLER_DESC sd{};
-    sd.Filter         = ToD3D12Filter(desc.minFilter, desc.magFilter);
+    sd.Filter         = desc.comparison
+                            ? ToD3D12FilterComparison(desc.minFilter, desc.magFilter)
+                            : ToD3D12Filter(desc.minFilter, desc.magFilter);
     sd.AddressU       = ToD3D12(desc.addressU);
     sd.AddressV       = ToD3D12(desc.addressV);
     sd.AddressW       = ToD3D12(desc.addressW);
     sd.MaxAnisotropy  = 1;
-    sd.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sd.ComparisonFunc = desc.comparison
+                            ? ToD3D12(desc.comparisonFunc)
+                            : D3D12_COMPARISON_FUNC_NEVER;
     sd.MaxLOD         = D3D12_FLOAT32_MAX;
+    // Border colour = OPAQUE_WHITE so out-of-frustum shadow taps read
+    // 1.0 (fully lit). Only honoured when AddressMode == Border, which
+    // shadow callers pair with comparison=true.
+    if (desc.comparison) {
+        sd.BorderColor[0] = 1.0f;
+        sd.BorderColor[1] = 1.0f;
+        sd.BorderColor[2] = 1.0f;
+        sd.BorderColor[3] = 1.0f;
+    }
 
     SamplerEntry entry{};
     entry.samplerCpu = samplerPool_.Allocate();

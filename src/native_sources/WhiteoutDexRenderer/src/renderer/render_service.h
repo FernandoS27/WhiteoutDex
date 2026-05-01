@@ -14,6 +14,7 @@
 #include "particle/particle_service.h"
 #include "particle/splat_service.h"
 #include "dnc/dnc_service.h"
+#include "shadow/shadow_service.h"
 #include "ribbon.h"
 #include "sound_emitter.h"
 #include "spn_spawner.h"
@@ -42,6 +43,7 @@ namespace WhiteoutDex {
     class SceneManager;
     // Cross-instance model template (definition in renderer/model_template.h).
     struct ModelTemplate;
+    namespace shadow { class ShadowPass; }
 }
 #include <unordered_map>
 #include <unordered_set>
@@ -83,6 +85,7 @@ class RenderService {
     friend class GeosetPassHd;
     friend class DebugRenderer;
     friend class SpnSpawner;
+    friend class shadow::ShadowPass;
 public:
     // Default ctor: creates an internal SceneManager (back-compat).
     RenderService();
@@ -246,6 +249,18 @@ public:
     // the service is wired up — callers should null-check.
     dnc::DncService*       GetDncService()       { return dncService_.get(); }
     const dnc::DncService* GetDncService() const { return dncService_.get(); }
+
+    // Gfx device accessor for satellite passes (shadow pass) that
+    // need to issue command-list ops without being friends of
+    // RenderService. Returns nullptr before InitBlsShaders runs.
+    gfx::IGFXDevice*       GetGfxDevice()       { return gfx_.get(); }
+    const gfx::IGFXDevice* GetGfxDevice() const { return gfx_.get(); }
+
+    // Shadow service. Constructed by InitBlsShaders; nullptr before
+    // then. Driving the master toggle + cascade count from the host
+    // is straightforward — see SetEnabled / SetParams on the service.
+    shadow::ShadowService*       GetShadowService()       { return shadowService_.get(); }
+    const shadow::ShadowService* GetShadowService() const { return shadowService_.get(); }
 
     // Host-supplied audio backend for MDX SND EventObjects. Default is
     // a NullSoundEmitter that drops every fire — the renderer library
@@ -458,6 +473,12 @@ private:
     // BaselineLights from it through GetDncService().
     std::unique_ptr<dnc::DncService>  dncService_;
 
+    // Cascaded-shadow-map service — owns the per-cascade depth
+    // targets + computed cascade VPs. Constructed in InitBlsShaders
+    // when the gfx device is available; the per-frame Update + the
+    // shadow render pass live in RenderFrame.
+    std::unique_ptr<shadow::ShadowService> shadowService_;
+
     // EventObject infrastructure. Splats live alongside particles (same
     // VB / shader path); the SPN spawner manages sub-MDX lifecycles in
     // sync with the PE1 path; the sound service is a logging stub by
@@ -631,6 +652,39 @@ private:
     // HD CB pool (path B). Sized for 8-light worst case like Path A; the
     // actual upload size is dynamic via HdPsCbSize/SdOnHdPsCbSize.
     gfx::BufferHandle                       blsHdVsCb_        = gfx::BufferHandle::Invalid;
+    // VS b1: ShadowCascades — three world→light-clip matrices. Used
+    // by hd_vs.slang / sd_on_hd_vs.slang when HAS_SHADOWS=1.
+    gfx::BufferHandle                       blsHdShadowCb_    = gfx::BufferHandle::Invalid;
+    // PS b1: ShadowCascadeCount — single float numCascades. Read by
+    // sdSampleShadowCascades when HAS_EXTRA_VERTS=1; without this
+    // bound the shader reads 0 and the cascade selector returns 1.0
+    // at every pixel (fully lit), making shadows totally invisible.
+    gfx::BufferHandle                       blsHdShadowCountCb_ = gfx::BufferHandle::Invalid;
+
+    // Depth-only PSO for the shadow render pass. Built once at
+    // InitBlsShaders time using HD VS perm 4 (FourBoneSkinning,
+    // no tangent / colour / uv, prepass=0, shadows=0 — i.e. the
+    // standard skinned VS the renderer's own HD draw path uses
+    // every frame, so the bytecode is known-good and matches our
+    // MeshHDSkinnedNoTangent input layout). Null PS + rtvFormat =
+    // Format::Unknown gives a depth-only attachment writing to
+    // ShadowService's cascade depth maps. Slope-scaled bias mirrors
+    // the engine's avoid-acne settings (see ShadowParams).
+    gfx::PipelineHandle                     shadowPSO_        = gfx::PipelineHandle::Invalid;
+    // Sibling PSO for non-skinned geosets (buildings, doodads).
+    // HD VS perm 0 (Rigid, no tangent / colour / uv) + kParticleSD
+    // input layout — same combination the renderer's own HD draw
+    // path uses for static no-tangent meshes, so it's known-good
+    // bytecode + layout. Without this, building / doodad geosets
+    // (which have no boneVb) never write to the cascade depth map
+    // and never cast shadows.
+    gfx::PipelineHandle                     shadowPSORigid_   = gfx::PipelineHandle::Invalid;
+    // Per-draw VS CB for the shadow pass. Only the first 192 B
+    // (world / worldView / worldViewProj) are populated — the
+    // depth-only render only needs SV_POSITION; the rest of the
+    // VSOutput interpolants compile out to writes the null PS
+    // never reads.
+    gfx::BufferHandle                       shadowVsCb_       = gfx::BufferHandle::Invalid;
     gfx::BufferHandle                       blsHdPsCb_        = gfx::BufferHandle::Invalid;
     gfx::BufferHandle                       blsSdOnHdPsCb_    = gfx::BufferHandle::Invalid;
     // PS b3 debug-vis CB; only bound when the HAS_DEBUG_VIS permute

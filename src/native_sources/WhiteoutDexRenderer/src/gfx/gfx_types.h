@@ -191,6 +191,13 @@ struct SamplerDesc {
     AddressMode addressU  = AddressMode::Wrap;
     AddressMode addressV  = AddressMode::Wrap;
     AddressMode addressW  = AddressMode::Wrap;
+    // When true, the resulting sampler is a SamplerComparisonState
+    // (D3D12_FILTER_COMPARISON_*). Required for shadow-map PCF
+    // (`SampleCmpLevelZero`); only consumers like sd_t_shadow0..2 need
+    // it. Border address-mode + a non-zero comparison func is the
+    // natural pairing — out-of-frustum taps return 1.0 (fully lit).
+    bool        comparison       = false;
+    CompareOp   comparisonFunc   = CompareOp::LessEqual;
 };
 
 // ============================================================================
@@ -235,6 +242,14 @@ struct RasterizerDesc {
     FillMode fill          = FillMode::Solid;
     bool     frontCCW      = false;
     bool     scissorEnable = false;
+    // Depth-bias knobs the shadow PSO sets. Default-zero leaves every
+    // existing pass untouched; the shadow render pass enables them to
+    // avoid surface acne / Peter-Panning. Maps directly to
+    // D3D11/12_RASTERIZER_DESC's DepthBias / SlopeScaledDepthBias /
+    // DepthBiasClamp fields.
+    int      depthBias              = 0;     // integer mul of min-resolvable depth
+    float    slopeScaledDepthBias   = 0.0f;  // mul of |dz/d{x,y}|
+    float    depthBiasClamp         = 0.0f;  // 0 = unclamped
 };
 
 struct GraphicsPipelineDesc {

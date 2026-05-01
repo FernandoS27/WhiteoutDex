@@ -101,6 +101,7 @@ private:
     HWND editDncPath_    = nullptr;
     HWND btnDncReset_    = nullptr;
     HWND cmbIblMode_     = nullptr;
+    HWND cmbShadows_     = nullptr;
     HMENU hMenuBar_      = nullptr;
     HMENU hMenuView_     = nullptr;
     HMENU hMenuProbe_    = nullptr;
@@ -133,6 +134,7 @@ private:
         IDC_DNC_PATH,
         IDC_DNC_RESET,
         IDC_IBL_MODE,
+        IDC_SHADOWS,
         // View menu toggles
         IDM_VIEW_GRID      = 1100,
         IDM_VIEW_PARTICLES,

@@ -5,6 +5,7 @@
 
 #include "../renderer/render_service.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cwchar>
@@ -114,10 +115,39 @@ void LoadSettingsIni(RenderService& service) {
     // 1=DayNight). Sentinel -1 leaves the service's default in place
     // (Portrait), so a missing/unparseable key won't yank a user into
     // DayNight unexpectedly.
+    //
+    // Skip the call when the saved value already matches the active
+    // mode: SetIblMode tears down + reloads the IBL probe pair, and
+    // doing that on the main thread immediately after the render
+    // thread comes up (Open returns the moment the first frame is
+    // queued) races with in-flight HD draws that hold the old probe
+    // SRV — manifesting as a black/garbled probe until the user
+    // re-picks one through the UI. The default `Portrait` already
+    // matches what InitBlsShaders just loaded, so a saved
+    // `IblMode=0` would otherwise force a useless reload every
+    // launch.
     {
         const int v = ::GetPrivateProfileIntW(kSection, L"IblMode",
                                               -1, iniPath.c_str());
-        if (v == 0 || v == 1) service.SetIblMode(static_cast<IblMode>(v));
+        if ((v == 0 || v == 1)
+            && static_cast<IblMode>(v) != service.GetIblMode()) {
+            service.SetIblMode(static_cast<IblMode>(v));
+        }
+    }
+
+    // ShadowCascades — 0..3. Deliberately NOT restored on startup:
+    // toggling the cascade service ON before the focus model has
+    // loaded triggers a slow GPU TDR ("hangs after a while") that
+    // toggling at runtime through the Settings combo doesn't, and
+    // the root cause is still under investigation. Saving the
+    // value via SaveSettingsIni still works so the user's preference
+    // doesn't get lost — it's just not auto-applied next launch.
+    // Re-enable by deleting this guard once the startup race / state
+    // accumulation is properly diagnosed.
+    {
+        const int v = ::GetPrivateProfileIntW(kSection, L"ShadowCascades",
+                                              -1, iniPath.c_str());
+        (void)v;
     }
 
     // DNC TOD knobs. The DncService is constructed lazily inside
@@ -199,6 +229,14 @@ void SaveSettingsIni(const RenderService& service) {
         ::swprintf_s(buf, L"%u",
                      static_cast<unsigned>(service.GetIblMode()));
         ::WritePrivateProfileStringW(kSection, L"IblMode", buf, iniPath.c_str());
+    }
+    if (const auto* shadow = service.GetShadowService()) {
+        const int cascades = shadow->IsEnabled()
+                                 ? std::clamp(shadow->Params().cascadeCount, 1, 3)
+                                 : 0;
+        wchar_t buf[8] = {};
+        ::swprintf_s(buf, L"%d", cascades);
+        ::WritePrivateProfileStringW(kSection, L"ShadowCascades", buf, iniPath.c_str());
     }
     if (const auto* dnc = service.GetDncService()) {
         wchar_t buf[32] = {};

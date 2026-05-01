@@ -166,7 +166,7 @@ void BuildHdPsCb(HdPsCb& out, const FrameInputs& in, const MatParams& mat) {
     // revisit once the shipped BLS is regenerated from the new sources.
     for (int i = 0; i < nLights; ++i) {
         out.lights[i] = in.lights[i];
-        out.lights[i]._pad = { 1.0f, 0.0f, 0.0f, 0.0f };
+        out.lights[i]._pad = { 0.25f, 0.0f, 0.0f, 0.0f };
     }
     for (int i = nLights; i < kMaxLights; ++i) out.lights[i] = {};
 }

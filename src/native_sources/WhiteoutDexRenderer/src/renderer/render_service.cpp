@@ -28,6 +28,9 @@
 #include "bls/scoped_cb.h"
 #include "ibl/split_sum.h"
 #include "ibl/env_probe.h"
+#include "shadow/shadow_pass.h"
+#include "model_source_utils.h"   // NormalizeTextureKey, ExtensionLower, DecodeToRGBA8
+#include "../io/texture_image_usage.h" // ApplyTextureSrgbPolicy
 #include <whiteout/models/mdx/parser.h>
 #include <algorithm>
 #include <cmath>
@@ -2306,6 +2309,21 @@ bool RenderService::InitBlsShaders() {
         dncService_ = std::make_unique<dnc::DncService>(scene_->ActiveContentProvider());
     }
 
+    // Shadow service: constructed once the gfx device is up so the
+    // per-cascade depth targets can be allocated lazily on first
+    // SetParams / SetEnabled. Disabled by default — flip via
+    // GetShadowService()->SetEnabled(true) or the Settings combo.
+    if (!shadowService_) {
+        shadowService_ = std::make_unique<shadow::ShadowService>(gfx_.get());
+    }
+
+    if (shadowVsCb_ == gfx::BufferHandle::Invalid) {
+        shadowVsCb_ = gfx_->CreateBuffer({
+            .size  = sizeof(bls::HdVsCb),
+            .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        });
+    }
+
     blsShaderCache_ = std::make_unique<bls::BlsShaderCache>(gfx_.get(), scene_->ActiveContentProvider());
     blsPrograms_    = std::make_unique<bls::BlsProgramCatalog>(blsShaderCache_.get());
     blsPsoBuilder_  = std::make_unique<bls::BlsPsoBuilder>(gfx_.get());
@@ -2406,6 +2424,21 @@ bool RenderService::InitBlsShaders() {
         .size  = sizeof(bls::HdVsCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
     });
+    // Shadow cascades VS CB at b1 — three Matrix44f. Required when
+    // the HAS_SHADOWS perm of hd_vs.slang is selected; the helper
+    // computeShadowCascades(worldPos, vsCB1, ...) reads the cascade
+    // matrices from this CB and writes shadowClip0..2 interpolants.
+    blsHdShadowCb_ = gfx_->CreateBuffer({
+        .size  = sizeof(bls::HdShadowCascadesCb),
+        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+    });
+    // PS b1 — ShadowCascadeCount. Tells sdSampleShadowCascades how
+    // many cascades to iterate. Without this bound the shader reads
+    // 0 and the early-out path returns "fully lit" everywhere.
+    blsHdShadowCountCb_ = gfx_->CreateBuffer({
+        .size  = sizeof(bls::SdOnHdShadowCascadeCountCb),
+        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+    });
     blsHdPsCb_ = gfx_->CreateBuffer({
         .size  = sizeof(bls::HdPsCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
@@ -2469,13 +2502,20 @@ void RenderService::SetEnvProbe(const std::string& relPath) {
 
     gfx::TextureHandle fromHandle = gfx::TextureHandle::Invalid;
     int mips = 0;
+    bool readOk = false;
     if (!relPath.empty() && scene_->ActiveContentProvider()) {
         auto probe = ibl::LoadEnvProbe(*gfx_, *scene_->ActiveContentProvider(), relPath);
         if (probe.handle != gfx::TextureHandle::Invalid) {
             fromHandle = probe.handle;
             mips       = probe.mipCount;
+            readOk     = true;
         }
     }
+    std::fprintf(stderr,
+                 "[ibl] SetEnvProbe('%s') -> %s (mips=%d)\n",
+                 relPath.c_str(),
+                 readOk ? "loaded" : "FAILED, using debug procedural",
+                 mips);
     if (fromHandle == gfx::TextureHandle::Invalid) {
         OutputDebugStringA("[WDEX IBL] probe load failed — using procedural debug probe\n");
         fromHandle = ibl::CreateDebugFacesEnvProbe(*gfx_);
@@ -2562,6 +2602,18 @@ void RenderService::ShutdownBlsShaders() {
         gfx_->Destroy(blsSdVsCb_);     blsSdVsCb_     = gfx::BufferHandle::Invalid;
         gfx_->Destroy(blsSdPsCb_);     blsSdPsCb_     = gfx::BufferHandle::Invalid;
         gfx_->Destroy(blsHdVsCb_);     blsHdVsCb_     = gfx::BufferHandle::Invalid;
+        gfx_->Destroy(blsHdShadowCb_); blsHdShadowCb_ = gfx::BufferHandle::Invalid;
+        gfx_->Destroy(blsHdShadowCountCb_); blsHdShadowCountCb_ = gfx::BufferHandle::Invalid;
+        if (shadowPSO_  != gfx::PipelineHandle::Invalid) {
+            gfx_->Destroy(shadowPSO_);  shadowPSO_  = gfx::PipelineHandle::Invalid;
+        }
+        if (shadowPSORigid_ != gfx::PipelineHandle::Invalid) {
+            gfx_->Destroy(shadowPSORigid_);
+            shadowPSORigid_ = gfx::PipelineHandle::Invalid;
+        }
+        if (shadowVsCb_ != gfx::BufferHandle::Invalid) {
+            gfx_->Destroy(shadowVsCb_); shadowVsCb_ = gfx::BufferHandle::Invalid;
+        }
         gfx_->Destroy(blsHdPsCb_);     blsHdPsCb_     = gfx::BufferHandle::Invalid;
         gfx_->Destroy(blsSdOnHdPsCb_); blsSdOnHdPsCb_ = gfx::BufferHandle::Invalid;
         gfx_->Destroy(blsHdDebugVisCb_); blsHdDebugVisCb_ = gfx::BufferHandle::Invalid;
@@ -2934,6 +2986,54 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
         useHdr ? hdrClear(bB) : sdClear(bB),
         1.0f,
     };
+    // Shadow pass: runs BEFORE the main scene pass so the cascade
+    // depth maps are populated and transitioned to PIXEL_SHADER_RESOURCE
+    // by the time the HD pass binds them at t10..t12. The pass
+    // services itself with its own BeginRenderPass / EndRenderPass
+    // calls per cascade. Cheap when the service is disabled (early
+    // return before any GPU work). v1 only clears the depth maps;
+    // see shadow_pass.cpp for the v2 draw-walk TODO.
+    if (shadowService_ && shadowService_->IsEnabled()) {
+        Matrix44f csmCamView, csmCamProj;
+        {
+            std::lock_guard<std::mutex> lock(dataMutex_);
+            const float aspect = (target.height > 0)
+                ? (float)target.width / (float)target.height : 1.0f;
+            csmCamView = scene_->Camera().ViewLH();
+            csmCamProj = scene_->Camera().ProjectionLH(aspect);
+        }
+        // Light direction: prefer DNC sample when available, fall back
+        // to a sensible default (pointing down-and-back so the model's
+        // front lights up).
+        Vector3f lightDirWS = { -0.3f, 0.5f, -0.7f };
+        if (auto* dnc = GetDncService(); dnc && dnc->HasAsset()) {
+            const auto sample = dnc->SampleNow();
+            if (sample.valid) lightDirWS = sample.worldDir;
+        }
+        // Scene bounds: focus actor's centroid + a radius derived from
+        // the orbital camera distance (the camera is sized to the
+        // model — 2× the bounds radius — so distance/2 is a tight
+        // upper bound on the model's extent). Falls back to a fixed
+        // value when the camera is in Direct mode (preset, no
+        // orbital distance).
+        // Future-terrain swap-out is documented in shadow_service.h.
+        Vector3f sceneCenter = { 0.0f, 0.0f, 0.0f };
+        float    sceneRadius = 150.0f;
+        if (auto* hero = focusModel(); hero) {
+            sceneCenter.x = hero->worldTransform.data[3][0];
+            sceneCenter.y = hero->worldTransform.data[3][1];
+            sceneCenter.z = hero->worldTransform.data[3][2];
+        }
+        if (scene_->Camera().GetMode() == Camera::Mode::Orbital) {
+            sceneRadius = std::max(50.0f, scene_->Camera().GetDistance() * 0.6f);
+        }
+        shadowService_->Update(csmCamView, csmCamProj,
+                               scene_->Camera().GetNearZ(),
+                               scene_->Camera().GetFarZ(),
+                               lightDirWS, sceneCenter, sceneRadius);
+        shadow::ShadowPass(*this).Run(*shadowService_);
+    }
+
     cmd->BeginRenderPass(sceneTarget, target.depth, clearColor, 1.0f, 0);
     cmd->SetViewport({0, 0, (float)target.width, (float)target.height, 0, 1});
 
@@ -3352,6 +3452,22 @@ public:
             RenderService::kIblSplitSumLutName);
         if (lut != gfx::TextureHandle::Invalid)
             cmd->BindShaderResource(gfx::ShaderStage::Pixel, 15, lut);
+
+        // Shadow cascade SRVs at t10..t12. Bound regardless of
+        // service.enabled — when shadows are off the depth maps
+        // contain garbage / 1.0 (cleared) and the HAS_SHADOWS perm
+        // isn't selected, so the PS doesn't sample. Binding them
+        // unconditionally avoids a "Texture2D used unbound" validator
+        // hit on the rare frame where rs.shadows flips between perms.
+        if (rs_.shadowService_) {
+            for (int c = 0; c < 3; ++c) {
+                const gfx::TextureHandle sh = rs_.shadowService_->depthTarget(c);
+                if (sh != gfx::TextureHandle::Invalid) {
+                    cmd->BindShaderResource(gfx::ShaderStage::Pixel,
+                                            10 + static_cast<uint32_t>(c), sh);
+                }
+            }
+        }
     }
 
     bls::BaselineLights Baseline(const Matrix44f& view) const {
@@ -3366,12 +3482,31 @@ public:
                 const Vector3f dirVS = whiteout::transform_normal(
                     Vector3f{ -sample.worldDir.x, -sample.worldDir.y, -sample.worldDir.z },
                     view);
+                static bool s_loggedDncSample = false;
+                if (!s_loggedDncSample) {
+                    s_loggedDncSample = true;
+                    std::fprintf(stderr,
+                        "[dnc] First InGame sample → diffuse=(%.3f, %.3f, %.3f) "
+                        "ambient=(%.3f, %.3f, %.3f) "
+                        "worldDir=(%.3f, %.3f, %.3f) dirVS=(%.3f, %.3f, %.3f)\n",
+                        sample.diffuse.x, sample.diffuse.y, sample.diffuse.z,
+                        sample.ambient.x, sample.ambient.y, sample.ambient.z,
+                        sample.worldDir.x, sample.worldDir.y, sample.worldDir.z,
+                        dirVS.x, dirVS.y, dirVS.z);
+                }
                 return { sample.ambient, sample.diffuse, dirVS };
             }
         }
         // HD baseline key (used ONLY when the model has no authored MDX
         // lights). Camera-attached headlight: LH view has forward = +Z so
         // direction-to-source is -Z in view space regardless of camera pose.
+        static bool s_loggedFallback = false;
+        if (!s_loggedFallback) {
+            s_loggedFallback = true;
+            std::fprintf(stderr,
+                "[dnc] Using GREY fallback baseline (DNC asset missing OR "
+                "LightingMode != InGame OR sample invalid)\n");
+        }
         return {
             /*ambient*/       { kHdBaselineAmbientColor.x, kHdBaselineAmbientColor.y, kHdBaselineAmbientColor.z },
             /*diffuse*/       { kHdBaselineLightColor.x,   kHdBaselineLightColor.y,   kHdBaselineLightColor.z },
@@ -3517,7 +3652,7 @@ public:
             rs.depthWrite     = matParams.DepthWriteEnabled();
             rs.lightingEnabled= !unlit && activeN > 0;
             rs.prepass        = false;
-            rs.shadows        = false;
+            rs.shadows        = rs_.shadowService_ && rs_.shadowService_->IsEnabled();
             // Drives the HD PS multiLayer specialisation (TMat =
             // MultiLayerMaterial). Without this the compiler
             // dead-code-strips every `t_teamColor.Sample(...)` call in
@@ -3581,6 +3716,19 @@ public:
             }
             cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, rs_.blsHdVsCb_);
 
+            // VS b1 = ShadowCascades. Always populate + bind so the
+            // HAS_SHADOWS=1 perm has a valid CB; when the service is
+            // disabled the cascade VPs are identity and the shader's
+            // isInShadowFrustum check rejects the (0,0,0) clip-space
+            // sample, falling through to "fully lit."
+            if (rs_.shadowService_ && rs_.blsHdShadowCb_ != gfx::BufferHandle::Invalid) {
+                if (auto sc = bls::ScopedCb<bls::HdShadowCascadesCb>(rs_.gfx_.get(),
+                                                                      rs_.blsHdShadowCb_)) {
+                    rs_.shadowService_->FillVsCb(*sc);
+                }
+                cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1, rs_.blsHdShadowCb_);
+            }
+
             // PS CB layout diverges by program: hd_ps.slang reads PBR
             // fields directly (HdPsCb) while sd_on_hd_ps.slang reads a
             // padded legacy layout (SdOnHdPsCb) with invViewRow rows and
@@ -3624,6 +3772,31 @@ public:
                     bls::BuildSdOnHdPsCb(*ps, frame, matParams);
                 }
                 cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, rs_.blsSdOnHdPsCb_);
+            }
+
+            // PS b1 = ShadowCascadeCount. The slang shaders read
+            // this via `asuint(sdPsCB1.numCascades)` — the CB slot
+            // is declared `float` in cb_structs.slang but the
+            // engine writes a raw int (`*(_DWORD *)... = s_maxCascade
+            // + 1` in WorldShadowBind @ 0x7ff609b0f8cf, verified
+            // via IDA Pro). Same trap as the resolved HD lightCount
+            // TDR: writing the value as an IEEE-754 float would
+            // give bit pattern 0x40400000 for 3.0f, and any
+            // downstream uses of `(int)numCascades` outside the
+            // hard-capped cascade-selector loop would see a
+            // billion-iteration count. Pack as raw uint bits via
+            // memcpy, mirroring BuildHdPsCb's lightCount fix.
+            if (rs_.blsHdShadowCountCb_ != gfx::BufferHandle::Invalid) {
+                if (auto cnt = bls::ScopedCb<bls::SdOnHdShadowCascadeCountCb>(
+                        rs_.gfx_.get(), rs_.blsHdShadowCountCb_)) {
+                    const int n = (rs_.shadowService_ && rs_.shadowService_->IsEnabled())
+                                      ? rs_.shadowService_->cascadeCount()
+                                      : 0;
+                    const uint32_t bits = static_cast<uint32_t>(n);
+                    std::memcpy(&cnt->numCascades, &bits, sizeof(float));
+                    cnt->_pad[0] = cnt->_pad[1] = cnt->_pad[2] = 0.0f;
+                }
+                cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, rs_.blsHdShadowCountCb_);
             }
 
             // Bind the HD PBR texture stack. Slots:

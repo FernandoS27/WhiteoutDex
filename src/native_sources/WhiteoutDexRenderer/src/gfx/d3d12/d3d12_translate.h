@@ -156,6 +156,19 @@ inline D3D12_FILTER ToD3D12Filter(Filter minF, Filter magF) {
     return D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT;
 }
 
+// Comparison-sampler variants. SamplerComparisonState in HLSL is a
+// distinct sampler type; the D3D filter must be one of the
+// `_COMPARISON_*` enums or `SampleCmp`/`SampleCmpLevelZero` returns 0.
+inline D3D12_FILTER ToD3D12FilterComparison(Filter minF, Filter magF) {
+    if (minF == Filter::Point && magF == Filter::Point)
+        return D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT;
+    if (minF == Filter::Linear && magF == Filter::Linear)
+        return D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    if (minF == Filter::Point && magF == Filter::Linear)
+        return D3D12_FILTER_COMPARISON_MIN_POINT_MAG_MIP_LINEAR;
+    return D3D12_FILTER_COMPARISON_MIN_LINEAR_MAG_MIP_POINT;
+}
+
 // ---- AddressMode ----
 inline D3D12_TEXTURE_ADDRESS_MODE ToD3D12(AddressMode a) {
     switch (a) {

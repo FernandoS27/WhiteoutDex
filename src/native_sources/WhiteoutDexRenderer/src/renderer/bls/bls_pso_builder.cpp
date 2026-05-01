@@ -101,6 +101,8 @@ constexpr gfx::InputElement kMeshHDSkinnedNoTangent[] = {
     { "ATTR", 6, gfx::Format::R8G8B8A8_UINT,      4,  1 }, // bone indices
 };
 
+} // namespace (close anonymous so LayoutFor below has external linkage)
+
 std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k) {
     switch (k) {
         case VertexLayoutKind::MeshSD:        return {kMeshSD,        std::size(kMeshSD)};
@@ -116,6 +118,8 @@ std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k) {
     }
     return {kMeshSD, std::size(kMeshSD)};
 }
+
+namespace {  // re-open anonymous namespace for the remaining helpers
 
 // ============================================================================
 // Blend / depth / raster derived from MatParams. The factor table matches

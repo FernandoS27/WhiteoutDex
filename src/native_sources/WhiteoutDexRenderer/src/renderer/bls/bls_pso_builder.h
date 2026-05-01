@@ -52,6 +52,11 @@ enum class VertexLayoutKind : uint8_t {
     MeshHDSkinnedNoTangent = 6,
 };
 
+// Returns the InputElement array for a given vertex layout family.
+// Useful when callers build their own PSOs outside the BlsPsoBuilder
+// cache (the shadow render pass does this for its depth-only PSO).
+std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k);
+
 struct PsoRequest {
     const BlsProgram*      program    = nullptr;
     uint32_t               vsIndex    = 0;

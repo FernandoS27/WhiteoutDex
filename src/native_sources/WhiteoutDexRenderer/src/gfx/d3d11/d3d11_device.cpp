@@ -203,20 +203,33 @@ TextureHandle D3D11Device::CreateTexture(const TextureDesc& desc, const void* in
         ? 0u /* D3D11 full chain sentinel */
         : static_cast<UINT>(desc.mipLevels);
 
+    const bool isDepth = hasFlag(desc.usage, TextureUsage::DepthStencil);
+    const bool isSrv   = hasFlag(desc.usage, TextureUsage::ShaderResource);
+
     D3D11_TEXTURE2D_DESC td{};
     td.Width     = static_cast<UINT>(desc.width);
     td.Height    = static_cast<UINT>(desc.height);
     td.MipLevels = mipCount;
     td.ArraySize = arraySize;
-    td.Format    = ToDXGI(desc.format);
+    // Depth + SRV: D3D11 forbids creating a Texture2D with a typed depth
+    // format (D24_UNORM_S8_UINT, D32_FLOAT) bound as both DEPTH_STENCIL
+    // and SHADER_RESOURCE. The resource itself must be TYPELESS, with
+    // the DSV cast back to the typed depth format and the SRV cast to
+    // the matching colour format (R24..G8 / R32_FLOAT). The DSV/SRV
+    // create paths below already handle the per-view cast.
+    td.Format    = (isDepth && isSrv)
+                       ? (desc.format == Format::D24_UNORM_S8_UINT
+                              ? DXGI_FORMAT_R24G8_TYPELESS
+                              : DXGI_FORMAT_R32_TYPELESS)
+                       : ToDXGI(desc.format);
     td.SampleDesc.Count = 1;
     if (desc.isCube) td.MiscFlags |= D3D11_RESOURCE_MISC_TEXTURECUBE;
 
-    if (hasFlag(desc.usage, TextureUsage::ShaderResource))
+    if (isSrv)
         td.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
     if (hasFlag(desc.usage, TextureUsage::RenderTarget))
         td.BindFlags |= D3D11_BIND_RENDER_TARGET;
-    if (hasFlag(desc.usage, TextureUsage::DepthStencil))
+    if (isDepth)
         td.BindFlags |= D3D11_BIND_DEPTH_STENCIL;
 
     td.Usage = initialPixels ? D3D11_USAGE_IMMUTABLE : D3D11_USAGE_DEFAULT;
@@ -436,6 +449,9 @@ PipelineHandle D3D11Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     rd.ScissorEnable          = desc.rasterizer.scissorEnable ? TRUE : FALSE;
     rd.DepthClipEnable        = TRUE;
     rd.AntialiasedLineEnable  = TRUE;
+    rd.DepthBias              = desc.rasterizer.depthBias;
+    rd.SlopeScaledDepthBias   = desc.rasterizer.slopeScaledDepthBias;
+    rd.DepthBiasClamp         = desc.rasterizer.depthBiasClamp;
     device_->CreateRasterizerState(&rd, &entry.rasterState);
 
     // Input layout from VS bytecode
@@ -484,13 +500,23 @@ void D3D11Device::Destroy(PipelineHandle h) {
 
 SamplerHandle D3D11Device::CreateSampler(const SamplerDesc& desc) {
     D3D11_SAMPLER_DESC sd{};
-    sd.Filter   = ToD3D11Filter(desc.minFilter, desc.magFilter);
+    sd.Filter   = desc.comparison
+                      ? ToD3D11FilterComparison(desc.minFilter, desc.magFilter)
+                      : ToD3D11Filter(desc.minFilter, desc.magFilter);
     sd.AddressU = ToD3D11(desc.addressU);
     sd.AddressV = ToD3D11(desc.addressV);
     sd.AddressW = ToD3D11(desc.addressW);
     sd.MaxAnisotropy = 1;
-    sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    sd.ComparisonFunc = desc.comparison
+                            ? ToD3D11(desc.comparisonFunc)
+                            : D3D11_COMPARISON_NEVER;
     sd.MaxLOD = D3D11_FLOAT32_MAX;
+    if (desc.comparison) {
+        sd.BorderColor[0] = 1.0f;
+        sd.BorderColor[1] = 1.0f;
+        sd.BorderColor[2] = 1.0f;
+        sd.BorderColor[3] = 1.0f;
+    }
 
     SamplerEntry entry{};
     HRESULT hr = device_->CreateSamplerState(&sd, &entry.sampler);
