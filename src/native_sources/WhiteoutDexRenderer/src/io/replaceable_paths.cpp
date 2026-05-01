@@ -91,7 +91,11 @@ int FindAny(const SlkTable& t, std::initializer_list<const char*> names) {
 
 void LoadCliffTypes(IContentProvider& cp, DataCache& cache) {
     auto data = cp.ReadFile("TerrainArt\\CliffTypes.slk", nullptr);
-    if (!data) return;
+    if (!data) {
+        std::fprintf(stderr,
+                     "[events] ERR: CliffTypes.slk: not found\n");
+        return;
+    }
     SlkTable t = ParseSlk(*data);
     LogHeaders("CliffTypes.slk", t);
     const int colId   = FindAny(t, {"cliffID"});

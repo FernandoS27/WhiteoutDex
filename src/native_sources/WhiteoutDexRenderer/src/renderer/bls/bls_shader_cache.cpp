@@ -1,6 +1,7 @@
 #include "bls_shader_cache.h"
 
 #include <cctype>
+#include <cstdio>
 
 namespace WhiteoutDex::bls {
 
@@ -39,7 +40,12 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
 
     const std::string path = std::string("Shaders/") + StagePrefix(stage) + "/" + key + ".bls";
     auto bytes = contentProvider_->ReadFile(path);
-    if (!bytes || bytes->empty()) return nullptr;
+    if (!bytes || bytes->empty()) {
+        std::fprintf(stderr,
+                     "[bls] ERR: shader read FAIL '%s'\n",
+                     path.c_str());
+        return nullptr;
+    }
 
     auto entry = std::make_unique<BlsShader>();
     entry->name  = key;
@@ -47,6 +53,9 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
 
     std::string err;
     if (!entry->container.Load(*bytes, &err)) {
+        std::fprintf(stderr,
+                     "[bls] ERR: shader parse FAIL '%s': %s\n",
+                     path.c_str(), err.c_str());
         return nullptr;
     }
 

@@ -2338,6 +2338,67 @@ bool RenderService::InitBlsShaders() {
         bls::GxShaderID::HD, "HD", "HD"
     });
 
+    // Depth-only PSOs for the shadow render pass. Two siblings:
+    //   * shadowPSO_      — HD VS perm 4 (FourBoneSkinning, no
+    //                       tangent / colour / uv, prepass=0,
+    //                       shadows=0) + MeshHDSkinnedNoTangent
+    //                       layout. For skinned geosets (heroes,
+    //                       animated doodads).
+    //   * shadowPSORigid_ — HD VS perm 0 (Rigid, no tangent /
+    //                       colour / uv) + kParticleSD layout. For
+    //                       static geosets (building walls, roofs,
+    //                       most doodad meshes). Mirrors the
+    //                       layout the HD draw path uses for the
+    //                       same `(no bones, no tangent)` case so
+    //                       we know the input-signature-vs-layout
+    //                       match is exactly what the engine
+    //                       expects.
+    // Both: null PS, rtvFormat=Unknown (depth-only),
+    // dsvFormat=D32_FLOAT, frontCCW=true (matches HD winding so
+    // the depth map captures the FRONT of every model — back-face
+    // writing leaves a single-model scene with no visible shadow
+    // at all). Slope-scaled bias from ShadowParams.
+    if (blsHdProgram_ && blsHdProgram_->vs &&
+        !blsHdProgram_->vs->permuteHandles.empty()) {
+        const shadow::ShadowParams& sp = shadowService_
+            ? shadowService_->Params()
+            : shadow::ShadowParams{};
+
+        auto buildShadowPso = [&](uint32_t permIndex,
+                                   bls::VertexLayoutKind layoutKind)
+            -> gfx::PipelineHandle {
+            if (permIndex >= blsHdProgram_->vs->permuteHandles.size())
+                return gfx::PipelineHandle::Invalid;
+            gfx::GraphicsPipelineDesc gpd{};
+            gpd.vs                              = blsHdProgram_->vs->permuteHandles[permIndex];
+            gpd.ps                              = gfx::ShaderHandle{0};
+            gpd.inputLayout                     = bls::LayoutFor(layoutKind);
+            gpd.topology                        = gfx::PrimitiveTopology::TriangleList;
+            gpd.depthStencil.depthTest          = true;
+            gpd.depthStencil.depthWrite         = true;
+            gpd.depthStencil.depthCompare       = gfx::CompareOp::LessEqual;
+            gpd.rasterizer.cull                 = gfx::CullMode::Back;
+            gpd.rasterizer.frontCCW             = true;
+            gpd.rasterizer.depthBias            = sp.depthBias;
+            gpd.rasterizer.slopeScaledDepthBias = sp.slopeScaledBias;
+            gpd.rasterizer.depthBiasClamp       = sp.depthBiasClamp;
+            gpd.rtvFormat                       = gfx::Format::Unknown;
+            gpd.dsvFormat                       = gfx::Format::D32_FLOAT;
+            return gfx_->CreateGraphicsPipeline(gpd);
+        };
+
+        if (shadowPSO_ == gfx::PipelineHandle::Invalid) {
+            shadowPSO_ = buildShadowPso(
+                /*permIndex=*/4,
+                bls::VertexLayoutKind::MeshHDSkinnedNoTangent);
+        }
+        if (shadowPSORigid_ == gfx::PipelineHandle::Invalid) {
+            shadowPSORigid_ = buildShadowPso(
+                /*permIndex=*/0,
+                bls::VertexLayoutKind::ParticleSD);
+        }
+    }
+
     // Tonemap pair (engine slot 14 = Sprite VS + Tonemap PS). Both come
     // through the BLS shader cache. The catalog's Load() expects matched
     // mat-shader names so we acquire each stage directly here.
@@ -2502,22 +2563,18 @@ void RenderService::SetEnvProbe(const std::string& relPath) {
 
     gfx::TextureHandle fromHandle = gfx::TextureHandle::Invalid;
     int mips = 0;
-    bool readOk = false;
     if (!relPath.empty() && scene_->ActiveContentProvider()) {
         auto probe = ibl::LoadEnvProbe(*gfx_, *scene_->ActiveContentProvider(), relPath);
         if (probe.handle != gfx::TextureHandle::Invalid) {
             fromHandle = probe.handle;
             mips       = probe.mipCount;
-            readOk     = true;
         }
     }
-    std::fprintf(stderr,
-                 "[ibl] SetEnvProbe('%s') -> %s (mips=%d)\n",
-                 relPath.c_str(),
-                 readOk ? "loaded" : "FAILED, using debug procedural",
-                 mips);
     if (fromHandle == gfx::TextureHandle::Invalid) {
-        OutputDebugStringA("[WDEX IBL] probe load failed — using procedural debug probe\n");
+        std::fprintf(stderr,
+                     "[ibl] WARN: probe '%s' failed to load — using debug "
+                     "procedural\n",
+                     relPath.c_str());
         fromHandle = ibl::CreateDebugFacesEnvProbe(*gfx_);
         mips       = ibl::kEnvProbeMipLevels;
     }
@@ -3482,31 +3539,12 @@ public:
                 const Vector3f dirVS = whiteout::transform_normal(
                     Vector3f{ -sample.worldDir.x, -sample.worldDir.y, -sample.worldDir.z },
                     view);
-                static bool s_loggedDncSample = false;
-                if (!s_loggedDncSample) {
-                    s_loggedDncSample = true;
-                    std::fprintf(stderr,
-                        "[dnc] First InGame sample → diffuse=(%.3f, %.3f, %.3f) "
-                        "ambient=(%.3f, %.3f, %.3f) "
-                        "worldDir=(%.3f, %.3f, %.3f) dirVS=(%.3f, %.3f, %.3f)\n",
-                        sample.diffuse.x, sample.diffuse.y, sample.diffuse.z,
-                        sample.ambient.x, sample.ambient.y, sample.ambient.z,
-                        sample.worldDir.x, sample.worldDir.y, sample.worldDir.z,
-                        dirVS.x, dirVS.y, dirVS.z);
-                }
                 return { sample.ambient, sample.diffuse, dirVS };
             }
         }
         // HD baseline key (used ONLY when the model has no authored MDX
         // lights). Camera-attached headlight: LH view has forward = +Z so
         // direction-to-source is -Z in view space regardless of camera pose.
-        static bool s_loggedFallback = false;
-        if (!s_loggedFallback) {
-            s_loggedFallback = true;
-            std::fprintf(stderr,
-                "[dnc] Using GREY fallback baseline (DNC asset missing OR "
-                "LightingMode != InGame OR sample invalid)\n");
-        }
         return {
             /*ambient*/       { kHdBaselineAmbientColor.x, kHdBaselineAmbientColor.y, kHdBaselineAmbientColor.z },
             /*diffuse*/       { kHdBaselineLightColor.x,   kHdBaselineLightColor.y,   kHdBaselineLightColor.z },

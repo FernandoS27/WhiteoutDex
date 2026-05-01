@@ -12,6 +12,7 @@
 #include <whiteout/models/mdx/parser.h>
 
 #include <chrono>
+#include <cstdio>
 #include <span>
 #include <utility>
 
@@ -168,14 +169,27 @@ std::shared_ptr<ModelTemplate>
 ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
     if (!contentProvider_) return nullptr;
     auto fileData = contentProvider_->ReadFile(mdxPath);
-    if (!fileData || fileData->empty()) return nullptr;
+    if (!fileData || fileData->empty()) {
+        std::fprintf(stderr,
+                     "[model] ERR: MDX read FAIL '%s'\n",
+                     mdxPath.c_str());
+        return nullptr;
+    }
 
     whiteout::mdx::Parser mdxParser;
     whiteout::mdx::Model model;
     try {
         model = mdxParser.parse(
             std::span<const whiteout::u8>(fileData->data(), fileData->size()));
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+                     "[model] ERR: MDX parse FAIL '%s': %s\n",
+                     mdxPath.c_str(), e.what());
+        return nullptr;
     } catch (...) {
+        std::fprintf(stderr,
+                     "[model] ERR: MDX parse threw unknown exception '%s'\n",
+                     mdxPath.c_str());
         return nullptr;
     }
 

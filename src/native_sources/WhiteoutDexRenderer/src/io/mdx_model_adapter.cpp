@@ -383,8 +383,10 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     }
 
     auto u8base = resolver_.BasePath().u8string();
-    std::fprintf(stderr, "  [tex %d] NOT FOUND: '%s' (base: %s)\n",
-                 textureId, path.c_str(), reinterpret_cast<const char*>(u8base.data()));
+    std::fprintf(stderr,
+                 "[textures] ERR: MDX texture[%d] NOT FOUND: '%s' (base: %s)\n",
+                 textureId, path.c_str(),
+                 reinterpret_cast<const char*>(u8base.data()));
 
     // Leave the TextureData invalid (width = height = 0, no pixels).
     // UploadStagedTextures sees the zero-size and skips the upload, so

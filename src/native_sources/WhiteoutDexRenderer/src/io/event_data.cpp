@@ -90,7 +90,7 @@ void RewriteMdlToMdx(std::string& path) {
 
 void LoadSpawnData(IContentProvider& cp, DataCache& cache) {
     auto data = cp.ReadFile("Splats\\SpawnData.slk", nullptr);
-    if (!data) { std::fprintf(stderr, "[WDEX events] SpawnData.slk: not found\n"); return; }
+    if (!data) { std::fprintf(stderr, "[events] ERR: SpawnData.slk: not found\n"); return; }
     SlkTable t = ParseSlk(*data);
     LogHeaders("SpawnData.slk", t);
 
@@ -101,7 +101,7 @@ void LoadSpawnData(IContentProvider& cp, DataCache& cache) {
     const int colId    = 0;
     const int colModel = FindAny(t, {"Model", "model"});
     if (colModel < 0) {
-        std::fprintf(stderr, "[WDEX events] SpawnData.slk missing Model col\n");
+        std::fprintf(stderr, "[events] ERR: SpawnData.slk missing Model col\n");
         return;
     }
     for (size_t r = 1; r < t.RowCount(); ++r) {
@@ -117,7 +117,7 @@ void LoadSpawnData(IContentProvider& cp, DataCache& cache) {
 
 void LoadSplatData(IContentProvider& cp, DataCache& cache) {
     auto data = cp.ReadFile("Splats\\SplatData.slk", nullptr);
-    if (!data) { std::fprintf(stderr, "[WDEX events] SplatData.slk: not found\n"); return; }
+    if (!data) { std::fprintf(stderr, "[events] ERR: SplatData.slk: not found\n"); return; }
     SlkTable t = ParseSlk(*data);
     LogHeaders("SplatData.slk", t);
 
@@ -181,7 +181,7 @@ void LoadSplatData(IContentProvider& cp, DataCache& cache) {
 
 void LoadUberSplatData(IContentProvider& cp, DataCache& cache) {
     auto data = cp.ReadFile("Splats\\UberSplatData.slk", nullptr);
-    if (!data) { std::fprintf(stderr, "[WDEX events] UberSplatData.slk: not found\n"); return; }
+    if (!data) { std::fprintf(stderr, "[events] ERR: UberSplatData.slk: not found\n"); return; }
     SlkTable t = ParseSlk(*data);
     LogHeaders("UberSplatData.slk", t);
 
@@ -239,7 +239,7 @@ void LoadUberSplatData(IContentProvider& cp, DataCache& cache) {
 void LoadAnimSounds(IContentProvider& cp, DataCache& cache) {
     auto sounds = cp.ReadFile("UI\\SoundInfo\\AnimSounds.slk", nullptr);
     if (!sounds) {
-        std::fprintf(stderr, "[WDEX events] AnimSounds.slk: not found\n");
+        std::fprintf(stderr, "[events] ERR: AnimSounds.slk: not found\n");
         return;
     }
     SlkTable st = ParseSlk(*sounds);

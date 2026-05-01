@@ -305,7 +305,9 @@ gfx::TextureHandle SplatService::GetOrLoadTexture(const std::string& path) {
     if (!data) {
         // Cache the miss so we don't re-poll the provider every frame.
         textureCache_.emplace(path, gfx::TextureHandle::Invalid);
-        std::fprintf(stderr, "[WDEX splat] missing %s\n", path.c_str());
+        std::fprintf(stderr,
+                     "[splat] ERR: tex read FAIL '%s'\n",
+                     path.c_str());
         return gfx::TextureHandle::Invalid;
     }
     if (foundExt.empty()) foundExt = ExtensionLower(std::filesystem::path(path));
@@ -314,8 +316,9 @@ gfx::TextureHandle SplatService::GetOrLoadTexture(const std::string& path) {
     int w = 0, h = 0;
     if (!DecodeToRGBA8(*data, foundExt, rgba, w, h) || w <= 0 || h <= 0) {
         textureCache_.emplace(path, gfx::TextureHandle::Invalid);
-        std::fprintf(stderr, "[WDEX splat] decode failed %s (ext=%s)\n",
-                     path.c_str(), foundExt.c_str());
+        std::fprintf(stderr,
+                     "[splat] ERR: tex decode FAIL '%s' ext='%s' bytes=%zu\n",
+                     path.c_str(), foundExt.c_str(), data->size());
         return gfx::TextureHandle::Invalid;
     }
 

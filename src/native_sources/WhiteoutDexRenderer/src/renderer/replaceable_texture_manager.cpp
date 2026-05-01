@@ -151,19 +151,36 @@ bool DecodeCanonicalAsset(IContentProvider& cp, const std::string& path,
                           std::vector<uint8_t>& outPixels, int& outW, int& outH) {
     std::string foundExt;
     auto data = cp.ReadFile(path, &foundExt);
-    if (!data) return false;
+    if (!data) {
+        std::fprintf(stderr,
+                     "[textures] ERR: ReplaceableTexture read FAIL '%s'\n",
+                     path.c_str());
+        return false;
+    }
     if (foundExt.empty()) foundExt = ExtensionLower(std::filesystem::path(path));
 
     auto result = DispatchTextureParser(foundExt,
         [&](auto& parser) { return parser.parse(*data); });
-    if (!result) return false;
+    if (!result) {
+        std::fprintf(stderr,
+                     "[textures] ERR: ReplaceableTexture decode FAIL '%s' "
+                     "ext='%s' bytes=%zu\n",
+                     path.c_str(), foundExt.c_str(), data->size());
+        return false;
+    }
 
     // Force RGBA8 so we don't have to plumb format/mips through the
     // staged-texture pixel buffer for the replaceable path.
     result->format(whiteout::textures::PixelFormat::RGBA8);
     outW = (int)result->width();
     outH = (int)result->height();
-    if (outW <= 0 || outH <= 0) return false;
+    if (outW <= 0 || outH <= 0) {
+        std::fprintf(stderr,
+                     "[textures] ERR: ReplaceableTexture invalid size '%s' "
+                     "%dx%d\n",
+                     path.c_str(), outW, outH);
+        return false;
+    }
     auto mip0 = result->mipData(0);
     outPixels.assign(mip0.begin(), mip0.end());
     return true;
