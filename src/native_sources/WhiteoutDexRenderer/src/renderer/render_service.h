@@ -208,6 +208,14 @@ public:
     void    SetIblMode(IblMode mode);
     IblMode GetIblMode() const { return iblMode_; }
 
+private:
+    // Issue the SetEnvProbe / SetDayNightProbes calls for the requested
+    // mode. Shared between SetIblMode (runtime swap) and InitBlsShaders
+    // (re-apply after device init / render-mode swap).
+    void ApplyIblMode(IblMode mode);
+
+public:
+
     // Format / texture used as the colour render target for the active
     // render mode. HD goes through `target.hdrColor` (R11G11B10F) and is
     // ACES-tonemapped onto `target.color` afterwards; SD writes directly

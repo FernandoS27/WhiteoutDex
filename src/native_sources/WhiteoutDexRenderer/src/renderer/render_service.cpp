@@ -2523,19 +2523,10 @@ bool RenderService::InitBlsShaders() {
     // model viewer (no shadow map → Day_IBL's directional bias
     // produces visible "dark patches in concavities" on close-range
     // subjects, see render_target.h::IblMode). The Settings UI lets
-    // the user opt into DayNight; iblMode_ is persisted and re-applied
-    // here when InitBlsShaders runs (e.g. after a render-mode swap).
-    if (iblMode_ == IblMode::DayNight) {
-        SetDayNightProbes(ibl::kDayIblPath, ibl::kNightIblPath);
-        if (!iblDayNightLoaded_) {
-            // Pair load failed (DDS missing in this content stack) —
-            // gracefully fall back to Portrait so the HD pipeline
-            // always has a valid probe.
-            SetEnvProbe(ibl::kPortraitIblPath);
-        }
-    } else {
-        SetEnvProbe(ibl::kPortraitIblPath);
-    }
+    // the user opt into DayNight / Dungeon / Sunset; iblMode_ is
+    // persisted and re-applied here when InitBlsShaders runs (e.g.
+    // after a render-mode swap).
+    ApplyIblMode(iblMode_);
 
     // All four BLS chains are required:
     //   * SD mesh draws route through blsSdProgram_;
@@ -2633,16 +2624,28 @@ void RenderService::SetIblMode(IblMode mode) {
     // device), so this is callable from the INI loader path before
     // InitBlsShaders has run; InitBlsShaders re-reads iblMode_ and
     // re-issues whichever load matches.
-    if (mode == IblMode::DayNight) {
-        SetDayNightProbes(ibl::kDayIblPath, ibl::kNightIblPath);
-        if (!iblDayNightLoaded_) {
-            // Same fallback as InitBlsShaders: don't strand the HD
-            // pipeline with no probe.
-            SetEnvProbe(ibl::kPortraitIblPath);
-        }
-    } else {
-        SetEnvProbe(ibl::kPortraitIblPath);
+    ApplyIblMode(mode);
+}
+
+void RenderService::ApplyIblMode(IblMode mode) {
+    switch (mode) {
+        case IblMode::DayNight:
+            SetDayNightProbes(ibl::kDayIblPath, ibl::kNightIblPath);
+            // Pair load failed (DDS missing in this content stack) —
+            // gracefully fall back to Portrait so the HD pipeline
+            // always has a valid probe.
+            if (!iblDayNightLoaded_) SetEnvProbe(ibl::kPortraitIblPath);
+            return;
+        case IblMode::Dungeon:
+            SetEnvProbe(ibl::kDungeonIblPath);
+            return;
+        case IblMode::Sunset:
+            SetEnvProbe(ibl::kSunsetIblPath);
+            return;
+        case IblMode::Portrait:
+            break;
     }
+    SetEnvProbe(ibl::kPortraitIblPath);
 }
 
 void RenderService::ShutdownBlsShaders() {

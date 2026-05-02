@@ -111,10 +111,45 @@ void LoadSettingsIni(RenderService& service) {
         if (v == 0 || v == 1) service.SetIgnoreNonLooping(v != 0);
     }
 
+    // View menu toggles — Grid / Particles / PopcornFX / Ribbons /
+    // Event Objects. Stored as "0"/"1"; sentinel -1 leaves the
+    // service's compile-time default in place. The render window's
+    // menu is built from the same DisplayFlags before this load runs,
+    // so callers must invoke RenderWindow::SyncViewMenuFromService()
+    // afterwards to repaint the checkmarks.
+    {
+        DisplayFlags df = service.GetDisplayFlags();
+        bool dirty = false;
+        auto loadFlag = [&](const wchar_t* key, bool& field) {
+            const int v = ::GetPrivateProfileIntW(kSection, key, -1,
+                                                  iniPath.c_str());
+            if (v == 0 || v == 1) {
+                field = (v != 0);
+                dirty = true;
+            }
+        };
+        loadFlag(L"ShowGrid",      df.showGrid);
+        loadFlag(L"ShowParticles", df.showParticles);
+        loadFlag(L"ShowPopcorn",   df.showPopcorn);
+        loadFlag(L"ShowRibbons",   df.showRibbons);
+        loadFlag(L"ShowEvents",    df.showEvents);
+        if (dirty) service.SetDisplayFlags(df);
+    }
+
+    // Tileset — integer matching io::Tileset (0..Count-1). Sentinel -1
+    // leaves the service's default (LordaeronSummer). Drives the
+    // replaceable-cliff path lookup; UI menu is re-synced afterwards.
+    {
+        const int v = ::GetPrivateProfileIntW(kSection, L"Tileset", -1,
+                                              iniPath.c_str());
+        const int n = static_cast<int>(io::Tileset::Count);
+        if (v >= 0 && v < n) service.SetTileset(static_cast<io::Tileset>(v));
+    }
+
     // IblMode — integer matching the IblMode enum (0=Portrait,
-    // 1=DayNight). Sentinel -1 leaves the service's default in place
-    // (Portrait), so a missing/unparseable key won't yank a user into
-    // DayNight unexpectedly.
+    // 1=DayNight, 2=Dungeon, 3=Sunset). Sentinel -1 leaves the
+    // service's default in place (Portrait), so a missing/unparseable
+    // key won't yank a user into a different probe unexpectedly.
     //
     // Skip the call when the saved value already matches the active
     // mode: SetIblMode tears down + reloads the IBL probe pair, and
@@ -129,7 +164,7 @@ void LoadSettingsIni(RenderService& service) {
     {
         const int v = ::GetPrivateProfileIntW(kSection, L"IblMode",
                                               -1, iniPath.c_str());
-        if ((v == 0 || v == 1)
+        if (v >= 0 && v <= static_cast<int>(IblMode::Sunset)
             && static_cast<IblMode>(v) != service.GetIblMode()) {
             service.SetIblMode(static_cast<IblMode>(v));
         }
@@ -223,6 +258,24 @@ void SaveSettingsIni(const RenderService& service) {
         ::WritePrivateProfileStringW(kSection, L"LoopNonLooping",
                                      service.GetIgnoreNonLooping() ? L"1" : L"0",
                                      iniPath.c_str());
+    }
+    {
+        const DisplayFlags df = service.GetDisplayFlags();
+        auto saveFlag = [&](const wchar_t* key, bool v) {
+            ::WritePrivateProfileStringW(kSection, key, v ? L"1" : L"0",
+                                         iniPath.c_str());
+        };
+        saveFlag(L"ShowGrid",      df.showGrid);
+        saveFlag(L"ShowParticles", df.showParticles);
+        saveFlag(L"ShowPopcorn",   df.showPopcorn);
+        saveFlag(L"ShowRibbons",   df.showRibbons);
+        saveFlag(L"ShowEvents",    df.showEvents);
+    }
+    {
+        wchar_t buf[8] = {};
+        ::swprintf_s(buf, L"%u",
+                     static_cast<unsigned>(service.GetTileset()));
+        ::WritePrivateProfileStringW(kSection, L"Tileset", buf, iniPath.c_str());
     }
     {
         wchar_t buf[8] = {};

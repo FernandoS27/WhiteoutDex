@@ -43,6 +43,14 @@ inline constexpr const char* kNightIblPath =
 inline constexpr const char* kPortraitIblPath =
     "Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds";
 
+// Single-probe environments exposed in the Settings IBL combo. Both are
+// authored game probes, used as the lone IBL (no day/night blend) when
+// the user picks the matching combobox entry.
+inline constexpr const char* kDungeonIblPath =
+    "Environment/EnvironmentMap/Dungeon/Night_IBL.dds";
+inline constexpr const char* kSunsetIblPath =
+    "Environment/EnvironmentMap/Northrend/Sunset_IBL.dds";
+
 // Result of a successful probe load. `mipCount` lets the renderer set
 // envFromMipEnd / envToMipEnd to (mipCount - 1) so the PS's roughness ->
 // mip remap clamps correctly; a non-zero product of the two endMips also

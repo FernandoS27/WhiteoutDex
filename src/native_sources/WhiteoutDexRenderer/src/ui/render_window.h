@@ -47,6 +47,12 @@ public:
     void ProcessCameraPresets();
     void ProcessSequences();
 
+    // Re-read DisplayFlags + Tileset from the service and update the
+    // View menu's checkmarks / radio button. Use after LoadSettingsIni
+    // so the menu reflects the persisted values (the menu was built
+    // earlier from the service's compile-time defaults).
+    void SyncViewMenuFromService();
+
     // Window handles
     HWND GetParentHWND() const { return hwnd_; }
     HWND GetRenderHWND() const { return hwndRender_; }
@@ -104,7 +110,6 @@ private:
     HWND cmbShadows_     = nullptr;
     HMENU hMenuBar_      = nullptr;
     HMENU hMenuView_     = nullptr;
-    HMENU hMenuProbe_    = nullptr;
     HMENU hMenuTileset_  = nullptr;
     HMENU hMenuDebug_    = nullptr;
     HMENU hMenuDebugVis_ = nullptr;
@@ -143,9 +148,6 @@ private:
         // Debug menu toggles
         IDM_DBG_COLLISIONS = 1200,
         IDM_DBG_LIGHTS,
-        // Probe submenu (5 entries; index = id - IDM_PROBE_BASE)
-        IDM_PROBE_BASE     = 1300,
-        IDM_PROBE_LAST     = IDM_PROBE_BASE + 4,
         // Tileset submenu (16 entries — one per io::Tileset enumerator;
         // index = id - IDM_TILESET_BASE casts straight to io::Tileset)
         IDM_TILESET_BASE   = 1310,

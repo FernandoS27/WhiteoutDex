@@ -53,9 +53,14 @@ enum class LightingMode : uint8_t {
 //              colour shift across the cycle, but with the
 //              accompanying directional artifact since the model
 //              viewer has no shadow-map pass to balance it.
+//   Dungeon  — Dungeon/Night_IBL.dds. Single dim probe for indoor /
+//              dungeon scenes.
+//   Sunset   — Northrend/Sunset_IBL.dds. Single warm low-sun probe.
 enum class IblMode : uint8_t {
     Portrait = 0,
     DayNight = 1,
+    Dungeon  = 2,
+    Sunset   = 3,
 };
 
 struct DisplayFlags {

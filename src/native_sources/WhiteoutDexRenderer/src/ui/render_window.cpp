@@ -189,7 +189,6 @@ bool RenderWindow::Create(int w, int h) {
     DisplayFlags df = service_.GetDisplayFlags();
     hMenuBar_      = CreateMenu();
     hMenuView_     = CreatePopupMenu();
-    hMenuProbe_    = CreatePopupMenu();
     hMenuDebug_    = CreatePopupMenu();
     hMenuDebugVis_ = CreatePopupMenu();
     hMenuLod_      = CreatePopupMenu();
@@ -202,21 +201,6 @@ bool RenderWindow::Create(int w, int h) {
     addToggle(hMenuView_, IDM_VIEW_RIBBONS,   L"Ribbons",   df.showRibbons);
     addToggle(hMenuView_, IDM_VIEW_EVENTS,    L"Event Objects", df.showEvents);
     AppendMenuW(hMenuView_, MF_SEPARATOR, 0, nullptr);
-
-    static const wchar_t* const kProbeLabels[5] = {
-        L"Dungeon Night",
-        L"Lordaeron Summer Day",
-        L"Lordaeron Summer Night",
-        L"Northrend Sunset",
-        L"Portrait Default",
-    };
-    const int kDefaultProbeIdx = 4;  // matches RenderService default
-    for (int i = 0; i < 5; ++i)
-        AppendMenuW(hMenuProbe_, MF_STRING, IDM_PROBE_BASE + i, kProbeLabels[i]);
-    CheckMenuRadioItem(hMenuProbe_,
-                       IDM_PROBE_BASE, IDM_PROBE_BASE + 4,
-                       IDM_PROBE_BASE + kDefaultProbeIdx, MF_BYCOMMAND);
-    AppendMenuW(hMenuView_, MF_POPUP | MF_STRING, (UINT_PTR)hMenuProbe_, L"Probe");
 
     // Tileset submenu (radio). Drives io::ReplaceableCanonicalPath /
     // CliffTypes.slk lookup — affects replaceable id 11. Item index =
@@ -549,12 +533,17 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         // Menu toggles — flip the stored state, push to service. Menu
         // checkmark is toggled via CheckMenuItem on the current state.
+        // View-menu toggles persist to the INI; Debug-menu toggles
+        // ride along (SaveSettingsIni only writes the keys it knows
+        // about, so showCollisions / showLights aren't persisted —
+        // matches the prior behaviour).
         auto toggleView = [&](UINT menuId, bool DisplayFlags::*field) {
             DisplayFlags df = service_.GetDisplayFlags();
             bool& v = df.*field;
             v = !v;
             CheckMenuItem(hMenuBar_, menuId, MF_BYCOMMAND | (v ? MF_CHECKED : MF_UNCHECKED));
             service_.SetDisplayFlags(df);
+            SaveSettingsIni(service_);
         };
         // Top-level &Settings menu entry — open the lazily-created popup
         // and bring it forward.
@@ -573,21 +562,6 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (id == IDM_DBG_COLLISIONS)   { toggleView(id, &DisplayFlags::showCollisions); return 0; }
         if (id == IDM_DBG_LIGHTS)       { toggleView(id, &DisplayFlags::showLights);     return 0; }
 
-        // Probe submenu (radio). Map id → path, update check, apply.
-        if (id >= (int)IDM_PROBE_BASE && id <= (int)IDM_PROBE_LAST) {
-            static const char* kPaths[5] = {
-                "environment/environmentmap/dungeon/night_ibl.dds",
-                "environment/environmentmap/lordaeronsummer/day_ibl.dds",
-                "environment/environmentmap/lordaeronsummer/night_ibl.dds",
-                "environment/environmentmap/northrend/sunset_ibl.dds",
-                "environment/environmentmap/portraits/portraitdefault_ibl.dds",
-            };
-            const int idx = id - IDM_PROBE_BASE;
-            CheckMenuRadioItem(hMenuProbe_, IDM_PROBE_BASE, IDM_PROBE_LAST, id, MF_BYCOMMAND);
-            service_.SetEnvProbe(kPaths[idx]);
-            return 0;
-        }
-
         // Tileset submenu (radio). idx casts straight to io::Tileset.
         if (id >= (int)IDM_TILESET_BASE && id <= (int)IDM_TILESET_LAST) {
             const int idx = id - IDM_TILESET_BASE;
@@ -596,6 +570,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             CheckMenuRadioItem(hMenuTileset_, IDM_TILESET_BASE, IDM_TILESET_LAST,
                                id, MF_BYCOMMAND);
             service_.SetTileset(static_cast<WhiteoutDex::io::Tileset>(idx));
+            SaveSettingsIni(service_);
             return 0;
         }
 
@@ -725,6 +700,31 @@ void RenderWindow::InvalidateTeamColorSwatch() {
 
 int RenderWindow::GetActiveCameraIndex() const {
     return cmbCamera_ ? (int)SendMessageW(cmbCamera_, CB_GETCURSEL, 0, 0) : 0;
+}
+
+void RenderWindow::SyncViewMenuFromService() {
+    if (!hMenuView_) return;
+    const DisplayFlags df = service_.GetDisplayFlags();
+    auto syncToggle = [&](UINT id, bool checked) {
+        CheckMenuItem(hMenuBar_, id,
+                      MF_BYCOMMAND | (checked ? MF_CHECKED : MF_UNCHECKED));
+    };
+    syncToggle(IDM_VIEW_GRID,      df.showGrid);
+    syncToggle(IDM_VIEW_PARTICLES, df.showParticles);
+    syncToggle(IDM_VIEW_POPCORN,   df.showPopcorn);
+    syncToggle(IDM_VIEW_RIBBONS,   df.showRibbons);
+    syncToggle(IDM_VIEW_EVENTS,    df.showEvents);
+    if (hMenuTileset_) {
+        const int n      = static_cast<int>(WhiteoutDex::io::Tileset::Count);
+        const int curIdx = std::clamp(static_cast<int>(service_.GetTileset()), 0, n - 1);
+        CheckMenuRadioItem(hMenuTileset_,
+                           IDM_TILESET_BASE, IDM_TILESET_LAST,
+                           IDM_TILESET_BASE + curIdx, MF_BYCOMMAND);
+    }
+    // Repaint the menu bar so any visible top-level checkmarks update.
+    // Safe cross-thread: DrawMenuBar just posts WM_NCPAINT to the
+    // window's owning thread.
+    if (hwnd_) DrawMenuBar(hwnd_);
 }
 
 // ============================================================================
@@ -926,6 +926,8 @@ void RenderWindow::EnsureSettingsWindow() {
         (HMENU)(INT_PTR)IDC_IBL_MODE, hInst, nullptr);
     SendMessageW(cmbIblMode_, CB_ADDSTRING, 0, (LPARAM)L"Portrait");
     SendMessageW(cmbIblMode_, CB_ADDSTRING, 0, (LPARAM)L"Day/Night");
+    SendMessageW(cmbIblMode_, CB_ADDSTRING, 0, (LPARAM)L"Dungeon");
+    SendMessageW(cmbIblMode_, CB_ADDSTRING, 0, (LPARAM)L"Sunset");
     SendMessageW(cmbIblMode_, CB_SETCURSEL,
                  static_cast<WPARAM>(service_.GetIblMode()), 0);
 
@@ -1095,7 +1097,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
         }
         if (id == IDC_IBL_MODE && HIWORD(wParam) == CBN_SELCHANGE && cmbIblMode_) {
             const int sel = (int)SendMessageW(cmbIblMode_, CB_GETCURSEL, 0, 0);
-            if (sel >= 0) {
+            if (sel >= 0 && sel <= static_cast<int>(IblMode::Sunset)) {
                 service_.SetIblMode(static_cast<IblMode>(sel));
                 SaveSettingsIni(service_);
             }

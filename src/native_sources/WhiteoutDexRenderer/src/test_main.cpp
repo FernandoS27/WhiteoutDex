@@ -101,6 +101,10 @@ int wmain(int argc, wchar_t* argv[]) {
     // is created lazily on first menu click and reads the restored
     // values then; the toolbar doesn't surface any of these knobs.
     WhiteoutDex::LoadSettingsIni(renderer);
+    // The View menu was built from compile-time defaults during Open;
+    // resync its checkmarks / Tileset radio so the loaded DisplayFlags
+    // and Tileset show through.
+    renderWindow.SyncViewMenuFromService();
 
     // Base path for texture resolution + child-model lookup.
     scene.SetPE1BasePath(mdxPath.parent_path());
@@ -156,14 +160,16 @@ int wmain(int argc, wchar_t* argv[]) {
         scene.SetCameraPresets(hero->sourceTemplate->cameraPresets);
 
     // ---- Walk-cycle locomotion drift ----
-    // When a Walk / Run sequence carries `moveSpeed != 0` (sourced from
-    // the MDX SEQS chunk), translate the actor + free-camera target
-    // along world +X by `moveSpeed * dt` so world-space splats /
-    // particles fall behind, giving the illusion of forward motion.
-    // The engine's preview tool gets the same perception by scrolling
-    // the legacy reference grid instead — same relative motion, but
-    // anchoring on the actor side keeps shadows / IBL probes /
-    // model-attached emitters in sync without a special grid path.
+    // When the active sequence's name contains "walk" (case-insensitive),
+    // translate the actor + free-camera target along world +X so
+    // world-space splats / particles fall behind, giving the illusion
+    // of forward motion. Speed comes from the MDX SEQS chunk's
+    // `moveSpeed` when authored; many walk cycles ship with
+    // `moveSpeed=0` (the in-game movement code reads it elsewhere or
+    // supplies a default), so we fall back to a fixed 100 game-units/s
+    // in that case. Non-walk sequences never drift, even if they
+    // carry a non-zero moveSpeed (e.g. attack lunges) — Run cycles
+    // are out of scope for the standalone preview's drift behaviour.
     //
     // Rules:
     //   1. Only Orbital (free) camera mode drifts. Direct (MDX preset
@@ -180,12 +186,6 @@ int wmain(int argc, wchar_t* argv[]) {
         float accumulated = 0.0f;
     };
     WalkDrift drift;
-    // Walk-by-name fallback: artists frequently ship Walk cycles with
-    // moveSpeed=0 in the SEQS chunk (the in-game movement code reads
-    // it elsewhere or supplies a default). To keep the perception
-    // consistent across those models, we treat any sequence whose
-    // name contains "walk" (case-insensitive) as a 100 game-units/s
-    // walker when its authored moveSpeed is missing.
     constexpr float kDefaultWalkSpeed = 100.0f;
     auto containsWalk = [](const std::string& s) {
         for (size_t i = 0; i + 4 <= s.size(); ++i) {
@@ -198,8 +198,8 @@ int wmain(int argc, wchar_t* argv[]) {
         return false;
     };
     auto effectiveMoveSpeed = [&](const WhiteoutDex::SequenceInfo& s) {
-        if (s.moveSpeed != 0.0f) return s.moveSpeed;
-        return containsWalk(s.name) ? kDefaultWalkSpeed : 0.0f;
+        if (!containsWalk(s.name)) return 0.0f;
+        return s.moveSpeed != 0.0f ? s.moveSpeed : kDefaultWalkSpeed;
     };
     auto applyWalkDrift = [&](float dt) {
         if (!hero) return;
