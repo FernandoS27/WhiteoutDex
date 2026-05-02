@@ -160,13 +160,11 @@ gfx::BlendDesc BlendFor(GxMatAlpha alpha) {
             bd.dstAlpha = gfx::BlendFactor::One;
             break;
         case GxMatAlpha::Modulate:
-            // src=DstColor, dst=Zero; srcA=DstAlpha (8), dstA=Zero.
+            // src=DstColor, dst=Zero; srcA=DstAlpha, dstA=Zero.
             bd.enable   = true;
             bd.srcColor = gfx::BlendFactor::DstColor;
             bd.dstColor = gfx::BlendFactor::Zero;
-            // gfx::BlendFactor lacks DstAlpha; Zero on srcA matches visually
-            // for R8G8B8A8_UNORM (we never read the alpha channel of the RT).
-            bd.srcAlpha = gfx::BlendFactor::Zero;
+            bd.srcAlpha = gfx::BlendFactor::DstAlpha;
             bd.dstAlpha = gfx::BlendFactor::Zero;
             break;
         case GxMatAlpha::Modulate2X:
@@ -174,8 +172,8 @@ gfx::BlendDesc BlendFor(GxMatAlpha alpha) {
             bd.enable   = true;
             bd.srcColor = gfx::BlendFactor::DstColor;
             bd.dstColor = gfx::BlendFactor::SrcColor;
-            bd.srcAlpha = gfx::BlendFactor::Zero;
-            bd.dstAlpha = gfx::BlendFactor::Zero;
+            bd.srcAlpha = gfx::BlendFactor::DstAlpha;
+            bd.dstAlpha = gfx::BlendFactor::SrcAlpha;
             break;
     }
     return bd;

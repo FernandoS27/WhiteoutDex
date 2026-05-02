@@ -152,7 +152,7 @@ enum class FillMode  { Solid, Wireframe };
 enum class CompareOp { Never, Less, LessEqual, Equal, Greater, GreaterEqual, Always };
 
 enum class BlendFactor { Zero, One, SrcAlpha, InvSrcAlpha, SrcColor, DstColor,
-                         InvSrcColor, InvDstColor };
+                         InvSrcColor, InvDstColor, DstAlpha, InvDstAlpha };
 enum class BlendOp     { Add, Subtract };
 
 enum class Filter      { Point, Linear };

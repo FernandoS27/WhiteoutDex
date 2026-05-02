@@ -115,6 +115,8 @@ inline D3D11_BLEND ToD3D11(BlendFactor bf) {
         case BlendFactor::DstColor:    return D3D11_BLEND_DEST_COLOR;
         case BlendFactor::InvSrcColor: return D3D11_BLEND_INV_SRC_COLOR;
         case BlendFactor::InvDstColor: return D3D11_BLEND_INV_DEST_COLOR;
+        case BlendFactor::DstAlpha:    return D3D11_BLEND_DEST_ALPHA;
+        case BlendFactor::InvDstAlpha: return D3D11_BLEND_INV_DEST_ALPHA;
         default:                       return D3D11_BLEND_ONE;
     }
 }
