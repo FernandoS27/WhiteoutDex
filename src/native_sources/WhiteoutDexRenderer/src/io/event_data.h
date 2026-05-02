@@ -7,7 +7,8 @@
 //   SPL  → world-space splat decal (Splats/SplatData.slk)
 //   UBR  → 3-stop "uber splat" decal (Splats/UberSplatData.slk)
 //   FPT  → footprint — aliased to SPL (same SLK row)
-//   SND  → 3D sound (UI/SoundInfo/AnimLookups.slk → SoundLabel → AnimSounds.slk)
+//   SND  → 3D sound (any of the eleven UI/SoundInfo/*Sounds*.slk files
+//                    keyed by AnimationEventCode — see event_data.cpp)
 // The remaining 4 chars after the dash select a specific row within each SLK.
 //
 // One per-type table is parsed once and cached; the per-type Find*
@@ -65,20 +66,34 @@ struct UbrEntry {
     int         blendMode = 0;
 };
 
-// AnimSounds row (chained from AnimLookups.SoundLabel for the SND id).
+// One row from any of the eleven UI/SoundInfo/*Sounds*.slk tables, keyed
+// by the row's AnimationEventCode value (matching the MDX SND suffix).
+//
+// `filePaths` is the list of CASC-relative file paths the engine considers
+// for this event. Each entry was either:
+//   (a) a FileNames token that already contained a path
+//       (e.g. "Units/Critters/Penguin/PenguinDeath1.flac"); or
+//   (b) a bare-stem token that resolved through one of the eight asset
+//       SLKs (DialogueXxxBase.slk + SoundAssetCombat.slk) into an
+//       AssetEntry's Filepath
+//       (e.g. "PeasantDeath1" → "Units/Human/Peasant/PeasantDeath.flac"); or
+//   (c) a bare-stem token with no asset-table match — kept verbatim,
+//       matching the engine's `MASTERSOUNDENTRY::AddFileName` synthetic-
+//       AssetEntry fallback (`m_Filepath = m_Label`).
 struct SndEntry {
-    std::vector<std::string> fileNames;
-    std::string              filepath;
+    std::vector<std::string> filePaths;
     float                    volume         = 1.0f;
     float                    minDistance    = 0.0f;
     float                    maxDistance    = 0.0f;
     float                    distanceCutoff = 0.0f;
 };
 
-// One-shot SLK load — pulls SpawnData / SplatData / UberSplatData /
-// AnimLookups / AnimSounds from CASC via the supplied content provider.
-// Idempotent: subsequent calls re-parse only when `force` is true. Safe
-// to call before a content provider exists (no-op until one is wired).
+// One-shot SLK load — pulls SpawnData / SplatData / UberSplatData, the
+// eight asset/dialogue SLKs (label → Filepath), and the eleven master
+// UI/SoundInfo/*Sounds*.slk tables from CASC via the supplied content
+// provider. Idempotent: subsequent calls re-parse only when `force` is
+// true. Safe to call before a content provider exists (no-op until one
+// is wired).
 void LoadEventDataFiles(IContentProvider* cp, bool force = false);
 
 // Per-prefix lookup. `id` is the post-dash suffix from the EventObject

@@ -282,7 +282,7 @@ void EventEmitterPool::Tick(const Actor&                  actor,
             const io::SndEntry* row = io::FindSnd(cfg.id);
             if (!row) {
                 std::fprintf(stderr,
-                    "[WDEX events] SND id '%s' not in AnimSounds.slk\n",
+                    "[WDEX events] SND id '%s' not in any UI/SoundInfo/*Sounds*.slk\n",
                     cfg.id.c_str());
                 e.resolutionFailed = true;
                 break;

@@ -24,62 +24,60 @@ namespace WhiteoutDex {
 
 namespace {
 
-// Compose `<filepath>\<sample>` and resolve through the content
-// provider. AnimSounds.slk carries the studio source extension —
-// usually `.flac` in Reforged, occasionally `.mp3` — but the only
-// format `PlaySoundW` understands is `.wav`, and the playback-ready
-// `.wav` ships alongside the source under the same stem. So the
-// resolution chain is:
-//   1. Try the path as-authored (handles old maps that already store
-//      .wav stems and any future codec we add).
-//   2. Strip whatever extension is there and try `.wav` —
-//      Reforged's per-sample stems all have `.wav` siblings.
-//   3. Append `.wav` when the SLK had no extension at all.
-// Returns the bytes from the first hit or std::nullopt on miss.
+// Resolve a SndEntry to a playable WAV byte buffer. `entry.filePaths`
+// is the engine's MASTERSOUNDENTRY::m_SoundInstances list, already
+// resolved at SLK load time to either an asset table's Filepath
+// (e.g. "Units/Human/Peasant/PeasantDeath.flac") or a bare-stem token.
+//
+// Per-path probing: PlaySoundW ONLY accepts `.wav` — handing it FLAC
+// bytes silently no-ops (no error, no audio), so we cannot use the
+// path as-authored when its extension isn't `.wav`. Reforged ships
+// most sound stems as both `.flac` (HD/studio) and `.wav` (legacy SD)
+// siblings, so we substitute every non-wav extension to `.wav`. If a
+// path already ends in `.wav` we use it directly.
+//
+// Across-paths probing: pick a random candidate first to vary playback,
+// then fall through the rest in order so per-variant gaps in CASC
+// (e.g. AnimSounds row PeasantDeath lists 4 stems but only one of
+// them — PeasantDeath1 → "PeasantDeath.wav" — has an SD `.wav`
+// sibling) don't silence the whole emitter.
 std::optional<std::vector<uint8_t>> ResolveSoundBytes(
     const IContentProvider& cp,
     const io::SndEntry&     entry) {
 
-    if (entry.fileNames.empty()) return std::nullopt;
+    if (entry.filePaths.empty()) return std::nullopt;
 
-    // Pick a random sample from the row when there are several.
-    // AnimSounds.FileNames is comma-split; the engine picks among
-    // them at random per fire to vary the audio.
-    static thread_local std::mt19937 rng{std::random_device{}()};
-    const size_t idx = (entry.fileNames.size() == 1) ? 0
-        : (rng() % entry.fileNames.size());
-
-    const std::string& sample = entry.fileNames[idx];
-    std::string base = entry.filepath;
-    if (!base.empty() && base.back() != '\\' && base.back() != '/') base += '\\';
-    const std::string fullPath = base + sample;
+    // Build the .wav-extension variant of a path. Lower-cases the
+    // existing extension before comparing so `.WAV` / `.Wav` aren't
+    // re-substituted into `.wav` (would still produce the same string,
+    // but the equality check lets us short-circuit when no rewrite
+    // is needed).
+    auto to_wav = [](const std::string& path) -> std::string {
+        const auto sepPos = path.find_last_of("/\\");
+        const auto dotPos = path.rfind('.');
+        const bool hasExt =
+            dotPos != std::string::npos &&
+            (sepPos == std::string::npos || dotPos > sepPos);
+        if (!hasExt) return path + ".wav";
+        std::string ext = path.substr(dotPos);
+        for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
+        if (ext == ".wav") return path;
+        return path.substr(0, dotPos) + ".wav";
+    };
 
     auto try_path = [&](const std::string& p)
         -> std::optional<std::vector<uint8_t>> {
+        if (p.empty()) return std::nullopt;
         return cp.ReadFile(p, nullptr);
     };
 
-    // 1. As-authored (covers .wav stems already in the SLK).
-    if (auto bytes = try_path(fullPath)) return bytes;
-
-    // Locate the extension — only count a `.` that lands after the
-    // last directory separator so paths like `dir.subdir/file` don't
-    // get truncated.
-    const auto sepPos = fullPath.find_last_of("/\\");
-    const auto dotPos = fullPath.rfind('.');
-    const bool hasExt =
-        dotPos != std::string::npos &&
-        (sepPos == std::string::npos || dotPos > sepPos);
-
-    // 2. Strip studio-source extension (.flac / .mp3 / …), substitute .wav.
-    if (hasExt) {
-        if (auto bytes = try_path(fullPath.substr(0, dotPos) + ".wav"))
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    const size_t n     = entry.filePaths.size();
+    const size_t start = (n == 1) ? 0 : (rng() % n);
+    for (size_t i = 0; i < n; ++i) {
+        if (auto bytes = try_path(to_wav(entry.filePaths[(start + i) % n])))
             return bytes;
-    } else {
-        // 3. SLK had no extension at all — try plain .wav.
-        if (auto bytes = try_path(fullPath + ".wav")) return bytes;
     }
-
     return std::nullopt;
 }
 
@@ -193,18 +191,17 @@ void WindowsSoundEmitter::Play(const io::SndEntry& entry,
 
     auto bytes = ResolveSoundBytes(*content_, entry);
     if (!bytes) {
-        // Log once per fire on miss. We tried the path as-authored
-        // and a .wav substitution — neither resolved through the
-        // content provider. Either the user has a partial install,
-        // the path needs another extension we don't probe yet, or
-        // the SLK row is malformed.
+        // Log on miss — every candidate path (including the .wav
+        // substitution) failed to resolve through the content
+        // provider. Either the user has a partial install, the
+        // SLK row points at an extension we don't probe yet, or
+        // the bare-stem token had no matching asset-table entry
+        // and isn't a real CASC path on its own.
         const char* sample =
-            entry.fileNames.empty() ? "<empty>" : entry.fileNames.front().c_str();
-        const char* dir =
-            entry.filepath.empty() ? "<root>" : entry.filepath.c_str();
-        std::fprintf(stderr, "[WDEX sound] missing — dir='%s' sample='%s' "
-                             "(also tried .wav substitution)\n",
-                     dir, sample);
+            entry.filePaths.empty() ? "<empty>" : entry.filePaths.front().c_str();
+        std::fprintf(stderr, "[WDEX sound] missing - first candidate '%s' "
+                             "(tried %zu paths, .wav substitution)\n",
+                     sample, entry.filePaths.size());
         return;
     }
 

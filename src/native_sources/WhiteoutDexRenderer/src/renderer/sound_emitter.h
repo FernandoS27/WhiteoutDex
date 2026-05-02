@@ -30,12 +30,12 @@ class ISoundEmitter {
 public:
     virtual ~ISoundEmitter() = default;
 
-    // Trigger one shot of the given AnimSounds row at the world position
-    // of the firing EventObject node. Implementations are responsible for
-    // resolving entry.fileNames (comma-separated WAV stems under
-    // entry.filepath) into a concrete sample, applying volume and
-    // distance attenuation against entry.minDistance / maxDistance /
-    // distanceCutoff, and managing voice lifetimes.
+    // Trigger one shot of the given sound row at the world position of
+    // the firing EventObject node. Implementations are responsible for
+    // picking one of `entry.filePaths` and reading it through their
+    // content provider, applying volume and distance attenuation
+    // against entry.minDistance / maxDistance / distanceCutoff, and
+    // managing voice lifetimes.
     virtual void Play(const io::SndEntry& entry, const Vector3f& worldPos) = 0;
 
     // Per-emitter master gain in [0, 1]. Default is 1.0 (full volume).
