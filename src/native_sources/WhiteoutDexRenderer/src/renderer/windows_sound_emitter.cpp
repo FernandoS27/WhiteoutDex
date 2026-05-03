@@ -18,65 +18,217 @@
 #include <windows.h>
 #include <mmsystem.h>
 
+// dr_flac (single-header, MIT/public-domain). This TU is the sole
+// implementation site — every other includer must NOT define
+// DR_FLAC_IMPLEMENTATION to avoid duplicate symbols.
+#define DR_FLAC_IMPLEMENTATION
+#define DR_FLAC_NO_OGG  // we never feed Ogg-encapsulated FLAC; saves a chunk of binary
+#include "third_party/dr_flac.h"
+
 #pragma comment(lib, "winmm.lib")
 
 namespace WhiteoutDex {
 
 namespace {
 
+// Wrap interleaved 16-bit PCM samples in a minimal RIFF/WAVE container
+// so PlaySoundW (which only accepts WAVE) can play decoded FLAC. Layout
+// is the canonical 44-byte WAVE header + raw `data` payload.
+//   0..3   "RIFF"
+//   4..7   total size - 8  (uint32 LE)
+//   8..11  "WAVE"
+//  12..15  "fmt "
+//  16..19  16              (PCM fmt chunk size)
+//  20..21  1               (PCM format tag)
+//  22..23  channels        (uint16)
+//  24..27  sampleRate      (uint32)
+//  28..31  byteRate        = sampleRate * channels * 2
+//  32..33  blockAlign      = channels * 2
+//  34..35  16              (bitsPerSample)
+//  36..39  "data"
+//  40..43  payloadBytes    (uint32)
+std::vector<uint8_t> WrapPcmS16AsWav(const drflac_int16* samples,
+                                      drflac_uint64       totalFrames,
+                                      unsigned int        channels,
+                                      unsigned int        sampleRate) {
+    const uint32_t payloadBytes =
+        static_cast<uint32_t>(totalFrames) *
+        static_cast<uint32_t>(channels)    * sizeof(int16_t);
+    const uint32_t totalBytes = 44u + payloadBytes;
+
+    std::vector<uint8_t> wav;
+    wav.resize(totalBytes);
+    auto put32 = [&](size_t off, uint32_t v) {
+        wav[off]     = static_cast<uint8_t>(v        & 0xFF);
+        wav[off + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+        wav[off + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
+        wav[off + 3] = static_cast<uint8_t>((v >> 24) & 0xFF);
+    };
+    auto put16 = [&](size_t off, uint16_t v) {
+        wav[off]     = static_cast<uint8_t>(v        & 0xFF);
+        wav[off + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+    };
+    std::memcpy(wav.data() + 0, "RIFF", 4);
+    put32(4, totalBytes - 8);
+    std::memcpy(wav.data() + 8,  "WAVE", 4);
+    std::memcpy(wav.data() + 12, "fmt ", 4);
+    put32(16, 16);
+    put16(20, 1);                           // PCM
+    put16(22, static_cast<uint16_t>(channels));
+    put32(24, sampleRate);
+    put32(28, sampleRate * channels * 2);   // byteRate
+    put16(32, static_cast<uint16_t>(channels * 2));  // blockAlign
+    put16(34, 16);                          // bitsPerSample
+    std::memcpy(wav.data() + 36, "data", 4);
+    put32(40, payloadBytes);
+    if (payloadBytes > 0) {
+        std::memcpy(wav.data() + 44, samples, payloadBytes);
+    }
+    return wav;
+}
+
+// Decode a FLAC byte buffer to a WAVE-wrapped PCM s16 buffer. Returns
+// nullopt on bad/unsupported input. Reforged FLAC assets are typically
+// 16-bit, mono or stereo; dr_flac handles 24-bit by truncation, so we
+// silently downconvert on the rare studio-master asset.
+std::optional<std::vector<uint8_t>> DecodeFlacToWav(const std::vector<uint8_t>& flac) {
+    unsigned int    channels    = 0;
+    unsigned int    sampleRate  = 0;
+    drflac_uint64   totalFrames = 0;
+    drflac_int16*   samples     = drflac_open_memory_and_read_pcm_frames_s16(
+        flac.data(), flac.size(), &channels, &sampleRate, &totalFrames, nullptr);
+    if (!samples || channels == 0 || sampleRate == 0 || totalFrames == 0) {
+        if (samples) drflac_free(samples, nullptr);
+        return std::nullopt;
+    }
+    auto wav = WrapPcmS16AsWav(samples, totalFrames, channels, sampleRate);
+    drflac_free(samples, nullptr);
+    return wav;
+}
+
 // Resolve a SndEntry to a playable WAV byte buffer. `entry.filePaths`
 // is the engine's MASTERSOUNDENTRY::m_SoundInstances list, already
 // resolved at SLK load time to either an asset table's Filepath
 // (e.g. "Units/Human/Peasant/PeasantDeath.flac") or a bare-stem token.
 //
-// Per-path probing: PlaySoundW ONLY accepts `.wav` — handing it FLAC
-// bytes silently no-ops (no error, no audio), so we cannot use the
-// path as-authored when its extension isn't `.wav`. Reforged ships
-// most sound stems as both `.flac` (HD/studio) and `.wav` (legacy SD)
-// siblings, so we substitute every non-wav extension to `.wav`. If a
-// path already ends in `.wav` we use it directly.
+// PlaySoundW ONLY accepts WAVE — handing it FLAC bytes silently no-ops
+// (no error, no audio). So for each source path we probe a small ladder
+// of candidates and convert FLAC to WAVE when needed:
+//   1. As-authored path. If `.flac` (or detected by magic), decode via
+//      dr_flac and wrap as WAVE; if `.wav`, return raw.
+//   2. Same path with extension forced to `.wav` (legacy SD CASC may
+//      ship a `.wav` sibling alongside the HD `.flac`).
+//   3. Same path with extension forced to `.flac` and decoded
+//      (covers asset entries authored without an extension or with an
+//      odd extension like `.ogg` we don't decode).
+//   4. Trailing-digit-strip variants of #2 and #3 (Reforged HD asset
+//      map keeps the variant digit, but the SD CASC often stores one
+//      legacy file with the digit dropped — e.g. `PeasantDeath1.flac`
+//      vs `PeasantDeath.wav`).
 //
 // Across-paths probing: pick a random candidate first to vary playback,
 // then fall through the rest in order so per-variant gaps in CASC
-// (e.g. AnimSounds row PeasantDeath lists 4 stems but only one of
-// them — PeasantDeath1 → "PeasantDeath.wav" — has an SD `.wav`
-// sibling) don't silence the whole emitter.
+// don't silence the whole emitter.
 std::optional<std::vector<uint8_t>> ResolveSoundBytes(
     const IContentProvider& cp,
-    const io::SndEntry&     entry) {
+    const io::SndEntry&     entry,
+    std::string*            attemptedOut) {
 
     if (entry.filePaths.empty()) return std::nullopt;
 
-    // Build the .wav-extension variant of a path. Lower-cases the
-    // existing extension before comparing so `.WAV` / `.Wav` aren't
-    // re-substituted into `.wav` (would still produce the same string,
-    // but the equality check lets us short-circuit when no rewrite
-    // is needed).
-    auto to_wav = [](const std::string& path) -> std::string {
+    // Split a path into directory, stem, and lowercased extension.
+    // `hasExt` is false when no `.` appears after the last separator.
+    struct PathParts {
+        std::string dir;     // includes trailing separator if any
+        std::string stem;
+        std::string extLow;  // lowercased, includes the leading dot
+        bool        hasExt;
+    };
+    auto split = [](const std::string& path) -> PathParts {
         const auto sepPos = path.find_last_of("/\\");
         const auto dotPos = path.rfind('.');
         const bool hasExt =
             dotPos != std::string::npos &&
             (sepPos == std::string::npos || dotPos > sepPos);
-        if (!hasExt) return path + ".wav";
-        std::string ext = path.substr(dotPos);
-        for (auto& c : ext) c = (char)std::tolower((unsigned char)c);
-        if (ext == ".wav") return path;
-        return path.substr(0, dotPos) + ".wav";
+        const size_t baseStart = (sepPos == std::string::npos) ? 0 : sepPos + 1;
+        PathParts p;
+        p.dir    = path.substr(0, baseStart);
+        p.stem   = hasExt ? path.substr(baseStart, dotPos - baseStart)
+                          : path.substr(baseStart);
+        p.extLow = hasExt ? path.substr(dotPos) : std::string{};
+        for (auto& c : p.extLow) c = (char)std::tolower((unsigned char)c);
+        p.hasExt = hasExt;
+        return p;
     };
 
-    auto try_path = [&](const std::string& p)
+    // Heuristic: bytes are FLAC iff they start with the "fLaC" magic.
+    auto looks_like_flac = [](const std::vector<uint8_t>& b) {
+        return b.size() >= 4 && b[0] == 'f' && b[1] == 'L' &&
+                                b[2] == 'a' && b[3] == 'C';
+    };
+
+    // Read a path, decode if FLAC, return WAVE-wrapped bytes (or raw
+    // WAVE if the file already is one). nullopt = path missing or
+    // FLAC decode failed.
+    auto fetch = [&](const std::string& p, bool decodeFlac)
         -> std::optional<std::vector<uint8_t>> {
         if (p.empty()) return std::nullopt;
-        return cp.ReadFile(p, nullptr);
+        auto bytes = cp.ReadFile(p, nullptr);
+        if (!bytes) return std::nullopt;
+        if (decodeFlac && looks_like_flac(*bytes)) {
+            auto wav = DecodeFlacToWav(*bytes);
+            if (!wav) return std::nullopt;
+            return wav;
+        }
+        return bytes;
+    };
+
+    // Build the probe ladder (path, decode-as-flac) for one source.
+    auto candidates = [&](const std::string& path)
+        -> std::vector<std::pair<std::string, bool>> {
+        std::vector<std::pair<std::string, bool>> out;
+        const PathParts p = split(path);
+
+        // Stem variants: as-authored, then trailing-digit-stripped if
+        // it actually reduces the stem.
+        std::vector<std::string> stems{ p.stem };
+        size_t end = p.stem.size();
+        while (end > 0 && p.stem[end - 1] >= '0' && p.stem[end - 1] <= '9') --end;
+        if (end > 0 && end < p.stem.size()) {
+            stems.push_back(p.stem.substr(0, end));
+        }
+
+        auto push = [&](std::string path, bool flac) {
+            for (const auto& [existing, _] : out) {
+                if (existing == path) return;
+            }
+            out.emplace_back(std::move(path), flac);
+        };
+
+        // 1: as-authored (decode if `.flac`, raw if `.wav`, FLAC-magic
+        // sniff covers extension-less or unknown-ext entries).
+        if (p.hasExt) push(path, p.extLow == ".flac");
+        else          push(path, true);
+
+        // 2/3 per stem variant: forced .wav, then forced .flac.
+        for (const auto& s : stems) {
+            push(p.dir + s + ".wav",  false);
+            push(p.dir + s + ".flac", true);
+        }
+        return out;
     };
 
     static thread_local std::mt19937 rng{std::random_device{}()};
     const size_t n     = entry.filePaths.size();
     const size_t start = (n == 1) ? 0 : (rng() % n);
     for (size_t i = 0; i < n; ++i) {
-        if (auto bytes = try_path(to_wav(entry.filePaths[(start + i) % n])))
-            return bytes;
+        for (const auto& [path, decodeFlac] : candidates(entry.filePaths[(start + i) % n])) {
+            if (auto bytes = fetch(path, decodeFlac)) return bytes;
+            if (attemptedOut) {
+                if (!attemptedOut->empty()) attemptedOut->append(", ");
+                attemptedOut->append(path);
+            }
+        }
     }
     return std::nullopt;
 }
@@ -189,19 +341,21 @@ void WindowsSoundEmitter::Play(const io::SndEntry& entry,
                                const Vector3f&     /*worldPos*/) {
     if (!content_) return;
 
-    auto bytes = ResolveSoundBytes(*content_, entry);
+    std::string attempted;
+    auto bytes = ResolveSoundBytes(*content_, entry, &attempted);
     if (!bytes) {
-        // Log on miss — every candidate path (including the .wav
-        // substitution) failed to resolve through the content
-        // provider. Either the user has a partial install, the
-        // SLK row points at an extension we don't probe yet, or
-        // the bare-stem token had no matching asset-table entry
-        // and isn't a real CASC path on its own.
-        const char* sample =
-            entry.filePaths.empty() ? "<empty>" : entry.filePaths.front().c_str();
-        std::fprintf(stderr, "[WDEX sound] missing - first candidate '%s' "
-                             "(tried %zu paths, .wav substitution)\n",
-                     sample, entry.filePaths.size());
+        // Log on miss with the full list of CASC paths we probed.
+        // Every candidate (including the .wav substitution, the
+        // trailing-digit-strip fallback, and the FLAC->WAV decode)
+        // failed to resolve through the content provider. Likely:
+        // partial install, SLK row points at an unsupported extension,
+        // or the asset is referenced but doesn't ship.
+        // ASCII '--' (no em dash) so the message renders correctly on
+        // a CP1252 console.
+        std::fprintf(stderr,
+                     "[WDEX sound] missing -- %zu source path(s); probed: %s\n",
+                     entry.filePaths.size(),
+                     attempted.empty() ? "<none>" : attempted.c_str());
         return;
     }
 
