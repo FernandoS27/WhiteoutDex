@@ -1280,6 +1280,14 @@ void RenderService::SetActiveSequence(int i) {
     }
 }
 
+void RenderService::ClearSplats() {
+    // Drop every alive ground decal (SPL/FPT/UBR). Engine-neutral
+    // primitive — application policy (e.g. "wipe on sequence change
+    // unless the new pose is decay/dissipate") lives in the client.
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    splatService_.Clear();
+}
+
 std::optional<std::vector<std::string>> RenderService::TakePendingSequences() {
     std::lock_guard<std::mutex> lock(dataMutex_);
     return scene_->TakePendingSequences();
@@ -1952,19 +1960,23 @@ bool RenderService::RenderParticlesBls() {
 // the camera VP takes them straight to clip space.
 namespace {
 particle::FilterMode SplatBlendModeToFilter(int blendMode) {
-    // SLK BlendMode column values mirror MDX layer filter modes:
-    // 0=None, 1=Transparent, 2=Blend, 3=Additive, 4=AddAlpha,
-    // 5=Modulate, 6=Modulate2X. For splat decals "None" is rare in
-    // shipped content; map it to Blend so a missing/zero entry still
-    // produces a visible decal rather than a hard-edged opaque quad.
+    // Splats/SplatData.slk's BlendMode column is NOT the MDX layer
+    // filter-mode enum — it's a 0..4 index into the engine's five
+    // pre-built per-blend splat emitters (preview.exe IWorldSplatEmitter
+    // @0x141ef7530 + SetSplatMaterials @0x141ef8880):
+    //   0 -> Blend       (sSplatEmitter[0])
+    //   1 -> Add         (sSplatEmitter[1])
+    //   2 -> Modulate    (sSplatEmitter[2])
+    //   3 -> Modulate2X  (sSplatEmitter[3])
+    //   4 -> AlphaKey    (sSplatEmitter[4])
+    // Out-of-range values fall back to Blend (the default per-emitter
+    // material when SetSplatMaterials skipped a slot).
     switch (blendMode) {
-        case 1: return particle::FilterMode::AlphaKey;     // Transparent
-        case 3: return particle::FilterMode::Additive;
-        case 4: return particle::FilterMode::Additive;     // AddAlpha — close enough at this fidelity
-        case 5: return particle::FilterMode::Modulate;
-        case 6: return particle::FilterMode::Modulate2X;
-        case 0:
-        case 2:
+        case 0: return particle::FilterMode::Blend;
+        case 1: return particle::FilterMode::Additive;
+        case 2: return particle::FilterMode::Modulate;
+        case 3: return particle::FilterMode::Modulate2X;
+        case 4: return particle::FilterMode::AlphaKey;
         default: return particle::FilterMode::Blend;
     }
 }

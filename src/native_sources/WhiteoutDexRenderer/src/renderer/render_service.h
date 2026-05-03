@@ -142,6 +142,11 @@ public:
     std::optional<std::vector<CameraPreset>> TakePendingCameraPresets();
     std::optional<std::vector<std::string>>  TakePendingSequences();
 
+    // Drop every alive ground decal (SPL/FPT/UBR). Engine-neutral
+    // primitive — clients drive the policy (e.g. wipe on sequence
+    // change unless the new pose is a residue/cleanup animation).
+    void ClearSplats();
+
     // ---- Camera manipulation (thread-safe; same dataMutex_ rationale) ----
     void RotateCamera(int dx, int dy);
     void PanCamera(int dx, int dy);

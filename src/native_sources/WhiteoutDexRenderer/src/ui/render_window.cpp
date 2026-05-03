@@ -15,6 +15,9 @@
 #include <commctrl.h>
 #include <cmath>      // std::floor for the TOD HH:MM split
 #include <algorithm>
+#include <cctype>     // std::tolower in the IDC_SEQUENCE substring check
+#include <cstring>    // std::strlen in the IDC_SEQUENCE substring check
+#include <string>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -626,8 +629,38 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             }
             case IDC_SEQUENCE: {
                 if (code == CBN_SELCHANGE) {
-                    int sel = (int)SendMessageW(cmbSequence_, CB_GETCURSEL, 0, 0);
-                    if (sel >= 0) service_.SetActiveSequence(sel);
+                    const int sel = (int)SendMessageW(cmbSequence_, CB_GETCURSEL, 0, 0);
+                    if (sel < 0) break;
+                    const int prev = service_.GetActiveSequenceIndex();
+                    service_.SetActiveSequence(sel);
+                    if (sel == prev) break;  // re-pick of same row → don't disturb live splats
+
+                    // App policy: wipe ground decals on every sequence
+                    // change EXCEPT when the new pose is a residue/cleanup
+                    // pose (Decay-Bone / Decay-Flesh / Dissipate are
+                    // authored as the visual continuation of the prior
+                    // Death pose, so its blood splats and burn marks must
+                    // persist into them). Case-insensitive substring match.
+                    auto containsCi = [](const std::string& hay, const char* needle) {
+                        const size_t hn = hay.size(), nn = std::strlen(needle);
+                        if (nn == 0 || hn < nn) return false;
+                        for (size_t i = 0; i + nn <= hn; ++i) {
+                            bool ok = true;
+                            for (size_t j = 0; j < nn; ++j) {
+                                const char a = (char)std::tolower((unsigned char)hay[i + j]);
+                                const char b = (char)std::tolower((unsigned char)needle[j]);
+                                if (a != b) { ok = false; break; }
+                            }
+                            if (ok) return true;
+                        }
+                        return false;
+                    };
+                    bool keep = false;
+                    if (sel < (int)sequenceNames_.size()) {
+                        const std::string& name = sequenceNames_[sel];
+                        keep = containsCi(name, "decay") || containsCi(name, "dissipate");
+                    }
+                    if (!keep) service_.ClearSplats();
                 }
                 break;
             }
@@ -678,7 +711,8 @@ void RenderWindow::ProcessSequences() {
         std::wstring wn(n.begin(), n.end());
         SendMessageW(cmbSequence_, CB_ADDSTRING, 0, (LPARAM)wn.c_str());
     }
-    if (!pending->empty()) {
+    sequenceNames_ = std::move(*pending);
+    if (!sequenceNames_.empty()) {
         ShowWindow(lblSequence_, SW_SHOW);
         ShowWindow(cmbSequence_, SW_SHOW);
         SendMessageW(cmbSequence_, CB_SETCURSEL, 0, 0);

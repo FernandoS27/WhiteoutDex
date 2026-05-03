@@ -173,6 +173,12 @@ private:
     // Camera presets (local copy for combo selection logic)
     std::vector<CameraPreset> cameraPresets_;
 
+    // Sequence names (local copy mirroring cmbSequence_ entries). Lets
+    // the IDC_SEQUENCE handler run app-side policy (e.g. "wipe splats
+    // unless the new sequence name contains decay/dissipate") without
+    // re-querying the service.
+    std::vector<std::string>  sequenceNames_;
+
     // Render thread and sync
     std::thread           renderThread_;
     std::atomic<bool>     running_{false};

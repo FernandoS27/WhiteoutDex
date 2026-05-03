@@ -3,15 +3,17 @@
 // EventEmitterPool — per-actor MDX EventObject dispatcher.
 //
 // Owns one entry per EventObject parsed from the actor's source model.
-// Each Tick scans `eventTrackTimes` for rising-edge crossings against
-// the actor's current animation frame, and on each crossing dispatches
-// to the appropriate service (SplatService for SPL/UBR/FPT,
-// SpnSpawner for SPN, ISoundEmitter for SND).
+// Each Tick walks `eventTrackTimes` for keys crossed since the previous
+// sample (mirrors preview.exe CKeyFrameTrackBase::JustPastKeyForward
+// @0x1409668b0) and dispatches one event per crossing to the
+// appropriate service (SplatService for SPL/UBR/FPT, SpnSpawner for SPN,
+// ISoundEmitter for SND). Multi-key tracks (e.g. an FPT footprint with
+// one key per wheel hit) emit every key per loop, not just the first.
 //
 // The pool itself is stateless w.r.t. graphics — it's just the
-// rising-edge state machine and the dispatch fan-out. All the heavy
-// lifting (loading textures, allocating actors, playing audio) lives
-// in the per-prefix services.
+// crossing detector and the dispatch fan-out. All the heavy lifting
+// (loading textures, allocating actors, playing audio) lives in the
+// per-prefix services.
 // ============================================================================
 
 #include "model_types.h"   // EventObjectConfig
@@ -44,10 +46,10 @@ public:
     // - actor:           the actor that owns this pool (carries handle + worldTransform).
     // - boneWorldMatrices: the same vector the renderer just produced.
     // - activeSeqIdx:    the actor's currently active sequence index.
-    //                    A change between ticks re-primes the rising-edge
-    //                    state so the new sequence's frame range can't
-    //                    re-fire events that were already crossed in the
-    //                    previous one. Pass -1 for global-sequence-only
+    //                    A change between ticks re-primes the per-key
+    //                    crossing state so the new sequence's frame range
+    //                    can't backfire keys that were already crossed in
+    //                    the previous one. Pass -1 for global-sequence-only
     //                    actors.
     // - localTimeMs:     the active sequence's current time within its window.
     // - globalTimeMs:    the renderer's free-running global clock.
@@ -67,11 +69,11 @@ public:
     bool Empty() const { return entries_.empty(); }
 
 private:
-    // Per-entry rising-edge state. Persists across ticks but resets on
-    // sequence change (detected in Tick via activeSeqIdx vs prevSeqIdx_).
+    // Per-entry per-key crossing state. Persists across ticks but
+    // resets on sequence change (detected in Tick via activeSeqIdx vs
+    // prevSeqIdx_).
     struct Entry {
         EventObjectConfig cfg;
-        int  lastValue        = 0;
         int  lastFrame        = -1;   // -1 sentinel → first tick primes without firing
         bool resolutionFailed = false; // SLK row missing → silently skip subsequent fires
     };

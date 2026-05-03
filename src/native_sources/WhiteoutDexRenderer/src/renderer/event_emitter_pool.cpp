@@ -32,20 +32,26 @@ void EventEmitterPool::Reset(std::vector<EventObjectConfig> configs,
 
 namespace {
 
-// Walk the track times from newest to oldest looking for a crossing
-// inside [windowLo, windowHi]: value=1 between the most recent crossing
-// and the next, 0 outside. We stop at the first match — the algorithm
-// only cares about *whether* a crossing exists at-or-before `frame`.
-int ValueAtFrame(const std::vector<uint32_t>& times,
-                 int frame, int windowLo, int windowHi) {
-    if (times.empty()) return 0;
-    if (frame < windowLo || frame > windowHi) return 0;
-    for (int i = (int)times.size() - 1; i >= 0; --i) {
-        const int t = (int)times[i];
-        if (t < windowLo)  return 0;     // walked past the window
-        if (t <= frame)    return 1;     // most recent crossing reached
+// Count keys in `times` whose value lies in the half-open interval
+// (lo, hi] AND in [windowLo, windowHi]. This is the engine's
+// per-key "JustPastKey" detector (preview.exe @0x1409668b0):
+// fire once per key crossed since the last sample, NOT once per
+// rising edge across the entire loop. Matters for tracks that
+// carry multiple keys per cycle (FPT footprints — one per wheel
+// hit — only the first would fire under a 0/1 latch model).
+int KeysInHalfOpen(const std::vector<uint32_t>& times,
+                   int lo, int hi,
+                   int windowLo, int windowHi) {
+    if (times.empty() || lo >= hi) return 0;
+    const int loB = std::max(lo,      windowLo - 1);  // (lo, ...] excludes lo itself
+    const int hiB = std::min(hi,      windowHi);
+    if (loB >= hiB) return 0;
+    int n = 0;
+    for (uint32_t raw : times) {
+        const int t = (int)raw;
+        if (t > loB && t <= hiB) ++n;
     }
-    return 0;
+    return n;
 }
 
 // Lift the hierarchy's "delta from bind" matrix into an absolute world
@@ -154,13 +160,13 @@ void EventEmitterPool::Tick(const Actor&                  actor,
     if (entries_.empty()) return;
 
     // Sequence change → re-prime so the new window's tracks don't
-    // inherit a stale lastValue=1 from the previous sequence (which
-    // would swallow a rising edge at the new sequence's first track).
-    // SceneManager::Update updates Actor::prevActiveSequence before
-    // ApplyFrameState runs, so we can't detect the change off the
-    // actor; we keep our own prev cursor instead.
+    // backfire across the boundary (would otherwise dispatch every
+    // key the previous sequence had already crossed). SceneManager
+    // updates Actor::prevActiveSequence before ApplyFrameState runs,
+    // so we can't detect the change off the actor; we keep our own
+    // prev cursor instead.
     if (activeSeqIdx != prevSeqIdx_) {
-        for (auto& e : entries_) { e.lastValue = 0; e.lastFrame = -1; }
+        for (auto& e : entries_) e.lastFrame = -1;
         prevSeqIdx_ = activeSeqIdx;
     }
 
@@ -189,28 +195,35 @@ void EventEmitterPool::Tick(const Actor&                  actor,
             windowHi = seqEndMs;
         }
 
-        // Rising-edge detection. Loop wrap (`frame < lastFrame` and
-        // we've already primed) re-arms the value gate so the very next
-        // crossing fires again. First tick (`lastFrame == -1`) primes
-        // without firing — otherwise loading a model in the middle of a
-        // sequence would dispatch every event whose track time was
-        // already past.
-        const int value = ValueAtFrame(cfg.eventTrackTimes, frame,
-                                       windowLo, windowHi);
-        bool fire = false;
-        if (e.lastFrame < 0) {
-            // First sample: just record state, don't fire.
-        } else if (frame < e.lastFrame) {
-            // Sequence wrapped — drop edge, then re-evaluate.
-            e.lastValue = 0;
-            fire = (value == 1);
-        } else {
-            fire = (value == 1 && e.lastValue == 0);
+        // Per-key crossing detection (mirrors preview.exe
+        // CKeyFrameTrackBase::JustPastKeyForward @0x1409668b0):
+        // fire ONCE per key whose time falls in (lastFrame, frame].
+        // First tick (lastFrame == -1) primes without firing —
+        // otherwise loading a model mid-sequence would dispatch
+        // every event whose track time was already past. A loop wrap
+        // (frame < lastFrame) splits the range into the tail of the
+        // previous loop (lastFrame, windowHi] and the head of the
+        // new loop [windowLo, frame], so a multi-key cycle (e.g. an
+        // FPT with one key per wheel hit) emits every key per loop
+        // instead of latching at the first.
+        int fireCount = 0;
+        if (e.lastFrame >= 0) {
+            if (frame >= e.lastFrame) {
+                fireCount = KeysInHalfOpen(cfg.eventTrackTimes,
+                                           e.lastFrame, frame,
+                                           windowLo, windowHi);
+            } else {
+                fireCount = KeysInHalfOpen(cfg.eventTrackTimes,
+                                           e.lastFrame, windowHi,
+                                           windowLo, windowHi)
+                          + KeysInHalfOpen(cfg.eventTrackTimes,
+                                           windowLo - 1, frame,
+                                           windowLo, windowHi);
+            }
         }
-        e.lastValue = value;
         e.lastFrame = frame;
 
-        if (!fire) continue;
+        if (fireCount <= 0) continue;
 
         // Resolve the firing world transform. The hierarchy stores a
         // "delta from bind" matrix per node, so to get the animated
@@ -228,70 +241,78 @@ void EventEmitterPool::Tick(const Actor&                  actor,
             nodeWorld = actor.worldTransform;
         }
 
-        switch (cfg.kind) {
-        case EventObjectConfig::Kind::SPN: {
-            if (!spn) break;
-            const io::SpnEntry* row = io::FindSpn(cfg.id);
-            if (!row) {
-                // Don't spam — log once per id by zeroing the entry's
-                // tracks so subsequent rising edges silently skip.
-                std::fprintf(stderr,
-                    "[WDEX events] SPN id '%s' not in SpawnData.slk\n",
-                    cfg.id.c_str());
-                e.resolutionFailed = true;
+        // SND collapses to one play per tick — the OS audio buffer
+        // can only hold one sound, so firing N copies in 16 ms just
+        // overwrites itself. Splats/spawns add real instances per
+        // crossing, so they get the full count.
+        const int dispatchCount =
+            (cfg.kind == EventObjectConfig::Kind::SND) ? 1 : fireCount;
+        for (int k = 0; k < dispatchCount && !e.resolutionFailed; ++k) {
+            switch (cfg.kind) {
+            case EventObjectConfig::Kind::SPN: {
+                if (!spn) break;
+                const io::SpnEntry* row = io::FindSpn(cfg.id);
+                if (!row) {
+                    // Don't spam — flag the entry so subsequent
+                    // crossings silently skip the lookup.
+                    std::fprintf(stderr,
+                        "[WDEX events] SPN id '%s' not in SpawnData.slk\n",
+                        cfg.id.c_str());
+                    e.resolutionFailed = true;
+                    break;
+                }
+                spn->Spawn(actor.handle, row->modelPath, nodeWorld, globalTimeMs);
                 break;
             }
-            spn->Spawn(actor.handle, row->modelPath, nodeWorld, globalTimeMs);
-            break;
-        }
-        case EventObjectConfig::Kind::SPL:
-        case EventObjectConfig::Kind::FPT: {
-            if (!splats) break;
-            const io::SplEntry* row = io::FindSpl(cfg.id);
-            if (!row) {
-                std::fprintf(stderr,
-                    "[WDEX events] SPL/FPT id '%s' not in SplatData.slk\n",
-                    cfg.id.c_str());
-                e.resolutionFailed = true;
+            case EventObjectConfig::Kind::SPL:
+            case EventObjectConfig::Kind::FPT: {
+                if (!splats) break;
+                const io::SplEntry* row = io::FindSpl(cfg.id);
+                if (!row) {
+                    std::fprintf(stderr,
+                        "[WDEX events] SPL/FPT id '%s' not in SplatData.slk\n",
+                        cfg.id.c_str());
+                    e.resolutionFailed = true;
+                    break;
+                }
+                Vector3f origin, right, forward;
+                ExtractSpawnFrame(nodeWorld, row->scale, origin, right, forward);
+                ProjectToGroundPlane(origin, right, forward, actor.worldTransform);
+                splats->SpawnSpl(*row, origin, right, forward);
                 break;
             }
-            Vector3f origin, right, forward;
-            ExtractSpawnFrame(nodeWorld, row->scale, origin, right, forward);
-            ProjectToGroundPlane(origin, right, forward, actor.worldTransform);
-            splats->SpawnSpl(*row, origin, right, forward);
-            break;
-        }
-        case EventObjectConfig::Kind::UBR: {
-            if (!splats) break;
-            const io::UbrEntry* row = io::FindUbr(cfg.id);
-            if (!row) {
-                std::fprintf(stderr,
-                    "[WDEX events] UBR id '%s' not in UberSplatData.slk\n",
-                    cfg.id.c_str());
-                e.resolutionFailed = true;
+            case EventObjectConfig::Kind::UBR: {
+                if (!splats) break;
+                const io::UbrEntry* row = io::FindUbr(cfg.id);
+                if (!row) {
+                    std::fprintf(stderr,
+                        "[WDEX events] UBR id '%s' not in UberSplatData.slk\n",
+                        cfg.id.c_str());
+                    e.resolutionFailed = true;
+                    break;
+                }
+                Vector3f origin, right, forward;
+                ExtractSpawnFrame(nodeWorld, row->scale, origin, right, forward);
+                ProjectToGroundPlane(origin, right, forward, actor.worldTransform);
+                splats->SpawnUbr(*row, origin, right, forward);
                 break;
             }
-            Vector3f origin, right, forward;
-            ExtractSpawnFrame(nodeWorld, row->scale, origin, right, forward);
-            ProjectToGroundPlane(origin, right, forward, actor.worldTransform);
-            splats->SpawnUbr(*row, origin, right, forward);
-            break;
-        }
-        case EventObjectConfig::Kind::SND: {
-            if (!sounds) break;
-            const io::SndEntry* row = io::FindSnd(cfg.id);
-            if (!row) {
-                std::fprintf(stderr,
-                    "[WDEX events] SND id '%s' not in any UI/SoundInfo/*Sounds*.slk\n",
-                    cfg.id.c_str());
-                e.resolutionFailed = true;
+            case EventObjectConfig::Kind::SND: {
+                if (!sounds) break;
+                const io::SndEntry* row = io::FindSnd(cfg.id);
+                if (!row) {
+                    std::fprintf(stderr,
+                        "[WDEX events] SND id '%s' not in any UI/SoundInfo/*Sounds*.slk\n",
+                        cfg.id.c_str());
+                    e.resolutionFailed = true;
+                    break;
+                }
+                sounds->Play(*row, ExtractWorldPos(nodeWorld));
                 break;
             }
-            sounds->Play(*row, ExtractWorldPos(nodeWorld));
-            break;
-        }
-        case EventObjectConfig::Kind::Unknown:
-            break;
+            case EventObjectConfig::Kind::Unknown:
+                break;
+            }
         }
     }
 }
