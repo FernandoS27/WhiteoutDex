@@ -1235,7 +1235,15 @@ void RenderService::ActivateCameraPreset(int idx) {
         // Fall back to an open range when no SequenceRanges are
         // known, so FindBracket doesn't empty out and return static.
         if (seqStart == 0 && seqEnd == 0) seqEnd = 1 << 30;
-        p.animator(pos, tgt, roll, scene_->GetAnimationTime(), seqStart, seqEnd);
+        // EvaluateTrack* keyframes live in absolute MDX-frame ms inside
+        // [seqStart, seqEnd]. The focus actor's `animation.TimeMs()` is
+        // already loop-clamped into that range by SceneManager::Update;
+        // the wall-clock from `GetAnimationTime()` would race past seqEnd
+        // and land in FindBracket's wrap region where segLen collapses
+        // to 0 and the animator freezes on a single key.
+        const int sampleMs = focus ? focus->animation.TimeMs()
+                                   : scene_->GetAnimationTime();
+        p.animator(pos, tgt, roll, sampleMs, seqStart, seqEnd);
     }
 
     scene_->Camera().SetDirectPose(pos, tgt, roll);
@@ -2959,8 +2967,11 @@ void RenderService::RenderFrame(RenderTargetId targetId) {
                 Vector3f pos  = preset.position;
                 Vector3f tgt  = preset.target;
                 float    roll = preset.staticRoll;
-                preset.animator(pos, tgt, roll,
-                                scene_->GetAnimationTime(), seqStart, seqEnd);
+                // Loop-clamped MDX-frame time, not the wall clock — see
+                // ActivateCameraPreset for the matching reasoning.
+                const int sampleMs = focus ? focus->animation.TimeMs()
+                                           : scene_->GetAnimationTime();
+                preset.animator(pos, tgt, roll, sampleMs, seqStart, seqEnd);
                 scene_->Camera().SetDirectPose(pos, tgt, roll);
             }
         }
