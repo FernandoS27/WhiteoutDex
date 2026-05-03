@@ -2357,6 +2357,15 @@ bool RenderService::InitBlsShaders() {
     blsHdProgram_ = blsPrograms_->Load({
         bls::GxShaderID::HD, "HD", "HD"
     });
+    // Engine parity: ILoadShaders @0x1407a647d registers Crystal as
+    // (0x18, "HD", "Crystal") — the HD vertex shader paired with a
+    // separate Crystal pixel shader. Loading via the same catalog
+    // dedupes the VS through BlsShaderCache so hd.bls is only parsed
+    // once. If `crystal.bls` is missing we silently fall back to HD
+    // for shaderId==24 layers (see the dispatch in RenderModelMeshBls).
+    blsCrystalProgram_ = blsPrograms_->Load({
+        bls::GxShaderID::Crystal, "HD", "Crystal"
+    });
 
     // Depth-only PSOs for the shadow render pass. Two siblings:
     //   * shadowPSO_      — HD VS perm 4 (FourBoneSkinning, no
@@ -2550,7 +2559,9 @@ bool RenderService::InitBlsShaders() {
 
     // All four BLS chains are required:
     //   * SD mesh draws route through blsSdProgram_;
-    //   * HD-mode mesh draws pick blsHdProgram_ (pure HD/Crystal) or
+    //   * HD-mode mesh draws pick blsHdProgram_ (pure HD), blsCrystalProgram_
+    //     (Layer::ShaderType=24 refractive props; falls back to HD if
+    //     crystal.bls is missing — not in this readiness gate), or
     //     blsSdOnHdProgram_ (legacy SD under HD mode);
     //   * tonemap.bls is the LDR resolve at the end of every frame —
     //     all 3D PSOs target RGBA16F, so without the tonemap pass the
@@ -2669,9 +2680,10 @@ void RenderService::ApplyIblMode(IblMode mode) {
 }
 
 void RenderService::ShutdownBlsShaders() {
-    blsSdProgram_     = nullptr;
-    blsSdOnHdProgram_ = nullptr;
-    blsHdProgram_     = nullptr;
+    blsSdProgram_      = nullptr;
+    blsSdOnHdProgram_  = nullptr;
+    blsHdProgram_      = nullptr;
+    blsCrystalProgram_ = nullptr;
     // Sprite VS + tonemap PS are reference-counted by the BLS shader
     // cache; the ReleaseAll() below tears down their handles. Clear
     // the borrowed pointers so a subsequent InitBlsShaders() doesn't
@@ -3430,10 +3442,15 @@ bool RenderService::RenderGeosetsBls(GeosetBucket bucket) {
 // PS permute with HAS_IBL=0, lights=0, no shadows, no prepass -- flat albedo
 // modulated by vertex color, no BRDF, no IBL. Later phases light this up.
 //
-// Routing: pure HD/Crystal materials use blsHdProgram_; SD/SD_on_HD
-// materials route through blsSdOnHdProgram_ once that program's CB build is
-// in place (Phase 4). Until then we also draw those via the HD program;
-// visual parity with SD mode will come in later phases.
+// Routing per Layer::ShaderType (engine ILoadShaders @0x1407a6200):
+//   1  → blsHdProgram_       (HD VS + HD PS)
+//  24  → blsCrystalProgram_  (HD VS + Crystal PS — refraction variant);
+//                              falls back to blsHdProgram_ if crystal.bls
+//                              didn't load.
+//   0/2/etc. → blsSdOnHdProgram_ (legacy SD authored on HD).
+// HD and Crystal share the HD vertex stage and the HdVsCb / HdPsCb
+// layouts — only the PS body differs — so the per-frame CB writers
+// and texture binds are unchanged across the two.
 // ============================================================================
 // GeosetPassHd — HD-path mesh draw. Runs only when renderMode_ == HD.
 // Drives the HD / SD_on_HD BLS programs with LH view+proj, the full PBR
@@ -3657,12 +3674,32 @@ public:
             if (isOpaqueFading)
                 effectiveFilter = FILTER_BLEND;
 
+            // Pick the BLS program by Layer::ShaderType. Engine
+            // ILoadShaders @0x1407a6200 maps:
+            //   1  → HD VS + HD PS         (full PBR mesh)
+            //  24  → HD VS + Crystal PS    (refractive/cloak variant)
+            //   0/2/etc. → SD_on_HD VS+PS  (legacy SD authored on HD)
+            // Crystal shares the HD vertex stage and CB layout, so the
+            // VS permute / texture binds / per-frame CB writes match
+            // verbatim — only the PS body differs (refraction blend on
+            // t_albedo + refract-modulated Fresnel alpha; see
+            // Wc3Shaders/effects/crystal_refract.slang). We fall back to
+            // the HD program if Crystal didn't load (missing crystal.bls)
+            // so the layer still renders, just without refraction.
+            const bool isCrystalMaterial = (layer.shaderId == 24)
+                                        && rs_.blsCrystalProgram_ != nullptr;
             const bool isHdMaterial =
-                (layer.shaderId == 1) /* HD */ || (layer.shaderId == 24) /* Crystal */;
+                isCrystalMaterial
+                || layer.shaderId == 1
+                || layer.shaderId == 24;
             const bls::GxShaderID programShaderId =
-                isHdMaterial ? bls::GxShaderID::HD : bls::GxShaderID::SD_on_HD;
+                isCrystalMaterial ? bls::GxShaderID::Crystal
+                : isHdMaterial    ? bls::GxShaderID::HD
+                                  : bls::GxShaderID::SD_on_HD;
             const bls::BlsProgram* program =
-                isHdMaterial ? rs_.blsHdProgram_ : rs_.blsSdOnHdProgram_;
+                isCrystalMaterial ? rs_.blsCrystalProgram_
+                : isHdMaterial    ? rs_.blsHdProgram_
+                                  : rs_.blsSdOnHdProgram_;
 
             bls::MatParams mp = bls::FromMdxLayer(effectiveFilter, layer.flags, programShaderId);
             if (mp.alpha == bls::GxMatAlpha::Modulate) {
@@ -3793,11 +3830,15 @@ public:
                 cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1, rs_.blsHdShadowCb_);
             }
 
-            // PS CB layout diverges by program: hd_ps.slang reads PBR
-            // fields directly (HdPsCb) while sd_on_hd_ps.slang reads a
-            // padded legacy layout (SdOnHdPsCb) with invViewRow rows and
+            // PS CB layout diverges by program: hd_ps.slang AND
+            // crystal_ps.slang both read the PBR HdPsCb (engine
+            // ILoadShaders pairs Crystal with the HD VS, and the
+            // Crystal PS keeps the same psCB2/psCB3 layout — only the
+            // body math differs). sd_on_hd_ps.slang reads a padded
+            // legacy layout (SdOnHdPsCb) with invViewRow rows and
             // lightCountSlot.z bit-reinterpret.
-            if (program == rs_.blsHdProgram_) {
+            if (program == rs_.blsHdProgram_ ||
+                program == rs_.blsCrystalProgram_) {
                 if (auto ps = bls::ScopedCb<bls::HdPsCb>(rs_.gfx_.get(), rs_.blsHdPsCb_)) {
                     bls::BuildHdPsCb(*ps, frame, matParams);
                 }
