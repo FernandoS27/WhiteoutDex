@@ -225,6 +225,7 @@ std::optional<std::vector<uint8_t>> FileContentProvider::ReadFile(
 static constexpr const char* kCascPrefixes[] = {
     "war3.w3mod:",
     "war3.w3mod:_hd.w3mod:",
+    "war3.w3mod:_deprecated.w3mod:",
 };
 
 // All extensions to try when searching CASC/MPQ archives.
