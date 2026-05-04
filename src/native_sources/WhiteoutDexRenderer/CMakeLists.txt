@@ -30,8 +30,9 @@ set(SLANG_COMMON_FLAGS -matrix-layout-column-major -I "${SHADER_SRC_DIR}"
     -default-downstream-compiler hlsl dxc)
 
 # Shader entry points: <slang_file>  <entry>  <stage>  <output_name>
-# Only line.slang (debug wires) and viewcube.slang (debug orientation cube)
-# remain as Slang sources; every MDX-material draw goes through BLS.
+# Only line.slang (debug wires) and viewcube.slang (debug orientation
+# cube) remain as Slang sources; every MDX-material draw goes through
+# BLS, and the tonemap pass uses the engine's sprite.bls VS directly.
 set(SHADER_ENTRIES
     "line.slang|vsLine|vertex|kLineVS"
     "line.slang|psLine|fragment|kLinePS"
@@ -124,11 +125,20 @@ set_property(CACHE WDX_DEFAULT_COORD_SPACE PROPERTY STRINGS "Blizzard" "Max")
 add_library(WhiteoutDexRendererLib STATIC
     src/renderer/render_service.cpp
     src/renderer/render_service_internal.cpp
+    src/renderer/sampler_asset_manager.cpp
+    src/renderer/texture_asset_manager.cpp
+    src/renderer/replaceable_texture_manager.cpp
+    src/renderer/model_template.cpp
+    src/renderer/model_template_manager.cpp
+    src/renderer/scene_manager.cpp
+    src/renderer/animation_driver.cpp
+    src/renderer/render_model.cpp
     src/renderer/render_target.cpp
     src/renderer/viewcube_atlas.cpp
     src/renderer/coordinate_system.cpp
     src/renderer/debug/debug_renderer.cpp
     src/ui/render_window.cpp
+    src/ui/settings_ini.cpp
     src/renderer/ribbon.cpp
     src/renderer/pe1_system.cpp
     src/renderer/particle/rnd_seed.cpp
@@ -138,6 +148,15 @@ add_library(WhiteoutDexRendererLib STATIC
     src/renderer/particle/plane_emitter.cpp
     src/renderer/particle/particle_geometry.cpp
     src/renderer/particle/particle_service.cpp
+    src/renderer/particle/splat_service.cpp
+    src/renderer/dnc/dnc_asset.cpp
+    src/renderer/dnc/dnc_cache.cpp
+    src/renderer/dnc/dnc_service.cpp
+    src/renderer/shadow/shadow_service.cpp
+    src/renderer/shadow/shadow_pass.cpp
+    src/renderer/event_emitter_pool.cpp
+    src/renderer/windows_sound_emitter.cpp
+    src/renderer/spn_spawner.cpp
     src/renderer/bls/bls_container.cpp
     src/renderer/bls/bls_shader_cache.cpp
     src/renderer/bls/bls_permuter.cpp
@@ -153,6 +172,10 @@ add_library(WhiteoutDexRendererLib STATIC
     src/io/team_glow_data.cpp
     src/io/file_resolver.cpp
     src/io/file_content_provider.cpp
+    src/io/replaceable_paths.cpp
+    src/io/event_data.cpp
+    src/io/slk.cpp
+    src/io/texture_image_usage.cpp
 )
 
 add_dependencies(WhiteoutDexRendererLib WhiteoutDexShaders)

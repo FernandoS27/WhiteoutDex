@@ -66,6 +66,10 @@ struct MatParams {
     bool DepthTestEnabled()const { return (disables & kDisableDepthTest)  == 0; }
     bool DepthWriteEnabled()const{ return (disables & kDisableDepthWrite) == 0; }
     bool CullEnabled()     const { return (disables & kDisableCull)       == 0; }
+    // Engine SelectModelMaterial sets m_disables |= 0x100 (kDisableBit8)
+    // for the DEPTHFILL_DEPTH prepass clone — we mirror that as a color-mask
+    // off so the depth pass only writes Z.
+    bool ColorWriteEnabled()const{ return (disables & kDisableBit8)       == 0; }
 };
 
 // ---------- MDX FilterMode -> GxMatAlpha / disables ------------------------

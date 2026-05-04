@@ -62,9 +62,18 @@ struct EmitterKeyHash {
 };
 
 // Per-emitter draw data for BuildGeometry consumers.
+//
+// `vertexOffset` is the start of this emitter's contiguous slice in the
+// shared vertex buffer that BuildGeometry appends into. Storing it
+// explicitly (rather than relying on iteration order) lets the renderer
+// sort EmitterDrawLists by priorityPlane after build without having to
+// reshuffle the vertex buffer. Mirrors how the WC3 engine sorts
+// CParticleEmitter2 by m_priorityPlane (offset 0x3C in the runtime
+// struct, verified in Warcraft III.exe).
 struct EmitterDrawList {
     ModelId                 model;
     int                     emitterId;
+    int                     vertexOffset;
     int                     vertexCount;
     int                     priorityPlane;
     ParticleMaterialDesc    material;

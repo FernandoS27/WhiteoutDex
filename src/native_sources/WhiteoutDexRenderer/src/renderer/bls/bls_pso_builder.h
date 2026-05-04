@@ -52,6 +52,11 @@ enum class VertexLayoutKind : uint8_t {
     MeshHDSkinnedNoTangent = 6,
 };
 
+// Returns the InputElement array for a given vertex layout family.
+// Useful when callers build their own PSOs outside the BlsPsoBuilder
+// cache (the shadow render pass does this for its depth-only PSO).
+std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k);
+
 struct PsoRequest {
     const BlsProgram*      program    = nullptr;
     uint32_t               vsIndex    = 0;
@@ -59,7 +64,12 @@ struct PsoRequest {
     MatParams              material;
     VertexLayoutKind       layout     = VertexLayoutKind::MeshSD;
     gfx::PrimitiveTopology topology   = gfx::PrimitiveTopology::TriangleList;
-    gfx::Format            rtvFormat  = gfx::Format::R8G8B8A8_UNORM;
+    // 3D draws render into the linear-HDR scene target (RGBA16F); the
+    // tonemap pass resolves to the R8G8B8A8 back-buffer. Callers that need
+    // a different RTV format (e.g. an offscreen LDR capture) must override
+    // this — leaving the default at HDR avoids the silent precision loss
+    // we used to get when HD lighting was clamped to RGBA8.
+    gfx::Format            rtvFormat  = gfx::Format::R16G16B16A16_FLOAT;
     gfx::Format            dsvFormat  = gfx::Format::D24_UNORM_S8_UINT;
     bool                   wireframe  = false;
     // Folded into the PSO hash so HD (LH) and SD (RH) stacks keep

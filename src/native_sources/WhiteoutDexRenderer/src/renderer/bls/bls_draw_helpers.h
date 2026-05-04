@@ -9,7 +9,8 @@
 #include "bls_frame.h"
 #include "bls_permuter.h"
 #include "bls_pso_builder.h"
-#include "model_types.h"  // FrameState::LightState / LightKind
+#include "model_types.h"   // FrameState::LightState / LightKind
+#include "render_target.h" // LightingMode
 #include "types.h"
 
 #include <vector>
@@ -30,16 +31,18 @@ struct BaselineLights {
     Vector3f dirToSourceVS  = {0.0f, 0.0f, 1.0f};
 };
 
-// Writes up to kMaxLights entries into `frame.lights[]`:
-//   - if no authored light is enabled, injects one baseline light
-//   - then copies every enabled authored light (transformed into view space)
-//   - zero-fills the remaining slots
-// Returns the populated light count. Matches the 3x-duplicated palette setup
-// inside RenderGeosetsBls/Hd/legacy, modulo the caller-supplied baseline.
+// Writes up to kMaxLights entries into `frame.lights[]` based on the
+// chosen LightingMode:
+//   Dynamic — baseline only when no authored light is enabled.
+//   InGame  — baseline always; authored lights stack on top.
+//   Glue    — baseline never; only authored lights (may be empty).
+// Authored lights are transformed into view space; remaining slots are
+// zero-filled. Returns the populated light count.
 int BuildLightPalette(FrameInputs&                                      frame,
                       const std::vector<FrameState::LightState>&        activeLights,
                       const Matrix44f&                                  viewMatrix,
-                      const BaselineLights&                             baseline);
+                      const BaselineLights&                             baseline,
+                      LightingMode                                      mode);
 
 // Canonical BLS (SD-in-SD-mode) mesh RenderState. Mirrors the inline fill
 // that was duplicated across RenderGeosetsBls / RenderParticlesBls:

@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include "file_resolver.h"
+#include "path_utf8.h"   // FsPathFromUtf8 — UTF-8 → fs::path
 
 namespace WhiteoutDex {
 namespace fs = std::filesystem;
@@ -23,7 +24,10 @@ std::string FileResolver::NormalizeSeparators(const std::string& path) {
 fs::path FileResolver::Resolve(const std::string& relativePath,
                                 std::span<const char* const> extensions) const {
     std::string norm = NormalizeSeparators(relativePath);
-    fs::path relPath(norm);
+    // UTF-8 → fs::path. fs::path's narrow ctor would interpret `norm` through
+    // the platform code page and corrupt CJK/non-ASCII bytes; FsPathFromUtf8
+    // explicitly converts via wide.
+    fs::path relPath = FsPathFromUtf8(norm);
     fs::path filename = relPath.filename();
 
     // Candidate directories: full sub-path first, then just the filename

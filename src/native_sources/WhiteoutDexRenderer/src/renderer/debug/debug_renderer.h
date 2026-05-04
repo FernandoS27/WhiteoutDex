@@ -104,6 +104,10 @@ private:
     int               gridVertCount_ = 0;
 
     // ---- ViewCube ----
+    // Atlas texture lifetime is owned by TextureAssetManager under this
+    // name; vcFaceTex_ caches the handle for fast per-frame bind.
+    static constexpr const char* kViewCubeFaceTexName = "debug.viewCubeFace";
+
     gfx::BufferHandle   vcCubeVB_    = gfx::BufferHandle::Invalid;
     gfx::BufferHandle   vcCubeIB_    = gfx::BufferHandle::Invalid;
     gfx::BufferHandle   vcOutlineVB_ = gfx::BufferHandle::Invalid;
@@ -114,7 +118,11 @@ private:
     // other code in the renderer should ever reach for these.
     gfx::ShaderHandle   viewCubeVS_  = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle   viewCubePS_  = gfx::ShaderHandle::Invalid;
-    gfx::PipelineHandle viewCubePSO_ = gfx::PipelineHandle::Invalid;
+    // Two PSOs — one for the HD scene target (R11G11B10F) and one for
+    // the LDR back-buffer (R8G8B8A8_UNORM); RenderViewCube picks the
+    // one matching the current renderMode_.
+    gfx::PipelineHandle viewCubePSOHdr_ = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle viewCubePSOSd_  = gfx::PipelineHandle::Invalid;
     bool                vcHovered_   = false;
 };
 

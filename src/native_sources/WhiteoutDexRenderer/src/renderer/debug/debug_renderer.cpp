@@ -7,6 +7,8 @@
 #include "render_service_internal.h"
 #include "compiled_shaders.h"
 #include "constants.h"
+#include "sampler_asset_manager.h"
+#include "texture_asset_manager.h"
 #include "viewcube_atlas.h"
 #include "coordinate_system.h"
 
@@ -35,8 +37,11 @@ void DebugRenderer::DestroyResources() {
     rs_.gfx_->Destroy(vcCubeIB_);      vcCubeIB_    = gfx::BufferHandle::Invalid;
     rs_.gfx_->Destroy(vcOutlineVB_);   vcOutlineVB_ = gfx::BufferHandle::Invalid;
     rs_.gfx_->Destroy(vcHomeVB_);      vcHomeVB_    = gfx::BufferHandle::Invalid;
-    rs_.gfx_->Destroy(vcFaceTex_);     vcFaceTex_   = gfx::TextureHandle::Invalid;
-    rs_.gfx_->Destroy(viewCubePSO_);   viewCubePSO_ = gfx::PipelineHandle::Invalid;
+    // ViewCube atlas lifetime owned by TextureAssetManager.
+    if (rs_.textures_) rs_.textures_->ReleaseOwned(kViewCubeFaceTexName);
+    vcFaceTex_   = gfx::TextureHandle::Invalid;
+    rs_.gfx_->Destroy(viewCubePSOHdr_); viewCubePSOHdr_ = gfx::PipelineHandle::Invalid;
+    rs_.gfx_->Destroy(viewCubePSOSd_);  viewCubePSOSd_  = gfx::PipelineHandle::Invalid;
     rs_.gfx_->Destroy(viewCubeVS_);    viewCubeVS_  = gfx::ShaderHandle::Invalid;
     rs_.gfx_->Destroy(viewCubePS_);    viewCubePS_  = gfx::ShaderHandle::Invalid;
     gridVertCount_ = 0;
@@ -49,8 +54,11 @@ bool DebugRenderer::CreateGridResources() {
     Vector4f gridColor  = {0.45f, 0.45f, 0.46f, 1.0f};
     Vector4f axisColorX = {0.75f, 0.2f,  0.2f,  1.0f};
     Vector4f axisColorY = {0.2f,  0.75f, 0.2f,  1.0f};
-    Vector4f axisColorZ = {0.2f,  0.2f,  0.75f, 1.0f};
 
+    // Ground-plane grid + the X/Y axes through origin. The Z axis spike
+    // used to be drawn here too but pollutes screenshots and overlaps
+    // most models' silhouettes; vertical scale reads fine from the
+    // grid spacing alone.
     for (float v = -extent; v <= extent; v += step) {
         Vector4f c = (v == 0.0f) ? axisColorY : gridColor;
         lines.push_back({{v, -extent, 0.0f}, c});
@@ -59,8 +67,6 @@ bool DebugRenderer::CreateGridResources() {
         lines.push_back({{-extent, v, 0.0f}, c});
         lines.push_back({{ extent, v, 0.0f}, c});
     }
-    lines.push_back({{0.0f, 0.0f, 0.0f},   axisColorZ});
-    lines.push_back({{0.0f, 0.0f, extent}, axisColorZ});
     gridVertCount_ = (int)lines.size();
 
     gridVB_ = rs_.gfx_->CreateBuffer({
@@ -71,7 +77,9 @@ bool DebugRenderer::CreateGridResources() {
 }
 
 bool DebugRenderer::CreateViewCubeResources() {
-    // Generate face label atlas procedurally (platform-neutral)
+    // Generate face label atlas procedurally (platform-neutral). Lifetime
+    // is handed to TextureAssetManager via RegisterOwned; vcFaceTex_
+    // caches the handle for fast per-frame bind.
     {
         int tw, th;
         auto pixels = GenerateViewCubeAtlas(tw, th);
@@ -81,6 +89,7 @@ bool DebugRenderer::CreateViewCubeResources() {
             .format = gfx::Format::R8G8B8A8_UNORM,
             .usage  = gfx::TextureUsage::ShaderResource,
         }, pixels.data());
+        if (rs_.textures_) rs_.textures_->RegisterOwned(kViewCubeFaceTexName, vcFaceTex_);
     }
 
     // Cube geometry: 24 vertices (4 per face), 36 indices
@@ -196,12 +205,22 @@ bool DebugRenderer::CreateViewCubeResources() {
     // (None so the cube is drawable from any angle) and the CCW convention.
     vcDesc.rasterizer.cull     = gfx::CullMode::None;
     vcDesc.rasterizer.frontCCW = true;
-    viewCubePSO_ = rs_.gfx_->CreateGraphicsPipeline(vcDesc);
+    // ViewCube draws into the active scene target — the HD path uses
+    // the HDR R11G11B10F intermediate (tonemapped to LDR afterwards),
+    // the SD path writes straight to the R8G8B8A8 back-buffer with no
+    // tonemap. Build a PSO for each format; RenderViewCube picks the
+    // matching one from rs_.renderMode_.
+    vcDesc.rtvFormat = RenderService::kHdrSceneFormat;
+    viewCubePSOHdr_  = rs_.gfx_->CreateGraphicsPipeline(vcDesc);
 
-    return vcCubeVB_    != gfx::BufferHandle::Invalid &&
-           vcCubeIB_    != gfx::BufferHandle::Invalid &&
-           vcOutlineVB_ != gfx::BufferHandle::Invalid &&
-           viewCubePSO_ != gfx::PipelineHandle::Invalid;
+    vcDesc.rtvFormat = RenderService::kSdSceneFormat;
+    viewCubePSOSd_   = rs_.gfx_->CreateGraphicsPipeline(vcDesc);
+
+    return vcCubeVB_       != gfx::BufferHandle::Invalid &&
+           vcCubeIB_       != gfx::BufferHandle::Invalid &&
+           vcOutlineVB_    != gfx::BufferHandle::Invalid &&
+           viewCubePSOHdr_ != gfx::PipelineHandle::Invalid &&
+           viewCubePSOSd_  != gfx::PipelineHandle::Invalid;
 }
 
 // ============================================================================
@@ -211,7 +230,7 @@ bool DebugRenderer::CreateViewCubeResources() {
 void DebugRenderer::RenderGrid() {
     if (gridVB_ == gfx::BufferHandle::Invalid) return;
     auto* cmd = rs_.gfx_->GetImmediateContext();
-    cmd->BindPipeline(rs_.linePSO_);
+    cmd->BindPipeline(rs_.CurrentLinePSO());
     cmd->BindVertexBuffer(0, gridVB_, sizeof(LineVertex));
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.cbPerFrame_);
     cmd->Draw(gridVertCount_, 0);
@@ -226,16 +245,16 @@ void DebugRenderer::RenderCollisions() {
     Matrix44f viewMat;
     {
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-        for (auto& [h, mi] : rs_.models_) {
+        for (auto& [h, mi] : rs_.scene_->Actors().All()) {
             if (mi->parentVisibility <= 0.02f) continue;
-            shapes.insert(shapes.end(), mi->collisionShapes.begin(), mi->collisionShapes.end());
+            shapes.insert(shapes.end(), mi->render.collisionShapes.begin(), mi->render.collisionShapes.end());
         }
         if (shapes.empty()) return;
-        viewMat = rs_.camera_.GetViewMatrix();
+        viewMat = rs_.scene_->Camera().GetViewMatrix();
     }
 
     auto* cmd = rs_.gfx_->GetImmediateContext();
-    cmd->BindPipeline(rs_.linePSO_);
+    cmd->BindPipeline(rs_.CurrentLinePSO());
 
     struct LV { Vector3f pos; Vector4f col; };
     Vector4f col = {0.0f, 1.0f, 0.3f, 1.0f};
@@ -336,7 +355,7 @@ void DebugRenderer::RenderCollisions() {
         float aspect = (rs_.height_ > 0) ? (float)rs_.width_ / (float)rs_.height_ : 1.0f;
         render_detail::CbPerFrameDesc d;
         d.view         = viewMat;
-        d.projection   = rs_.camera_.ProjectionRH(aspect);
+        d.projection   = rs_.scene_->Camera().ProjectionRH(aspect);
         d.lightColor   = kCollisionLightColor;
         d.ambientColor = kCollisionAmbientColor;
         render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
@@ -360,9 +379,9 @@ void DebugRenderer::RenderLightMarkers() {
     Matrix44f viewMat;
     {
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-        for (auto& [h, mi] : rs_.models_) {
+        for (auto& [h, mi] : rs_.scene_->Actors().All()) {
             if (mi->parentVisibility <= 0.02f) continue;
-            for (const auto& L : mi->activeLights) {
+            for (const auto& L : mi->render.activeLights) {
                 const bool dir = (L.kind == FrameState::LightKind::Directional);
                 lights.push_back({
                     dir ? whiteout::transform_point(Vector3f{0,0,0}, mi->worldTransform)
@@ -375,11 +394,11 @@ void DebugRenderer::RenderLightMarkers() {
             }
         }
         if (lights.empty()) return;
-        viewMat = rs_.camera_.GetViewMatrix();
+        viewMat = rs_.scene_->Camera().GetViewMatrix();
     }
 
     auto* cmd = rs_.gfx_->GetImmediateContext();
-    cmd->BindPipeline(rs_.linePSO_);
+    cmd->BindPipeline(rs_.CurrentLinePSO());
 
     struct LV { Vector3f pos; Vector4f col; };
     std::vector<LV> verts;
@@ -428,7 +447,7 @@ void DebugRenderer::RenderLightMarkers() {
         float aspect = (rs_.height_ > 0) ? (float)rs_.width_ / (float)rs_.height_ : 1.0f;
         render_detail::CbPerFrameDesc d;
         d.view       = viewMat;
-        d.projection = rs_.camera_.ProjectionRH(aspect);
+        d.projection = rs_.scene_->Camera().ProjectionRH(aspect);
         render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
     }
     DrawWireLines(rs_.gfx_.get(), cmd, rs_.cbPerFrame_, verts);
@@ -469,8 +488,8 @@ void DebugRenderer::RenderViewCube() {
     {
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
         float dist = 3.5f;
-        float cosP = cosf(rs_.camera_.GetPitch()), sinP = sinf(rs_.camera_.GetPitch());
-        float cosY = cosf(rs_.camera_.GetYaw()),   sinY = sinf(rs_.camera_.GetYaw());
+        float cosP = cosf(rs_.scene_->Camera().GetPitch()), sinP = sinf(rs_.scene_->Camera().GetPitch());
+        float cosY = cosf(rs_.scene_->Camera().GetYaw()),   sinY = sinf(rs_.scene_->Camera().GetYaw());
         Vector3f eye = { dist * cosP * cosY, dist * cosP * sinY, dist * sinP };
         Vector3f tgt = { 0, 0, 0 };
         Vector3f up  = { 0, 0, 1 };
@@ -488,19 +507,23 @@ void DebugRenderer::RenderViewCube() {
         render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
     }
 
-    cmd->BindPipeline(viewCubePSO_);
+    // Pick the PSO whose RTV format matches the scene target the
+    // ViewCube is being drawn into (HDR for HD mode, LDR for SD).
+    const auto vcPso = (rs_.renderMode_ == RenderMode::HD)
+                       ? viewCubePSOHdr_ : viewCubePSOSd_;
+    cmd->BindPipeline(vcPso);
     cmd->BindVertexBuffer(0, vcCubeVB_, sizeof(Vertex));
     cmd->BindIndexBuffer(vcCubeIB_, gfx::Format::R32_UINT);
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.cbPerFrame_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, rs_.cbPerFrame_);
-    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplerLinear_);
+    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplers_->LinearWrap());
     if (vcFaceTex_ != gfx::TextureHandle::Invalid)
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, vcFaceTex_);
     else
-        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, rs_.defaultTex_);
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, rs_.textures_->GetDefaults().White);
     cmd->DrawIndexed(36, 0, 0);
 
-    cmd->BindPipeline(rs_.linePSO_);
+    cmd->BindPipeline(rs_.CurrentLinePSO());
     cmd->BindVertexBuffer(0, vcOutlineVB_, sizeof(LineVertex));
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.cbPerFrame_);
     cmd->Draw(24, 0);
@@ -554,10 +577,10 @@ void DebugRenderer::RenderViewCube() {
     Matrix44f view, proj;
     {
         std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-        view = rs_.camera_.GetViewMatrix();
+        view = rs_.scene_->Camera().GetViewMatrix();
     }
     float aspect = (rs_.height_ > 0) ? (float)rs_.width_ / (float)rs_.height_ : 1.0f;
-    proj = rs_.camera_.ProjectionRH(aspect);
+    proj = rs_.scene_->Camera().ProjectionRH(aspect);
     {
         render_detail::CbPerFrameDesc d;
         d.view         = view;
@@ -586,8 +609,8 @@ int DebugRenderer::HitTestViewCube(int mx, int my) const {
     Matrix44f vcView;
     {
         float dist = 3.5f;
-        float cosP = cosf(rs_.camera_.GetPitch()), sinP = sinf(rs_.camera_.GetPitch());
-        float cosY = cosf(rs_.camera_.GetYaw()),   sinY = sinf(rs_.camera_.GetYaw());
+        float cosP = cosf(rs_.scene_->Camera().GetPitch()), sinP = sinf(rs_.scene_->Camera().GetPitch());
+        float cosY = cosf(rs_.scene_->Camera().GetYaw()),   sinY = sinf(rs_.scene_->Camera().GetYaw());
         Vector3f eye = { dist*cosP*cosY, dist*cosP*sinY, dist*sinP };
         Vector3f up  = { 0, 0, 1 };
         vcView = Matrix44f::look_at_rh(eye, {0,0,0}, up);
@@ -598,8 +621,8 @@ int DebugRenderer::HitTestViewCube(int mx, int my) const {
     Vector3f centers[] = {{0,.5f,0},{0,-.5f,0},{-.5f,0,0},{.5f,0,0},{0,0,.5f},{0,0,-.5f}};
     Vector3f normals[] = {{0,1,0},{0,-1,0},{-1,0,0},{1,0,0},{0,0,1},{0,0,-1}};
 
-    float cosP = cosf(rs_.camera_.GetPitch()), sinP = sinf(rs_.camera_.GetPitch());
-    float cosY = cosf(rs_.camera_.GetYaw()),   sinY = sinf(rs_.camera_.GetYaw());
+    float cosP = cosf(rs_.scene_->Camera().GetPitch()), sinP = sinf(rs_.scene_->Camera().GetPitch());
+    float cosY = cosf(rs_.scene_->Camera().GetYaw()),   sinY = sinf(rs_.scene_->Camera().GetYaw());
     Vector3f camDir = { -cosP*cosY, -cosP*sinY, -sinP };
 
     int bestFace = -1;

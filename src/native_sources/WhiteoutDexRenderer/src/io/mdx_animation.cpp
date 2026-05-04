@@ -10,6 +10,69 @@ using namespace whiteout::mdx;
 
 namespace WhiteoutDex {
 
+namespace {
+
+Quaternion Wc3Slerp(const Quaternion& a, const Quaternion& b, float t) {
+    f32 d = a.dot(b);
+    d = std::clamp(d, -1.0f, 1.0f);
+
+    // If the dot product is negative, slerp won't take the shorter path.
+    // Fix by reversing one quaternion.
+    Quaternion end = b;
+    if (d < 0.0f) {
+        d = -d;
+        end.x = -end.x;
+        end.y = -end.y;
+        end.z = -end.z;
+        end.w = -end.w;
+    }
+
+    // This is the key difference of Wc3's slerp from a standard implementation: the dot product 
+    // threshold for switching to linear interpolation is much higher (0.9 vs ~0.9995).
+    // Compute the cosine of the angle between the two quaternions
+    const f32 DOT_THRESHOLD = 0.9f;
+    if (d > DOT_THRESHOLD) {
+        // If the quaternions are close, use linear interpolation
+        Quaternion result = Quaternion(
+            a.x + t * (end.x - a.x),
+            a.y + t * (end.y - a.y),
+            a.z + t * (end.z - a.z),
+            a.w + t * (end.w - a.w)
+        );
+        return result.normalized();
+    }
+
+    // Calculate the angle between the quaternions
+    f32 theta_0 = std::acos(d); // angle between input quaternions
+    f32 theta = theta_0 * t;    // angle between a and result
+
+    f32 sin_theta = std::sin(theta);
+    f32 sin_theta_0 = std::sin(theta_0);
+
+    if (sin_theta_0 < 1e-6f)
+        return a;
+
+    f32 s0 = std::sin(theta_0 - theta) / sin_theta_0;
+    f32 s1 = sin_theta / sin_theta_0;
+
+    return Quaternion(
+        a.x * s0 + end.x * s1,
+        a.y * s0 + end.y * s1,
+        a.z * s0 + end.z * s1,
+        a.w * s0 + end.w * s1
+    );
+}
+
+Quaternion Wc3Squad(const Quaternion& start, const Quaternion& outtan,
+                             const Quaternion& inttan, const Quaternion& end, f32 t) {
+    Quaternion slerp1 = Wc3Slerp(start, end, t);
+    Quaternion slerp2 = Wc3Slerp(outtan, inttan, t);
+    return Wc3Slerp(slerp1, slerp2, 2 * t * (1 - t));
+}
+
+
+} // namespace
+
 // ============================================================================
 // FindBracket — locate in-sequence keyframes bracketing timeMs.
 //
@@ -41,16 +104,23 @@ static KeyBracket FindBracket(const KeyType* keys, int count, int timeMs,
     KeyBracket b;
     if (count == 0) return b;
 
-    int rangeLo = -1, rangeHi = -1;
-    for (int i = 0; i < count; i++) {
-        int f = (int)keys[i].frame;
-        if (f > seqEnd) break;
-        if (f >= seqStart) {
-            if (rangeLo < 0) rangeLo = i;
-            rangeHi = i;
-        }
+    // Binary search: first key with frame >= seqStart (lower_bound of seqStart).
+    {
+        int lo = 0, hi = count;
+        while (lo < hi) { int m = (lo + hi) >> 1; if ((int)keys[m].frame < seqStart) lo = m + 1; else hi = m; }
+        b.lo = lo; // reuse b.lo as rangeLo temporarily
     }
-    if (rangeLo < 0) return b;
+    int rangeLo = b.lo;
+    if (rangeLo >= count || (int)keys[rangeLo].frame > seqEnd) { b.lo = -1; return b; }
+
+    // Binary search: last key with frame <= seqEnd (upper_bound of seqEnd, minus 1).
+    {
+        int lo = rangeLo, hi = count;
+        while (lo < hi) { int m = (lo + hi) >> 1; if ((int)keys[m].frame <= seqEnd) lo = m + 1; else hi = m; }
+        b.hi = lo - 1; // reuse b.hi as rangeHi temporarily
+    }
+    int rangeHi = b.hi;
+
     if (rangeLo == rangeHi) { b.lo = b.hi = rangeLo; return b; }
 
     int firstFrame = (int)keys[rangeLo].frame;
@@ -71,18 +141,16 @@ static KeyBracket FindBracket(const KeyType* keys, int count, int timeMs,
         return b;
     }
 
-    for (int i = rangeLo; i < rangeHi; i++) {
-        int fa = (int)keys[i].frame;
-        int fb = (int)keys[i + 1].frame;
-        if (timeMs >= fa && timeMs < fb) {
-            b.lo = i;
-            b.hi = i + 1;
-            int denom = fb - fa;
-            b.t = denom > 0 ? (float)(timeMs - fa) / (float)denom : 0.0f;
-            return b;
-        }
+    // Binary search: last key in [rangeLo, rangeHi) with frame <= timeMs.
+    // timeMs >= firstFrame and timeMs < lastFrame guarantee a valid bracket exists.
+    {
+        int lo = rangeLo, hi = rangeHi;
+        while (lo < hi) { int m = (lo + hi + 1) >> 1; if ((int)keys[m].frame <= timeMs) lo = m; else hi = m - 1; }
+        b.lo = lo;
+        b.hi = lo + 1;
+        int denom = (int)keys[b.hi].frame - (int)keys[b.lo].frame;
+        b.t = denom > 0 ? (float)(timeMs - (int)keys[b.lo].frame) / (float)denom : 0.0f;
     }
-    b.lo = b.hi = rangeHi;
     return b;
 }
 
@@ -172,10 +240,10 @@ Vector3f EvaluateTrackVec3(const Track<Vector3f>& track, int timeMs, int seqStar
 Quaternion EvaluateTrackQuat(const Track<Quaternion>& track, int timeMs, int seqStart, int seqEnd,
                              Quaternion defaultVal) {
     return EvaluateTrackImpl<Quaternion>(track, timeMs, seqStart, seqEnd, defaultVal,
-        [](const Quaternion& a, const Quaternion& b, float t) { return Quaternion::slerp(a, b, t); },
+        [](const Quaternion& a, const Quaternion& b, float t) { return Wc3Slerp(a, b, t); },
         [](const Quaternion& a, const Quaternion& ota, const Quaternion& itb,
            const Quaternion& b, float t, InterpolationType) {
-            return Quaternion::squad(a, ota, itb, b, t);
+            return Wc3Squad(a, ota, itb, b, t);
         });
 }
 
@@ -274,6 +342,13 @@ void MdxHierarchy::Build(const whiteout::mdx::Model& model) {
     addAll(model.collisionShapes,   HierarchyNode::Source::CollisionShape);
     addAll(model.attachments,       HierarchyNode::Source::Attachment);
     addAll(model.lights,            HierarchyNode::Source::Light);
+    // EventObjects need their own palette slot so the per-actor
+    // EventEmitterPool can resolve `objectId → world matrix` for splat /
+    // SPN spawns. Without this, ObjectIdToNodeIndex returns -1 and
+    // EventObjects collapse onto actor.worldTransform — which makes
+    // every footprint spawn at the model origin instead of under the
+    // foot bone the EventObject was authored to ride on.
+    addAll(model.eventObjects,      HierarchyNode::Source::EventObject);
 
     for (int i = 0; i < (int)nodes_.size(); i++)
         objectIdToIdx_[nodes_[i].objectId] = i;

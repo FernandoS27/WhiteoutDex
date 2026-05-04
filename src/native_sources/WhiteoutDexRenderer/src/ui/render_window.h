@@ -47,6 +47,12 @@ public:
     void ProcessCameraPresets();
     void ProcessSequences();
 
+    // Re-read DisplayFlags + Tileset from the service and update the
+    // View menu's checkmarks / radio button. Use after LoadSettingsIni
+    // so the menu reflects the persisted values (the menu was built
+    // earlier from the service's compile-time defaults).
+    void SyncViewMenuFromService();
+
     // Window handles
     HWND GetParentHWND() const { return hwnd_; }
     HWND GetRenderHWND() const { return hwndRender_; }
@@ -63,10 +69,17 @@ public:
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK RenderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    LRESULT HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     // Render thread function (owned by this window)
     void ThreadFunc(int width, int height, gfx::GfxApi api);
+
+    // Lazily build the Settings popup the first time the menu item is
+    // clicked. The window is hidden on close instead of destroyed so
+    // re-opening is instant and the controls keep their state.
+    void EnsureSettingsWindow();
 
     RenderService& service_;
 
@@ -81,12 +94,33 @@ private:
     HWND cmbCamera_    = nullptr;
     HWND lblSequence_  = nullptr;
     HWND cmbSequence_  = nullptr;
+    HWND cmbLighting_  = nullptr;
+    HWND btnBgColor_   = nullptr;
+    HWND sldExposure_  = nullptr;
+    HWND lblExposure_  = nullptr;
+    HWND sldSndVolume_ = nullptr;
+    HWND lblSndVolume_ = nullptr;
+    HWND chkLoopNonLoop_ = nullptr;
+    HWND sldTimeOfDay_   = nullptr;
+    HWND lblTimeOfDay_   = nullptr;
+    HWND chkAnimateTod_  = nullptr;
+    HWND editDncPath_    = nullptr;
+    HWND btnDncReset_    = nullptr;
+    HWND cmbIblMode_     = nullptr;
+    HWND cmbShadows_     = nullptr;
     HMENU hMenuBar_      = nullptr;
     HMENU hMenuView_     = nullptr;
-    HMENU hMenuProbe_    = nullptr;
+    HMENU hMenuTileset_  = nullptr;
     HMENU hMenuDebug_    = nullptr;
     HMENU hMenuDebugVis_ = nullptr;
     HMENU hMenuLod_      = nullptr;
+
+    // Settings popup — owns the Background colour swatch + Exposure slider
+    // controls (moved off the toolbar so the toolbar only carries the
+    // live, frame-touched controls). Created lazily on first click of
+    // the &Settings menu entry; hidden on close, never destroyed until
+    // the parent window itself goes away.
+    HWND hwndSettings_ = nullptr;
 
     // Menu item IDs. Ranged enums for the two submenu groups so the
     // WM_COMMAND handler can dispatch by range instead of a case per
@@ -95,22 +129,38 @@ private:
         IDC_TEAMCOLOR = 1001,
         IDC_CAMERA,
         IDC_SEQUENCE,
+        IDC_LIGHTING,
+        IDC_BGCOLOR,
+        IDC_EXPOSURE,
+        IDC_SND_VOLUME,
+        IDC_LOOP_NONLOOP,
+        IDC_TIME_OF_DAY,
+        IDC_ANIMATE_TOD,
+        IDC_DNC_PATH,
+        IDC_DNC_RESET,
+        IDC_IBL_MODE,
+        IDC_SHADOWS,
         // View menu toggles
         IDM_VIEW_GRID      = 1100,
         IDM_VIEW_PARTICLES,
         IDM_VIEW_RIBBONS,
+        IDM_VIEW_EVENTS,
         // Debug menu toggles
         IDM_DBG_COLLISIONS = 1200,
         IDM_DBG_LIGHTS,
-        // Probe submenu (5 entries; index = id - IDM_PROBE_BASE)
-        IDM_PROBE_BASE     = 1300,
-        IDM_PROBE_LAST     = IDM_PROBE_BASE + 4,
+        // Tileset submenu (16 entries — one per io::Tileset enumerator;
+        // index = id - IDM_TILESET_BASE casts straight to io::Tileset)
+        IDM_TILESET_BASE   = 1310,
+        IDM_TILESET_LAST   = IDM_TILESET_BASE + 15,
         // Debug-vis submenu (8 entries; index = id - IDM_DBGVIS_BASE)
         IDM_DBGVIS_BASE    = 1400,
         IDM_DBGVIS_LAST    = IDM_DBGVIS_BASE + 7,
         // LOD submenu: [0]=Auto, [1]=Force 0, [2]=Force 1, [3]=Force 2, [4]=Force 3
         IDM_LOD_BASE       = 1500,
         IDM_LOD_LAST       = IDM_LOD_BASE + 4,
+        // Top-level &Settings menu entry (clickable, no popup) — opens
+        // the Settings window for Background colour + Exposure.
+        IDM_SETTINGS       = 1600,
     };
 
     // Mouse state
@@ -122,6 +172,12 @@ private:
 
     // Camera presets (local copy for combo selection logic)
     std::vector<CameraPreset> cameraPresets_;
+
+    // Sequence names (local copy mirroring cmbSequence_ entries). Lets
+    // the IDC_SEQUENCE handler run app-side policy (e.g. "wipe splats
+    // unless the new sequence name contains decay/dissipate") without
+    // re-querying the service.
+    std::vector<std::string>  sequenceNames_;
 
     // Render thread and sync
     std::thread           renderThread_;

@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "types.h"
+#include <memory>
 #include <unordered_map>
 
 namespace WhiteoutDex {
@@ -48,53 +49,79 @@ struct GeosetPaletteLayout {
 };
 
 // ============================================================================
+// Immutable per-skeleton skinning data.
+// nodeCount + inverseBindMatrices + per-geoset weights + palette layouts
+// don't change between instances of the same model — every PE1 child or
+// attachment that sources from the same MDX shares one of these via
+// ModelTemplate::skinningData. Only currentMatrices_ / offsetMatrices_
+// stay per-instance because they're animated state.
+// ============================================================================
+struct SkinningData {
+    int                                          nodeCount = 0;
+    std::vector<Matrix44f>                       inverseBindMatrices;
+    std::unordered_map<int, GeosetSkinInfo>      geosetWeights;
+    std::unordered_map<int, GeosetPaletteLayout> geosetLayouts;
+};
+
+// ============================================================================
 // Skinning System
 // ============================================================================
 class SkinningSystem {
 public:
     void Clear() {
-        inverseBindMatrices_.clear();
+        data_.reset();
         currentMatrices_.clear();
         offsetMatrices_.clear();
-        geosetWeights_.clear();
-        geosetLayouts_.clear();
-        nodeCount_ = 0;
         matricesDirty_ = false;
         nodesReady_ = false;
     }
 
-    // ---- Setup (called once from API thread) ----
+    // ---- Setup ----
 
+    // Bind a pre-built shared SkinningData (template path). Sizes per-instance
+    // currentMatrices_ / offsetMatrices_ to match. After this, the per-instance
+    // setters (SetSkeleton/SetGeosetWeights/SetGeosetLayout) MUST NOT be called
+    // — mutating them would corrupt every other instance referencing the same
+    // shared_ptr.
+    void SetSharedData(std::shared_ptr<SkinningData> data) {
+        data_ = std::move(data);
+        const int n = data_ ? data_->nodeCount : 0;
+        currentMatrices_.assign(n, Matrix44f::identity());
+        offsetMatrices_.assign(n, Matrix44f::identity());
+        matricesDirty_ = false;
+        nodesReady_ = false;  // require an UpdateNodeMatrices before skinning
+    }
+
+    // Legacy non-template setup (top-level Max plugin / test_main). The first
+    // setter call lazily creates an owned SkinningData; subsequent calls
+    // mutate it in place.
     void SetSkeleton(int nodeCount, const float* inverseBindData) {
-        nodeCount_ = nodeCount;
-        inverseBindMatrices_.resize(nodeCount);
-        currentMatrices_.resize(nodeCount);
-        offsetMatrices_.resize(nodeCount);
-        nodesReady_ = false;  // Don't allow skinning until UpdateNodeMatrices is called
-
+        SkinningData* d = ensureOwnedData();
+        d->nodeCount = nodeCount;
+        d->inverseBindMatrices.resize(nodeCount);
         for (int i = 0; i < nodeCount; i++) {
-            // Load 16 floats as row-major 4x4 matrix
             const float* m = inverseBindData + i * 16;
-            Matrix44f& mat = inverseBindMatrices_[i];
+            Matrix44f& mat = d->inverseBindMatrices[i];
             mat.data[0] = {m[0], m[1], m[2],  m[3]};
             mat.data[1] = {m[4], m[5], m[6],  m[7]};
             mat.data[2] = {m[8], m[9], m[10], m[11]};
             mat.data[3] = {m[12],m[13],m[14], m[15]};
-            currentMatrices_[i]  = Matrix44f::identity();
-            offsetMatrices_[i]   = Matrix44f::identity(); // Safe default until nodes arrive
         }
+        currentMatrices_.assign(nodeCount, Matrix44f::identity());
+        offsetMatrices_.assign(nodeCount, Matrix44f::identity());
+        nodesReady_ = false;
     }
 
     // Register a geoset's palette layout (local-subset + group averages).
     // Called once at model load, after SetSkeleton. Used by
     // ComputeGeosetPalette below to fill the per-geoset BonePaletteCb.
     void SetGeosetLayout(int geosetId, GeosetPaletteLayout layout) {
-        geosetLayouts_[geosetId] = std::move(layout);
+        ensureOwnedData()->geosetLayouts[geosetId] = std::move(layout);
     }
 
     void SetGeosetWeights(int geosetId, int vertCount,
                           const int* nodeIndices, const float* weights) {
-        GeosetSkinInfo& info = geosetWeights_[geosetId];
+        GeosetSkinInfo& info = ensureOwnedData()->geosetWeights[geosetId];
         info.vertices.resize(vertCount);
         for (int v = 0; v < vertCount; v++) {
             for (int j = 0; j < 4; j++) {
@@ -104,10 +131,14 @@ public:
         }
     }
 
+    // Expose the shared data so ModelTemplateManager can build it
+    // through the legacy setters and then publish the shared_ptr on the template.
+    std::shared_ptr<SkinningData> SharedData() const { return data_; }
+
     // ---- Per-frame update (called from API thread via SetTime path) ----
 
     void UpdateNodeMatrices(int nodeCount, const float* worldData) {
-        if (nodeCount != nodeCount_) return;
+        if (!data_ || nodeCount != data_->nodeCount) return;
         for (int i = 0; i < nodeCount; i++) {
             const float* m = worldData + i * 16;
             Matrix44f& mat = currentMatrices_[i];
@@ -122,20 +153,24 @@ public:
 
     // ---- Query ----
 
-    bool HasSkeleton()              const { return nodeCount_ > 0; }
+    bool HasSkeleton()              const { return data_ && data_->nodeCount > 0; }
     bool IsReady()                  const { return nodesReady_; }
-    int  NodeCount()                const { return nodeCount_; }
-    bool HasWeights(int geosetId)   const { return geosetWeights_.count(geosetId) > 0; }
+    int  NodeCount()                const { return data_ ? data_->nodeCount : 0; }
+    bool HasWeights(int geosetId)   const {
+        return data_ && data_->geosetWeights.count(geosetId) > 0;
+    }
     bool NeedsUpdate()              const { return matricesDirty_; }
 
     const GeosetSkinInfo* GetGeosetWeights(int geosetId) const {
-        auto it = geosetWeights_.find(geosetId);
-        return (it != geosetWeights_.end()) ? &it->second : nullptr;
+        if (!data_) return nullptr;
+        auto it = data_->geosetWeights.find(geosetId);
+        return (it != data_->geosetWeights.end()) ? &it->second : nullptr;
     }
 
     const GeosetPaletteLayout* GetGeosetLayout(int geosetId) const {
-        auto it = geosetLayouts_.find(geosetId);
-        return (it != geosetLayouts_.end()) ? &it->second : nullptr;
+        if (!data_) return nullptr;
+        auto it = data_->geosetLayouts.find(geosetId);
+        return (it != data_->geosetLayouts.end()) ? &it->second : nullptr;
     }
 
     // Palette slot count for geoset: subset + group averages.
@@ -161,11 +196,13 @@ public:
     // ---- Compute offset matrices (render thread, call once per frame) ----
 
     void ComputeOffsetMatrices() {
-        if (!matricesDirty_) return;
-        for (int i = 0; i < nodeCount_; i++) {
+        if (!data_ || !matricesDirty_) return;
+        const int n = data_->nodeCount;
+        const auto& inv = data_->inverseBindMatrices;
+        for (int i = 0; i < n; i++) {
             // offset = inverseBind * current
             // This transforms: bindPoseWorld → nodeLocal → currentWorld
-            offsetMatrices_[i] = inverseBindMatrices_[i] * currentMatrices_[i];
+            offsetMatrices_[i] = inv[i] * currentMatrices_[i];
         }
         matricesDirty_ = false;
     }
@@ -176,22 +213,23 @@ public:
     // number of real slots written (= GeosetPaletteSize).
     int ComputeGeosetPalette(int geosetId, Matrix44f* out, int capacity) const {
         auto* layout = GetGeosetLayout(geosetId);
-        if (!layout || !out || capacity <= 0) {
+        if (!layout || !out || capacity <= 0 || !data_) {
             if (out && capacity > 0) {
                 for (int i = 0; i < capacity; ++i) out[i] = Matrix44f::identity();
             }
             return 0;
         }
-        const int subsetN = (int)layout->subsetNodeIndices.size();
-        const int groupN  = (int)layout->groupAverages.size();
-        const int total   = subsetN + groupN;
-        const int n       = total < capacity ? total : capacity;
+        const int subsetN  = (int)layout->subsetNodeIndices.size();
+        const int groupN   = (int)layout->groupAverages.size();
+        const int total    = subsetN + groupN;
+        const int n        = total < capacity ? total : capacity;
+        const int nodeCnt  = data_->nodeCount;
 
         // Subset bones: direct copy of the global offset matrix.
         for (int i = 0; i < subsetN && i < capacity; ++i) {
             int g = layout->subsetNodeIndices[i];
-            if (g >= 0 && g < nodeCount_) out[i] = offsetMatrices_[g];
-            else                          out[i] = Matrix44f::identity();
+            if (g >= 0 && g < nodeCnt) out[i] = offsetMatrices_[g];
+            else                       out[i] = Matrix44f::identity();
         }
         // Group-average pseudo slots: average of listed global offsets.
         // Mirrors Previewd's BuildPrimBone (@0x1402cf5e0) `sum / N`. Since
@@ -208,7 +246,7 @@ public:
             Matrix44f sum = Matrix44f::zero();
             int cnt = 0;
             for (int nodeIdx : rec.nodeIndices) {
-                if (nodeIdx < 0 || nodeIdx >= nodeCount_) continue;
+                if (nodeIdx < 0 || nodeIdx >= nodeCnt) continue;
                 const Matrix44f& m = offsetMatrices_[nodeIdx];
                 for (int r = 0; r < 4; r++)
                     for (int c = 0; c < 4; c++)
@@ -237,13 +275,15 @@ public:
                       const std::vector<Vertex>& baseVerts,
                       std::vector<Vertex>& outVerts) const
     {
-        auto it = geosetWeights_.find(geosetId);
-        if (it == geosetWeights_.end()) return false;
+        if (!data_) return false;
+        auto it = data_->geosetWeights.find(geosetId);
+        if (it == data_->geosetWeights.end()) return false;
         const auto& skin = it->second;
 
         if (skin.vertices.size() != baseVerts.size()) return false;
 
         outVerts.resize(baseVerts.size());
+        const int nodeCnt = data_->nodeCount;
 
         for (int i = 0; i < (int)baseVerts.size(); i++) {
             const auto& inf = skin.vertices[i];
@@ -260,7 +300,7 @@ public:
                 if (w < 0.0001f) continue;
 
                 int nIdx = inf.boneIdx[j];
-                if (nIdx < 0 || nIdx >= nodeCount_) continue;
+                if (nIdx < 0 || nIdx >= nodeCnt) continue;
 
                 const Matrix44f& offset = offsetMatrices_[nIdx];
 
@@ -289,14 +329,20 @@ public:
     }
 
 private:
-    int nodeCount_ = 0;
-    std::vector<Matrix44f> inverseBindMatrices_;  // set once at setup
-    std::vector<Matrix44f> currentMatrices_;      // updated per frame
-    std::vector<Matrix44f> offsetMatrices_;       // = invBind * current, per node
-    std::unordered_map<int, GeosetSkinInfo> geosetWeights_;
-    std::unordered_map<int, GeosetPaletteLayout> geosetLayouts_;
-    bool matricesDirty_ = false;
-    bool nodesReady_ = false;   // true after first UpdateNodeMatrices call
+    // Lazily create owned SkinningData on first legacy setter call. If `data_`
+    // is already shared (use_count > 1) we'd be mutating someone else's data,
+    // which is a logic error — but we don't fork because the only multi-ref
+    // path goes through SetSharedData where setters are forbidden by contract.
+    SkinningData* ensureOwnedData() {
+        if (!data_) data_ = std::make_shared<SkinningData>();
+        return data_.get();
+    }
+
+    std::shared_ptr<SkinningData> data_;          // shared with template, or owned
+    std::vector<Matrix44f>        currentMatrices_;  // per-instance, per-frame
+    std::vector<Matrix44f>        offsetMatrices_;   // per-instance, per-frame
+    bool                          matricesDirty_ = false;
+    bool                          nodesReady_    = false;
 };
 
 } // namespace WhiteoutDex

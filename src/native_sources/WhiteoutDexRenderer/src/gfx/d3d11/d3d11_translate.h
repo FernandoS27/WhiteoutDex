@@ -37,6 +37,7 @@ inline DXGI_FORMAT ToDXGI(Format f) {
         case Format::R16G16_UNORM:        return DXGI_FORMAT_R16G16_UNORM;
         case Format::R16G16B16A16_UNORM:  return DXGI_FORMAT_R16G16B16A16_UNORM;
         case Format::R16G16B16A16_FLOAT:  return DXGI_FORMAT_R16G16B16A16_FLOAT;
+        case Format::R11G11B10_FLOAT:     return DXGI_FORMAT_R11G11B10_FLOAT;
         case Format::R16_UINT:            return DXGI_FORMAT_R16_UINT;
         case Format::R32_UINT:            return DXGI_FORMAT_R32_UINT;
         case Format::R32_FLOAT:           return DXGI_FORMAT_R32_FLOAT;
@@ -114,6 +115,8 @@ inline D3D11_BLEND ToD3D11(BlendFactor bf) {
         case BlendFactor::DstColor:    return D3D11_BLEND_DEST_COLOR;
         case BlendFactor::InvSrcColor: return D3D11_BLEND_INV_SRC_COLOR;
         case BlendFactor::InvDstColor: return D3D11_BLEND_INV_DEST_COLOR;
+        case BlendFactor::DstAlpha:    return D3D11_BLEND_DEST_ALPHA;
+        case BlendFactor::InvDstAlpha: return D3D11_BLEND_INV_DEST_ALPHA;
         default:                       return D3D11_BLEND_ONE;
     }
 }
@@ -137,6 +140,17 @@ inline D3D11_FILTER ToD3D11Filter(Filter minF, Filter magF) {
         return D3D11_FILTER_MIN_POINT_MAG_MIP_LINEAR;
     // minF == Linear, magF == Point
     return D3D11_FILTER_MIN_LINEAR_MAG_MIP_POINT;
+}
+
+// Comparison-sampler variants (HLSL SamplerComparisonState).
+inline D3D11_FILTER ToD3D11FilterComparison(Filter minF, Filter magF) {
+    if (minF == Filter::Point && magF == Filter::Point)
+        return D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT;
+    if (minF == Filter::Linear && magF == Filter::Linear)
+        return D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    if (minF == Filter::Point && magF == Filter::Linear)
+        return D3D11_FILTER_COMPARISON_MIN_POINT_MAG_MIP_LINEAR;
+    return D3D11_FILTER_COMPARISON_MIN_LINEAR_MAG_MIP_POINT;
 }
 
 // ---- AddressMode ----

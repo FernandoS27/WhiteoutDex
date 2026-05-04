@@ -32,6 +32,16 @@ enum class Format : uint16_t {
     R16G16B16A16_UNORM,
     R16G16B16A16_FLOAT,
 
+    // Packed unsigned float format (DXGI_FORMAT_R11G11B10_FLOAT).
+    // 11/11/10 bits with 5-bit biased exponent + unsigned mantissa — no
+    // sign bit, so negative HDR values get hardware-clamped to 0 on
+    // write. Matches Blizzard's `GxTex_R11G11B10F` (=12) which is the
+    // engine's default HDR scene target. We pick this for the
+    // post-light HDR target so the ACES tonemap input range matches
+    // engine behaviour (negative-pixel clamp), and we save 50% memory
+    // vs RGBA16F.
+    R11G11B10_FLOAT,
+
     R16_UINT,
     R32_UINT,
 
@@ -88,7 +98,8 @@ inline uint32_t FormatBytesPerBlock(Format f) {
         case Format::R8G8B8A8_UINT:  case Format::B8G8R8A8_UNORM:
         case Format::R16G16_UNORM:   case Format::R32_UINT:
         case Format::R32_FLOAT:      case Format::D24_UNORM_S8_UINT:
-        case Format::D32_FLOAT:      return 4;
+        case Format::D32_FLOAT:
+        case Format::R11G11B10_FLOAT: return 4;
         case Format::R16G16B16A16_UNORM: case Format::R16G16B16A16_FLOAT:
         case Format::R32G32_FLOAT:   return 8;
         case Format::R32G32B32_FLOAT: return 12;
@@ -141,7 +152,7 @@ enum class FillMode  { Solid, Wireframe };
 enum class CompareOp { Never, Less, LessEqual, Equal, Greater, GreaterEqual, Always };
 
 enum class BlendFactor { Zero, One, SrcAlpha, InvSrcAlpha, SrcColor, DstColor,
-                         InvSrcColor, InvDstColor };
+                         InvSrcColor, InvDstColor, DstAlpha, InvDstAlpha };
 enum class BlendOp     { Add, Subtract };
 
 enum class Filter      { Point, Linear };
@@ -180,6 +191,13 @@ struct SamplerDesc {
     AddressMode addressU  = AddressMode::Wrap;
     AddressMode addressV  = AddressMode::Wrap;
     AddressMode addressW  = AddressMode::Wrap;
+    // When true, the resulting sampler is a SamplerComparisonState
+    // (D3D12_FILTER_COMPARISON_*). Required for shadow-map PCF
+    // (`SampleCmpLevelZero`); only consumers like sd_t_shadow0..2 need
+    // it. Border address-mode + a non-zero comparison func is the
+    // natural pairing — out-of-frustum taps return 1.0 (fully lit).
+    bool        comparison       = false;
+    CompareOp   comparisonFunc   = CompareOp::LessEqual;
 };
 
 // ============================================================================
@@ -207,6 +225,10 @@ struct BlendDesc {
     BlendFactor dstAlpha        = BlendFactor::Zero;
     BlendOp     opAlpha         = BlendOp::Add;
     bool        alphaToCoverage = false;
+    // Mask all four RTV channels off when false. Used by the depth-prepass
+    // pass for fading opaque-baked layers (SelectModelMaterial DEPTHFILL_DEPTH
+    // sets m_disables |= 0x100 to suppress color writes).
+    bool        colorWrite      = true;
 };
 
 struct DepthStencilDesc {
@@ -220,6 +242,14 @@ struct RasterizerDesc {
     FillMode fill          = FillMode::Solid;
     bool     frontCCW      = false;
     bool     scissorEnable = false;
+    // Depth-bias knobs the shadow PSO sets. Default-zero leaves every
+    // existing pass untouched; the shadow render pass enables them to
+    // avoid surface acne / Peter-Panning. Maps directly to
+    // D3D11/12_RASTERIZER_DESC's DepthBias / SlopeScaledDepthBias /
+    // DepthBiasClamp fields.
+    int      depthBias              = 0;     // integer mul of min-resolvable depth
+    float    slopeScaledDepthBias   = 0.0f;  // mul of |dz/d{x,y}|
+    float    depthBiasClamp         = 0.0f;  // 0 = unclamped
 };
 
 struct GraphicsPipelineDesc {

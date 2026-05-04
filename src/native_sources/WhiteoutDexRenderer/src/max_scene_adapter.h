@@ -34,7 +34,13 @@
 #define WC3_BITMAP_CLASS_ID      Class_ID(0x3a7c10f1, 0x5e2d4b08)
 #define WC3PARTICLES2_CLASS_ID   Class_ID(0xD9F33BC9, 0x7A0DA37A)
 #define WC3RIBBON_CLASS_ID       Class_ID(0x937AA064, 0x9EFFA3DA)
-#define WC3VERTEXMOD_CLASS_ID    Class_ID(0x234d68a2, 0x7204a141)
+// Wc3VertexMod is a MaxScript scripted plugin — its declared classID is NOT
+// what `Modifier::ClassID()` returns at the C++ layer (Max wraps scripted-
+// plugin ids opaquely). Use FindModifierByClassName with the plugin name
+// instead. This define is kept for symmetry with the other WC3*_CLASS_ID
+// macros but no production code path should resolve a scripted plugin
+// through it.
+#define WC3VERTEXMOD_CLASS_ID    Class_ID(0x7A1B2C07, 0x3D4E5F07)
 #define WC3PARTICLES1_CLASS_ID   Class_ID(0x12E4F5A6, 0x3B7C8D9E)
 #define WC3ATTACHPOINT_CLASS_ID  Class_ID(0x1136ac20, 0x6f9cfeb7)
 
@@ -160,11 +166,11 @@ public:
     std::vector<AttachmentConfig>      GetAttachmentConfigs() override;
     std::vector<PE1EmitterConfig>      GetPE1Configs()      override;
 
-    void SetActiveSequence(int sequenceIndex) override;  // no-op for Max
-
-    FrameState Evaluate(int timeMs, int globalTimeMs = -1) override;
-
-    std::vector<SequenceInfo> GetSequences() override;
+    // ---- IAnimationSource ----
+    FrameState Evaluate(int sequenceIdx, int timeMs, int globalTimeMs,
+                        const Matrix44f& worldTransform,
+                        const Vector3f&  cameraPos) const override;
+    std::vector<SequenceInfo> GetSequences() const override;
 
     // Camera presets from scene (Max cameras + "Active Viewport")
     std::vector<WhiteoutDex::CameraPreset> GetCameraPresets();
@@ -175,8 +181,8 @@ private:
     void CollectMaterials();
     int  LoadTexture(const std::wstring& filePath, int replaceableId);
     int  LoadTextureFromContentProvider(const std::string& archivePath, int replaceableId);
-    int  LoadTextureWithTeamColor(const std::wstring& filePath, int tcR, int tcG, int tcB);
-    int  GenerateTeamGlowTexture(int tcR, int tcG, int tcB);
+    // SD TEAMCOLOR / TEAMGLOW slots are reserved through LoadTexture(L"", 1|2)
+    // — pixel bake lives in ReplaceableTextureManager renderer-side.
     void CollectBones();
     void CollectAttachments();
     void CollectParticleEmitters();
@@ -184,24 +190,58 @@ private:
     void CollectCollisionShapes();
 
     // Helpers
-    void PackMatrix(const Matrix3& tm, float* dst);
+    static Matrix44f PackMatrix(const Matrix3& tm);
     static bool PB2Float(Animatable* a, const wchar_t* name, TimeValue t, float& out);
     static bool PB2Int(Animatable* a, const wchar_t* name, TimeValue t, int& out);
     static bool PB2Bool(Animatable* a, const wchar_t* name, TimeValue t, BOOL& out);
     static bool PB2Color(Animatable* a, const wchar_t* name, TimeValue t, Color& out);
     static bool PB2Texmap(Animatable* a, const wchar_t* name, Texmap*& out);
+    // PB2 reads with an in-place fallback default — return `def` when the param
+    // is absent or the scan fails, otherwise the read value.
+    static int   PB2IntOr  (Animatable* a, const wchar_t* name, TimeValue t, int   def = 0);
+    static float PB2FloatOr(Animatable* a, const wchar_t* name, TimeValue t, float def = 0.0f);
+    static bool  PB2BoolOr (Animatable* a, const wchar_t* name, TimeValue t, bool  def = false);
     static Object* GetBaseObject(INode* node);
     static Modifier* FindSkinModifier(INode* node);
     static Modifier* FindModifierByClassID(INode* node, Class_ID cid);
+    // Name-based modifier lookup. Required for scripted-plugin modifiers
+    // (Wc3VertexMod etc.) — Max's MaxScript-defined plugins do NOT expose
+    // their declared classID through Modifier::ClassID(), so the ClassID
+    // path silently misses every scripted plugin. The exporter takes the
+    // same approach in geoset_anim_extractor.cpp's findVertexMod().
+    static Modifier* FindModifierByClassName(INode* node,
+                                             const wchar_t* const* nameSubstrings);
+    // Wc3Material reading helpers — shared between CollectMaterials, CollectScene,
+    // ExtractWc3MaterialLayer, and RefreshMaterials.
+    static int ReadWc3MaterialFlags(Mtl* mtl);
+    std::wstring ResolveBitmapPath(Mtl* mtl, const wchar_t* paramName);
     MaterialLayerInfo ExtractWc3MaterialLayer(Mtl* mtl);
+    // Texture registration: push (rgba, w, h) into the loaded-texture table and
+    // return its new texId. Used by every loader path. `displayPath` is the
+    // filePath stored on TextureEntry for diagnostics; when empty, the cache
+    // key is reused (the common case — TeamColor-composited textures override
+    // it so the entry shows the original texture path, not the "__TC__" key).
+    int RegisterTexture(const std::wstring& key, int replaceableId,
+                        std::vector<uint8_t>&& pixels, int width, int height,
+                        const std::wstring& displayPath = L"",
+                        std::string sharedKey = {});
+    // HD-sentinel allocation removed — adapters set teamColorMapId to
+    // kHdTeamColorActive directly when the HD layer flags its team-colour
+    // slot as live-driven. See ReplaceableTextureManager::GetHdSwatchTexture.
     std::wstring GetMaxFilePath();
 
-    // Loaded texture pixel data (kept for GetTextures())
+    // Loaded texture pixel data (kept for GetTextures()).
+    // `sharedKey` carries the cross-model dedup key (normalised path) so
+    // GetTextures can stamp it onto TextureData without an extra lookup.
+    // Empty for procedural / sentinel textures and for cache-borrow
+    // entries where rgba is empty (the renderer's shared cache already
+    // owns the GPU resource — we just record the borrow).
     struct LoadedTexture {
         int textureId;
         int replaceableId;
         std::vector<uint8_t> rgba;
         int width, height;
+        std::string sharedKey;
     };
     std::vector<LoadedTexture> loadedTextures_;
 
@@ -238,6 +278,11 @@ private:
         std::wstring teamColorTexPath;
     };
     std::unordered_map<int, MaterialSnapshot> matSnapshots_;  // materialId → snapshot
+
+    // Capture the subset of Wc3Material properties used for change detection.
+    MaterialSnapshot SnapshotMaterial(Mtl* mtl);
+    // Rebuild matSnapshots_ from the current materials_ list.
+    void UpdateMaterialSnapshots();
 };
 
 } // namespace WhiteoutDex

@@ -203,20 +203,33 @@ TextureHandle D3D11Device::CreateTexture(const TextureDesc& desc, const void* in
         ? 0u /* D3D11 full chain sentinel */
         : static_cast<UINT>(desc.mipLevels);
 
+    const bool isDepth = hasFlag(desc.usage, TextureUsage::DepthStencil);
+    const bool isSrv   = hasFlag(desc.usage, TextureUsage::ShaderResource);
+
     D3D11_TEXTURE2D_DESC td{};
     td.Width     = static_cast<UINT>(desc.width);
     td.Height    = static_cast<UINT>(desc.height);
     td.MipLevels = mipCount;
     td.ArraySize = arraySize;
-    td.Format    = ToDXGI(desc.format);
+    // Depth + SRV: D3D11 forbids creating a Texture2D with a typed depth
+    // format (D24_UNORM_S8_UINT, D32_FLOAT) bound as both DEPTH_STENCIL
+    // and SHADER_RESOURCE. The resource itself must be TYPELESS, with
+    // the DSV cast back to the typed depth format and the SRV cast to
+    // the matching colour format (R24..G8 / R32_FLOAT). The DSV/SRV
+    // create paths below already handle the per-view cast.
+    td.Format    = (isDepth && isSrv)
+                       ? (desc.format == Format::D24_UNORM_S8_UINT
+                              ? DXGI_FORMAT_R24G8_TYPELESS
+                              : DXGI_FORMAT_R32_TYPELESS)
+                       : ToDXGI(desc.format);
     td.SampleDesc.Count = 1;
     if (desc.isCube) td.MiscFlags |= D3D11_RESOURCE_MISC_TEXTURECUBE;
 
-    if (hasFlag(desc.usage, TextureUsage::ShaderResource))
+    if (isSrv)
         td.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
     if (hasFlag(desc.usage, TextureUsage::RenderTarget))
         td.BindFlags |= D3D11_BIND_RENDER_TARGET;
-    if (hasFlag(desc.usage, TextureUsage::DepthStencil))
+    if (isDepth)
         td.BindFlags |= D3D11_BIND_DEPTH_STENCIL;
 
     td.Usage = initialPixels ? D3D11_USAGE_IMMUTABLE : D3D11_USAGE_DEFAULT;
@@ -417,7 +430,7 @@ PipelineHandle D3D11Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     bd.RenderTarget[0].SrcBlendAlpha         = ToD3D11(desc.blend.srcAlpha);
     bd.RenderTarget[0].DestBlendAlpha        = ToD3D11(desc.blend.dstAlpha);
     bd.RenderTarget[0].BlendOpAlpha          = ToD3D11(desc.blend.opAlpha);
-    bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    bd.RenderTarget[0].RenderTargetWriteMask = desc.blend.colorWrite ? D3D11_COLOR_WRITE_ENABLE_ALL : 0;
     device_->CreateBlendState(&bd, &entry.blendState);
 
     // Depth-stencil state
@@ -436,6 +449,9 @@ PipelineHandle D3D11Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     rd.ScissorEnable          = desc.rasterizer.scissorEnable ? TRUE : FALSE;
     rd.DepthClipEnable        = TRUE;
     rd.AntialiasedLineEnable  = TRUE;
+    rd.DepthBias              = desc.rasterizer.depthBias;
+    rd.SlopeScaledDepthBias   = desc.rasterizer.slopeScaledDepthBias;
+    rd.DepthBiasClamp         = desc.rasterizer.depthBiasClamp;
     device_->CreateRasterizerState(&rd, &entry.rasterState);
 
     // Input layout from VS bytecode
@@ -484,13 +500,23 @@ void D3D11Device::Destroy(PipelineHandle h) {
 
 SamplerHandle D3D11Device::CreateSampler(const SamplerDesc& desc) {
     D3D11_SAMPLER_DESC sd{};
-    sd.Filter   = ToD3D11Filter(desc.minFilter, desc.magFilter);
+    sd.Filter   = desc.comparison
+                      ? ToD3D11FilterComparison(desc.minFilter, desc.magFilter)
+                      : ToD3D11Filter(desc.minFilter, desc.magFilter);
     sd.AddressU = ToD3D11(desc.addressU);
     sd.AddressV = ToD3D11(desc.addressV);
     sd.AddressW = ToD3D11(desc.addressW);
     sd.MaxAnisotropy = 1;
-    sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    sd.ComparisonFunc = desc.comparison
+                            ? ToD3D11(desc.comparisonFunc)
+                            : D3D11_COMPARISON_NEVER;
     sd.MaxLOD = D3D11_FLOAT32_MAX;
+    if (desc.comparison) {
+        sd.BorderColor[0] = 1.0f;
+        sd.BorderColor[1] = 1.0f;
+        sd.BorderColor[2] = 1.0f;
+        sd.BorderColor[3] = 1.0f;
+    }
 
     SamplerEntry entry{};
     HRESULT hr = device_->CreateSamplerState(&sd, &entry.sampler);
@@ -512,17 +538,36 @@ void D3D11Device::Destroy(SamplerHandle h) {
 SwapChainHandle D3D11Device::CreateSwapChain(void* nativeWindowHandle,
                                               int width, int height,
                                               Format colorFormat) {
+    // BitBlt swap chains accept _SRGB resource formats directly; for
+    // flip-model + DXGI_SWAP_EFFECT_FLIP_DISCARD we'd have to strip the
+    // suffix. This D3D11 path uses the legacy BitBlt model so we can
+    // pass the sRGB form through unchanged. Either way we cache the
+    // sRGB-encoded RTV format on the entry so any view recreated by
+    // ResizeSwapChain ends up gamma-encoding on write.
+    DXGI_FORMAT rtvDxgi = ToDXGI(colorFormat);
+    // Strip the sRGB suffix (if any) to get the matching linear-RTV
+    // format. SD writes through this view so display-ready bytes are
+    // stored verbatim — see CreateSwapChain comment in d3d12_device.
+    DXGI_FORMAT rtvDxgiLinear = rtvDxgi;
+    switch (rtvDxgi) {
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: rtvDxgiLinear = DXGI_FORMAT_R8G8B8A8_UNORM; break;
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: rtvDxgiLinear = DXGI_FORMAT_B8G8R8A8_UNORM; break;
+        default: break;
+    }
+
     DXGI_SWAP_CHAIN_DESC scd{};
     scd.BufferCount       = 1;
     scd.BufferDesc.Width  = static_cast<UINT>(width);
     scd.BufferDesc.Height = static_cast<UINT>(height);
-    scd.BufferDesc.Format = ToDXGI(colorFormat);
+    scd.BufferDesc.Format = rtvDxgi;
     scd.BufferUsage       = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.OutputWindow      = static_cast<HWND>(nativeWindowHandle);
     scd.SampleDesc.Count  = 1;
     scd.Windowed          = TRUE;
 
     SwapChainEntry entry{};
+    entry.rtvDxgiFormat       = rtvDxgi;
+    entry.rtvDxgiFormatLinear = rtvDxgiLinear;
     HRESULT hr = factory_->CreateSwapChain(device_, &scd, &entry.swapChain);
     if (FAILED(hr)) return SwapChainHandle::Invalid;
 
@@ -536,26 +581,32 @@ SwapChainHandle D3D11Device::CreateSwapChain(void* nativeWindowHandle,
 
 void D3D11Device::CreateSwapChainViews(SwapChainEntry& sc) {
     sc.ReleaseBackBuffer();
-    // Also remove old texture entry if it exists
-    if (sc.backBufferTexHandle != 0) {
-        auto* te = textures_.Get(sc.backBufferTexHandle);
-        if (te) {
-            // Only release the RTV — the texture itself is owned by the swap chain
+    // Drop both old proxy entries if present.
+    auto dropProxy = [&](uint64_t& h) {
+        if (h == 0) return;
+        if (auto* te = textures_.Get(h)) {
             SafeRelease(te->rtv);
             SafeRelease(te->srv);
-            te->tex = nullptr;  // don't release — owned by swap chain
+            te->tex = nullptr;   // owned by swap chain
         }
-        textures_.Remove(sc.backBufferTexHandle);
-        sc.backBufferTexHandle = 0;
-    }
+        textures_.Remove(h);
+        h = 0;
+    };
+    dropProxy(sc.backBufferTexHandle);
+    dropProxy(sc.backBufferTexHandleLinear);
 
     sc.swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D),
                             reinterpret_cast<void**>(&sc.backBuffer));
-    if (sc.backBuffer)
-        sc.backBufferTexHandle = static_cast<uint64_t>(RegisterBackBuffer(sc.backBuffer));
+    if (sc.backBuffer) {
+        // Two RTV views on the same physical back-buffer resource —
+        // sRGB-encoding for HD's tonemap output, plain UNORM for SD's
+        // direct draws. Both proxies AddRef the same ID3D11Texture2D.
+        sc.backBufferTexHandle       = static_cast<uint64_t>(RegisterBackBuffer(sc.backBuffer, sc.rtvDxgiFormat));
+        sc.backBufferTexHandleLinear = static_cast<uint64_t>(RegisterBackBuffer(sc.backBuffer, sc.rtvDxgiFormatLinear));
+    }
 }
 
-TextureHandle D3D11Device::RegisterBackBuffer(ID3D11Texture2D* bb) {
+TextureHandle D3D11Device::RegisterBackBuffer(ID3D11Texture2D* bb, DXGI_FORMAT rtvFormat) {
     TextureEntry entry{};
     entry.tex = bb;
     bb->AddRef();  // We'll track it; swap chain also holds a ref
@@ -566,7 +617,13 @@ TextureHandle D3D11Device::RegisterBackBuffer(ID3D11Texture2D* bb) {
     entry.desc.height = static_cast<int>(td.Height);
     entry.desc.usage  = TextureUsage::RenderTarget;
 
-    device_->CreateRenderTargetView(bb, nullptr, &entry.rtv);
+    // Explicit RTV-desc format so the view can be _SRGB even if the
+    // underlying resource is the linear variant — gives hardware
+    // linear→sRGB encoding on every write to the back buffer.
+    D3D11_RENDER_TARGET_VIEW_DESC rtvDesc{};
+    rtvDesc.Format        = rtvFormat;
+    rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    device_->CreateRenderTargetView(bb, &rtvDesc, &entry.rtv);
     return static_cast<TextureHandle>(textures_.Insert(std::move(entry)));
 }
 
@@ -577,17 +634,21 @@ void D3D11Device::ResizeSwapChain(SwapChainHandle h, int width, int height) {
     // Unbind render targets before resize to release back buffer references
     context_->OMSetRenderTargets(0, nullptr, nullptr);
 
-    // Must release all references before resize
-    if (sc->backBufferTexHandle != 0) {
-        auto* te = textures_.Get(sc->backBufferTexHandle);
-        if (te) {
+    // Must release all references before resize. CreateSwapChainViews
+    // re-acquires both proxies after ResizeBuffers; here we just drop
+    // them so the resource refcount reaches zero.
+    auto dropProxy = [&](uint64_t& h) {
+        if (h == 0) return;
+        if (auto* te = textures_.Get(h)) {
             SafeRelease(te->rtv);
             SafeRelease(te->srv);
             te->tex = nullptr;
         }
-        textures_.Remove(sc->backBufferTexHandle);
-        sc->backBufferTexHandle = 0;
-    }
+        textures_.Remove(h);
+        h = 0;
+    };
+    dropProxy(sc->backBufferTexHandle);
+    dropProxy(sc->backBufferTexHandleLinear);
     sc->ReleaseBackBuffer();
 
     sc->swapChain->ResizeBuffers(0, static_cast<UINT>(width), static_cast<UINT>(height),
@@ -599,15 +660,17 @@ void D3D11Device::DestroySwapChain(SwapChainHandle h) {
     if (h == SwapChainHandle::Invalid) return;
     auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
     if (sc) {
-        if (sc->backBufferTexHandle != 0) {
-            auto* te = textures_.Get(sc->backBufferTexHandle);
-            if (te) {
+        auto dropProxy = [&](uint64_t handle) {
+            if (handle == 0) return;
+            if (auto* te = textures_.Get(handle)) {
                 SafeRelease(te->rtv);
                 SafeRelease(te->srv);
                 te->tex = nullptr;
             }
-            textures_.Remove(sc->backBufferTexHandle);
-        }
+            textures_.Remove(handle);
+        };
+        dropProxy(sc->backBufferTexHandle);
+        dropProxy(sc->backBufferTexHandleLinear);
         sc->Release();
     }
     swapChains_.Remove(static_cast<uint64_t>(h));
@@ -623,6 +686,12 @@ TextureHandle D3D11Device::GetSwapChainBackBuffer(SwapChainHandle h) {
     auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
     if (!sc) return TextureHandle::Invalid;
     return static_cast<TextureHandle>(sc->backBufferTexHandle);
+}
+
+TextureHandle D3D11Device::GetSwapChainBackBufferLinear(SwapChainHandle h) {
+    auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
+    if (!sc) return TextureHandle::Invalid;
+    return static_cast<TextureHandle>(sc->backBufferTexHandleLinear);
 }
 
 // ============================================================================

@@ -61,6 +61,38 @@ struct PE1EmitterConfig {
 };
 
 // ============================================================================
+// EventObject configuration — animation event triggers (SPN/SPL/UBR/FPT/SND)
+// ============================================================================
+// Decoded from the MDX EventObject's `name` field: chars 0..2 are the
+// 3-letter prefix (encoded into Kind), char 3 is a dash, chars 4..7 are
+// the SLK row id (lowercased into `id`). `eventTrackTimes` carries the
+// raw frame numbers from the parsed EventObject — the rising-edge
+// scanner walks them backward to detect crossings against the active
+// sequence's frame window.
+//
+// `globalSequenceId` follows MDX semantics: 0xFFFFFFFFu means "use the
+// active sequence", anything else indexes into model.globalSequences[].
+// `nodeIndex` is the bone-world matrix slot to fetch the spawn transform
+// from at fire time.
+struct EventObjectConfig {
+    enum class Kind : uint8_t { SPN, SPL, UBR, FPT, SND, Unknown };
+
+    std::string  name;
+    Kind         kind             = Kind::Unknown;
+    std::string  id;
+    int          nodeIndex        = -1;
+    // The EventObject's bind-pose pivot. Used to lift the
+    // hierarchy's "delta from bind" matrix into an absolute world
+    // transform: `pivotT * boneMatrix * actor.worldTransform`. Without
+    // this the splat sits near the model origin offset by whatever
+    // delta the foot bone has from bind, instead of at the foot's
+    // animated world position. See worldOf() in mdx_model_adapter.cpp.
+    Vector3f     pivot            = {0, 0, 0};
+    uint32_t     globalSequenceId = 0xFFFFFFFFu;
+    std::vector<uint32_t> eventTrackTimes;
+};
+
+// ============================================================================
 // FilterMode enum (matches Magos Constants.h / WhiteoutDex IO)
 // ============================================================================
 enum FilterMode {
@@ -117,6 +149,13 @@ struct MeshData {
     std::vector<Vector3f> positions;
     std::vector<Vector3f> normals;
     std::vector<Vector2f> uvs;
+    // UVAS channel 1. Empty unless the source geoset declared a second
+    // texCoord array. The MDX `Layer.CoordID` selects which channel a
+    // given material layer samples; Previewd's CreateVertexAndIndexBuffers
+    // (@0x7ff609af8af0) caps at 2 streams in the VB, so we mirror that
+    // and only carry channels 0 and 1. Layers with CoordID >= 2 (rare in
+    // shipping content) fall back to channel 0.
+    std::vector<Vector2f> uvs1;
     // Per-vertex tangent frame. .xyz = world-space tangent direction,
     // .w = handedness sign for bitangent reconstruction (see
     // tangentToWorld in wc3_shaders/math/normal.slang). Empty when the
@@ -125,6 +164,21 @@ struct MeshData {
     std::vector<Vector4f> tangents;
     std::vector<uint32_t>  indices;
 };
+
+// Sentinel value adapters write into MaterialLayerData::teamColorMapId
+// when the MDX/Max layer's team-colour slot is the WC3 replaceable=1
+// placeholder — a "the engine should fill this with the live UI swatch"
+// signal, *not* a real authored texture. The HD draw treats this value
+// as a request to bind ReplaceableTextureManager::GetHdSwatchTexture()
+// at t4 and ignore the per-actor texture cache.
+//
+// Any other non-negative value in `teamColorMapId` is a real authored
+// texture id (e.g. the user assigned a custom mask BLP / DDS in the
+// teamColorMap slot of their HD Wc3Material) and gets bound through
+// the standard `bindMaterialTex` lookup. -1 means the slot is absent
+// entirely. The sentinel is < 0 (and != -1) so it can never collide
+// with a valid texture id.
+inline constexpr int kHdTeamColorActive = -2;
 
 struct TextureData {
     int textureId;
@@ -140,6 +194,15 @@ struct TextureData {
     int width, height;
     int mipLevels = 1;
     uint32_t wrapFlags = 0x3;   // bit 0 = WrapWidth (U), bit 1 = WrapHeight (V); default = wrap both
+
+    // Cross-model dedup key. When non-empty the renderer treats this
+    // texture as a shared asset: TextureAssetManager keeps one GPU upload
+    // per unique key with a refcount, so two models referencing the same
+    // BLP cause one upload, not two. Adapters fill this with a normalised
+    // path (lower-case, forward-slash) for file-backed textures and leave
+    // it empty for procedural / replaceable / per-model unique textures
+    // (team-colour swatches, magenta missing-marker, HD sentinels).
+    std::string sharedKey;
 };
 
 struct MaterialLayerData {
@@ -148,6 +211,14 @@ struct MaterialLayerData {
     float alpha;
     int flags;  // MAT_TWO_SIDED, MAT_UNSHADED, etc. (from FilterMode/MaterialFlags enums)
     int textureAnimationId = -1;  // -1 = none; else index into model's TXAN table
+    // UV channel selector (MDX Layer.CoordID). Picks which of the
+    // geoset's UVAS channels feeds TEXCOORD0 for this layer's draw.
+    // -1 means SphereEnvMap (MDX layer flag 0x2): the engine forces
+    // procedural UVs from the normal/eye in the shader and never
+    // samples the geoset's UV stream — see ProcessTexLayers
+    // @0x7ff609b69e40 in Previewd. Default 0 covers the 99% case
+    // where layers want channel 0.
+    int coordId = 0;
     // MDX layer shader id (Layer::ShaderType). 0 = SD, 1 = HD, 2 = SDOnHD,
     // 24 = Crystal; other values are non-mesh shaders that shouldn't appear on
     // a real layer but we preserve the raw integer so the render path can
@@ -164,6 +235,13 @@ struct MaterialLayerData {
     int normalMapId    = -1;
     int ormMapId       = -1;
     int emissiveMapId  = -1;
+    // -1 = no team-colour slot authored on this layer.
+    // Any value >= 0 means "this layer wants the live HD team-colour swatch";
+    // the HD draw path binds ReplaceableTextureManager::GetHdSwatchTexture()
+    // at t4 and ignores the numeric value itself. Adapters set this to
+    // kHdTeamColorActive when the MDX/Max layer flags the slot as live-driven
+    // but doesn't author a real texture; a real textureId from the model's
+    // texture scope is equally valid (the bind path doesn't look it up).
     int teamColorMapId = -1;
 
     // Per-layer HD material knobs. Feed directly into the HD PS CB
@@ -309,11 +387,28 @@ struct FrameState {
     };
     std::vector<LayerAlphaState> layerAlphas;
 
-    // Per-layer animated texture ID (KMTF tracks)
+    // Per-layer animated texture ID (KMTF tracks). Reforged HD layers
+    // (v1200+) can carry an independent KMTF track per subtexture slot —
+    // animating the normal map, ORM, emissive, or team-colour mask
+    // separately from the diffuse — so each animated slot emits its
+    // own state. Classic v800-v1100 layers only animate diffuse and
+    // emit a single Diffuse-tagged entry, preserving the original
+    // behaviour. Slot numbering matches MDX `Layer::SlotType` so the
+    // adapter can `static_cast` directly. Anything beyond TeamColor
+    // (e.g. EnvironmentMap=5) currently has no rendered slot — those
+    // states are dropped at apply time, not at evaluate time.
+    enum class LayerTexSlot : uint8_t {
+        Diffuse   = 0,
+        Normal    = 1,
+        ORM       = 2,
+        Emissive  = 3,
+        TeamColor = 4,
+    };
     struct LayerTextureIdState {
-        int materialId;
-        int layerIndex;
-        int textureId;
+        int          materialId;
+        int          layerIndex;
+        LayerTexSlot slot       = LayerTexSlot::Diffuse;
+        int          textureId;
     };
     std::vector<LayerTextureIdState> layerTextureIds;
 

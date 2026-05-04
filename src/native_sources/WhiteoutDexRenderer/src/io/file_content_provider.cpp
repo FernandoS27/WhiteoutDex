@@ -4,6 +4,7 @@
 
 #include "file_content_provider.h"
 #include "file_resolver.h"
+#include "path_utf8.h"   // FsPathFromUtf8 — UTF-8 → fs::path
 
 #include <whiteout/utils/blizzard_game_finder.h>
 
@@ -57,7 +58,10 @@ struct FileContentProvider::Impl {
                 info.game != whiteout::utils::BlizzardGame::WarcraftIIIReforged)
                 continue;
 
-            if (fs::exists(fs::path(info.path) / "Data")) {
+            // info.path is UTF-8 from BlizzardGameFinder; FsPathFromUtf8
+            // preserves CJK chars when the user installed WC3 to a
+            // non-ASCII directory.
+            if (fs::exists(FsPathFromUtf8(info.path) / "Data")) {
                 wc3Path = info.path;
                 break;
             }
@@ -94,13 +98,16 @@ struct FileContentProvider::Impl {
     void TryOpenMpq() {
 #if WHITEOUT_HAS_MPQ
         for (const char* name : kMpqNames) {
-            fs::path mpqPath = fs::path(wc3Path) / name;
+            // wc3Path is UTF-8 — round-trip through FsPathFromUtf8 / PathToUtf8
+            // so a CJK install dir survives both fs::exists and the MPQ open
+            // call (whiteoutmpq's narrow API also expects UTF-8 here).
+            fs::path mpqPath = FsPathFromUtf8(wc3Path) / name;
             if (!fs::exists(mpqPath))
                 continue;
 
             std::string error;
             auto storage = whiteout::storages::mpq::Storage::open(
-                mpqPath.string(), &error);
+                PathToUtf8(mpqPath), &error);
             if (storage) {
                 std::printf("[FileContentProvider] Opened MPQ: %s\n", name);
                 mpqStorages.push_back(std::move(*storage));
@@ -218,6 +225,7 @@ std::optional<std::vector<uint8_t>> FileContentProvider::ReadFile(
 static constexpr const char* kCascPrefixes[] = {
     "war3.w3mod:",
     "war3.w3mod:_hd.w3mod:",
+    "war3.w3mod:_deprecated.w3mod:",
 };
 
 // All extensions to try when searching CASC/MPQ archives.

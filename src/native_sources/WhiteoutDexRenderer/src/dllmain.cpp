@@ -1,17 +1,30 @@
 // ============================================================================
 // WhiteoutDex — All-in-One Max SDK Plugin (.dlx)
-// Adapter-Pattern: MaxSceneAdapter → IModelSource → RenderService
+//
+// Adapter pattern (live source): MaxSceneAdapter implements both
+// IModelDataSource (Build()) and IAnimationSource (Evaluate()), so a single
+// SpawnActorFromLiveSource call covers both the static snapshot AND the
+// per-frame animation feed. The adapter outlives the renderer because the
+// actor's AnimationDriver holds a shared_ptr to it.
 //
 // MaxScript API:
-//   ndxStart()   → Extract scene + open renderer + start sync
-//   ndxStop()    → Stop everything + close window
+//   ndxStart()             → Extract scene + open renderer + start sync
+//   ndxStop()              → Stop everything + close window
+//   ndxRefreshMaterials()  → Re-read material properties (hot reload)
 // ============================================================================
 
 #include "max_scene_adapter.h"
+#include "renderer/model_instance.h"   // Actor
 #include "renderer/render_service.h"
+#include "renderer/scene_manager.h"
+#include "renderer/replaceable_texture_manager.h"
+#include "renderer/windows_sound_emitter.h"
 #include "ui/render_window.h"
 
+#include <chrono>
 #include <filesystem>
+#include <memory>
+
 #include <max.h>
 #include <maxversion.h>
 #include <maxscript/maxscript.h>
@@ -19,43 +32,47 @@
 #include <maxscript/foundation/numbers.h>
 #include <maxscript/macros/define_instantiation_functions.h>
 
-#include <chrono>
-
 // ============================================================================
 // Global state
 // ============================================================================
-static WhiteoutDex::MaxSceneAdapter* g_adapter      = nullptr;
+static std::shared_ptr<WhiteoutDex::MaxSceneAdapter> g_adapter;
+static WhiteoutDex::Actor*           g_actor        = nullptr;   // borrowed; owned by g_scene
+static WhiteoutDex::SceneManager*    g_scene        = nullptr;
 static WhiteoutDex::RenderService*   g_renderer     = nullptr;
 static WhiteoutDex::RenderWindow*    g_renderWindow = nullptr;
-static bool                           g_running      = false;
-static HINSTANCE                      g_hInstance = nullptr;
-static DWORD                          g_lastTimeChangedTick = 0;
-static std::chrono::steady_clock::time_point g_wallClockStart;
+static bool                          g_running      = false;
+static HINSTANCE                     g_hInstance    = nullptr;
+static DWORD                         g_lastTimeChangedTick = 0;
 
-static int wallClockElapsedMs() {
-    auto now = std::chrono::steady_clock::now();
-    return (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - g_wallClockStart).count();
+// Convert Max time (TimeValue ticks) to milliseconds. Returns 0 if Max
+// reports a missing tick rate (rare; tested ndxStart paths).
+static int MaxTimeToMs(TimeValue t) {
+    int tpf = GetTicksPerFrame(), fps = GetFrameRate();
+    return (tpf > 0 && fps > 0) ? (int)((float)t / (float)tpf * 1000.0f / (float)fps) : 0;
+}
+
+// Push Max's externally-driven time onto the actor + scene clock, then run
+// eval+apply on Max's thread. MaxSceneAdapter::Evaluate reads live Max
+// scene state (node TMs, modifier params, vertex paint, materials) which is
+// only thread-safe to touch from Max's UI thread — the render-thread Tick
+// can't do this for us.
+static void EvalFromMax(int timeMs) {
+    if (!g_actor || !g_renderer || !g_scene) return;
+    g_actor->animation.SetTimeMs(timeMs);
+    g_scene->SetAnimationTime(timeMs);
+    g_renderer->EvaluateAndApply(*g_actor);
 }
 
 // ============================================================================
-// TimeChange callback — asks adapter to Evaluate, passes result to renderer
+// TimeChange callback — Max scrubs the timeline; we re-evaluate the actor.
 // ============================================================================
 class NdxTimeCallback : public TimeChangeCallback {
 public:
     void TimeChanged(TimeValue t) override {
-        if (!g_running || !g_renderer || !g_adapter) return;
-        if (!g_renderWindow || !g_renderWindow->IsOpen()) { /* will be cleaned up by ndxStop */ return; }
-        int tpf = GetTicksPerFrame(), fps = GetFrameRate();
-        int timeMs = (tpf > 0 && fps > 0)
-            ? (int)((float)t / (float)tpf * 1000.0f / (float)fps)
-            : 0;
-
+        if (!g_running || !g_renderer || !g_actor) return;
+        if (!g_renderWindow || !g_renderWindow->IsOpen()) return;
         g_lastTimeChangedTick = GetTickCount();
-        // Update camera position for billboard evaluation (no-op for MaxSceneAdapter)
-        Vector3f cp = g_renderer->GetCameraPosition();
-        g_adapter->SetCameraPosition(cp.x, cp.y, cp.z);
-        WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs, wallClockElapsedMs());
-        g_renderer->ApplyFrameState(state, timeMs);
+        EvalFromMax(MaxTimeToMs(t));
     }
 };
 
@@ -67,32 +84,23 @@ static NdxTimeCallback* g_timeCallback = nullptr;
 static UINT_PTR g_materialTimerId = 0;
 
 static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
-    if (!g_running || !g_renderer || !g_adapter) return;
+    if (!g_running || !g_renderer || !g_adapter || !g_actor) return;
     if (!g_renderWindow || !g_renderWindow->IsOpen()) return;
 
-    // Check for material property changes
+    // Hot-reload check.
     auto result = g_adapter->RefreshMaterials();
     if (result.changed) {
         g_renderer->UpdateMaterials(result.materials, result.textures);
     }
 
-    // Re-evaluate frame state only when the timeline is idle — this picks up
-    // non-animated changes (vertex colors, modifiers, visibility toggles).
-    // Skip when TimeChanged is actively firing to avoid conflicting updates
-    // that cause flicker during animation playback.
+    // Re-evaluate when the timeline is idle — picks up non-animated
+    // changes (vertex paint, modifier toggles, visibility flips). Skip
+    // when TimeChanged is actively firing so playback isn't fighting a
+    // duplicate eval on the same frame.
     DWORD now = GetTickCount();
     if (now - g_lastTimeChangedTick > 1000) {
         Interface* ip = GetCOREInterface();
-        if (ip) {
-            TimeValue t = ip->GetTime();
-            int tpf = GetTicksPerFrame(), fps = GetFrameRate();
-            int timeMs = (tpf > 0 && fps > 0)
-                ? (int)((float)t / (float)tpf * 1000.0f / (float)fps) : 0;
-            Vector3f cp = g_renderer->GetCameraPosition();
-            g_adapter->SetCameraPosition(cp.x, cp.y, cp.z);
-            WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs, wallClockElapsedMs());
-            g_renderer->ApplyFrameState(state, timeMs);
-        }
+        if (ip) EvalFromMax(MaxTimeToMs(ip->GetTime()));
     }
 }
 
@@ -117,8 +125,14 @@ static void NdxCleanup() {
         g_renderWindow->Close();
         delete g_renderWindow; g_renderWindow = nullptr;
     }
+    // Order: actors die with the renderer's scene-clear/release; release the
+    // renderer next so its non-owning scene pointer goes inert; drop the
+    // adapter shared_ptr (the actor's AnimationDriver was the last other
+    // holder, so this destroys the adapter); finally tear down scene.
+    g_actor = nullptr;
     if (g_renderer) { delete g_renderer; g_renderer = nullptr; }
-    if (g_adapter) { delete g_adapter; g_adapter = nullptr; }
+    g_adapter.reset();
+    if (g_scene)    { delete g_scene;    g_scene    = nullptr; }
     mprintf(_M("WhiteoutDex: === STOPPED ===\n"));
 }
 
@@ -166,29 +180,28 @@ extern "C" {
 // ============================================================================
 
 def_visible_primitive(ndxStart, "ndxStart");
-Value* ndxStart_cf(Value** arg_list, int count)
+Value* ndxStart_cf(Value** /*arg_list*/, int count)
 {
     check_arg_count(ndxStart, 0, count);
     auto start = std::chrono::high_resolution_clock::now();
 
     if (g_running) NdxCleanup();
 
-    // Create render service + platform render window
-    g_renderer = new WhiteoutDex::RenderService();
+    // Host owns SceneManager + RenderService + RenderWindow.
+    g_scene        = new WhiteoutDex::SceneManager();
+    g_renderer     = new WhiteoutDex::RenderService(*g_scene);
     g_renderWindow = new WhiteoutDex::RenderWindow(*g_renderer);
     if (!g_renderWindow->Open(800, 600)) {
         mprintf(_M("WhiteoutDex: ERROR - Could not open renderer window\n"));
         delete g_renderWindow; g_renderWindow = nullptr;
-        delete g_renderer; g_renderer = nullptr;
+        delete g_renderer;     g_renderer     = nullptr;
+        delete g_scene;        g_scene        = nullptr;
         return Integer::intern(-1);
     }
 
-    // Make renderer window float above Max.
-    // Use GetAncestor(GA_ROOT) to guarantee we hand a top-level window to
-    // GWLP_HWNDPARENT — if GetMAXHWnd() returns a child window (viewport,
-    // panel, etc.) passing it directly causes undefined behaviour and can
-    // silently reparent the renderer as a child of that narrow panel,
-    // which clips the title bar down to a single character ("W").
+    // Make renderer window float above Max. GA_ROOT walks up to a top-level
+    // window so GWLP_HWNDPARENT doesn't accidentally re-parent the window
+    // under a child viewport panel (which would clip the title bar to "W").
     Interface* ip = GetCOREInterface();
     HWND ndxWnd = FindWindowW(L"WhiteoutDexRendererClass", nullptr);
     if (ndxWnd && ip) {
@@ -197,84 +210,74 @@ Value* ndxStart_cf(Value** arg_list, int count)
         SetWindowLongPtrW(ndxWnd, GWLP_HWNDPARENT, (LONG_PTR)(maxRoot ? maxRoot : maxHwnd));
     }
 
-    // Collect scene data
+    // PE1 base path = directory containing the loaded .max file. Set BEFORE
+    // adapter collection so PE1 child-model paths in the scene resolve.
+    if (const MCHAR* maxFile = ip->GetCurFilePath().data(); maxFile && maxFile[0]) {
+        std::wstring wp(maxFile);
+        auto pos = wp.find_last_of(L'\\');
+        if (pos != std::wstring::npos) wp = wp.substr(0, pos + 1);
+        g_scene->SetPE1BasePath(std::filesystem::path(wp));
+    }
+
+    // Audio: same Windows-native ISoundEmitter the standalone exe uses.
+    // Borrows the scene's content provider for CASC/MPQ lookup so SND
+    // EventObjects play through the host OS during preview. Without
+    // this, the renderer's default null emitter drops every fire.
+    g_renderer->SetSoundEmitter(std::make_unique<WhiteoutDex::WindowsSoundEmitter>(
+        g_scene->ActiveContentProvider()));
+
+    // ---- Build the live adapter ----
+    g_adapter = std::make_shared<WhiteoutDex::MaxSceneAdapter>();
+    // Cross-model dedup: skip BLP/CASC decode for textures that other models
+    // already uploaded. SpawnActorFromLiveSource sets this too, but we set
+    // it now so CollectScene's incidental texture reads also benefit.
+    g_adapter->SetTextureCacheQuery(
+        [](std::string_view k) { return g_renderer->Textures().IsCachedShared(k); });
+
+    // Walk the Max scene at t=0 for stable bind-pose extraction.
     TimeValue savedTime = ip->GetTime();
     ip->SetTime(0, FALSE);
-
-    g_adapter = new WhiteoutDex::MaxSceneAdapter();
     mprintf(_M("WhiteoutDex: Collecting scene...\n"));
     g_adapter->CollectScene();
 
-    // Get typed data and load into renderer
+    // ---- One-call spawn ----
+    // Pulls all static data via IModelDataSource::Build, builds an inline
+    // ModelTemplate, registers attachment + PE1 configs, and binds the
+    // actor's AnimationDriver to the adapter (which is also an
+    // IAnimationSource). Replaces ~15 lines of GetX + LoadModel + SetX boilerplate.
     mprintf(_M("WhiteoutDex: Loading model...\n"));
-    auto meshes     = g_adapter->GetMeshes();
-    auto textures   = g_adapter->GetTextures();
-    auto materials  = g_adapter->GetMaterials();
-    auto skeleton   = g_adapter->GetSkeleton();
-    auto skinW      = g_adapter->GetSkinWeights();
-    auto particles  = g_adapter->GetParticleConfigs();
-    auto ribbons    = g_adapter->GetRibbonConfigs();
-    auto collisions = g_adapter->GetCollisionShapes();
-
-    g_renderer->LoadModel(meshes, textures, materials, skeleton,
-                          skinW, particles, ribbons, collisions);
-
-    // Register attachment models
-    auto attConfigs = g_adapter->GetAttachmentConfigs();
-    if (!attConfigs.empty()) {
-        g_renderer->SetAttachmentConfigs(g_renderer->GetFocusModelHandle(), attConfigs);
-        int withModels = 0;
-        for (auto& ac : attConfigs) if (!ac.modelPath.empty()) withModels++;
-        mprintf(_M("  %d attachments (%d with models)\n"), (int)attConfigs.size(), withModels);
+    g_actor = g_renderer->SpawnActorFromLiveSource(g_adapter);
+    if (!g_actor) {
+        mprintf(_M("WhiteoutDex: ERROR - SpawnActorFromLiveSource failed\n"));
+        NdxCleanup();
+        return Integer::intern(-1);
     }
 
-    // Register PE1 emitters (model particle emitters)
-    auto pe1Configs = g_adapter->GetPE1Configs();
-    if (!pe1Configs.empty()) {
-        // Set base path for resolving PE1 model files + textures (Max file directory)
-        const MCHAR* maxFile = ip->GetCurFilePath().data();
-        if (maxFile && maxFile[0]) {
-            std::wstring wp(maxFile);
-            auto pos = wp.find_last_of(L'\\');
-            if (pos != std::wstring::npos) wp = wp.substr(0, pos + 1);
-            g_renderer->SetPE1BasePath(std::filesystem::path(wp));
-        }
-        g_renderer->SetPE1Configs(g_renderer->GetFocusModelHandle(), pe1Configs);
-        mprintf(_M("  %d PE1 emitters registered\n"), (int)pe1Configs.size());
-    }
+    // Camera presets (Max-specific extension; not part of IModelDataSource).
+    if (auto cameras = g_adapter->GetCameraPresets(); !cameras.empty())
+        g_scene->SetCameraPresets(std::move(cameras));
 
-    // Populate camera combo with scene cameras
-    auto cameras = g_adapter->GetCameraPresets();
-    if (!cameras.empty())
-        g_renderer->SetCameraPresets(cameras);
-
-    // Restore time and do initial evaluation
+    // Restore Max's time and run the initial eval so the model is visible
+    // before TimeChanged starts firing.
     ip->SetTime(savedTime, FALSE);
-    TimeValue t = ip->GetTime();
-    int tpf = GetTicksPerFrame(), fps = GetFrameRate();
-    int timeMs = (tpf > 0 && fps > 0)
-        ? (int)((float)t / (float)tpf * 1000.0f / (float)fps) : 0;
+    EvalFromMax(MaxTimeToMs(ip->GetTime()));
 
-    WhiteoutDex::FrameState state = g_adapter->Evaluate(timeMs, 0);
-    g_renderer->ApplyFrameState(state, timeMs);
-
-    // Register time callback
+    // Hook Max's timeline + start the polling timer for hot-reload.
     g_timeCallback = new NdxTimeCallback();
     ip->RegisterTimeChangeCallback(g_timeCallback);
-    g_running = true;
-    g_wallClockStart = std::chrono::steady_clock::now();
-
-    // Start material polling timer (500ms interval)
+    g_running        = true;
     g_materialTimerId = SetTimer(nullptr, 0, 500, MaterialPollTimer);
 
     auto end = std::chrono::high_resolution_clock::now();
     int ms = (int)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
+    // Diagnostic readout from the actor's render-side counts.
     mprintf(_M("\nWhiteoutDex: === STARTED in %d ms ===\n"), ms);
-    mprintf(_M("  %d meshes, %d textures, %d materials, %d nodes\n"),
-            (int)meshes.size(), (int)textures.size(), (int)materials.size(), skeleton.nodeCount);
-    mprintf(_M("  %d particles, %d ribbons, %d collisions\n"),
-            (int)particles.size(), (int)ribbons.size(), (int)collisions.size());
+    mprintf(_M("  %d geosets, %d materials\n"),
+            (int)g_actor->render.gpuGeosets.size(),
+            (int)g_actor->render.gpuMaterials.size());
+    mprintf(_M("  %d collisions\n"),
+            (int)g_actor->render.collisionShapes.size());
 
     return Integer::intern(ms);
 }
@@ -284,7 +287,7 @@ Value* ndxStart_cf(Value** arg_list, int count)
 // ============================================================================
 
 def_visible_primitive(ndxStop, "ndxStop");
-Value* ndxStop_cf(Value** arg_list, int count)
+Value* ndxStop_cf(Value** /*arg_list*/, int count)
 {
     check_arg_count(ndxStop, 0, count);
     NdxCleanup();
@@ -297,7 +300,7 @@ Value* ndxStop_cf(Value** arg_list, int count)
 // ============================================================================
 
 def_visible_primitive(ndxRefreshMaterials, "ndxRefreshMaterials");
-Value* ndxRefreshMaterials_cf(Value** arg_list, int count)
+Value* ndxRefreshMaterials_cf(Value** /*arg_list*/, int count)
 {
     check_arg_count(ndxRefreshMaterials, 0, count);
     if (!g_running || !g_renderer || !g_adapter)

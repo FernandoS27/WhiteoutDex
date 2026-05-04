@@ -43,6 +43,7 @@ public:
     void          DestroySwapChain(SwapChainHandle) override;
     void          Present         (SwapChainHandle) override;
     TextureHandle GetSwapChainBackBuffer(SwapChainHandle) override;
+    TextureHandle GetSwapChainBackBufferLinear(SwapChainHandle) override;
 
     TextureHandle CreateColorTarget(int w, int h, Format f) override;
     TextureHandle CreateDepthTarget(int w, int h, Format f) override;
@@ -63,7 +64,7 @@ public:
     SamplerEntry*  GetSampler (SamplerHandle h)  { return samplers_.Get(static_cast<uint64_t>(h)); }
 
 private:
-    TextureHandle RegisterBackBuffer(ID3D11Texture2D* bb);
+    TextureHandle RegisterBackBuffer(ID3D11Texture2D* bb, DXGI_FORMAT rtvFormat);
     void CreateSwapChainViews(SwapChainEntry& sc);
 
     ID3D11Device*        device_  = nullptr;

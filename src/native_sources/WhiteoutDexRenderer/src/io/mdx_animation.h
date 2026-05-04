@@ -50,7 +50,7 @@ struct HierarchyNode {
     const whiteout::mdx::Track<whiteout::Vector3f>* scaling     = nullptr;
 
     // Classification: which model array this node came from, and its index there
-    enum class Source { Bone, Helper, ParticleEmitter, ParticleEmitter2, RibbonEmitter, CollisionShape, Attachment, Light, Other };
+    enum class Source { Bone, Helper, ParticleEmitter, ParticleEmitter2, RibbonEmitter, CollisionShape, Attachment, Light, EventObject, Other };
     Source source = Source::Other;
     int sourceIndex = 0;   // index into the corresponding model vector
 };

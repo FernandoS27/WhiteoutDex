@@ -115,14 +115,37 @@ public:
     virtual void* MapBuffer   (BufferHandle) = 0;
     virtual void  UnmapBuffer (BufferHandle) = 0;
 
-    // Swap chains
+    // Swap chains. Default colorFormat is the *sRGB-encoded* RTV view —
+    // every 3D draw goes through HDR + tonemap and the tonemap PS writes
+    // linear LDR. The sRGB RTV gamma-encodes that linear output on write
+    // so the display sees properly gamma-encoded pixels. Mirrors the
+    // engine's pmChooseSwapChainFormat preferring RGBA8Unorm_sRGB
+    // (pmFormat 32) — Preview RE @0x7ff609ab1db0. Texture-side sRGB
+    // policy is now correct (mdx + max adapters call
+    // ApplyTextureSrgbPolicy on every TextureData), so the linear ACES
+    // input is in real linear space and a single sRGB encode at the
+    // RTV completes the gamma chain.
+    //
+    // Flip-model swap chains forbid `_SRGB` resource formats, so the
+    // backend strips the suffix for the swap chain create call and
+    // re-applies it on the per-buffer RTV view (see
+    // d3d12_device.cpp::CreateSwapChain).
     virtual SwapChainHandle CreateSwapChain(void* nativeWindowHandle,
                                             int width, int height,
-                                            Format colorFormat = Format::R8G8B8A8_UNORM) = 0;
+                                            Format colorFormat = Format::R8G8B8A8_UNORM_SRGB) = 0;
     virtual void          ResizeSwapChain (SwapChainHandle, int width, int height) = 0;
     virtual void          DestroySwapChain(SwapChainHandle) = 0;
     virtual void          Present         (SwapChainHandle) = 0;
     virtual TextureHandle GetSwapChainBackBuffer(SwapChainHandle) = 0;
+
+    // Linear (non-sRGB) RTV view of the same physical back-buffer. Both
+    // proxy handles share the underlying DXGI buffer, but their RTV
+    // descriptors carry different formats — sRGB for the HD tonemap
+    // output (hardware encodes on write), non-sRGB for the SD pipeline
+    // (display-ready bytes from the SD shader stored verbatim, no
+    // double-encoding). When the caller's `colorFormat` was already a
+    // linear UNORM, this returns the same proxy as GetSwapChainBackBuffer.
+    virtual TextureHandle GetSwapChainBackBufferLinear(SwapChainHandle) = 0;
 
     // Off-screen render targets
     virtual TextureHandle CreateColorTarget(int w, int h, Format f) = 0;

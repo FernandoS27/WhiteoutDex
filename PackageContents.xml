@@ -74,32 +74,32 @@ Warcraft III MDX/MDL Modeling Toolkit for 3ds Max 2022-2027
 
     <Components Description="plugins parts">
         <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2022" SeriesMax="2022" />
-        <ComponentEntry ModuleName="./src/native_sources/output/Max2022/WhiteoutDexExtractor_2022.dlx" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2022/WhiteoutFlakes_2022.dlx" />
     </Components>
 
     <Components Description="plugins parts">
         <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2023" SeriesMax="2023" />
-        <ComponentEntry ModuleName="./src/native_sources/output/Max2023/WhiteoutDexExtractor_2023.dlx" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2023/WhiteoutFlakes_2023.dlx" />
     </Components>
 
     <Components Description="plugins parts">
         <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2024" SeriesMax="2024" />
-        <ComponentEntry ModuleName="./src/native_sources/output/Max2024/WhiteoutDexExtractor_2024.dlx" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2024/WhiteoutFlakes_2024.dlx" />
     </Components>
 
     <Components Description="plugins parts">
         <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2025" SeriesMax="2025" />
-        <ComponentEntry ModuleName="./src/native_sources/output/Max2025/WhiteoutDexExtractor_2025.dlx" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2025/WhiteoutFlakes_2025.dlx" />
     </Components>
 
     <Components Description="plugins parts">
         <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2026" SeriesMax="2026" />
-        <ComponentEntry ModuleName="./src/native_sources/output/Max2026/WhiteoutDexExtractor_2026.dlx" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2026/WhiteoutFlakes_2026.dlx" />
     </Components>
 
     <Components Description="plugins parts">
         <RuntimeRequirements OS="Win64" Platform="3ds Max" SeriesMin="2027" SeriesMax="2027" />
-        <ComponentEntry ModuleName="./src/native_sources/output/Max2027/WhiteoutDexExtractor_2027.dlx" />
+        <ComponentEntry ModuleName="./src/native_sources/output/Max2027/WhiteoutFlakes_2027.dlx" />
     </Components>
 
     <!-- ================================================================

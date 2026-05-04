@@ -251,17 +251,21 @@ bool D3D12Device::CreateRootSignatures() {
 
         // Static samplers for HD PS slots our dynamic sampler table (s0..s3)
         // doesn't cover:
-        //   s4  — s_teamColor: wrap-linear. Without a binding the HD PS's
-        //         t_teamColor.Sample returns undefined values, scrambling
-        //         the multi-layer blend's team-coloured regions on every
-        //         draw that uses TMat.hasMultiLayer.
-        //   s13 — s_iblFrom (env cube from, linear-clamp)
-        //   s14 — s_iblTo   (env cube to,   linear-clamp)
-        //   s15 — s_brdfLut (split-sum LUT, linear-clamp)
+        //   s4         — s_teamColor: wrap-linear. Without a binding the HD
+        //                PS's t_teamColor.Sample returns undefined values,
+        //                scrambling the multi-layer blend's team-coloured
+        //                regions on every draw that uses TMat.hasMultiLayer.
+        //   s10/11/12  — sd_s_shadow0..2 (SamplerComparisonState) for the
+        //                CSM PCF taps. Border address-mode + opaque-white
+        //                colour means out-of-frustum taps return 1.0
+        //                (fully lit), matching the engine's shadow path.
+        //   s13        — s_iblFrom (env cube from, linear-clamp)
+        //   s14        — s_iblTo   (env cube to,   linear-clamp)
+        //   s15        — s_brdfLut (split-sum LUT, linear-clamp)
         // Using static samplers keeps the dynamic sampler descriptor table
         // small (s0..s3 only), preventing the 2048-entry D3D12 sampler heap
         // from wrapping mid-frame under a heavy HD draw load.
-        D3D12_STATIC_SAMPLER_DESC staticSamplers[4] = {};
+        D3D12_STATIC_SAMPLER_DESC staticSamplers[7] = {};
         auto MakeSampler = [](UINT shaderRegister, D3D12_TEXTURE_ADDRESS_MODE addressMode) {
             D3D12_STATIC_SAMPLER_DESC s{};
             s.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -279,15 +283,35 @@ bool D3D12Device::CreateRootSignatures() {
             s.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
             return s;
         };
+        auto MakeShadowSampler = [](UINT shaderRegister) {
+            D3D12_STATIC_SAMPLER_DESC s{};
+            s.Filter           = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+            s.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            s.AddressV         = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            s.AddressW         = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+            s.MipLODBias       = 0.0f;
+            s.MaxAnisotropy    = 0;
+            s.ComparisonFunc   = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+            s.BorderColor      = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+            s.MinLOD           = 0.0f;
+            s.MaxLOD           = D3D12_FLOAT32_MAX;
+            s.ShaderRegister   = shaderRegister;
+            s.RegisterSpace    = 0;
+            s.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+            return s;
+        };
         staticSamplers[0] = MakeSampler(4,  D3D12_TEXTURE_ADDRESS_MODE_WRAP);   // s_teamColor
-        staticSamplers[1] = MakeSampler(13, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_iblFrom
-        staticSamplers[2] = MakeSampler(14, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_iblTo
-        staticSamplers[3] = MakeSampler(15, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_brdfLut
+        staticSamplers[1] = MakeShadowSampler(10);                              // sd_s_shadow0
+        staticSamplers[2] = MakeShadowSampler(11);                              // sd_s_shadow1
+        staticSamplers[3] = MakeShadowSampler(12);                              // sd_s_shadow2
+        staticSamplers[4] = MakeSampler(13, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_iblFrom
+        staticSamplers[5] = MakeSampler(14, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_iblTo
+        staticSamplers[6] = MakeSampler(15, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);  // s_brdfLut
 
         D3D12_ROOT_SIGNATURE_DESC rsd{};
         rsd.NumParameters     = static_cast<UINT>(GraphicsRP::Count);
         rsd.pParameters       = params;
-        rsd.NumStaticSamplers = 4;
+        rsd.NumStaticSamplers = 7;
         rsd.pStaticSamplers   = staticSamplers;
         rsd.Flags             = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -941,7 +965,7 @@ PipelineHandle D3D12Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     rt0.DestBlendAlpha        = ToD3D12(desc.blend.dstAlpha);
     rt0.BlendOpAlpha          = ToD3D12(desc.blend.opAlpha);
     rt0.LogicOp               = D3D12_LOGIC_OP_NOOP;
-    rt0.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    rt0.RenderTargetWriteMask = desc.blend.colorWrite ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
     pd.BlendState = bd;
     pd.SampleMask = UINT_MAX;
 
@@ -954,6 +978,9 @@ PipelineHandle D3D12Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     rs.AntialiasedLineEnable = TRUE;
     rs.MultisampleEnable     = FALSE;
     rs.ConservativeRaster    = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+    rs.DepthBias             = desc.rasterizer.depthBias;
+    rs.SlopeScaledDepthBias  = desc.rasterizer.slopeScaledDepthBias;
+    rs.DepthBiasClamp        = desc.rasterizer.depthBiasClamp;
     pd.RasterizerState = rs;
 
     // Depth-stencil
@@ -968,8 +995,16 @@ PipelineHandle D3D12Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     pd.InputLayout.pInputElementDescs = elems.data();
     pd.InputLayout.NumElements        = static_cast<UINT>(elems.size());
     pd.PrimitiveTopologyType          = ToD3D12TopologyType(desc.topology);
-    pd.NumRenderTargets               = 1;
-    pd.RTVFormats[0]                  = ToDXGI(desc.rtvFormat);
+    // Format::Unknown for the rtvFormat → depth-only PSO. Used by the
+    // shadow-cascade render pass which writes only the DSV. D3D12
+    // validation requires NumRenderTargets == 0 in this case;
+    // requesting an RTV with format=DXGI_FORMAT_UNKNOWN is invalid.
+    if (desc.rtvFormat == Format::Unknown) {
+        pd.NumRenderTargets = 0;
+    } else {
+        pd.NumRenderTargets = 1;
+        pd.RTVFormats[0]    = ToDXGI(desc.rtvFormat);
+    }
     pd.DSVFormat                      = ToDXGI(desc.dsvFormat);
     pd.SampleDesc.Count               = 1;
 
@@ -1012,13 +1047,26 @@ void D3D12Device::Destroy(PipelineHandle h) {
 
 SamplerHandle D3D12Device::CreateSampler(const SamplerDesc& desc) {
     D3D12_SAMPLER_DESC sd{};
-    sd.Filter         = ToD3D12Filter(desc.minFilter, desc.magFilter);
+    sd.Filter         = desc.comparison
+                            ? ToD3D12FilterComparison(desc.minFilter, desc.magFilter)
+                            : ToD3D12Filter(desc.minFilter, desc.magFilter);
     sd.AddressU       = ToD3D12(desc.addressU);
     sd.AddressV       = ToD3D12(desc.addressV);
     sd.AddressW       = ToD3D12(desc.addressW);
     sd.MaxAnisotropy  = 1;
-    sd.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sd.ComparisonFunc = desc.comparison
+                            ? ToD3D12(desc.comparisonFunc)
+                            : D3D12_COMPARISON_FUNC_NEVER;
     sd.MaxLOD         = D3D12_FLOAT32_MAX;
+    // Border colour = OPAQUE_WHITE so out-of-frustum shadow taps read
+    // 1.0 (fully lit). Only honoured when AddressMode == Border, which
+    // shadow callers pair with comparison=true.
+    if (desc.comparison) {
+        sd.BorderColor[0] = 1.0f;
+        sd.BorderColor[1] = 1.0f;
+        sd.BorderColor[2] = 1.0f;
+        sd.BorderColor[3] = 1.0f;
+    }
 
     SamplerEntry entry{};
     entry.samplerCpu = samplerPool_.Allocate();
@@ -1049,10 +1097,25 @@ SwapChainHandle D3D12Device::CreateSwapChain(void* nativeWindowHandle,
     entry.hwnd        = static_cast<HWND>(nativeWindowHandle);
     entry.colorFormat = colorFormat;
 
+    // FLIP_DISCARD swap chains forbid _SRGB resource formats — the resource
+    // itself must be the linear/raw variant, but we apply the sRGB encoding
+    // on write through the RTV view. We accept the sRGB-suffixed format as
+    // input (so PSOs target the sRGB rtvFormat and the hardware encodes
+    // linear→sRGB on write) and strip the suffix here for the DXGI create
+    // call. Same trick Blizzard uses to satisfy DXGI while still rendering
+    // the tonemap output as gamma-encoded sRGB.
+    DXGI_FORMAT rtvDxgi      = ToDXGI(colorFormat);
+    DXGI_FORMAT resourceDxgi = rtvDxgi;
+    switch (rtvDxgi) {
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: resourceDxgi = DXGI_FORMAT_R8G8B8A8_UNORM; break;
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: resourceDxgi = DXGI_FORMAT_B8G8R8A8_UNORM; break;
+        default: break;
+    }
+
     DXGI_SWAP_CHAIN_DESC1 scd{};
     scd.Width       = static_cast<UINT>(width);
     scd.Height      = static_cast<UINT>(height);
-    scd.Format      = ToDXGI(colorFormat);
+    scd.Format      = resourceDxgi;
     scd.Stereo      = FALSE;
     scd.SampleDesc.Count = 1;
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -1073,20 +1136,49 @@ SwapChainHandle D3D12Device::CreateSwapChain(void* nativeWindowHandle,
 
     factory_->MakeWindowAssociation(entry.hwnd, DXGI_MWA_NO_ALT_ENTER);
 
-    // Pre-allocate the proxy texture slot (contents populated by RefreshProxyTexture).
+    // Cache both RTV format variants so resize re-creates RTVs with the
+    // same encoding behaviours.
+    entry.rtvDxgiFormat       = rtvDxgi;        // sRGB (or whatever caller asked for)
+    entry.rtvDxgiFormatLinear = resourceDxgi;   // always non-sRGB equivalent
+
+    // Pre-allocate two proxy texture slots — one for each RTV view of
+    // the same back-buffer resource. Renderer uses the sRGB proxy for
+    // HD's tonemap output (hardware encodes), and the linear proxy for
+    // SD's direct draws (display-ready bytes stored verbatim).
     TextureEntry proxy{};
     proxy.ownsResource = false;
     proxy.desc.width  = width;
     proxy.desc.height = height;
     proxy.desc.format = colorFormat;
     proxy.desc.usage  = TextureUsage::RenderTarget;
-    entry.proxyTexHandle = textures_.Insert(std::move(proxy));
+    entry.proxyTexHandle = textures_.Insert(TextureEntry(proxy));
 
-    // Acquire per-buffer resources + RTVs.
+    TextureEntry proxyLinear = proxy;
+    // Translate the linear DXGI back to the gfx Format for the proxy's
+    // metadata. Currently only the two RGBA8 variants strip; everything
+    // else passes through unchanged.
+    if (colorFormat == Format::R8G8B8A8_UNORM_SRGB)
+        proxyLinear.desc.format = Format::R8G8B8A8_UNORM;
+    // (B8G8R8A8_UNORM_SRGB isn't in the gfx::Format enum yet; if it's
+    // ever added the strip-suffix branch above already handles the
+    // DXGI side, mirror it here.)
+    entry.proxyTexHandleLinear = textures_.Insert(std::move(proxyLinear));
+
+    // Acquire per-buffer resources + both RTVs. The sRGB-format RTV
+    // engages hardware encoding; the linear-format RTV stores writes
+    // verbatim. Both alias the same DXGI back-buffer resource.
+    D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     for (UINT i = 0; i < kFramesInFlight; ++i) {
         entry.swapChain->GetBuffer(i, IID_PPV_ARGS(&entry.backBuffers[i]));
-        entry.backBufferRtvs[i] = rtvPool_.Allocate();
-        device_->CreateRenderTargetView(entry.backBuffers[i], nullptr, entry.backBufferRtvs[i]);
+
+        rtvDesc.Format            = rtvDxgi;
+        entry.backBufferRtvs[i]   = rtvPool_.Allocate();
+        device_->CreateRenderTargetView(entry.backBuffers[i], &rtvDesc, entry.backBufferRtvs[i]);
+
+        rtvDesc.Format                  = entry.rtvDxgiFormatLinear;
+        entry.backBufferRtvsLinear[i]   = rtvPool_.Allocate();
+        device_->CreateRenderTargetView(entry.backBuffers[i], &rtvDesc, entry.backBufferRtvsLinear[i]);
     }
 
     entry.currentBackBufferIndex = entry.swapChain->GetCurrentBackBufferIndex();
@@ -1097,14 +1189,23 @@ SwapChainHandle D3D12Device::CreateSwapChain(void* nativeWindowHandle,
 }
 
 void D3D12Device::RefreshProxyTexture(SwapChainEntry& sc) {
-    auto* proxy = textures_.Get(sc.proxyTexHandle);
-    if (!proxy) return;
-    UINT idx          = sc.currentBackBufferIndex;
-    proxy->resource   = sc.backBuffers[idx];
-    proxy->rtvCpu     = sc.backBufferRtvs[idx];
-    proxy->hasRtv     = true;
-    // After Present, DXGI puts the newly-acquired back buffer in PRESENT state.
-    proxy->currentState = D3D12_RESOURCE_STATE_PRESENT;
+    UINT idx = sc.currentBackBufferIndex;
+    if (auto* proxy = textures_.Get(sc.proxyTexHandle)) {
+        proxy->resource     = sc.backBuffers[idx];
+        proxy->rtvCpu       = sc.backBufferRtvs[idx];
+        proxy->hasRtv       = true;
+        // After Present, DXGI puts the newly-acquired back buffer in PRESENT state.
+        proxy->currentState = D3D12_RESOURCE_STATE_PRESENT;
+    }
+    // Linear proxy aliases the same underlying resource — share state so
+    // the command list's ResourceBarrier tracking on either handle
+    // tracks the back buffer correctly.
+    if (auto* proxy = textures_.Get(sc.proxyTexHandleLinear)) {
+        proxy->resource     = sc.backBuffers[idx];
+        proxy->rtvCpu       = sc.backBufferRtvsLinear[idx];
+        proxy->hasRtv       = true;
+        proxy->currentState = D3D12_RESOURCE_STATE_PRESENT;
+    }
 }
 
 void D3D12Device::ResizeSwapChain(SwapChainHandle h, int width, int height) {
@@ -1113,11 +1214,15 @@ void D3D12Device::ResizeSwapChain(SwapChainHandle h, int width, int height) {
 
     FlushGpu();
 
-    // Detach proxy, release back buffers, resize, re-acquire.
+    // Detach both proxies, release back buffers, resize, re-acquire.
     auto* proxy = textures_.Get(sc->proxyTexHandle);
     if (proxy) {
         proxy->resource = nullptr;
         proxy->hasRtv   = false;
+    }
+    if (auto* lp = textures_.Get(sc->proxyTexHandleLinear)) {
+        lp->resource = nullptr;
+        lp->hasRtv   = false;
     }
     sc->ReleaseBackBuffers();
 
@@ -1127,9 +1232,14 @@ void D3D12Device::ResizeSwapChain(SwapChainHandle h, int width, int height) {
                                                DXGI_FORMAT_UNKNOWN, 0);
     if (FAILED(hr)) return;
 
+    D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     for (UINT i = 0; i < kFramesInFlight; ++i) {
         sc->swapChain->GetBuffer(i, IID_PPV_ARGS(&sc->backBuffers[i]));
-        device_->CreateRenderTargetView(sc->backBuffers[i], nullptr, sc->backBufferRtvs[i]);
+        rtvDesc.Format = sc->rtvDxgiFormat;
+        device_->CreateRenderTargetView(sc->backBuffers[i], &rtvDesc, sc->backBufferRtvs[i]);
+        rtvDesc.Format = sc->rtvDxgiFormatLinear;
+        device_->CreateRenderTargetView(sc->backBuffers[i], &rtvDesc, sc->backBufferRtvsLinear[i]);
     }
     sc->currentBackBufferIndex = sc->swapChain->GetCurrentBackBufferIndex();
 
@@ -1151,9 +1261,16 @@ void D3D12Device::DestroySwapChain(SwapChainHandle h) {
     auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
     if (sc) {
         FlushGpu();
-        auto* proxy = textures_.Get(sc->proxyTexHandle);
-        if (proxy) { proxy->resource = nullptr; proxy->hasRtv = false; }
+        if (auto* proxy = textures_.Get(sc->proxyTexHandle)) {
+            proxy->resource = nullptr;
+            proxy->hasRtv   = false;
+        }
+        if (auto* proxy = textures_.Get(sc->proxyTexHandleLinear)) {
+            proxy->resource = nullptr;
+            proxy->hasRtv   = false;
+        }
         textures_.Remove(sc->proxyTexHandle);
+        textures_.Remove(sc->proxyTexHandleLinear);
         sc->Release();
     }
     swapChains_.Remove(static_cast<uint64_t>(h));
@@ -1232,6 +1349,12 @@ TextureHandle D3D12Device::GetSwapChainBackBuffer(SwapChainHandle h) {
     auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
     if (!sc) return TextureHandle::Invalid;
     return static_cast<TextureHandle>(sc->proxyTexHandle);
+}
+
+TextureHandle D3D12Device::GetSwapChainBackBufferLinear(SwapChainHandle h) {
+    auto* sc = swapChains_.Get(static_cast<uint64_t>(h));
+    if (!sc) return TextureHandle::Invalid;
+    return static_cast<TextureHandle>(sc->proxyTexHandleLinear);
 }
 
 // ============================================================================

@@ -42,18 +42,16 @@ public:
     std::vector<CollisionShapeData>    GetCollisionShapes() override;
     std::vector<AttachmentConfig>      GetAttachmentConfigs() override;
     std::vector<PE1EmitterConfig>      GetPE1Configs()      override;
+    std::vector<EventObjectConfig>     GetEventObjects()    override;
+    std::vector<uint32_t>              GetGlobalSequences() override;
 
-    // ---- Sequence control ----
-    void SetActiveSequence(int sequenceIndex) override;
+    // ---- Per-frame evaluation (IAnimationSource) ----
+    FrameState Evaluate(int sequenceIdx, int timeMs, int globalTimeMs,
+                        const Matrix44f& worldTransform,
+                        const Vector3f&  cameraPos) const override;
 
-    // ---- Camera info for billboard nodes ----
-    void SetCameraPosition(float x, float y, float z) override;
-
-    // ---- Per-frame evaluation ----
-    FrameState Evaluate(int timeMs, int globalTimeMs = -1) override;
-
-    // ---- Sequence info ----
-    std::vector<SequenceInfo> GetSequences() override;
+    // ---- Sequence info (IAnimationSource) ----
+    std::vector<SequenceInfo> GetSequences() const override;
 
     // ---- Camera presets from model ----
     std::vector<CameraPreset> GetCameraPresets() const;
@@ -79,21 +77,15 @@ private:
     // ribbon / light sitting below a hidden bone.
     std::vector<int> boneGateGeoset_;
 
-    // Active sequence
-    int activeSeqIdx_ = -1;
-    int seqStart_ = 0;
-    int seqEnd_   = 0;
-
-    // Camera position for billboard evaluation
-    Vector3f cameraPos_ = {0, -350, 50};
-
     // Helpers
     int MapPE2FilterMode(whiteout::u32 mdxMode) const;
     int MapShadingFlags(whiteout::mdx::Layer::ShadingFlag sf) const;
 
     TextureData LoadTextureFile(const std::string& path, int textureId,
                                 int replaceableId) const;
-    TextureData GenerateTeamColorTexture(int textureId, int replaceableId) const;
+    // TeamColor / TeamGlow placeholder generation moved to
+    // ReplaceableTextureManager (renderer-side) — adapters only declare
+    // the replaceableId on the emitted TextureData.
 };
 
 } // namespace WhiteoutDex

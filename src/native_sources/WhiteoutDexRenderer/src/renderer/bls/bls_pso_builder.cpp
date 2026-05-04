@@ -101,6 +101,8 @@ constexpr gfx::InputElement kMeshHDSkinnedNoTangent[] = {
     { "ATTR", 6, gfx::Format::R8G8B8A8_UINT,      4,  1 }, // bone indices
 };
 
+} // namespace (close anonymous so LayoutFor below has external linkage)
+
 std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k) {
     switch (k) {
         case VertexLayoutKind::MeshSD:        return {kMeshSD,        std::size(kMeshSD)};
@@ -116,6 +118,8 @@ std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k) {
     }
     return {kMeshSD, std::size(kMeshSD)};
 }
+
+namespace {  // re-open anonymous namespace for the remaining helpers
 
 // ============================================================================
 // Blend / depth / raster derived from MatParams. The factor table matches
@@ -156,13 +160,11 @@ gfx::BlendDesc BlendFor(GxMatAlpha alpha) {
             bd.dstAlpha = gfx::BlendFactor::One;
             break;
         case GxMatAlpha::Modulate:
-            // src=DstColor, dst=Zero; srcA=DstAlpha (8), dstA=Zero.
+            // src=DstColor, dst=Zero; srcA=DstAlpha, dstA=Zero.
             bd.enable   = true;
             bd.srcColor = gfx::BlendFactor::DstColor;
             bd.dstColor = gfx::BlendFactor::Zero;
-            // gfx::BlendFactor lacks DstAlpha; Zero on srcA matches visually
-            // for R8G8B8A8_UNORM (we never read the alpha channel of the RT).
-            bd.srcAlpha = gfx::BlendFactor::Zero;
+            bd.srcAlpha = gfx::BlendFactor::DstAlpha;
             bd.dstAlpha = gfx::BlendFactor::Zero;
             break;
         case GxMatAlpha::Modulate2X:
@@ -170,8 +172,8 @@ gfx::BlendDesc BlendFor(GxMatAlpha alpha) {
             bd.enable   = true;
             bd.srcColor = gfx::BlendFactor::DstColor;
             bd.dstColor = gfx::BlendFactor::SrcColor;
-            bd.srcAlpha = gfx::BlendFactor::Zero;
-            bd.dstAlpha = gfx::BlendFactor::Zero;
+            bd.srcAlpha = gfx::BlendFactor::DstAlpha;
+            bd.dstAlpha = gfx::BlendFactor::SrcAlpha;
             break;
     }
     return bd;
@@ -207,7 +209,10 @@ uint64_t HashRequest(const PsoRequest& r) {
         ((uint32_t(r.rtvFormat)          & 0xFFu) << 12) |
         ((uint32_t(r.dsvFormat)          & 0xFFu) << 20) |
         ((r.wireframe ? 1u : 0u)                  << 28) |
-        ((r.lhClipSpace ? 1u : 0u)                << 29);
+        ((r.lhClipSpace ? 1u : 0u)                << 29) |
+        // Depth-prepass clones differ from the color pass only in colorMask
+        // off (kDisableBit8) — fold it into the key so they cache separately.
+        ((r.material.ColorWriteEnabled() ? 0u : 1u) << 30);
     k ^= uint64_t(bits) * 0xFF51AFD7ED558CCDull;
     return k;
 }
@@ -238,6 +243,7 @@ gfx::PipelineHandle BlsPsoBuilder::GetOrBuild(const PsoRequest& request) {
     desc.inputLayout  = LayoutFor(request.layout);
     desc.topology     = request.topology;
     desc.blend        = BlendFor(request.material.alpha);
+    desc.blend.colorWrite = request.material.ColorWriteEnabled();
     desc.depthStencil = DepthFor(request.material);
     desc.rasterizer   = RasterFor(request.material, request.wireframe, request.lhClipSpace);
     desc.rtvFormat    = request.rtvFormat;

@@ -88,7 +88,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2016/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2016/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2016/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2016/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2016/WhiteoutFlakes.dlx" />
     </Components>
 
     <!-- Native Plugins Max 2017 -->
@@ -100,7 +100,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2017/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2017/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2017/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2017/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2017/WhiteoutFlakes.dlx" />
     </Components>
 
     <!-- Native Plugins Max 2018 -->
@@ -112,7 +112,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2018/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2018/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2018/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2018/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2018/WhiteoutFlakes.dlx" />
     </Components>
 
     <!-- Native Plugins Max 2019 -->
@@ -124,7 +124,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2019/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2019/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2019/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2019/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2019/WhiteoutFlakes.dlx" />
     </Components>
 
     <!-- Native Plugins Max 2020 -->
@@ -136,7 +136,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2020/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2020/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2020/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2020/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2020/WhiteoutFlakes.dlx" />
     </Components>
 
     <!-- Native Plugins Max 2021 -->
@@ -148,7 +148,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2021/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2021/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2021/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2021/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2021/WhiteoutFlakes.dlx" />
     </Components>
 
     <!-- Native Plugins Max 2022 -->
@@ -160,7 +160,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2022/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2022/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2022/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2022/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2022/WhiteoutFlakes.dlx" />
     </Components>
 
     <!-- Native Plugins Max 2023 -->
@@ -172,7 +172,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2023/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2023/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2023/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2023/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2023/WhiteoutFlakes.dlx" />
     </Components>
 
     <!-- Native Plugins Max 2024 -->
@@ -184,7 +184,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2024/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2024/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2024/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2024/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2024/WhiteoutFlakes.dlx" />
     </Components>
 
     <!-- Native Plugins Max 2025 -->
@@ -196,7 +196,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2025/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2025/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2025/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2025/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2025/WhiteoutFlakes.dlx" />
     </Components>
 
     <!-- Native Plugins Max 2026 -->
@@ -208,7 +208,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2026/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2026/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2026/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2026/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2026/WhiteoutFlakes.dlx" />
     </Components>
 
     <!-- Native Plugins Max 2027 -->
@@ -220,7 +220,7 @@
         <ComponentEntry ModuleName="./native plugins/Max2027/Wc3Particles1.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2027/Wc3Particles2.dlo" />
         <ComponentEntry ModuleName="./native plugins/Max2027/Wc3Ribbon.dlo" />
-        <ComponentEntry ModuleName="./native plugins/Max2027/WhiteoutDexExtractor.dlx" />
+        <ComponentEntry ModuleName="./native plugins/Max2027/WhiteoutFlakes.dlx" />
     </Components>
 
 </ApplicationPackage>

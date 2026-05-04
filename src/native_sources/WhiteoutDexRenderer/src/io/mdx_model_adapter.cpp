@@ -5,13 +5,10 @@
 #include "mdx_model_adapter.h"
 #include "content_provider.h"
 #include "team_glow_data.h"
+#include "texture_image_usage.h"
+#include "renderer/model_source_utils.h"
 #include <cmath>
 #include <cstdio>
-#include <whiteout/textures/blp/blp.h>
-#include <whiteout/textures/dds/parser.h>
-#include <whiteout/textures/tga/parser.h>
-#include <whiteout/textures/png/parser.h>
-#include <whiteout/textures/texture.h>
 
 namespace WhiteoutDex {
 
@@ -137,15 +134,18 @@ void TransformMdxModelToMaxCoords(whiteout::mdx::Model& m) {
     swizPos(m.modelExtent.maximum);
 
     // Node-bearing structures: transform their TRS tracks
-    for (auto& b  : m.bones)             transformNodeTracks(b.node);
-    for (auto& h  : m.helpers)           transformNodeTracks(h.node);
-    for (auto& a  : m.attachments)       transformNodeTracks(a.node);
-    for (auto& l  : m.lights)            transformNodeTracks(l.node);
-    for (auto& pe : m.particleEmitters)  transformNodeTracks(pe.node);
-    for (auto& pe : m.particleEmitters2) transformNodeTracks(pe.node);
-    for (auto& re : m.ribbonEmitters)    transformNodeTracks(re.node);
-    for (auto& eo : m.eventObjects)      transformNodeTracks(eo.node);
-    for (auto& ce : m.cornEmitters)      transformNodeTracks(ce.node);
+    auto transformAll = [](auto& arr) {
+        for (auto& x : arr) transformNodeTracks(x.node);
+    };
+    transformAll(m.bones);
+    transformAll(m.helpers);
+    transformAll(m.attachments);
+    transformAll(m.lights);
+    transformAll(m.particleEmitters);
+    transformAll(m.particleEmitters2);
+    transformAll(m.ribbonEmitters);
+    transformAll(m.eventObjects);
+    transformAll(m.cornEmitters);
     for (auto& cs : m.collisionShapes) {
         transformNodeTracks(cs.node);
         for (auto& v : cs.vertices) swizPos(v);
@@ -165,7 +165,21 @@ void TransformMdxModelToMaxCoords(whiteout::mdx::Model& m) {
     // Note: TextureAnimation tracks are 2D UV-space — no 3D swizzle.
 }
 
-inline Vector3f toXM(const Vector3f& v) { return v; }
+// ============================================================================
+// File-local helpers — MDX-specific subtexture lookup. The generic bit-test /
+// solid-fill / parser-dispatch helpers now live in renderer/model_source_utils.h
+// since they're shared with MaxSceneAdapter.
+// ============================================================================
+
+// Pick the DiffuseMap subtexture (falling back to slot [0] for layers that
+// didn't tag one). Returns nullptr only when the subTextures list is empty.
+inline const Layer::SubTexture* FindDiffuseSubTexture(
+    const std::vector<Layer::SubTexture>& subs) {
+    if (subs.empty()) return nullptr;
+    for (const auto& s : subs)
+        if (s.slot == Layer::SlotType::DiffuseMap) return &s;
+    return &subs[0];
+}
 
 } // namespace
 
@@ -237,27 +251,34 @@ std::vector<MeshData> MdxModelAdapter::GetMeshes() {
         const bool hasTangents = (int)gs.tangents.size() == vc;
         if (hasTangents) mesh.tangents.resize(vc);
 
+        // Second UVAS channel: only present when the MDX geoset declared
+        // it (UVAS numChannels >= 2). Layers with CoordID == 1 sample
+        // from this stream; the renderer bakes a sibling VB at template
+        // upload only when some material layer actually targets it.
+        const bool hasUv1 = gs.textureCoordinateSets.size() >= 2
+                         && (int)gs.textureCoordinateSets[1].size() == vc;
+        if (hasUv1) mesh.uvs1.resize(vc);
+
+        // Positions, normals, and tangents are already in our default coord
+        // space — TransformMdxModelToMaxCoords ran at load time, so a plain
+        // copy preserves W (handedness) and world-space XYZ.
         for (int v = 0; v < vc; v++) {
-            mesh.positions[v] = toXM(gs.vertexPositions[v]);
+            mesh.positions[v] = gs.vertexPositions[v];
             if (v < (int)gs.vertexNormals.size())
-                mesh.normals[v] = toXM(gs.vertexNormals[v]);
+                mesh.normals[v] = gs.vertexNormals[v];
             if (!gs.textureCoordinateSets.empty() &&
                 v < (int)gs.textureCoordinateSets[0].size()) {
                 mesh.uvs[v] = {gs.textureCoordinateSets[0][v].x,
                                gs.textureCoordinateSets[0][v].y};
             }
-            if (hasTangents) {
-                // gs.tangents is already in our default coord space --
-                // TransformMdxModelToMaxCoords ran swizTangent on every
-                // entry at load time, so the XYZ component is correct
-                // world-space and W carries the handedness sign.
-                mesh.tangents[v] = gs.tangents[v];
+            if (hasUv1) {
+                mesh.uvs1[v] = {gs.textureCoordinateSets[1][v].x,
+                                gs.textureCoordinateSets[1][v].y};
             }
+            if (hasTangents) mesh.tangents[v] = gs.tangents[v];
         }
 
-        mesh.indices.resize(gs.faces.size());
-        for (int f = 0; f < (int)gs.faces.size(); f++)
-            mesh.indices[f] = gs.faces[f];
+        mesh.indices.assign(gs.faces.begin(), gs.faces.end());
 
         result.push_back(std::move(mesh));
     }
@@ -275,6 +296,10 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     td.textureId     = textureId;
     td.replaceableId = replaceableId;
     td.width = td.height = 0;
+    // Cross-model dedup key. The MDX path string is the canonical resource
+    // identifier — two models referencing `Textures/Dirt.blp` produce one
+    // GPU upload via TextureAssetManager's shared cache.
+    td.sharedKey     = NormalizeTextureKey(path);
 
     // Parse a texture from a decoded result into td.
     //
@@ -292,6 +317,11 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
             gfxFmt = tex.isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB
                                   : gfx::Format::R8G8B8A8_UNORM;
         }
+        // Engine policy: filename-suffix-driven sRGB / linear (mirrors
+        // CImageFile::DetermineImageUsage @ Preview 0x7ff609bad260).
+        // Ignores the file's stored DXGI flag — same behaviour as
+        // `CreateImageTexture`'s `(imageUsage - 1) > 1` override.
+        gfxFmt = ApplyTextureSrgbPolicy(gfxFmt, path);
         td.width     = (int)tex.width();
         td.height    = (int)tex.height();
         td.format    = gfxFmt;
@@ -315,53 +345,21 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
 
     // Try parsing from a file path on disk.
     auto tryParsePath = [&](const fs::path& p) -> bool {
-        std::string ext = p.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
         // path::string() uses the ANSI code page on Windows, which corrupts
         // non-ASCII characters (e.g. CJK). path::u8string() gives correct
         // UTF-8 bytes that WhiteoutLib parsers accept.
         auto u8 = p.u8string();
         std::string pathStr(reinterpret_cast<const char*>(u8.data()), u8.size());
-
-        std::optional<whiteout::textures::Texture> result;
-
-        if (ext == ".blp") {
-            whiteout::textures::blp::Parser parser;
-            result = parser.parse(pathStr);
-        } else if (ext == ".dds") {
-            whiteout::textures::dds::Parser parser;
-            result = parser.parse(pathStr);
-        } else if (ext == ".tga") {
-            whiteout::textures::tga::Parser parser;
-            result = parser.parse(pathStr);
-        } else if (ext == ".png") {
-            whiteout::textures::png::Parser parser;
-            result = parser.parse(pathStr);
-        }
-
+        auto result = DispatchTextureParser(ExtensionLower(p),
+            [&](auto& parser) { return parser.parse(pathStr); });
         if (result) { applyResult(*result); return true; }
         return false;
     };
 
     // Try parsing from a memory buffer (CASC/MPQ source).
     auto tryParseBuffer = [&](std::span<const uint8_t> buf, const std::string& ext) -> bool {
-        std::optional<whiteout::textures::Texture> result;
-
-        if (ext == ".blp") {
-            whiteout::textures::blp::Parser parser;
-            result = parser.parse(buf);
-        } else if (ext == ".dds") {
-            whiteout::textures::dds::Parser parser;
-            result = parser.parse(buf);
-        } else if (ext == ".tga") {
-            whiteout::textures::tga::Parser parser;
-            result = parser.parse(buf);
-        } else if (ext == ".png") {
-            whiteout::textures::png::Parser parser;
-            result = parser.parse(buf);
-        }
-
+        auto result = DispatchTextureParser(ext,
+            [&](auto& parser) { return parser.parse(buf); });
         if (result) { applyResult(*result); return true; }
         return false;
     };
@@ -369,9 +367,6 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
     // 1. Try local disk via FileResolver.
     fs::path resolved = resolver_.ResolveTexture(path);
     if (!resolved.empty() && tryParsePath(resolved)) {
-        auto u8resolved = resolved.u8string();
-        std::fprintf(stdout, "  [tex %d] loaded %s\n", textureId,
-                     reinterpret_cast<const char*>(u8resolved.data()));
         return td;
     }
 
@@ -380,54 +375,29 @@ TextureData MdxModelAdapter::LoadTextureFile(const std::string& path,
         std::string foundExt;
         auto data = contentProvider_->ReadFile(path, &foundExt);
         if (data) {
-            if (foundExt.empty()) {
-                foundExt = fs::path(path).extension().string();
-                std::transform(foundExt.begin(), foundExt.end(), foundExt.begin(), ::tolower);
-            }
+            if (foundExt.empty()) foundExt = ExtensionLower(fs::path(path));
             if (tryParseBuffer(*data, foundExt)) {
-                std::fprintf(stdout, "  [tex %d] loaded from archive: %s\n",
-                             textureId, path.c_str());
                 return td;
             }
         }
     }
 
     auto u8base = resolver_.BasePath().u8string();
-    std::fprintf(stderr, "  [tex %d] NOT FOUND: '%s' (base: %s)\n",
-                 textureId, path.c_str(), reinterpret_cast<const char*>(u8base.data()));
+    std::fprintf(stderr,
+                 "[textures] ERR: MDX texture[%d] NOT FOUND: '%s' (base: %s)\n",
+                 textureId, path.c_str(),
+                 reinterpret_cast<const char*>(u8base.data()));
 
-    // Fallback: 4x4 magenta checkerboard
-    td.width  = 4;
-    td.height = 4;
-    td.pixels.resize(4 * 4 * 4);
-    for (int j = 0; j < 16; j++) {
-        td.pixels[j * 4 + 0] = 255;
-        td.pixels[j * 4 + 1] = 0;
-        td.pixels[j * 4 + 2] = 255;
-        td.pixels[j * 4 + 3] = 255;
-    }
-    return td;
-}
-
-TextureData MdxModelAdapter::GenerateTeamColorTexture(int textureId,
-                                                       int replaceableId) const {
-    TextureData td;
-    td.textureId     = textureId;
-    td.replaceableId = replaceableId;
-    if (replaceableId == 2) {
-        // TeamGlow: decode embedded TGA tinted with default red
-        td.pixels = DecodeTeamGlow(255, 0, 0, td.width, td.height);
-    } else {
-        // TeamColor: solid 4x4 red
-        td.width = 4; td.height = 4;
-        td.pixels.resize(64);
-        for (int j = 0; j < 16; j++) {
-            td.pixels[j * 4 + 0] = 255;
-            td.pixels[j * 4 + 1] = 0;
-            td.pixels[j * 4 + 2] = 0;
-            td.pixels[j * 4 + 3] = 255;
-        }
-    }
+    // Leave the TextureData invalid (width = height = 0, no pixels).
+    // UploadStagedTextures sees the zero-size and skips the upload, so
+    // the per-actor ModelScope::Get(id) returns gfx::TextureHandle::
+    // Invalid at draw time. `bindMaterialTex` then falls through to the
+    // slot-specific default (White for t0 albedo, FlatNormal for t1,
+    // NeutralOrm for t2, Black for t3/t4) — which means a missing ORM
+    // file gives the engine-faithful (1,1,0,0) instead of magenta
+    // (which the multi-layer-blend math would otherwise read as
+    // metal=1, teamBlend=1 and turn the surface into a chrome-finish
+    // team-coloured mirror).
     return td;
 }
 
@@ -438,10 +408,30 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
     for (int i = 0; i < (int)model_.textures.size(); i++) {
         const auto& tex = model_.textures[i];
         TextureData td;
-        if (tex.replaceableId == 1 || tex.replaceableId == 2) {
-            td = GenerateTeamColorTexture(i, (int)tex.replaceableId);
+        if (tex.replaceableId != 0) {
+            // Replaceable slot: adapter only declares the id; the
+            // ReplaceableTextureManager::RegisterModelSlot path resolves
+            // the canonical CASC asset (or bakes a TeamColor / TeamGlow
+            // swatch for ids 1/2) and stamps the pixels into stagedTextures.
+            // Leaving width/height = 0 here keeps UploadStagedTextures
+            // off this slot until the manager fills it.
+            td.textureId     = i;
+            td.replaceableId = (int)tex.replaceableId;
+            td.width = td.height = 0;
         } else if (!tex.fileName.empty()) {
-            td = LoadTextureFile(tex.fileName, i, (int)tex.replaceableId);
+            // Skip the BLP/CASC decode entirely when the renderer's
+            // shared cache already holds this path — UploadStagedTextures
+            // will detect (sharedKey != "" && pixels empty) and borrow
+            // from the cache via TextureAssetManager::BindShared.
+            std::string sharedKey = NormalizeTextureKey(tex.fileName);
+            if (IsTextureCached(sharedKey)) {
+                td.textureId     = i;
+                td.replaceableId = (int)tex.replaceableId;
+                td.width = td.height = 0;
+                td.sharedKey = std::move(sharedKey);
+            } else {
+                td = LoadTextureFile(tex.fileName, i, (int)tex.replaceableId);
+            }
         } else {
             // Empty texture → 4x4 white
             td.textureId     = i;
@@ -461,13 +451,14 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
 // ============================================================================
 
 int MdxModelAdapter::MapShadingFlags(Layer::ShadingFlag sf) const {
+    using SF = Layer::ShadingFlag;
+    const u32 s = (u32)sf;
     int flags = 0;
-    u32 s = (u32)sf;
-    if (s & (u32)Layer::ShadingFlag::TwoSided)    flags |= MAT_TWO_SIDED;
-    if (s & (u32)Layer::ShadingFlag::Unshaded)     flags |= MAT_UNSHADED;
-    if (s & (u32)Layer::ShadingFlag::Unfogged)     flags |= MAT_UNFOGGED;
-    if (s & (u32)Layer::ShadingFlag::NoDepthTest)  flags |= MAT_NO_DEPTH_TEST;
-    if (s & (u32)Layer::ShadingFlag::NoDepthSet)   flags |= MAT_NO_DEPTH_SET;
+    if (hasFlag(s, SF::TwoSided))    flags |= MAT_TWO_SIDED;
+    if (hasFlag(s, SF::Unshaded))    flags |= MAT_UNSHADED;
+    if (hasFlag(s, SF::Unfogged))    flags |= MAT_UNFOGGED;
+    if (hasFlag(s, SF::NoDepthTest)) flags |= MAT_NO_DEPTH_TEST;
+    if (hasFlag(s, SF::NoDepthSet))  flags |= MAT_NO_DEPTH_SET;
     return flags;
 }
 
@@ -482,8 +473,6 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
         md.priorityPlane = (int)mat.priorityPlane;
         md.sortOrder     = 0;
 
-        std::fprintf(stdout, "  [mat %d] %d layer(s)\n", i, (int)mat.layers.size());
-
         for (int li = 0; li < (int)mat.layers.size(); ++li) {
             const auto& layer = mat.layers[li];
             MaterialLayerData ld;
@@ -493,6 +482,19 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
             ld.textureAnimationId = ((int32_t)layer.textureAnimationId < 0
                                      || (int32_t)layer.textureAnimationId >= (int)model_.textureAnimations.size())
                                     ? -1 : (int)layer.textureAnimationId;
+            // CoordID maps the layer to one of the geoset's UVAS channels.
+            // SphereEnvMap (Layer::ShadingFlag::SphereEnvMap = 0x2) tells the
+            // engine to compute UVs procedurally from normal/eye instead of
+            // sampling — Previewd's ProcessTexLayers (@0x7ff609b69e40) writes
+            // -1 into the runtime layer in that case. We mirror that
+            // sentinel; the draw path treats coordId == -1 as "synthesise"
+            // (currently falls back to channel 0 since no env-map shader
+            // permute is wired yet).
+            if (hasFlag((u32)layer.shadingFlags, Layer::ShadingFlag::SphereEnvMap)) {
+                ld.coordId = -1;
+            } else {
+                ld.coordId = static_cast<int>(layer.coordId);
+            }
             // MDX layer shader id (Layer::ShaderType). Cast through uint32_t
             // so non-mesh / future values round-trip unchanged; the draw path
             // treats unknown ids as SDLegacy (0), matching Previewd's MDL
@@ -519,31 +521,42 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
             //     only sample the diffuse map, so grab the DiffuseMap slot;
             //     if no DiffuseMap is present fall back to subTextures[0].
             if (!layer.subTextures.empty()) {
-                // Reforged multi-texture layout: each subtexture is tagged
-                // by its SlotType. Pluck out every slot the HD PS reads
-                // (DiffuseMap / NormalMap / ORMMap / EmissiveMap / TeamColor)
-                // so the renderer can bind them to t0..t4 respectively.
-                int diffuseTex = (int)layer.subTextures[0].textureId;
-                for (const auto& sub : layer.subTextures) {
-                    const int tex = static_cast<int>(sub.textureId);
-                    switch (sub.slot) {
-                        case Layer::SlotType::DiffuseMap:  diffuseTex        = tex; break;
-                        case Layer::SlotType::NormalMap:   ld.normalMapId    = tex; break;
-                        case Layer::SlotType::ORMMap:      ld.ormMapId       = tex; break;
-                        case Layer::SlotType::EmissiveMap: ld.emissiveMapId  = tex; break;
-                        case Layer::SlotType::TeamColor:   ld.teamColorMapId = tex; break;
-                        default: break;
+                // Reforged multi-texture layout: subtextures bind to t0..t5
+                // by ARRAY POSITION, not by their `slot` (texSemantic) tag.
+                // Previewd's ProcessTexLayers (@0x7ff609b69e40) calls
+                // `CWar3Mat::SetTexture(mat, subIdx, tex, semantic)` where
+                // `subIdx` is the loop counter — the semantic is metadata,
+                // never the actual GPU register. Authored content can (and
+                // does) tag sibling subtextures with the same SlotType
+                // (e.g. berserkelemental.mdx mat 3 has sub[0] and sub[1]
+                // both tagged DiffuseMap, with sub[1] supplying the normal
+                // map by position). Switching on slot would route both into
+                // the diffuse field; binding by index matches the engine.
+                auto subAt = [&](size_t pos) -> int {
+                    return pos < layer.subTextures.size()
+                               ? (int)layer.subTextures[pos].textureId : -1;
+                };
+                ld.textureId      = subAt(0);   // t0 albedo
+                ld.normalMapId    = subAt(1);   // t1 normal
+                ld.ormMapId       = subAt(2);   // t2 ORM
+                ld.emissiveMapId  = subAt(3);   // t3 emissive
+                // t4 team-colour: live-swatch sentinel logic still applies,
+                // but the resolution key is "what's at position 4", not
+                // "the SlotType::TeamColor subtexture".
+                if (layer.subTextures.size() > 4) {
+                    const int tex = (int)layer.subTextures[4].textureId;
+                    if (tex >= 0 && tex < (int)model_.textures.size()
+                        && model_.textures[tex].replaceableId == 1) {
+                        ld.teamColorMapId = kHdTeamColorActive;
+                    } else {
+                        ld.teamColorMapId = tex;
                     }
                 }
-                ld.textureId = diffuseTex;
+                // Position 5 (typically EnvironmentMap) currently has no
+                // bind site in our HD draw path — drop it here.
             } else {
                 ld.textureId = (int)layer.textureId;
             }
-
-            std::fprintf(stdout,
-                "    layer %d: fm=%d tex=%d alpha=%.2f flags=0x%x is_hd=%d subTex=%d\n",
-                li, (int)layer.filterMode, ld.textureId, ld.alpha, ld.flags,
-                (int)layer.is_hd, (int)layer.subTextures.size());
 
             md.layers.push_back(ld);
         }
@@ -582,22 +595,16 @@ SkeletonData MdxModelAdapter::GetSkeleton() {
     sk.nodePivots.assign(sk.nodeCount, Vector3f{0, 0, 0});
     sk.nodeParents.assign(sk.nodeCount, -1);
     const auto& nodes = hierarchy_.Nodes();
+    using NF = whiteout::mdx::Node::NodeFlag;
     for (int i = 0; i < (int)nodes.size(); i++) {
-        uint32_t nf = nodes[i].flags;
-        uint32_t bbf = 0;
-        using NF = whiteout::mdx::Node::NodeFlag;
-        // One-hot priority to match Previewd's GetObjectFlags @0x140456dd0:
-        // Billboarded > LockX > LockY > LockZ. Multiple file bits collapse
-        // to a single engine flag. CameraAnchored is independent.
-        if      (nf & (uint32_t)NF::Billboarded)      bbf |= BONE_BILLBOARD_FULL;
-        else if (nf & (uint32_t)NF::BillboardedLockX) bbf |= BONE_BILLBOARD_LOCK_X;
-        else if (nf & (uint32_t)NF::BillboardedLockY) bbf |= BONE_BILLBOARD_LOCK_Y;
-        else if (nf & (uint32_t)NF::BillboardedLockZ) bbf |= BONE_BILLBOARD_LOCK_Z;
-        if (nf & (uint32_t)NF::CameraAnchored)        bbf |= BONE_BILLBOARD_CAMERA_ANCHORED;
-        sk.billboardFlags[i] = bbf;
-
-        const auto& p = nodes[i].pivot;
-        sk.nodePivots[i] = {p.x, p.y, p.z};
+        const uint32_t nf = nodes[i].flags;
+        sk.billboardFlags[i] = PackBillboardFlags(
+            hasFlag(nf, NF::Billboarded),
+            hasFlag(nf, NF::BillboardedLockX),
+            hasFlag(nf, NF::BillboardedLockY),
+            hasFlag(nf, NF::BillboardedLockZ),
+            hasFlag(nf, NF::CameraAnchored));
+        sk.nodePivots[i]  = nodes[i].pivot;
         sk.nodeParents[i] = nodes[i].parentIdx;
     }
 
@@ -835,13 +842,14 @@ std::vector<ParticleEmitterConfig> MdxModelAdapter::GetParticleConfigs() {
         cfg.tailDecayRepeat = (int)pe.tailDecayInterval[2];
 
         // Flags from node
-        u32 nf = (u32)pe.node.flags;
-        cfg.modelSpace  = (nf & (u32)Node::NodeFlag::ModelSpace) != 0;
-        cfg.xyQuad      = (nf & (u32)Node::NodeFlag::XYQuad)     != 0;
-        cfg.sortZ       = (nf & (u32)Node::NodeFlag::SortPrimitives) != 0;
-        cfg.unshaded    = (nf & (u32)Node::NodeFlag::Unshaded)   != 0;
-        cfg.lineEmitter = (nf & (u32)Node::NodeFlag::LineEmitter) != 0;
-        cfg.unfogged    = (nf & (u32)Node::NodeFlag::Unfogged)   != 0;
+        const u32 nf = (u32)pe.node.flags;
+        using NF = Node::NodeFlag;
+        cfg.modelSpace  = hasFlag(nf, NF::ModelSpace);
+        cfg.xyQuad      = hasFlag(nf, NF::XYQuad);
+        cfg.sortZ       = hasFlag(nf, NF::SortPrimitives);
+        cfg.unshaded    = hasFlag(nf, NF::Unshaded);
+        cfg.lineEmitter = hasFlag(nf, NF::LineEmitter);
+        cfg.unfogged    = hasFlag(nf, NF::Unfogged);
 
         cfg.priorityPlane  = (int)pe.priorityPlane;
         cfg.replaceableId  = (int)pe.replaceableId;
@@ -912,18 +920,18 @@ std::vector<particle::PlaneEmitterInit> MdxModelAdapter::GetPlaneEmitterInits() 
 
         // Flag bits from the node.
         const whiteout::u32 nf = static_cast<whiteout::u32>(pe.node.flags);
-        init.modelSpace    = (nf & (whiteout::u32)Node::NodeFlag::ModelSpace)     != 0;
-        init.xyQuads       = (nf & (whiteout::u32)Node::NodeFlag::XYQuad)         != 0;
-        init.sortZ         = (nf & (whiteout::u32)Node::NodeFlag::SortPrimitives) != 0;
-        const bool lineEmitter = (nf & (whiteout::u32)Node::NodeFlag::LineEmitter) != 0;
-        init.longitude     = lineEmitter ? 0.0f : 6.2831853071795864769f;
+        using NF = Node::NodeFlag;
+        init.modelSpace = hasFlag(nf, NF::ModelSpace);
+        init.xyQuads    = hasFlag(nf, NF::XYQuad);
+        init.sortZ      = hasFlag(nf, NF::SortPrimitives);
+        init.longitude  = hasFlag(nf, NF::LineEmitter) ? 0.0f : 6.2831853071795864769f;
 
         // Material descriptor. Single texture slot 0; MDX `textureId` is the
         // index into the model's texture table (resolved by the render service).
         init.material.textureId     = static_cast<int>(pe.textureId);
         init.material.filterMode    = MapToServiceFilterMode(pe.filterMode);
-        init.material.unshaded      = (nf & (whiteout::u32)Node::NodeFlag::Unshaded) != 0;
-        init.material.unfogged      = (nf & (whiteout::u32)Node::NodeFlag::Unfogged) != 0;
+        init.material.unshaded      = hasFlag(nf, NF::Unshaded);
+        init.material.unfogged      = hasFlag(nf, NF::Unfogged);
         init.material.replaceableId = static_cast<int>(pe.replaceableId);
 
         // MDX one-shot "squirt" flag: arm the NeedSquirt latch at activation.
@@ -990,26 +998,27 @@ std::vector<RibbonEmitterConfig> MdxModelAdapter::GetRibbonConfigs() {
 
         if (rb.materialId < (u32)model_.materials.size() &&
             !model_.materials[rb.materialId].layers.empty()) {
-            const auto& layer = model_.materials[rb.materialId].layers[0];
+            const auto& mat   = model_.materials[rb.materialId];
+            const auto& layer = mat.layers[0];
 
-            if (!layer.subTextures.empty()) {
-                int diffuseTex = (int)layer.subTextures[0].textureId;
-                for (const auto& sub : layer.subTextures) {
-                    if (sub.slot == Layer::SlotType::DiffuseMap) {
-                        diffuseTex = (int)sub.textureId;
-                        break;
-                    }
-                }
-                cfg.textureId = diffuseTex;
-            } else {
+            if (const auto* diffuse = FindDiffuseSubTexture(layer.subTextures))
+                cfg.textureId = (int)diffuse->textureId;
+            else
                 cfg.textureId = (int)layer.textureId;
-            }
 
             cfg.filterMode = MapFilterMode((int)layer.filterMode);
 
-            u32 sf = (u32)layer.shadingFlags;
-            cfg.unshaded = (sf & (u32)Layer::ShadingFlag::Unshaded) != 0;
-            cfg.twoSided = (sf & (u32)Layer::ShadingFlag::TwoSided) != 0;
+            const u32 sf = (u32)layer.shadingFlags;
+            cfg.unshaded = hasFlag(sf, Layer::ShadingFlag::Unshaded);
+            cfg.twoSided = hasFlag(sf, Layer::ShadingFlag::TwoSided);
+
+            // Ribbons inherit priorityPlane from their referenced material
+            // (MDX MATS chunk carries it per material, mirroring how
+            // geosets get theirs). PE2 emitters carry their own priority
+            // because they own an inline material rather than referencing
+            // one — see MDLPARTICLEEMITTER2::priorityPlane vs ribbons'
+            // materialId indirection.
+            cfg.priorityPlane = (int)mat.priorityPlane;
         }
         // Ribbons are double-sided in the engine regardless of layer flag
         // (CRibbonEmitter::Render does not bind a cull state).
@@ -1038,58 +1047,44 @@ std::vector<CollisionShapeData> MdxModelAdapter::GetCollisionShapes() {
         CollisionShapeData cd;
         cd.type   = (int)cs.type;
         cd.radius = cs.radius;
-        if (cs.vertices.size() >= 1) {
-            cd.vertices[0] = {cs.vertices[0].x, cs.vertices[0].y, cs.vertices[0].z};
-        }
-        if (cs.vertices.size() >= 2) {
-            cd.vertices[1] = {cs.vertices[1].x, cs.vertices[1].y, cs.vertices[1].z};
-        }
+        if (cs.vertices.size() >= 1) cd.vertices[0] = cs.vertices[0];
+        if (cs.vertices.size() >= 2) cd.vertices[1] = cs.vertices[1];
         // Previewd builds geoset vertices at `pivot + extent` in bind-pose world;
         // the bone matrix we apply is a skinning delta (identity at bind). Store the
         // pivot so the renderer can reconstruct the bind-pose world-space corners.
-        if (cs.node.objectId < model_.pivotPoints.size()) {
-            const auto& p = model_.pivotPoints[cs.node.objectId];
-            cd.pivot = {p.x, p.y, p.z};
-        }
+        if (cs.node.objectId < model_.pivotPoints.size())
+            cd.pivot = model_.pivotPoints[cs.node.objectId];
         result.push_back(cd);
     }
     return result;
 }
 
 // ============================================================================
-// SetActiveSequence
-// ============================================================================
-
-void MdxModelAdapter::SetActiveSequence(int sequenceIndex) {
-    activeSeqIdx_ = sequenceIndex;
-    if (sequenceIndex >= 0 && sequenceIndex < (int)model_.sequences.size()) {
-        seqStart_ = (int)model_.sequences[sequenceIndex].intervalStart;
-        seqEnd_   = (int)model_.sequences[sequenceIndex].intervalEnd;
-    } else {
-        seqStart_ = seqEnd_ = 0;
-    }
-}
-
-// ============================================================================
-// SetCameraPosition — store camera position for billboard evaluation
-// ============================================================================
-
-void MdxModelAdapter::SetCameraPosition(float x, float y, float z) {
-    cameraPos_ = { x, y, z };
-}
-
-// ============================================================================
 // Evaluate — Per-frame animation evaluation
+//
+// Phase 3: stateless — sequence + camera arrive as parameters from
+// AnimationDriver instead of being set via SetActiveSequence /
+// SetCameraPosition. The const qualifier reflects that.
 // ============================================================================
 
-FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
+FrameState MdxModelAdapter::Evaluate(int sequenceIdx, int timeMs, int globalTimeMs,
+                                     const Matrix44f& worldTransform,
+                                     const Vector3f& cameraPos) const {
+    // Resolve sequence range. Out-of-range indices collapse to (0, 0) — same
+    // behaviour the old SetActiveSequence(invalid) path produced.
+    int seqStart = 0, seqEnd = 0;
+    if (sequenceIdx >= 0 && sequenceIdx < (int)model_.sequences.size()) {
+        seqStart = (int)model_.sequences[sequenceIdx].intervalStart;
+        seqEnd   = (int)model_.sequences[sequenceIdx].intervalEnd;
+    }
+
     FrameState fs;
 
     // Evaluate bone hierarchy (pass camera position for billboard nodes)
     std::vector<Matrix44f> boneWorld, allNodes;
-    hierarchy_.Evaluate(timeMs, seqStart_, seqEnd_,
+    hierarchy_.Evaluate(timeMs, seqStart, seqEnd,
                         model_.globalSequences, boneWorld, allNodes,
-                        &cameraPos_, globalTimeMs);
+                        &cameraPos, globalTimeMs);
     // Use ALL node matrices as the skinning palette (indexed by node position
     // in the hierarchy). Vertices can reference any node type via objectId.
     fs.boneWorldMatrices = std::move(allNodes);
@@ -1108,7 +1103,32 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
                 return {0, 0, 0x3FFFFFFF};
             }
         }
-        return {timeMs, seqStart_, seqEnd_};
+        return {timeMs, seqStart, seqEnd};
+    };
+
+    // Per-track eval helpers: fold effectiveTime + EvaluateTrack* into one call.
+    // `def` is the fallback used both when the track is not authored (Evaluate*
+    // returns it verbatim) and when every key lies outside the active sequence.
+    auto evalF32 = [&](const Track<f32>& tr, float def, bool forceNoInterp = false) {
+        auto [t, s, e] = effectiveTime(tr.globalSequenceId);
+        return EvaluateTrackF32(tr, t, s, e, def, forceNoInterp);
+    };
+    auto evalVec3 = [&](const Track<Vector3f>& tr, const Vector3f& def) {
+        auto [t, s, e] = effectiveTime(tr.globalSequenceId);
+        return EvaluateTrackVec3(tr, t, s, e, def);
+    };
+    auto evalQuat = [&](const Track<Quaternion>& tr, const Quaternion& def) {
+        auto [t, s, e] = effectiveTime(tr.globalSequenceId);
+        return EvaluateTrackQuat(tr, t, s, e, def);
+    };
+    auto evalU32 = [&](const Track<u32>& tr, u32 def) {
+        auto [t, s, e] = effectiveTime(tr.globalSequenceId);
+        return EvaluateTrackU32(tr, t, s, e, def);
+    };
+
+    // Resolve a MDX Node's objectId → hierarchy palette position.
+    auto nodeOf = [&](const Node& n) {
+        return hierarchy_.ObjectIdToNodeIndex((int)n.objectId);
     };
 
     // GeosetAnimation evaluation
@@ -1120,21 +1140,18 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         int gid = (int)ga.geosetId;
         if (gid < 0 || gid >= geosetCount) continue;
 
-        {
-            // Match Previewd's SetGeosetAlpha @0x14019c4d0: when the KGAO
-            // track is authored, the fresh-sequence identity is 1.0 (not
-            // the static `ga.alpha`). The static only applies when no KGAO
-            // track is authored at all.
-            auto [t, s, e] = effectiveTime(ga.alphaTracks.globalSequenceId);
-            const float identity = ga.alphaTracks.isUsed ? 1.0f : ga.alpha;
-            fs.geosetAlphas[gid] = EvaluateTrackF32(ga.alphaTracks, t, s, e, identity);
-        }
+        // Match Previewd's SetGeosetAlpha @0x14019c4d0: when the KGAO track is
+        // authored, the fresh-sequence identity is 1.0 (not the static
+        // ga.alpha). The static only applies when no KGAO track is authored.
+        const float identity = ga.alphaTracks.isUsed ? 1.0f : ga.alpha;
+        fs.geosetAlphas[gid] = evalF32(ga.alphaTracks, identity);
+
+        // KGAC colors are stored BGR on the wire; static ga.color is RGB.
         if (ga.colorTracks.isUsed) {
-            auto [t, s, e] = effectiveTime(ga.colorTracks.globalSequenceId);
-            Vector3f color = EvaluateTrackVec3(ga.colorTracks, t, s, e, ga.color);
-            fs.geosetColors[gid] = {color.z, color.y, color.x};
+            Vector3f c = evalVec3(ga.colorTracks, ga.color);
+            fs.geosetColors[gid] = {c.z, c.y, c.x};
         } else {
-            fs.geosetColors[gid] = {ga.color.x, ga.color.y, ga.color.z};
+            fs.geosetColors[gid] = ga.color;
         }
     }
 
@@ -1168,13 +1185,10 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         for (int li = 0; li < (int)mat.layers.size(); li++) {
             const auto& layer = mat.layers[li];
             if (!layer.alphaTracks.isUsed) continue;
-
-            auto [t, s, e] = effectiveTime(layer.alphaTracks.globalSequenceId);
-            float alpha = EvaluateTrackF32(layer.alphaTracks, t, s, e, layer.alpha);
             FrameState::LayerAlphaState las;
             las.materialId = mi;
             las.layerIndex = li;
-            las.alpha = alpha;
+            las.alpha      = evalF32(layer.alphaTracks, layer.alpha);
             fs.layerAlphas.push_back(las);
         }
     }
@@ -1191,81 +1205,72 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
             if (!anyAnim) continue;
 
             FrameState::LayerFresnelState lfs;
-            lfs.materialId = mi;
-            lfs.layerIndex = li;
-
-            if (layer.fresnelColorTracks.isUsed) {
-                auto [t, s, e] = effectiveTime(layer.fresnelColorTracks.globalSequenceId);
-                Vector3f c = EvaluateTrackVec3(layer.fresnelColorTracks, t, s, e, layer.fresnelColor);
-                lfs.fresnelColor = { c.x, c.y, c.z };
-            } else {
-                lfs.fresnelColor = { layer.fresnelColor.x, layer.fresnelColor.y, layer.fresnelColor.z };
-            }
-
-            if (layer.fresnelAlphaTracks.isUsed) {
-                auto [t, s, e] = effectiveTime(layer.fresnelAlphaTracks.globalSequenceId);
-                lfs.fresnelOpacity = EvaluateTrackF32(layer.fresnelAlphaTracks, t, s, e, layer.fresnelOpacity);
-            } else {
-                lfs.fresnelOpacity = layer.fresnelOpacity;
-            }
-
-            if (layer.fresnelTeamColorTracks.isUsed) {
-                auto [t, s, e] = effectiveTime(layer.fresnelTeamColorTracks.globalSequenceId);
-                lfs.fresnelTeamColor = EvaluateTrackF32(layer.fresnelTeamColorTracks, t, s, e, layer.fresnelTeamColor);
-            } else {
-                lfs.fresnelTeamColor = layer.fresnelTeamColor;
-            }
-
-            if (layer.emissiveGainTracks.isUsed) {
-                auto [t, s, e] = effectiveTime(layer.emissiveGainTracks.globalSequenceId);
-                lfs.emissiveGain = EvaluateTrackF32(layer.emissiveGainTracks, t, s, e, layer.emissiveGain);
-            } else {
-                lfs.emissiveGain = layer.emissiveGain;
-            }
-
+            lfs.materialId       = mi;
+            lfs.layerIndex       = li;
+            lfs.fresnelColor     = evalVec3(layer.fresnelColorTracks,     layer.fresnelColor);
+            lfs.fresnelOpacity   = evalF32 (layer.fresnelAlphaTracks,     layer.fresnelOpacity);
+            lfs.fresnelTeamColor = evalF32 (layer.fresnelTeamColorTracks, layer.fresnelTeamColor);
+            lfs.emissiveGain     = evalF32 (layer.emissiveGainTracks,     layer.emissiveGain);
             fs.layerFresnels.push_back(lfs);
         }
     }
 
-    // Layer texture ID (KMTF) evaluation — animated texture swap per layer
-    // Classic (v800-v1100): KMTF track lives on layer.textureIdTracks.
-    // Reforged (v1200+): parser moves KMTF into subTexture.tracks; we evaluate
-    //   the DiffuseMap subtexture's track (falling back to subTextures[0]).
+    // Layer texture ID (KMTF) evaluation — animated texture swap per layer.
+    //
+    // Classic (v800-v1100): KMTF lives on layer.textureIdTracks and only
+    // animates the (single) diffuse texture. One state emitted, slot=Diffuse.
+    //
+    // Reforged (v1200+): every SubTexture carries its own KMTF track. Each
+    // animated slot — Normal/ORM/Emissive/TeamColor as well as Diffuse —
+    // emits an independent state so the per-slot bind in the HD draw path
+    // can pick up animated normal/ORM/emissive/team swaps, not just diffuse.
+    // ApplyLayerStates routes the state into the matching *MapId field by
+    // slot; states for slots we don't render (EnvironmentMap and beyond)
+    // are dropped there.
     for (int mi = 0; mi < (int)model_.materials.size(); mi++) {
         const auto& mat = model_.materials[mi];
         for (int li = 0; li < (int)mat.layers.size(); li++) {
             const auto& layer = mat.layers[li];
 
-            const Track<u32>* kmtf = nullptr;
-            u32 defaultTexId = layer.textureId;
-
+            // Classic path: single track on the layer itself.
             if (layer.textureIdTracks.isUsed) {
-                // Classic path
-                kmtf = &layer.textureIdTracks;
-            } else if (!layer.subTextures.empty()) {
-                // Reforged path: find DiffuseMap subtexture's track
-                const Layer::SubTexture* diffuse = &layer.subTextures[0];
-                for (const auto& sub : layer.subTextures) {
-                    if (sub.slot == Layer::SlotType::DiffuseMap) {
-                        diffuse = &sub;
-                        break;
-                    }
-                }
-                if (diffuse->tracks.isUsed) {
-                    kmtf = &diffuse->tracks;
-                    defaultTexId = diffuse->textureId;
-                }
+                FrameState::LayerTextureIdState lts;
+                lts.materialId = mi;
+                lts.layerIndex = li;
+                lts.slot       = FrameState::LayerTexSlot::Diffuse;
+                lts.textureId  = (int)evalU32(layer.textureIdTracks, layer.textureId);
+                fs.layerTextureIds.push_back(lts);
+                continue;
             }
 
-            if (!kmtf) continue;
-
-            auto [t, s, e] = effectiveTime(kmtf->globalSequenceId);
-            u32 texId = EvaluateTrackU32(*kmtf, t, s, e, defaultTexId);
-            FrameState::LayerTextureIdState lts;
-            lts.materialId = mi;
-            lts.layerIndex = li;
-            lts.textureId  = (int)texId;
-            fs.layerTextureIds.push_back(lts);
+            // Reforged path: walk every subtexture for an animated track.
+            // The runtime slot is the subtexture's ARRAY INDEX, not its
+            // `slot` (texSemantic) tag — Previewd's ProcessTexLayers binds
+            // by position, and shipping content sometimes mistags siblings
+            // (e.g. berserkelemental.mdx mat 3 has both sub[0] and sub[1]
+            // tagged DiffuseMap, with sub[1] actually feeding t1/normal).
+            // Position 5 (typically EnvironmentMap) has no bind site so
+            // we skip it here rather than emit a state the apply step
+            // would silently drop.
+            for (size_t k = 0; k < layer.subTextures.size(); ++k) {
+                const auto& sub = layer.subTextures[k];
+                if (!sub.tracks.isUsed) continue;
+                FrameState::LayerTexSlot slot;
+                switch (k) {
+                    case 0: slot = FrameState::LayerTexSlot::Diffuse;   break;
+                    case 1: slot = FrameState::LayerTexSlot::Normal;    break;
+                    case 2: slot = FrameState::LayerTexSlot::ORM;       break;
+                    case 3: slot = FrameState::LayerTexSlot::Emissive;  break;
+                    case 4: slot = FrameState::LayerTexSlot::TeamColor; break;
+                    default: continue;                  // position 5+ (EnvMap) — no bind
+                }
+                FrameState::LayerTextureIdState lts;
+                lts.materialId = mi;
+                lts.layerIndex = li;
+                lts.slot       = slot;
+                lts.textureId  = (int)evalU32(sub.tracks, sub.textureId);
+                fs.layerTextureIds.push_back(lts);
+            }
         }
     }
 
@@ -1299,81 +1304,54 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     for (int i = 0; i < (int)model_.particleEmitters2.size(); i++) {
         const auto& pe = model_.particleEmitters2[i];
         auto& ps = fs.particleStates[i];
+        const int nodeIdx = nodeOf(pe.node);
+
         ps.emitterId = i;
+        // Lift into scene world space for nested actors (PE1 children, etc.)
+        // — for top-level actors worldTransform is identity so this is a no-op.
+        // Particle/ribbon/attachment draws use frame.world=identity, so the
+        // emitter transform must already be in scene world space here.
+        ps.transform = kPE2SpawnFrameRotation * worldOf(nodeIdx) * worldTransform;
 
-        int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)pe.node.objectId);
-
-        ps.transform = kPE2SpawnFrameRotation * worldOf(nodeIdx);
-
-        {
-            bool squirting = (pe.squirt != 0);
-            auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
-            ps.emissionRate = EvaluateTrackF32(pe.emissionRateTracks, t, s, e, pe.emissionRate, squirting);
-            ps.squirting = squirting;
-        }
-        { auto [t,s,e] = effectiveTime(pe.speedTracks.globalSequenceId);
-          ps.speed        = EvaluateTrackF32(pe.speedTracks, t, s, e, pe.speed); }
-        { auto [t,s,e] = effectiveTime(pe.variationTracks.globalSequenceId);
-          ps.variation    = EvaluateTrackF32(pe.variationTracks, t, s, e, pe.variation); }
-        { auto [t,s,e] = effectiveTime(pe.latitudeTracks.globalSequenceId);
-          // MDX stores latitude in degrees; Previewd's
-          // SetEmitterLatitude2 (0x140530917) and ILoadParticleEmitters2
-          // (0x14049e4f3) both convert via deg * pi / 180 before calling
-          // CPlaneParticleEmitter::SetLatitude. The emitter's CreateParticle
-          // consumes it as radians (sin/cos). Match the conversion here.
-          const float degs = EvaluateTrackF32(pe.latitudeTracks, t, s, e, pe.latitude);
-          ps.coneAngle     = degs * (3.14159265358979323846f / 180.0f); }
-        { auto [t,s,e] = effectiveTime(pe.gravityTracks.globalSequenceId);
-          ps.gravity      = EvaluateTrackF32(pe.gravityTracks, t, s, e, pe.gravity); }
-        { auto [t,s,e] = effectiveTime(pe.widthTracks.globalSequenceId);
-          ps.width        = EvaluateTrackF32(pe.widthTracks, t, s, e, pe.width); }
-        { auto [t,s,e] = effectiveTime(pe.lengthTracks.globalSequenceId);
-          ps.length       = EvaluateTrackF32(pe.lengthTracks, t, s, e, pe.length); }
-        { auto [t,s,e] = effectiveTime(pe.visibilityTracks.globalSequenceId);
-          ps.visibility   = EvaluateTrackF32(pe.visibilityTracks, t, s, e, 1.0f); }
-        ps.visibility *= gateByBoneAncestors(nodeIdx);
-
-        (void)pe; // all PE2 per-frame fields set above
+        const bool squirting = (pe.squirt != 0);
+        ps.squirting    = squirting;
+        ps.emissionRate = evalF32(pe.emissionRateTracks, pe.emissionRate, squirting);
+        ps.speed        = evalF32(pe.speedTracks,     pe.speed);
+        ps.variation    = evalF32(pe.variationTracks, pe.variation);
+        // MDX stores latitude in degrees; Previewd's SetEmitterLatitude2
+        // (0x140530917) and ILoadParticleEmitters2 (0x14049e4f3) both convert
+        // via deg * pi / 180 before calling CPlaneParticleEmitter::SetLatitude.
+        // CreateParticle consumes it as radians (sin/cos).
+        ps.coneAngle    = evalF32(pe.latitudeTracks, pe.latitude) * (3.14159265358979323846f / 180.0f);
+        ps.gravity      = evalF32(pe.gravityTracks, pe.gravity);
+        ps.width        = evalF32(pe.widthTracks,   pe.width);
+        ps.length       = evalF32(pe.lengthTracks,  pe.length);
+        ps.visibility   = evalF32(pe.visibilityTracks, 1.0f) * gateByBoneAncestors(nodeIdx);
     }
 
     // Attachment transforms
     for (int i = 0; i < (int)model_.attachments.size(); i++) {
         const auto& att = model_.attachments[i];
-        int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)att.node.objectId);
-        Matrix44f tm = worldOf(nodeIdx);
-        float vis = 1.0f;
-        if (att.visibilityTracks.isUsed) {
-            auto [t,s,e] = effectiveTime(att.visibilityTracks.globalSequenceId);
-            vis = EvaluateTrackF32(att.visibilityTracks, t, s, e, 1.0f);
-        }
-        vis *= gateByBoneAncestors(nodeIdx);
-        fs.attachmentStates.push_back({i, tm, vis});
+        const int nodeIdx = nodeOf(att.node);
+        const float vis = evalF32(att.visibilityTracks, 1.0f) * gateByBoneAncestors(nodeIdx);
+        fs.attachmentStates.push_back({i, worldOf(nodeIdx) * worldTransform, vis});
     }
 
-    // PE1 (model particle emitter) per-frame state
+    // PE1 (model particle emitter) per-frame state. Lat/lon already in radians
+    // in MDX so no unit conversion needed.
     for (int i = 0; i < (int)model_.particleEmitters.size(); i++) {
         const auto& pe = model_.particleEmitters[i];
+        const int nodeIdx = nodeOf(pe.node);
+
         FrameState::PE1FrameState ps;
-        ps.emitterId = i;
-
-        int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)pe.node.objectId);
-        ps.transform = worldOf(nodeIdx);
-
-        // Evaluate animated tracks (lat/lon already in radians in MDX)
-        { auto [t,s,e] = effectiveTime(pe.emissionRateTracks.globalSequenceId);
-          ps.emissionRate = EvaluateTrackF32(pe.emissionRateTracks, t, s, e, pe.emissionRate); }
-        { auto [t,s,e] = effectiveTime(pe.speedTracks.globalSequenceId);
-          ps.speed = EvaluateTrackF32(pe.speedTracks, t, s, e, pe.initialVelocity); }
-        { auto [t,s,e] = effectiveTime(pe.latitudeTracks.globalSequenceId);
-          ps.latitude = EvaluateTrackF32(pe.latitudeTracks, t, s, e, pe.latitude); }
-        { auto [t,s,e] = effectiveTime(pe.longitudeTracks.globalSequenceId);
-          ps.longitude = EvaluateTrackF32(pe.longitudeTracks, t, s, e, pe.longitude); }
-        { auto [t,s,e] = effectiveTime(pe.gravityTracks.globalSequenceId);
-          ps.gravity = EvaluateTrackF32(pe.gravityTracks, t, s, e, pe.gravity); }
-        { auto [t,s,e] = effectiveTime(pe.visibilityTracks.globalSequenceId);
-          ps.visibility = EvaluateTrackF32(pe.visibilityTracks, t, s, e, 1.0f); }
-        ps.visibility *= gateByBoneAncestors(nodeIdx);
-
+        ps.emitterId    = i;
+        ps.transform    = worldOf(nodeIdx) * worldTransform;
+        ps.emissionRate = evalF32(pe.emissionRateTracks, pe.emissionRate);
+        ps.speed        = evalF32(pe.speedTracks,        pe.initialVelocity);
+        ps.latitude     = evalF32(pe.latitudeTracks,     pe.latitude);
+        ps.longitude    = evalF32(pe.longitudeTracks,    pe.longitude);
+        ps.gravity      = evalF32(pe.gravityTracks,      pe.gravity);
+        ps.visibility   = evalF32(pe.visibilityTracks,   1.0f) * gateByBoneAncestors(nodeIdx);
         fs.pe1States.push_back(ps);
     }
 
@@ -1383,32 +1361,25 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     for (int i = 0; i < (int)model_.ribbonEmitters.size(); i++) {
         const auto& rb = model_.ribbonEmitters[i];
         auto& rs = fs.ribbonStates[i];
-        rs.emitterId = i;
+        const int nodeIdx = nodeOf(rb.node);
 
-        int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)rb.node.objectId);
-        rs.transform = worldOf(nodeIdx);
+        rs.emitterId  = i;
+        rs.transform  = worldOf(nodeIdx) * worldTransform;
+        rs.above      = evalF32(rb.heightAboveTracks, rb.heightAbove);
+        rs.below      = evalF32(rb.heightBelowTracks, rb.heightBelow);
+        rs.alpha      = evalF32(rb.alphaTracks,       rb.alpha);
+        rs.visibility = evalF32(rb.visibilityTracks,  1.0f) * gateByBoneAncestors(nodeIdx);
+        rs.slot       = (int)evalU32(rb.textureSlotTracks, rb.textureSlot);
 
-        { auto [t,s,e] = effectiveTime(rb.heightAboveTracks.globalSequenceId);
-          rs.above      = EvaluateTrackF32(rb.heightAboveTracks, t, s, e, rb.heightAbove); }
-        { auto [t,s,e] = effectiveTime(rb.heightBelowTracks.globalSequenceId);
-          rs.below      = EvaluateTrackF32(rb.heightBelowTracks, t, s, e, rb.heightBelow); }
-        { auto [t,s,e] = effectiveTime(rb.alphaTracks.globalSequenceId);
-          rs.alpha      = EvaluateTrackF32(rb.alphaTracks, t, s, e, rb.alpha); }
-        { auto [t,s,e] = effectiveTime(rb.visibilityTracks.globalSequenceId);
-          rs.visibility = EvaluateTrackF32(rb.visibilityTracks, t, s, e, 1.0f); }
-        rs.visibility *= gateByBoneAncestors(nodeIdx);
-        { auto [t,s,e] = effectiveTime(rb.textureSlotTracks.globalSequenceId);
-          rs.slot       = (int)EvaluateTrackU32(rb.textureSlotTracks, t, s, e, rb.textureSlot); }
-
-        // MDX ribbon color is stored BGR (matches CImVector layout the engine
-        // uses internally); the renderer wants RGB, so swap channels — same
-        // convention applied to GeosetAnim colors above.
+        // MDX ribbon color is stored BGR when animated (CImVector wire layout);
+        // the static rb.color is already RGB. Swap on the animated path so the
+        // renderer always sees RGB. Same convention applies to GeosetAnim and
+        // Light color tracks.
         if (rb.colorTracks.isUsed) {
-            auto [t,s,e] = effectiveTime(rb.colorTracks.globalSequenceId);
-            Vector3f c = EvaluateTrackVec3(rb.colorTracks, t, s, e, rb.color);
+            Vector3f c = evalVec3(rb.colorTracks, rb.color);
             rs.color = {c.z, c.y, c.x};
         } else {
-            rs.color = {rb.color.x, rb.color.y, rb.color.z};
+            rs.color = rb.color;
         }
     }
 
@@ -1430,13 +1401,9 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         // Visibility track (KLAV) gates the whole light. 0 = off. The
         // ancestor-bone gate additionally hides the light if its parent
         // bone chain is invisible, matching Previewd's DFS subtree skip.
-        float visibility = 1.0f;
-        if (L.visibilityTracks.isUsed) {
-            auto [t,s,e] = effectiveTime(L.visibilityTracks.globalSequenceId);
-            visibility = EvaluateTrackF32(L.visibilityTracks, t, s, e, 1.0f);
-        }
-        visibility *= gateByBoneAncestors(
-            hierarchy_.ObjectIdToNodeIndex((int)L.node.objectId));
+        const int lightNodeIdx = nodeOf(L.node);
+        const float visibility = evalF32(L.visibilityTracks, 1.0f) *
+                                 gateByBoneAncestors(lightNodeIdx);
         // Strict > 0 matches Previewd's SetLightValues @0x14052f5e0 which
         // gates EnvApply/EnvUnApply on `isVisible > 0.0`.
         ls.enabled = visibility > 0.0f;
@@ -1463,24 +1430,13 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         // IGNORED. Matching that avoids double-contribution oversaturation.
         // Visibility (KLAV) is an enable-gate only; the engine never scales
         // color or intensity by it.
-        Vector3f color  = L.color;
-        float    inten  = L.intensity;
-        float    ambI   = L.ambientIntensity;
+        Vector3f color = L.color;
         if (L.colorTracks.isUsed) {
-            auto [t,s,e] = effectiveTime(L.colorTracks.globalSequenceId);
-            Vector3f animatedColor = EvaluateTrackVec3(L.colorTracks, t, s, e, L.color);
-            color = {animatedColor.z, animatedColor.y, animatedColor.x}; // BGR -> RGB
+            Vector3f animated = evalVec3(L.colorTracks, L.color);
+            color = {animated.z, animated.y, animated.x}; // BGR -> RGB
         }
-        if (L.intensityTracks.isUsed) {
-            auto [t,s,e] = effectiveTime(L.intensityTracks.globalSequenceId);
-            inten = EvaluateTrackF32(L.intensityTracks, t, s, e, L.intensity);
-        }
-        if (L.ambientIntensityTracks.isUsed) {
-            auto [t,s,e] = effectiveTime(L.ambientIntensityTracks.globalSequenceId);
-            ambI = EvaluateTrackF32(L.ambientIntensityTracks, t, s, e, L.ambientIntensity);
-        }
-        if (inten < 0.0f) inten = 0.0f;     // engine clamps intensity at 0
-        if (ambI  < 0.0f) ambI  = 0.0f;
+        float inten = std::max(0.0f, evalF32(L.intensityTracks,        L.intensity));
+        float ambI  = std::max(0.0f, evalF32(L.ambientIntensityTracks, L.ambientIntensity));
         ls.diffuse = { color.x * inten, color.y * inten, color.z * inten };
         ls.ambient = { ambI, ambI, ambI };
 
@@ -1488,21 +1444,12 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
         // encodes TRS around the pivot as Translate(-pivot)*S*R*Translate(pivot+t),
         // so transforming {0,0,0} through it collapses to zero for identity
         // TRS -- you have to feed in the PIVOT to recover the node's animated
-        // world position. Match the `worldOf` helper used for particle/attachment
-        // nodes: premultiply a Translate(pivot) and transform {0,0,0} through.
-        const auto& nodes = hierarchy_.Nodes();
-        const int   nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)L.node.objectId);
-        Matrix44f   world = Matrix44f::identity();
-        if (nodeIdx >= 0 && nodeIdx < (int)fs.boneWorldMatrices.size()) {
-            const auto& piv = nodes[nodeIdx].pivot;
-            Matrix44f pivotT = Matrix44f::translation({piv.x, piv.y, piv.z});
-            world = pivotT * fs.boneWorldMatrices[nodeIdx];
-        }
-        // Omni: node's animated world pivot. Directional: -Z axis of the node
-        // in world space. Engine's SetLightDirection (0x14052f540) sets the
-        // local direction to (0, 0, -1) and transforms it by the world matrix
-        // (translation removed) -- that's the emission direction the shader
-        // expects as CGxLight.m_dir.
+        // world position. `worldOf` handles that by premultiplying Translate(pivot).
+        // Lift into scene world space — light shader CBs expect world-space
+        // positions/directions, and bone matrices stay model-space (paired
+        // with frame.world=mi->worldTransform), so for nested actors we have
+        // to fold worldTransform in here. No-op when worldTransform=identity.
+        Matrix44f world = worldOf(lightNodeIdx) * worldTransform;
         if (ls.kind == FrameState::LightKind::Directional) {
             ls.worldDir = whiteout::transform_normal(Vector3f{0, 0, -1}, world);
         } else {
@@ -1516,8 +1463,7 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     // Collision shape transforms
     fs.collisionTransforms.resize(model_.collisionShapes.size());
     for (int i = 0; i < (int)model_.collisionShapes.size(); i++) {
-        const auto& cs = model_.collisionShapes[i];
-        int nodeIdx = hierarchy_.ObjectIdToNodeIndex((int)cs.node.objectId);
+        const int nodeIdx = nodeOf(model_.collisionShapes[i].node);
         fs.collisionTransforms[i] = (nodeIdx >= 0 && nodeIdx < (int)fs.boneWorldMatrices.size())
                                      ? fs.boneWorldMatrices[nodeIdx] : Matrix44f::identity();
     }
@@ -1531,13 +1477,9 @@ FrameState MdxModelAdapter::Evaluate(int timeMs, int globalTimeMs) {
     for (int i = 0; i < (int)model_.textureAnimations.size(); i++) {
         const auto& ta = model_.textureAnimations[i];
 
-        auto [tt, ts, te] = effectiveTime(ta.translationTracks.globalSequenceId);
-        Vector3f trans = EvaluateTrackVec3(ta.translationTracks, tt, ts, te, {0, 0, 0});
-        auto [st, ss, se] = effectiveTime(ta.scalingTracks.globalSequenceId);
-        Vector3f scale = EvaluateTrackVec3(ta.scalingTracks, st, ss, se, {1, 1, 1});
-        auto [rt, rs, re] = effectiveTime(ta.rotationTracks.globalSequenceId);
-        Quaternion rot = EvaluateTrackQuat(ta.rotationTracks, rt, rs, re,
-                                           Quaternion(0, 0, 0, 1));
+        Vector3f   trans = evalVec3(ta.translationTracks, {0, 0, 0});
+        Vector3f   scale = evalVec3(ta.scalingTracks,     {1, 1, 1});
+        Quaternion rot   = evalQuat(ta.rotationTracks,    Quaternion(0, 0, 0, 1));
 
         // BLS palette entry — Previewd composition order:
         //   final = Translate(t) * Scale-around-(0.5,0.5)(s) * Rotate-around-(0.5,0.5)(r)
@@ -1612,14 +1554,75 @@ std::vector<PE1EmitterConfig> MdxModelAdapter::GetPE1Configs() {
 }
 
 // ============================================================================
+// GetEventObjects
+// ============================================================================
+// MDX EventObject names follow `XXX-IIII` where the 4-letter prefix
+// (chars 0..2) drives dispatch and chars 4..7 are the SLK row id.
+// We decode here so the renderer doesn't have to re-parse the name on
+// every fire. Unknown prefixes are still surfaced so the renderer can
+// log them once per model rather than swallowing them silently.
+
+static EventObjectConfig::Kind DecodeEventKind(std::string_view name) {
+    if (name.size() < 3) return EventObjectConfig::Kind::Unknown;
+    auto eq = [&](const char* p) {
+        return name[0] == p[0] && name[1] == p[1] && name[2] == p[2];
+    };
+    if (eq("SPN")) return EventObjectConfig::Kind::SPN;
+    if (eq("SPL")) return EventObjectConfig::Kind::SPL;
+    if (eq("UBR")) return EventObjectConfig::Kind::UBR;
+    if (eq("FPT")) return EventObjectConfig::Kind::FPT;
+    if (eq("SND")) return EventObjectConfig::Kind::SND;
+    return EventObjectConfig::Kind::Unknown;
+}
+
+std::vector<EventObjectConfig> MdxModelAdapter::GetEventObjects() {
+    std::vector<EventObjectConfig> result;
+    result.reserve(model_.eventObjects.size());
+    for (const auto& ev : model_.eventObjects) {
+        EventObjectConfig cfg;
+        cfg.name = ev.node.name;
+        cfg.kind = DecodeEventKind(cfg.name);
+        // Skip leading prefix + dash; the SLK id is the remainder. MDX
+        // name fields are fixed 80 bytes but typically null-trimmed by
+        // the parser, so just slice from char 4 onward when long enough.
+        if (cfg.name.size() >= 4) {
+            std::string_view tail{cfg.name.data() + 4, cfg.name.size() - 4};
+            // Trim trailing nulls / spaces that some authoring tools leave.
+            while (!tail.empty() && (tail.back() == '\0' || tail.back() == ' ')) tail.remove_suffix(1);
+            cfg.id.assign(tail);
+        }
+        cfg.nodeIndex        = hierarchy_.ObjectIdToNodeIndex((int)ev.node.objectId);
+        if (ev.node.objectId < model_.pivotPoints.size())
+            cfg.pivot = model_.pivotPoints[ev.node.objectId];
+        cfg.globalSequenceId = ev.globalSequenceId;
+        cfg.eventTrackTimes  = ev.eventTrackTimes;
+        result.push_back(std::move(cfg));
+    }
+    return result;
+}
+
+// ============================================================================
+// GetGlobalSequences
+// ============================================================================
+
+std::vector<uint32_t> MdxModelAdapter::GetGlobalSequences() {
+    return std::vector<uint32_t>(model_.globalSequences.begin(),
+                                 model_.globalSequences.end());
+}
+
+// ============================================================================
 // GetSequences
 // ============================================================================
 
-std::vector<IModelSource::SequenceInfo> MdxModelAdapter::GetSequences() {
+std::vector<SequenceInfo> MdxModelAdapter::GetSequences() const {
     std::vector<SequenceInfo> result;
     result.reserve(model_.sequences.size());
     for (const auto& seq : model_.sequences) {
-        result.push_back({seq.name, (int)seq.intervalStart, (int)seq.intervalEnd});
+        const bool nonLoop =
+            (seq.flags & whiteout::mdx::Sequence::Flag::NonLooping)
+                != whiteout::mdx::Sequence::Flag::None;
+        result.push_back({seq.name, (int)seq.intervalStart, (int)seq.intervalEnd,
+                          seq.moveSpeed, nonLoop});
     }
     return result;
 }
