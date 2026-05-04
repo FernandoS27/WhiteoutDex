@@ -661,6 +661,7 @@ private:
     const bls::BlsProgram*                  blsSdProgram_     = nullptr; // SD_HighSpec VS + SD PS
     const bls::BlsProgram*                  blsSdOnHdProgram_ = nullptr; // SD_on_HD VS + SD_on_HD PS
     const bls::BlsProgram*                  blsHdProgram_     = nullptr; // HD VS + HD PS (full PBR)
+    const bls::BlsProgram*                  blsCrystalProgram_= nullptr; // HD VS + Crystal PS (refractive). Null if crystal.bls absent.
 
     // HD CB pool (path B). Sized for 8-light worst case like Path A; the
     // actual upload size is dynamic via HdPsCbSize/SdOnHdPsCbSize.

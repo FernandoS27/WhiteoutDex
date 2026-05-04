@@ -745,7 +745,6 @@ void RenderWindow::SyncViewMenuFromService() {
     };
     syncToggle(IDM_VIEW_GRID,      df.showGrid);
     syncToggle(IDM_VIEW_PARTICLES, df.showParticles);
-    syncToggle(IDM_VIEW_POPCORN,   df.showPopcorn);
     syncToggle(IDM_VIEW_RIBBONS,   df.showRibbons);
     syncToggle(IDM_VIEW_EVENTS,    df.showEvents);
     if (hMenuTileset_) {

@@ -130,7 +130,6 @@ void LoadSettingsIni(RenderService& service) {
         };
         loadFlag(L"ShowGrid",      df.showGrid);
         loadFlag(L"ShowParticles", df.showParticles);
-        loadFlag(L"ShowPopcorn",   df.showPopcorn);
         loadFlag(L"ShowRibbons",   df.showRibbons);
         loadFlag(L"ShowEvents",    df.showEvents);
         if (dirty) service.SetDisplayFlags(df);
@@ -267,7 +266,6 @@ void SaveSettingsIni(const RenderService& service) {
         };
         saveFlag(L"ShowGrid",      df.showGrid);
         saveFlag(L"ShowParticles", df.showParticles);
-        saveFlag(L"ShowPopcorn",   df.showPopcorn);
         saveFlag(L"ShowRibbons",   df.showRibbons);
         saveFlag(L"ShowEvents",    df.showEvents);
     }
