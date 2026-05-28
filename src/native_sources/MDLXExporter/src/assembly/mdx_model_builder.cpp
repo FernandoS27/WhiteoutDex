@@ -117,6 +117,11 @@ Node buildNode(const ir::IRModel& ir, int32_t irNodeIndex,
     node.type = type;
     node.flags = extraFlags;
 
+    // Merge in IR node flags (billboard, don't-inherit, camera-anchored, etc.)
+    if (irNodeIndex >= 0 && irNodeIndex < static_cast<int32_t>(ir.nodes.size())) {
+        node.flags = node.flags | static_cast<Node::NodeFlag>(ir.nodes[irNodeIndex].nodeFlags);
+    }
+
     // Set type flag
     switch (type) {
     case Node::NodeType::Bone:       node.flags = node.flags | Node::NodeFlag::Bone; break;
@@ -311,17 +316,18 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
 
     // 6. Bones + helpers
     for (auto& bone : ir.bones) {
+        auto boneFlags = static_cast<Node::NodeFlag>(bone.nodeFlags);
         if (bone.isHelper && opts.version < 1200) {
             // v800: separate helper
             Helper h;
             h.node = buildNode(ir, bone.nodeIndex, hierarchy,
-                               Node::NodeType::Helper, Node::NodeFlag::None, invScale);
+                               Node::NodeType::Helper, boneFlags, invScale);
             model.helpers.push_back(std::move(h));
         } else {
             // Bone (or v1200 helper-as-bone)
             Bone b;
             b.node = buildNode(ir, bone.nodeIndex, hierarchy,
-                               Node::NodeType::Bone, Node::NodeFlag::Bone, invScale);
+                               Node::NodeType::Bone, Node::NodeFlag::Bone | boneFlags, invScale);
             b.geosetId = Bone::MULTIPLE_GEOSETS;
             b.geosetAnimationId = Bone::MULTIPLE_GEOSETS;
             model.bones.push_back(std::move(b));
@@ -549,6 +555,50 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         MdxGeosetMerger merger;
         merger.merge(model.geosets);
     }
+
+    // ── Bone ↔ Geoset back-reference fix ────────────────────────────────
+    // The MDX bone trailer carries two fields beyond the Node:
+    //   uint32 geosetId       — index of the geoset that uses this bone
+    //                           for skinning. -1 (MULTIPLE_GEOSETS) if the
+    //                           bone is unbound, or referenced by multiple
+    //                           geosets.
+    //   uint32 geosetAnimId   — same idea, but for the geoset animation
+    //                           (KGAO chunk). -1 if none.
+    //
+    // The previous code unconditionally wrote MULTIPLE_GEOSETS for every
+    // bone (mdx_model_builder.cpp:326). NeoDex computes the actual
+    // back-reference (NeoDexSceneParser.ms LoadBone / Wc3Bone construction):
+    // a bone referenced by exactly ONE geoset's MATS list gets that
+    // geoset's index; a bone referenced by zero or multiple geosets stays
+    // at -1.
+    //
+    // Symptom of the missing back-reference: bones bound to a single
+    // geoset (typical for accessory chains like a hat bone) drift slightly
+    // during animation — strict renderers use this field to pick the
+    // correct skinning matrix evaluation path.
+    {
+        // Map: boneObjectId -> geoset index, or -2 if multiple geosets reference it
+        std::map<uint32_t, int32_t> boneToGeoset;
+        for (size_t gi = 0; gi < model.geosets.size(); ++gi) {
+            int32_t gIdx = static_cast<int32_t>(gi);
+            for (uint32_t boneObjId : model.geosets[gi].matrixIndices) {
+                auto it = boneToGeoset.find(boneObjId);
+                if (it == boneToGeoset.end()) {
+                    boneToGeoset[boneObjId] = gIdx;
+                } else if (it->second >= 0 && it->second != gIdx) {
+                    it->second = -2;  // multi-geoset
+                }
+            }
+        }
+        for (auto& b : model.bones) {
+            auto it = boneToGeoset.find(b.node.objectId);
+            if (it != boneToGeoset.end() && it->second >= 0) {
+                b.geosetId = static_cast<uint32_t>(it->second);
+            }
+            // else: keep MULTIPLE_GEOSETS (already set at construction)
+        }
+    }
+    // ────────────────────────────────────────────────────────────────────
 
     // 9. Lights
     for (auto& irLight : ir.lights) {

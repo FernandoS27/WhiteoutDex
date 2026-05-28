@@ -2,24 +2,21 @@
 // Copyright (c) 2026 Fernando Sahmkow
 #pragma once
 
-#include "BLPDecoder.h"
-#include "DDSDecoder.h"
+#include "ImageDecode.h"
 
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <string>
 #include <vector>
 #include <atomic>
 #include <mutex>
 
-// Forward-declare WhiteoutLib CASC storage (replaces old CASCReader)
+// Forward-declare WhiteoutLib storages (replace old MPQReader/CASCReader)
 namespace whiteout::storages::casc { class Storage; }
+namespace whiteout::storages::mpq  { class Storage; }
 
 namespace whiteoutdex {
-
-// Forward declarations — avoid pulling in MPQ/CASC headers
-class MPQReader;
-class MPQManager;
 
 // ============================================================================
 //  ThumbnailResult  —  one decoded thumbnail
@@ -65,9 +62,9 @@ using ThumbnailProgressFn = std::function<void(int completed, int total)>;
 //    Each worker runs the full extract→decode→resize pipeline for its
 //    assigned files.  No shared mutable state between workers.
 //
-//    The underlying MPQReader and casc::Storage are thread-safe for concurrent
-//    extractFile() calls (memory-mapped I/O, no file-handle contention).
-//    BLPDecoder/DDSDecoder are stateless and safe for concurrent use.
+//    The underlying mpq::Storage and casc::Storage are thread-safe for
+//    concurrent reads. The decoders in ImageDecode.h are stateless and
+//    safe for concurrent use.
 //
 //  Usage from MaxScript (via ManagedWrapper):
 //    local engine = WhiteoutDexTextureBrowser.CreateThumbnailEngine()
@@ -94,14 +91,9 @@ public:
     int  thumbWidth()  const noexcept { return thumbW_; }
     int  thumbHeight() const noexcept { return thumbH_; }
 
-    // ── Generate from MPQ ────────────────────────────────────────────────────
+    // ── Generate from MPQ (searches archives in order — first match wins) ──
     std::vector<ThumbnailResult> generateFromMPQ(
-        const MPQReader& reader,
-        const std::vector<std::string>& paths,
-        ThumbnailProgressFn progress = nullptr) const;
-
-    std::vector<ThumbnailResult> generateFromMPQ(
-        const MPQManager& manager,
+        const std::vector<whiteout::storages::mpq::Storage>& archives,
         const std::vector<std::string>& paths,
         ThumbnailProgressFn progress = nullptr) const;
 
@@ -128,12 +120,6 @@ public:
     bool isCancelled() const noexcept { return cancelled_.load(); }
 
 private:
-    // ── Detect format and decode ─────────────────────────────────────────────
-    enum class TextureFormat { Unknown, BLP, DDS };
-    static TextureFormat detectFormat(const uint8_t* data, size_t len);
-
-    DecodedImage decodeTexture(const uint8_t* data, size_t len) const;
-
     // ── Internal batch processor ─────────────────────────────────────────────
     //    extractFn: function that extracts a file by path → byte vector
     using ExtractFn = std::function<bool(const std::string& path,
@@ -145,16 +131,14 @@ private:
         ExtractFn extractFn,
         ThumbnailProgressFn progress) const;
 
+    DecodedImage decodeAndResize(std::span<const uint8_t> data) const;
+
     // ── State ────────────────────────────────────────────────────────────────
     int  threadCount_ = 0;   // 0 = auto
     int  thumbW_      = 64;
     int  thumbH_      = 64;
 
     mutable std::atomic<bool> cancelled_{false};
-
-    // Decoders — stateless, can be shared across threads
-    BLPDecoder blpDecoder_;
-    DDSDecoder ddsDecoder_;
 };
 
 } // namespace whiteoutdex

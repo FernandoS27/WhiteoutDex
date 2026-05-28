@@ -61,25 +61,20 @@ namespace detail {
 // AND outTangentType == #step is semantically equivalent to a
 // None / DontInterp controller. Export it as MDX interpolationType=0.
 //
-// IBezFloatKey::flags layout (from maxsdk istdplug.h):
-//   bits 0..2  : in-tangent type (BEZKEY_STEP == 5)
-//   bits 3..5  : out-tangent type
-// Masks: IN = 0x7, OUT = 0x38 (shift >> 3)
+// Uses the SDK macros GetInTanType/GetOutTanType and BEZKEY_STEP
+// from istdplug.h — these handle the correct bit positions
+// (bits 7-12 in the flags DWORD, NOT bits 0-5).
 inline bool bezierKeysAllStep(IKeyControl* ikc) {
     if (!ikc) return false;
     int n = ikc->GetNumKeys();
     if (n <= 0) return false;
 
-    constexpr int kStep = 5;
-    constexpr DWORD kInMask  = 0x0007;
-    constexpr DWORD kOutMask = 0x0038;
-
     for (int i = 0; i < n; ++i) {
         IBezFloatKey k;
         ikc->GetKey(i, &k);
-        int inT  = static_cast<int>(k.flags & kInMask);
-        int outT = static_cast<int>((k.flags & kOutMask) >> 3);
-        if (inT != kStep || outT != kStep) return false;
+        int inT  = GetInTanType(k.flags);
+        int outT = GetOutTanType(k.flags);
+        if (inT != BEZKEY_STEP || outT != BEZKEY_STEP) return false;
     }
     return true;
 }
@@ -168,14 +163,88 @@ inline int32_t extractVisibilityTrack(INode* node, ir::IRModel& model) {
     track.interpolation = detail::detectVisInterp(ctrl, ikc);
     const bool isNone = (track.interpolation == ir::InterpolationType::None);
 
+    // ── Bezier with tangents: NeoDex-compatible sampling ──────────
+    // Max's IBezFloatKey.intan/.outtan are tangent SLOPES (dQ/dt),
+    // NOT the control-point values that MDX expects. NeoDex solves
+    // this by sampling the controller at 1/3 and 2/3 points between
+    // keys and applying BezierInTan/BezierOutTan formulas.
+    const bool isBezierWithTangents = useTypedKeys
+        && (cidA == HYBRIDINTERP_FLOAT_CLASS_ID)
+        && !isNone;
+
+    if (isBezierWithTangents) {
+        // Pass 1: read key times and evaluate values
+        struct TK { TimeValue time; float value; float sIn; float sOut; };
+        std::vector<TK> tk(nkeys);
+        for (int i = 0; i < nkeys; i++) {
+            IBezFloatKey k; ikc->GetKey(i, &k);
+            tk[i].time = k.time;
+            Interval v = FOREVER;
+            ctrl->GetValue(k.time, &tk[i].value, v);
+        }
+
+        // Pass 2: sample at 1/3 and 2/3 points between adjacent keys
+        for (int i = 0; i < nkeys; i++) {
+            if (i > 0) {
+                TimeValue t23 = tk[i-1].time +
+                    (TimeValue)(2.0 * (double)(tk[i].time - tk[i-1].time) / 3.0);
+                Interval v = FOREVER;
+                ctrl->GetValue(t23, &tk[i].sIn, v);
+            } else {
+                tk[i].sIn = tk[i].value;
+            }
+            if (i < nkeys - 1) {
+                TimeValue t13 = tk[i].time +
+                    (TimeValue)((double)(tk[i+1].time - tk[i].time) / 3.0);
+                Interval v = FOREVER;
+                ctrl->GetValue(t13, &tk[i].sOut, v);
+            } else {
+                tk[i].sOut = tk[i].value;
+            }
+        }
+
+        // Pass 3: compute MDX Bezier control points
+        // BezierOutTan(pe, pd, a, d) = 3*pe + (2*d - 5*a - 9*pd) / 6
+        // BezierInTan (pe, pd, a, d) = 3*pd + (2*a - 9*pe - 5*d) / 6
+        for (int i = 0; i < nkeys; i++) {
+            float val = tk[i].value;
+            float inTan, outTan;
+
+            if (i > 0) {
+                float pe = tk[i-1].sOut, pd = tk[i].sIn;
+                float a = tk[i-1].value, d = tk[i].value;
+                inTan = 3.0f*pd + (2.0f*a - 9.0f*pe - 5.0f*d) / 6.0f;
+            } else {
+                inTan = val;
+            }
+            if (i < nkeys - 1) {
+                float pe = tk[i].sOut, pd = tk[i+1].sIn;
+                float a = tk[i].value, d = tk[i+1].value;
+                outTan = 3.0f*pe + (2.0f*d - 5.0f*a - 9.0f*pd) / 6.0f;
+            } else {
+                outTan = val;
+            }
+
+            // Snap tangents near value (NeoDex ProcessBezier)
+            if (std::fabs(inTan - val) < 0.01f) inTan = val;
+            if (std::fabs(outTan - val) < 0.01f) outTan = val;
+
+            ir::Keyframe<float> key;
+            key.time       = tk[i].time;
+            key.value      = val;
+            key.inTangent  = inTan;
+            key.outTangent = outTan;
+            key.hasTangents = true;
+            track.keys.push_back(key);
+        }
+    } else {
+    // ── All other controller types: original single-pass loop ────
     for (int i = 0; i < nkeys; i++) {
         track.keys.push_back({});
         auto& key = track.keys.back();
 
         TimeValue t = 0;
         float value = 0.0f;
-        float inTan = 0.0f, outTan = 0.0f;
-        bool hasTangents = false;
 
         if (useTypedKeys) {
             if (cidA == LININTERP_FLOAT_CLASS_ID) {
@@ -184,29 +253,18 @@ inline int32_t extractVisibilityTrack(INode* node, ir::IRModel& model) {
                 t = k.time;
                 value = k.val;
             } else if (cidA == HYBRIDINTERP_FLOAT_CLASS_ID) {
+                // Bezier downgraded to None (all-step): read value only
                 IBezFloatKey k;
                 ikc->GetKey(i, &k);
                 t = k.time;
                 value = k.val;
-                // Only keep tangents if the track is actually Bezier
-                // (not downgraded to None via all-step detection).
-                if (!isNone) {
-                    inTan = k.intan;
-                    outTan = k.outtan;
-                    hasTangents = true;
-                }
             } else if (cidA == TCBINTERP_FLOAT_CLASS_ID) {
                 ITCBFloatKey k;
                 ikc->GetKey(i, &k);
                 t = k.time;
                 value = k.val;
             }
-            // No default branch — isTypedFloatController guarantees one
-            // of the three above.
         } else {
-            // On_Off, boolean_float, and any other keyframeable float
-            // controller: read via Animatable NumKeys + GetKeyTime and
-            // evaluate the controller at that time to get the value.
             t = ctrl->GetKeyTime(i);
             Interval valid = FOREVER;
             ctrl->GetValue(t, &value, valid);
@@ -217,10 +275,11 @@ inline int32_t extractVisibilityTrack(INode* node, ir::IRModel& model) {
 
         key.time       = t;
         key.value      = value;
-        key.inTangent  = hasTangents ? inTan  : 0.0f;
-        key.outTangent = hasTangents ? outTan : 0.0f;
-        key.hasTangents = hasTangents;
+        key.inTangent  = 0.0f;
+        key.outTangent = 0.0f;
+        key.hasTangents = false;
     }
+    } // else
 
     // ── Global Sequence detection ────────────────────────────────
     int32_t gsIdx = core::anim::detectAndRegisterGlobalSeq(ctrl, model);

@@ -16,6 +16,20 @@ SceneTraversal::Result SceneTraversal::traverse(Interface* gi, const NodeClassif
 
 void SceneTraversal::visitNode(INode* node, int parentIndex,
                                 const NodeClassifier& classifier, Result& result) {
+    // Skip hidden nodes (matches NeoDex IsIgnorable: obj.isHidden).
+    // Children of hidden nodes are still traversed because a visible
+    // child of a hidden parent should still export — same as the
+    // existing NodeCategory::Ignored behaviour below. The child's
+    // parentIndex is forwarded so the hierarchy stays flat over the
+    // skipped node.
+    if (node && node->IsHidden()) {
+        int numChildren = node->NumberOfChildren();
+        for (int i = 0; i < numChildren; ++i) {
+            visitNode(node->GetChildNode(i), parentIndex, classifier, result);
+        }
+        return;
+    }
+
     std::string customTag;
     NodeCategory cat = classifier.classify(node, customTag);
 

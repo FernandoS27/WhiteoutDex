@@ -69,7 +69,7 @@ struct WdxTeamColorManager
             )
             
             ::WdxTeamColorManager.isPoppedOut = true
-            createDialog mainRollout width:440 height:82 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
+            createDialog mainRollout width:440 height:82 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
         )
         
         on mainRollout close do

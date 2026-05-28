@@ -566,7 +566,7 @@ void Wc3Particle1Builder::buildParticles(
 
 void Wc3Particle2Builder::buildParticles(
     const ir::IRModel& irModel, std::vector<INode*>& nodeMap,
-    const std::wstring& modelDir, void* cascStorage,
+    const std::wstring& modelDir, void* cascStorage, void* mpqStorage,
     Interface* gi, core::ExportErrorReporter& reporter)
 {
     for (const auto& irPE : irModel.particleEmitters) {
@@ -687,21 +687,64 @@ void Wc3Particle2Builder::buildParticles(
             irPE.textureIndex < static_cast<int32_t>(irModel.textures.size()))
         {
             const auto& irTex = irModel.textures[irPE.textureIndex];
-            if (!irTex.filePath.empty()) {
-                std::wstring prefix, filename;
-                splitMdxPath(irTex.filePath, prefix, filename);
+
+            // Pick the actual MDX path to use:
+            //   1. Explicit filePath (covers most cases).
+            //   2. ReplaceableID-derived canonical path when filePath is
+            //      empty (e.g. v800 TeamColor / TeamGlow / Cliff). Mirrors
+            //      the same fallback used in Wc3MaterialBuilder so that
+            //      particle textures driven by an ID instead of a path
+            //      still get extracted from CASC/MPQ.
+            std::string mdxPath = irTex.filePath;
+            if (mdxPath.empty() && irTex.replaceableId > 0) {
+                static constexpr struct { int id; const char* path; } kMap[] = {
+                    {  1, "ReplaceableTextures\\TeamColor\\TeamColor00.blp" },
+                    {  2, "ReplaceableTextures\\TeamGlow\\TeamGlow00.blp" },
+                    { 11, "ReplaceableTextures\\Cliff\\Cliff0.blp" },
+                    { 21, "ReplaceableTextures\\LordaeronTree\\LordaeronSummerTree.blp" },
+                    { 22, "ReplaceableTextures\\AshenvaleTree\\AshenTree.blp" },
+                    { 23, "ReplaceableTextures\\BarrensTree\\BarrensTree.blp" },
+                    { 24, "ReplaceableTextures\\NorthrendTree\\NorthTree.blp" },
+                    { 25, "ReplaceableTextures\\Mushroom\\MushroomTree.blp" },
+                    { 31, "ReplaceableTextures\\RuinsTree\\RuinsTree.blp" },
+                    { 32, "ReplaceableTextures\\OutlandMushroomTree\\MushroomTree.blp" },
+                };
+                for (const auto& m : kMap) {
+                    if (m.id == irTex.replaceableId) { mdxPath = m.path; break; }
+                }
+            }
+
+            if (!mdxPath.empty()) {
+                // Extract the texture to disk first so we can write the full
+                // absolute path back into m_particlePath. The Wc3Particles2
+                // plugin's manual file-browser also stores absolute disk
+                // paths in m_particlePath, so this keeps the imported state
+                // consistent with what the plugin produces when the user
+                // picks a texture by hand. Re-export (if/when implemented)
+                // will need to convert this back to a relative MDX path.
+                std::wstring fullDiskPath = mdx_scene::resolveTexturePathFull(
+                    modelDir, toWstr(mdxPath), cascStorage, mpqStorage);
 
                 auto* pathPtr   = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PATH_IID));
                 auto* prefixPtr = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PREFIX_IID));
-                if (pathPtr)   *pathPtr   = filename.c_str();
-                if (prefixPtr) *prefixPtr = prefix.c_str();
 
-                // Side effect: make sure CASC extracts the texture to disk so
-                // the renderer can find it (resolveTexturePathFull extracts to
-                // <modelDir>\<relPath> if the file isn't already there). We
-                // only need the extraction side effect, not the return value.
-                (void)mdx_scene::resolveTexturePathFull(
-                    modelDir, toWstr(irTex.filePath), cascStorage);
+                // Prefer the resolved absolute disk path (mirrors what
+                // BrowseForMdlFile does in the plugin). Fall back to the
+                // MDX-relative filename only if extraction failed and the
+                // file isn't on disk anywhere — gives the user something
+                // visible in the rollout instead of an empty field.
+                std::wstring filename, prefix;
+                splitMdxPath(mdxPath, prefix, filename);
+
+                std::error_code ec;
+                if (!fullDiskPath.empty() && std::filesystem::exists(fullDiskPath, ec)) {
+                    if (pathPtr)   *pathPtr   = fullDiskPath.c_str();
+                    if (prefixPtr) *prefixPtr = prefix.c_str();   // keeps re-export prefix info
+                } else {
+                    // Texture not extractable — fall back to MDX-relative split
+                    if (pathPtr)   *pathPtr   = filename.c_str();
+                    if (prefixPtr) *prefixPtr = prefix.c_str();
+                }
             }
         }
 
@@ -1017,12 +1060,15 @@ void Wc3VertexColorBuilder::applyVertexColors(
 
         // Create and apply Wc3VertexMod via MaxScript — scripted modifier
         // plugins can't be safely cast to Modifier* from CreateInstance.
+        // Plugin classname is Wdx_Wc3VertexMod (see Wc3VertexColor.ms line 1:
+        // `plugin modifier Wdx_Wc3VertexMod`). Older code used the bare
+        // "Wc3VertexMod" which is undefined in MaxScript.
         std::wstring nodeName(meshNode->GetName());
         wchar_t script[512];
         swprintf_s(script, 512,
             L"(local n = getNodeByName \"%s\";"
             L"if n != undefined do ("
-            L"local m = Wc3VertexMod();"
+            L"local m = Wdx_Wc3VertexMod();"
             L"m.UsesDropShadow = %s;"
             L"m.UsesColor = %s;"
             L"m.VertexColor = color %d %d %d;"
@@ -1201,10 +1247,34 @@ void Wc3SequenceBuilder::buildSequences(
     const ir::IRModel& irModel, Interface* gi,
     core::ExportErrorReporter& reporter)
 {
-    if (irModel.sequences.empty()) return;
-
     INode* rootNode = gi->GetRootNode();
     if (!rootNode) return;
+
+    // If the MDX has no sequences, inject a default "Stand" sequence
+    // (frame 10 → 60, looping) so the artist always has a working
+    // animation range to start with. Without this the timeline collapses
+    // to a single frame and the SequenceStorage CA stays empty, which
+    // breaks downstream tooling that assumes at least one sequence.
+    //
+    // We work from a local copy of the sequence list so the source
+    // irModel reference stays untouched (it is const).
+    std::vector<ir::Sequence> sequencesLocal;
+    if (irModel.sequences.empty()) {
+        ir::Sequence stand;
+        stand.name = "Stand";
+        stand.startTime = 10 * GetTicksPerFrame();
+        stand.endTime   = 60 * GetTicksPerFrame();
+        stand.isLooping = true;
+        stand.rarity    = 0.0f;
+        stand.moveSpeed = 0.0f;
+        stand.flags     = 0;
+        stand.extentMin = Point3(0.0f, 0.0f, 0.0f);
+        stand.extentMax = Point3(0.0f, 0.0f, 0.0f);
+        stand.extentRadius = 0.0f;
+        sequencesLocal.push_back(std::move(stand));
+    }
+    const std::vector<ir::Sequence>& sequences =
+        irModel.sequences.empty() ? sequencesLocal : irModel.sequences;
 
     // Remove legacy note tracks
     while (rootNode->HasNoteTracks())
@@ -1217,7 +1287,7 @@ void Wc3SequenceBuilder::buildSequences(
     script += L"::SequenceStorage.removeCA()\n";
     script += L"::SequenceStorage.ensureCA()\n";
 
-    for (const auto& seq : irModel.sequences) {
+    for (const auto& seq : sequences) {
         // Convert name to wide string, escape backslashes and quotes
         std::wstring wname;
         for (char c : seq.name) {
@@ -1259,7 +1329,7 @@ void Wc3SequenceBuilder::buildSequences(
     }
 
     // Create FrameTagManager entries (paired Start/End tags)
-    for (const auto& seq : irModel.sequences) {
+    for (const auto& seq : sequences) {
         std::wstring wname;
         for (char c : seq.name) {
             if (c == '\\') wname += L"\\\\";
@@ -1286,9 +1356,9 @@ void Wc3SequenceBuilder::buildSequences(
         TRUE, nullptr);
 
     // Set animation range
-    TimeValue minTime = irModel.sequences[0].startTime;
-    TimeValue maxTime = irModel.sequences[0].endTime;
-    for (const auto& seq : irModel.sequences) {
+    TimeValue minTime = sequences[0].startTime;
+    TimeValue maxTime = sequences[0].endTime;
+    for (const auto& seq : sequences) {
         if (seq.startTime < minTime) minTime = seq.startTime;
         if (seq.endTime > maxTime) maxTime = seq.endTime;
     }

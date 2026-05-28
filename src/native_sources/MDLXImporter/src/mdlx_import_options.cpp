@@ -29,11 +29,18 @@ void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts) {
     MSTR dir = gi->GetDir(APP_PLUGCFG_DIR);
     std::wstring iniPath = std::wstring(dir.data()) + L"\\WhiteoutDexImporter.ini";
 
-    if (GetFileAttributesW(iniPath.c_str()) == INVALID_FILE_ATTRIBUTES)
-        return;
+    // The importer-private INI is optional — if it's missing we skip the
+    // user-preference block but still fall through to the global Settings
+    // INIs at the bottom of this function so MPQ/CASC paths still get loaded.
+    const bool haveImporterIni =
+        (GetFileAttributesW(iniPath.c_str()) != INVALID_FILE_ATTRIBUTES);
 
     const wchar_t* sec = L"Settings";
     auto& c = opts.core;
+
+    // Importer-private values are read only if the file exists.
+    std::wstring mpq, casc;
+    if (haveImporterIni) {
 
     // ── Mode ──
     auto mode = iniGetString(iniPath.c_str(), sec, L"ImportMode");
@@ -124,11 +131,11 @@ void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts) {
     auto optBone = iniGetString(iniPath.c_str(), sec, L"OptimizeBonesAndHelpers");
     if (!optBone.empty()) c.optimizeBonesAndHelpers = iniBool(optBone);
 
-    // ── MDX-specific ──
-    auto mpq = iniGetString(iniPath.c_str(), sec, L"SearchMPQ");
+    // ── MDX-specific (Importer-private INI keys, lowest priority) ──
+    mpq = iniGetString(iniPath.c_str(), sec, L"SearchMPQ");
     if (!mpq.empty()) opts.searchMPQ = iniBool(mpq);
 
-    auto casc = iniGetString(iniPath.c_str(), sec, L"SearchCASC");
+    casc = iniGetString(iniPath.c_str(), sec, L"SearchCASC");
     if (!casc.empty()) opts.searchCASC = iniBool(casc);
 
     auto mpqDir = iniGetString(iniPath.c_str(), sec, L"MPQDirectory");
@@ -143,6 +150,47 @@ void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts) {
 
     auto ffx = iniGetString(iniPath.c_str(), sec, L"ImportFaceFX");
     if (!ffx.empty()) opts.importFaceFX = iniBool(ffx);
+
+    } // end if (haveImporterIni)
+    // ────────────────────────────────────────────────────────────────────
+    // Fallback to the global WhiteoutDex Settings INI files used by the
+    // Settings dialog (Settings.mcr) and TextureBrowserHelper.ms.
+    //
+    //   WhiteoutDex_Settings.ini → [CASC] W3Path     (set by Settings dialog)
+    //   WhiteoutDexMPQ.ini        → [MPQ]  Directory  (set by Settings dialog)
+    //
+    // Importer-private values from WhiteoutDexImporter.ini above take priority;
+    // these globals are used only when the importer's own INI is empty.
+    // ────────────────────────────────────────────────────────────────────
+    if (opts.cascDirectory.empty()) {
+        std::wstring cascIni = std::wstring(dir.data()) + L"\\WhiteoutDex_Settings.ini";
+        if (GetFileAttributesW(cascIni.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            auto w3 = iniGetString(cascIni.c_str(), L"CASC", L"W3Path");
+            if (!w3.empty()) opts.cascDirectory = w3;
+        }
+    }
+    if (opts.mpqDirectory.empty()) {
+        std::wstring mpqIni = std::wstring(dir.data()) + L"\\WhiteoutDexMPQ.ini";
+        if (GetFileAttributesW(mpqIni.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            auto md = iniGetString(mpqIni.c_str(), L"MPQ", L"Directory");
+            if (!md.empty()) opts.mpqDirectory = md;
+        }
+    }
+
+    // Auto-enable searches if a valid path is now available and the user
+    // hasn't explicitly turned them off in WhiteoutDexImporter.ini.
+    //   - CASC valid iff cascDirectory contains .build.info
+    //   - MPQ  valid iff mpqDirectory exists as a directory
+    if (casc.empty() && !opts.cascDirectory.empty()) {
+        std::wstring buildInfo = opts.cascDirectory + L"\\.build.info";
+        if (GetFileAttributesW(buildInfo.c_str()) != INVALID_FILE_ATTRIBUTES)
+            opts.searchCASC = true;
+    }
+    if (mpq.empty() && !opts.mpqDirectory.empty()) {
+        DWORD attr = GetFileAttributesW(opts.mpqDirectory.c_str());
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
+            opts.searchMPQ = true;
+    }
 }
 
 void applyFastPreset(MdlxImportOptions& opts) {

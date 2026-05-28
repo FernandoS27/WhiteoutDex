@@ -1737,7 +1737,7 @@ struct WdxGlobalSequenceManager
 	
 	fn showUI =
 	(
-		CreateDialog this.mainRollout
+		CreateDialog this.mainRollout style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 	),
 	
 	fn hideUI =

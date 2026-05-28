@@ -26,6 +26,7 @@
 // Max SDK
 #include <MaxDirectories.h>
 #include <triobj.h>
+#include <MeshNormalSpec.h>
 #include <modstack.h>
 #include <iskin.h>
 #include <istdplug.h>
@@ -375,6 +376,49 @@ INode* createBoneNode(const ir::Bone& bone, Interface* gi, bool asPointHelper) {
     name.printf(_T("%hs"), bone.name.c_str());
     node->SetName(name);
 
+    // Point-helper styling — match NeoDex's appearance:
+    //   p = point name:obj.name pos:obj.pivot box:true size:pSize
+    //   p.wirecolor = green
+    //
+    // Without this our point helpers default to a tiny axis tripod which
+    // is hard to see at typical model scale. NeoDex uses box-style helpers
+    // sized 20 with green wirecolor; replicating that here makes attachment
+    // points / fake bones / model roots immediately visible and visually
+    // distinguishable from real bones.
+    //
+    // Implementation: the PointHelpObject paramblock layout is not part of
+    // the public SDK so we drive it through MaxScript instead — that's
+    // exactly what NeoDex does and the API surface is documented.
+    if (asPointHelper) {
+        // Wirecolor we can set directly via the C++ API.
+        node->SetWireColor(RGB(0, 255, 0));
+
+        // Display flags via MaxScript. We escape the node name in case it
+        // contains characters that would break the script string literal.
+        std::wstring nm(node->GetName());
+        std::wstring escaped;
+        escaped.reserve(nm.size());
+        for (wchar_t c : nm) {
+            if (c == L'"' || c == L'\\') escaped.push_back(L'\\');
+            escaped.push_back(c);
+        }
+        std::wstringstream ss;
+        ss << L"(local n = getNodeByName \"" << escaped << L"\";"
+           << L"if n != undefined and (classOf n) == Point do ("
+           << L"n.size = 20;"
+           << L"n.box = true;"
+           << L"n.cross = false;"
+           << L"n.axistripod = false;"
+           << L"n.centermarker = false))";
+        std::wstring scriptStr = ss.str();
+        ExecuteMAXScriptScript(
+            const_cast<wchar_t*>(scriptStr.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE, nullptr);
+    }
+
     // Flag BoneGeometry nodes as bones so Max's tools & exporters treat them
     // correctly (equivalent to MaxScript's `.boneEnable = true`).
     if (!asPointHelper) {
@@ -525,7 +569,69 @@ INode* createMeshNode(const ir::Mesh& irMesh, Interface* gi) {
         }
     }
 
-    // Normals via smoothing groups (explicit normals handled later if needed)
+    // Per-vertex normals — write the MDX file's authoritative normals directly
+    // into the mesh's MeshNormalSpec so Max doesn't recompute them from the
+    // face geometry + a single smoothing group. Without this step, models
+    // like Arthas show wrong shading on rounded surfaces (nose, chin, etc.):
+    // SmGroup=1 makes everything one giant smooth surface, but with welded
+    // hard-edge vertices (Arthas's mesh has a single vertex shared between
+    // smooth-shaded and hard-shaded regions) Max ends up averaging across
+    // semantic boundaries and the lighting collapses to nonsense.
+    //
+    // MDX stores ONE normal per vertex (no per-corner normals), so we use
+    // each face's three vertex indices to look up the corresponding normal.
+    // Using SetAllExplicit(true) tells Max these normals are authoritative
+    // and must NOT be recomputed when smoothing groups change.
+    bool haveNormals = false;
+    for (int i = 0; i < vertCount; ++i) {
+        const Point3& nv = irMesh.vertices[i].normal;
+        if (nv.LengthSquared() > 1e-6f) { haveNormals = true; break; }
+    }
+    if (haveNormals) {
+        mesh.SpecifyNormals();
+        MeshNormalSpec* specNorms = mesh.GetSpecifiedNormals();
+        if (specNorms) {
+            specNorms->ClearAndFree();
+            specNorms->SetParent(&mesh);
+            specNorms->SetNumNormals(vertCount);
+            specNorms->SetNumFaces(faceCount);
+
+            // Populate the normal pool — one per IR vertex.
+            for (int i = 0; i < vertCount; ++i) {
+                Point3 n = irMesh.vertices[i].normal;
+                float L = n.Length();
+                if (L > 1e-6f) n /= L; else n = Point3(0.0f, 0.0f, 1.0f);
+                specNorms->Normal(i) = n;
+            }
+            specNorms->SetAllExplicit(true);
+
+            // Attach normal IDs to each face corner. faceCount has been
+            // truncated above to validFaces, so the face indices remain
+            // in lockstep with the original triangulation we walked.
+            int mf = 0;
+            for (int f = 0; f < static_cast<int>(irMesh.indices.size() / 3); ++f) {
+                int base = f * 3;
+                uint32_t i0 = irMesh.indices[base];
+                uint32_t i1 = irMesh.indices[base + 1];
+                uint32_t i2 = irMesh.indices[base + 2];
+                if (i0 >= static_cast<uint32_t>(vertCount) ||
+                    i1 >= static_cast<uint32_t>(vertCount) ||
+                    i2 >= static_cast<uint32_t>(vertCount))
+                    continue;
+                if (mf >= faceCount) break;
+                MeshNormalFace& nf = specNorms->Face(mf);
+                nf.SpecifyAll(true);
+                nf.SetNormalID(0, static_cast<int>(i0));
+                nf.SetNormalID(1, static_cast<int>(i1));
+                nf.SetNormalID(2, static_cast<int>(i2));
+                ++mf;
+            }
+            specNorms->CheckNormals();
+        }
+    }
+
+    // Build smoothing-group derived normals as a fallback for any face where
+    // we didn't specify one (none expected, but the API requires this call).
     mesh.buildNormals();
     mesh.InvalidateGeomCache();
     mesh.InvalidateTopologyCache();
@@ -1252,15 +1358,42 @@ Control* createFloatController(const ir::FloatTrack& track) {
                 SetInTanType(key.flags, BEZKEY_STEP);
                 SetOutTanType(key.flags, BEZKEY_STEP);
             } else if (kf.hasTangents) {
-                SetInTanType(key.flags, BEZKEY_USER);
-                SetOutTanType(key.flags, BEZKEY_USER);
-                if (i > 0) {
-                    float dt = static_cast<float>(kf.time - track.keys[i-1].time);
-                    if (dt > 0.0f) key.intan = bezConst * (kf.inTangent - kf.value) / dt;
+                // V3 strategy: when adjacent keys hold the same value (e.g. an
+                // opacity that fades to 0, holds at 0, then fades back up), use
+                // BEZKEY_FLAT on the matching side so the curve plateaus instead
+                // of overshooting through Auto-Smooth or following extreme MDX
+                // tangents into negative territory. Only use BEZKEY_USER (with
+                // the bezConst slope) where the value actually changes.
+                //
+                // Empirically verified against box_export_2.mdx — without this,
+                // the imported opacity curve overshoots both above 100 and below
+                // 0 between equal-value keys (variant test V1 "CURRENT" produced
+                // visible waves; V3 "FLAT_AT_REPEATS" produces a clean plateau).
+                constexpr float kEpsilon = 1e-4f;
+                bool prevSameValue = (i > 0)
+                    && (fabsf(track.keys[i-1].value - kf.value) < kEpsilon);
+                bool nextSameValue = (i < numKeys - 1)
+                    && (fabsf(track.keys[i+1].value - kf.value) < kEpsilon);
+
+                if (prevSameValue) {
+                    SetInTanType(key.flags, BEZKEY_FLAT);
+                    // intan stays 0 from memset
+                } else {
+                    SetInTanType(key.flags, BEZKEY_USER);
+                    if (i > 0) {
+                        float dt = static_cast<float>(kf.time - track.keys[i-1].time);
+                        if (dt > 0.0f) key.intan = bezConst * (kf.inTangent - kf.value) / dt;
+                    }
                 }
-                if (i < numKeys - 1) {
-                    float dt = static_cast<float>(track.keys[i+1].time - kf.time);
-                    if (dt > 0.0f) key.outtan = bezConst * (kf.outTangent - kf.value) / dt;
+                if (nextSameValue) {
+                    SetOutTanType(key.flags, BEZKEY_FLAT);
+                    // outtan stays 0 from memset
+                } else {
+                    SetOutTanType(key.flags, BEZKEY_USER);
+                    if (i < numKeys - 1) {
+                        float dt = static_cast<float>(track.keys[i+1].time - kf.time);
+                        if (dt > 0.0f) key.outtan = bezConst * (kf.outTangent - kf.value) / dt;
+                    }
                 }
             }
             ikc->AppendKey(&key);
@@ -1314,17 +1447,40 @@ Control* createColorController(const ir::ColorTrack& track) {
                 SetInTanType(key.flags, BEZKEY_STEP);
                 SetOutTanType(key.flags, BEZKEY_STEP);
             } else if (kf.hasTangents && track.interpolation == ir::InterpolationType::Bezier) {
-                SetInTanType(key.flags, BEZKEY_USER);
-                SetOutTanType(key.flags, BEZKEY_USER);
+                // V3 strategy: BEZKEY_FLAT on the side with a same-value neighbour
+                // (per RGB component, but we treat the whole color as stable only
+                // when ALL three components match, otherwise fall through to USER).
+                // See createFloatController for the rationale.
+                constexpr float kEpsilon = 1e-4f;
+                auto sameColor = [&](const Color& a, const Color& b) {
+                    return fabsf(a.r - b.r) < kEpsilon
+                        && fabsf(a.g - b.g) < kEpsilon
+                        && fabsf(a.b - b.b) < kEpsilon;
+                };
+                bool prevSameValue = (i > 0)
+                    && sameColor(track.keys[i-1].value, kf.value);
+                bool nextSameValue = (i < numKeys - 1)
+                    && sameColor(track.keys[i+1].value, kf.value);
                 Point3 inT(kf.inTangent.r, kf.inTangent.g, kf.inTangent.b);
                 Point3 outT(kf.outTangent.r, kf.outTangent.g, kf.outTangent.b);
-                if (i > 0) {
-                    float dt = static_cast<float>(kf.time - track.keys[i-1].time);
-                    if (dt > 0.0f) key.intan = bezConst * (inT - val) / dt;
+
+                if (prevSameValue) {
+                    SetInTanType(key.flags, BEZKEY_FLAT);
+                } else {
+                    SetInTanType(key.flags, BEZKEY_USER);
+                    if (i > 0) {
+                        float dt = static_cast<float>(kf.time - track.keys[i-1].time);
+                        if (dt > 0.0f) key.intan = bezConst * (inT - val) / dt;
+                    }
                 }
-                if (i < numKeys - 1) {
-                    float dt = static_cast<float>(track.keys[i+1].time - kf.time);
-                    if (dt > 0.0f) key.outtan = bezConst * (outT - val) / dt;
+                if (nextSameValue) {
+                    SetOutTanType(key.flags, BEZKEY_FLAT);
+                } else {
+                    SetOutTanType(key.flags, BEZKEY_USER);
+                    if (i < numKeys - 1) {
+                        float dt = static_cast<float>(track.keys[i+1].time - kf.time);
+                        if (dt > 0.0f) key.outtan = bezConst * (outT - val) / dt;
+                    }
                 }
             }
             ikc->AppendKey(&key);
@@ -1439,11 +1595,25 @@ void animateFloatNamedScript(INode* node, const wchar_t* paramName,
        << L"n." << paramName << L".controller = bezier_float();"
        << L"local c = n." << paramName << L".controller;";
 
-    for (const auto& kf : track.keys) {
+    // V3 strategy for Bezier: same-value neighbours become BEZKEY_FLAT to avoid
+    // overshoot. Linear/Step/None bypass this and use their own tangent type.
+    constexpr float kEpsilon = 1e-4f;
+    const bool isBezier = (track.interpolation == ir::InterpolationType::Bezier);
+    const int n = static_cast<int>(track.keys.size());
+    for (int i = 0; i < n; ++i) {
+        const auto& kf = track.keys[i];
+        const wchar_t* inTan = tanType;
+        const wchar_t* outTan = tanType;
+        if (isBezier) {
+            bool prevSame = (i > 0) && (fabsf(track.keys[i-1].value - kf.value) < kEpsilon);
+            bool nextSame = (i < n - 1) && (fabsf(track.keys[i+1].value - kf.value) < kEpsilon);
+            inTan  = prevSame ? L"#flat" : L"#smooth";
+            outTan = nextSame ? L"#flat" : L"#smooth";
+        }
         ss << L"local k = addNewKey c " << kf.time << L"t;"
            << L"k.value = " << kf.value << L";"
-           << L"k.inTangentType = " << tanType << L";"
-           << L"k.outTangentType = " << tanType << L";";
+           << L"k.inTangentType = " << inTan << L";"
+           << L"k.outTangentType = " << outTan << L";";
     }
 
     if (track.globalSequenceIndex >= 0) {
@@ -1486,7 +1656,17 @@ void animateColorNamedScript(INode* node, const wchar_t* paramName,
        << L"n." << paramName << L".controller = bezier_color();"
        << L"local c = n." << paramName << L".controller;";
 
-    for (const auto& kf : track.keys) {
+    constexpr float kEpsilon = 1e-4f;
+    auto sameColor = [&](const Color& a, const Color& b) {
+        return fabsf(a.r - b.r) < kEpsilon
+            && fabsf(a.g - b.g) < kEpsilon
+            && fabsf(a.b - b.b) < kEpsilon;
+    };
+    const bool isBezier = (track.interpolation == ir::InterpolationType::Bezier);
+    const int n = static_cast<int>(track.keys.size());
+
+    for (int i = 0; i < n; ++i) {
+        const auto& kf = track.keys[i];
         // Max's color picker uses 0..255 range (confirmed by Wc3Light plugin
         // defaults: AmbColor=[255,230,142], ShadowColor=[122,172,255]).
         // Convert MDX 0..1 float to 0..255 byte. BGR->RGB swap is already
@@ -1497,10 +1677,20 @@ void animateColorNamedScript(INode* node, const wchar_t* paramName,
         if (r < 0) r = 0; if (r > 255) r = 255;
         if (g < 0) g = 0; if (g > 255) g = 255;
         if (b < 0) b = 0; if (b > 255) b = 255;
+
+        // V3 strategy for Bezier: same-value neighbours become BEZKEY_FLAT.
+        const wchar_t* inTan = tanType;
+        const wchar_t* outTan = tanType;
+        if (isBezier) {
+            bool prevSame = (i > 0) && sameColor(track.keys[i-1].value, kf.value);
+            bool nextSame = (i < n - 1) && sameColor(track.keys[i+1].value, kf.value);
+            inTan  = prevSame ? L"#flat" : L"#smooth";
+            outTan = nextSame ? L"#flat" : L"#smooth";
+        }
         ss << L"local k = addNewKey c " << kf.time << L"t;"
            << L"k.value = color " << r << L" " << g << L" " << b << L";"
-           << L"k.inTangentType = " << tanType << L";"
-           << L"k.outTangentType = " << tanType << L";";
+           << L"k.inTangentType = " << inTan << L";"
+           << L"k.outTangentType = " << outTan << L";";
     }
 
     if (track.globalSequenceIndex >= 0) {
@@ -1779,19 +1969,31 @@ void insertVisibilityKeys(INode* node, const ir::FloatTrack& track,
             key.time = track.keys[i].time;
             key.val = track.keys[i].value;
 
-            // Custom tangents from MDX data
-            SetInTanType(key.flags, BEZKEY_USER);
-            SetOutTanType(key.flags, BEZKEY_USER);
+            // V3 strategy: BEZKEY_FLAT on the side with a same-value neighbour,
+            // BEZKEY_USER (with bezConst slope) elsewhere. See createFloatController
+            // for rationale. Visibility tracks frequently hold at 0 or 1 between
+            // keys, so the flat handling is even more important here.
+            constexpr float kEpsilon = 1e-4f;
+            bool prevSameValue = (i > 0)
+                && (fabsf(track.keys[i-1].value - key.val) < kEpsilon);
+            bool nextSameValue = (i < numKeys - 1)
+                && (fabsf(track.keys[i+1].value - key.val) < kEpsilon);
 
-            if (track.keys[i].hasTangents) {
-                // In tangent: relative to previous key time
-                if (i > 0) {
+            if (prevSameValue) {
+                SetInTanType(key.flags, BEZKEY_FLAT);
+            } else {
+                SetInTanType(key.flags, BEZKEY_USER);
+                if (track.keys[i].hasTangents && i > 0) {
                     float dt = static_cast<float>(track.keys[i].time - track.keys[i-1].time);
                     if (dt > 0.0f)
                         key.intan = bezConst * (track.keys[i].inTangent - key.val) / dt;
                 }
-                // Out tangent: relative to next key time
-                if (i < numKeys - 1) {
+            }
+            if (nextSameValue) {
+                SetOutTanType(key.flags, BEZKEY_FLAT);
+            } else {
+                SetOutTanType(key.flags, BEZKEY_USER);
+                if (track.keys[i].hasTangents && i < numKeys - 1) {
                     float dt = static_cast<float>(track.keys[i+1].time - track.keys[i].time);
                     if (dt > 0.0f)
                         key.outtan = bezConst * (track.keys[i].outTangent - key.val) / dt;
@@ -1953,7 +2155,8 @@ template <typename T>
 void remapTrackKeys(ir::Track<T>& track,
                     const std::vector<SeqRange>& ranges,
                     const T& defaultVal,
-                    bool useDefaultForStartBoundary)
+                    bool useDefaultForStartBoundary,
+                    bool resetOnEmptySeq = false)
 {
     if (track.keys.empty() || track.globalSequenceIndex >= 0) return;
 
@@ -2039,8 +2242,21 @@ void remapTrackKeys(ir::Track<T>& track,
             //   3. First MDX key (track's initial/anchor value). This is the
             //      critical fallback for sequences BEFORE the first keyed one.
             //   4. defaultVal (should never reach this — track has keys).
+            //
+            // EXCEPTION (resetOnEmptySeq == true): for bone Translation/Rotation/
+            // Scale tracks, the Wc3 engine convention is that a sequence WITHOUT
+            // keys for a bone evaluates to local identity (0,0,0 / identity quat /
+            // 1,1,1) — NOT to the last value of the previous sequence. Without
+            // this branch, e.g. Crystal Golem rt_wrist_jnt holds the Death-end
+            // pose throughout the Stand sequence because Stand has no KGTR keys.
+            // In NeoDex this works because no stubs are inserted at all, so
+            // Max's bind-pose interpolation takes over; we explicitly write the
+            // identity stub to match.
             T holdVal = defaultVal;
-            if (!newKeys.empty()) {
+            if (resetOnEmptySeq) {
+                // Use the bind-pose/identity default unconditionally.
+                // holdVal stays = defaultVal.
+            } else if (!newKeys.empty()) {
                 holdVal = newKeys.back().value;
             } else {
                 bool found = false;
@@ -2165,11 +2381,23 @@ void remapTimeline(ir::IRModel& irModel) {
         irModel.sequences[r.origIdx].endTime   = r.newEnd;
     }
 
-    // Remap node animation tracks
+    // Remap node animation tracks.
+    //
+    // For Translation/Rotation/Scale on bones, we pass resetOnEmptySeq=true
+    // so that sequences WITHOUT keys for a bone collapse to local identity
+    // (0,0,0 / identity quat / 1,1,1) instead of holding the last value
+    // from a previous sequence. This matches the Wc3 engine semantics:
+    // a sequence with no track entries for a bone returns the bone to its
+    // bind pose, not whatever pose the previous sequence ended on.
+    //
+    // Concrete failure case without this flag: Crystal Golem rt_wrist_jnt
+    // has KGTR keys only in Walk/Death/Birth/Sleep but NOT in Stand. With
+    // hold-last semantics, Stand inherits the Death-end pose ("dead arm
+    // dangling"). With resetOnEmptySeq, Stand correctly goes to bind pose.
     for (auto& na : irModel.nodeAnimations) {
-        remapTrackKeys(na.translation, ranges, Point3(0.0f, 0.0f, 0.0f), false);
-        remapTrackKeys(na.rotation,    ranges, Quat(0.0f, 0.0f, 0.0f, 1.0f), false);
-        remapTrackKeys(na.scale,       ranges, Point3(1.0f, 1.0f, 1.0f), false);
+        remapTrackKeys(na.translation, ranges, Point3(0.0f, 0.0f, 0.0f), false, true);
+        remapTrackKeys(na.rotation,    ranges, Quat(0.0f, 0.0f, 0.0f, 1.0f), false, true);
+        remapTrackKeys(na.scale,       ranges, Point3(1.0f, 1.0f, 1.0f), false, true);
     }
 
     // ── Remap floatTracks, routing visibility through dedicated path ─
@@ -2258,6 +2486,37 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
     // 2. Parse MDX/MDL file via WhiteoutLib (fast — needed to detect version)
     std::string filePath = wcharToUtf8(name);
+
+    // Read the TRUE MDX version directly from the file header BEFORE
+    // calling parser.parse(), which auto-upgrades mdxModel.version to
+    // CurrentVersion (1200) regardless of what the file actually was.
+    // This matches NeoDex's peekMDXVersion approach and is needed to
+    // pick the correct dialog (Classic MPQ vs Reforged CASC) and to
+    // make per-version code paths reachable.
+    //
+    // MDX layout: bytes 0..3 = "MDLX", 4..7 = "VERS", 8..11 = chunk
+    // size (always 4), 12..15 = u32 version. v800 / v1000 / v1100 / v1200.
+    // For .mdl files (text format), this byte-peek will return 0 and we
+    // fall back to whatever the parser reports — fine since .mdl is
+    // mostly v800/Classic anyway.
+    uint32_t trueMdxVersion = 0;
+    {
+        FILE* f = nullptr;
+        if (fopen_s(&f, filePath.c_str(), "rb") == 0 && f) {
+            uint8_t header[16] = {0};
+            if (fread(header, 1, 16, f) == 16) {
+                if (header[0]=='M' && header[1]=='D' && header[2]=='L' && header[3]=='X' &&
+                    header[4]=='V' && header[5]=='E' && header[6]=='R' && header[7]=='S') {
+                    trueMdxVersion = (uint32_t)header[12]
+                                   | ((uint32_t)header[13] << 8)
+                                   | ((uint32_t)header[14] << 16)
+                                   | ((uint32_t)header[15] << 24);
+                }
+            }
+            fclose(f);
+        }
+    }
+
     whiteout::mdx::Parser parser;
     whiteout::mdx::Model mdxModel;
 
@@ -2271,11 +2530,17 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         return IMPEXP_FAIL;
     }
 
-    opts.detectedVersion = mdxModel.version;
+    // Use the true (pre-upgrade) version where available, otherwise
+    // fall back to the parser's value (e.g. for .mdl text files).
+    opts.detectedVersion = (trueMdxVersion != 0) ? trueMdxVersion : mdxModel.version;
 
     // 3. Show import options dialog (unless suppressed)
     if (!suppressPrompts) {
-        bool isReforged = (mdxModel.version >= 1200);
+        // Use the TRUE MDX version (pre-upgrade) so v800/v1000/v1100
+        // models get the Classic MPQ dialog and only true v1200+ models
+        // get the Reforged CASC dialog. mdxModel.version cannot be used
+        // here because the parser auto-upgrades it to 1200.
+        bool isReforged = (opts.detectedVersion >= 1200);
         if (!showImportDialog(hInstance, gi->GetMAXHWnd(), opts, isReforged))
             return IMPEXP_CANCEL;
     }
@@ -2359,10 +2624,18 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 if (bone.nodeIndex < 0 || bone.nodeIndex >= static_cast<int32_t>(mustImport.size()))
                     continue;
                 if (!mustImport[bone.nodeIndex]) continue;
-                if (bone.parentIndex >= 0 && bone.parentIndex < static_cast<int32_t>(mustImport.size())
-                    && !mustImport[bone.parentIndex]) {
-                    mustImport[bone.parentIndex] = true;
-                    changed = true;
+                // bone.parentIndex is a bone-array-pos (Index into irModel.bones),
+                // not a nodeIndex. Translate via irModel.bones[parentIdx].nodeIndex
+                // before indexing mustImport[] which is sized by nodeIndex space.
+                if (bone.parentIndex >= 0
+                    && bone.parentIndex < static_cast<int32_t>(irModel.bones.size())) {
+                    int32_t parentNodeIdx = irModel.bones[bone.parentIndex].nodeIndex;
+                    if (parentNodeIdx >= 0
+                        && parentNodeIdx < static_cast<int32_t>(mustImport.size())
+                        && !mustImport[parentNodeIdx]) {
+                        mustImport[parentNodeIdx] = true;
+                        changed = true;
+                    }
                 }
             }
         }
@@ -2402,12 +2675,35 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
             // MaxScript setupNode: apply DontInherit flags
             // MDX flags: 0x1 = DontInheritTranslation, 0x2 = DontInheritRotation, 0x4 = DontInheritScaling
-            if (bone.nodeFlags & 0x7) {
+            //
+            // 0x2 (DontInheritRotation) is deliberately NOT translated to Max's
+            // INHERIT_ROT_*. The Wc3 engine effectively ignores this flag in
+            // its bone-TM composition: setting it on/off produces identical
+            // rendering in-game, and the war3-model TypeScript renderer
+            // explicitly skips it without any visual regression.
+            //
+            // In Max however, INHERIT_ROT_off does not reset the bone's own
+            // rotation but suppresses rotation pass-through to CHILDREN.
+            // Empirical measurement on Naruto_Hokage_2026.mdx (3ds Max Biped
+            // export with the flag set on every biped bone), frame 10 of Stand:
+            //
+            //   Bone           with flag honored          flag stripped              Δ pos    Δ rot
+            //   R Thigh (d2)   pos=(-0.15,+10.28,+80.50)  pos=(-0.15,+10.28,+80.50)  0.0      0°
+            //   R Calf  (d3)   pos=(-20.13, +2.47,+51.18) pos=(-21.57,+18.43,+52.32) 16.1     53°
+            //   R Foot  (d4)   pos=(-26.65,+32.79,+15.99) pos=(-19.92,+38.35, +9.88) 10.7     73°
+            //
+            // Grandchildren-and-deeper drift visibly away from the bind pose.
+            // Stripping the flag matches the engine and produces correct anim.
+            //
+            // The original flag value is preserved as a user property so the
+            // exporter can round-trip the original MDX bit pattern.
+            boneNode->SetUserPropInt(_T("DontInheritRotation"),
+                                     (bone.nodeFlags & 0x2) ? 1 : 0);
+
+            if (bone.nodeFlags & 0x5) {  // 0x1 (translation) and 0x4 (scaling) only
                 DWORD inheritFlags = INHERIT_ALL;
                 if (bone.nodeFlags & 0x1)
                     inheritFlags &= ~(INHERIT_POS_X | INHERIT_POS_Y | INHERIT_POS_Z);
-                if (bone.nodeFlags & 0x2)
-                    inheritFlags &= ~(INHERIT_ROT_X | INHERIT_ROT_Y | INHERIT_ROT_Z);
                 if (bone.nodeFlags & 0x4)
                     inheritFlags &= ~(INHERIT_SCL_X | INHERIT_SCL_Y | INHERIT_SCL_Z);
                 Control* tmCtrl = boneNode->GetTMController();
@@ -2436,24 +2732,41 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         // Set parent relationships (second pass — all nodes must exist first)
         // MaxScript relinkObjects walks up the parent chain when a parent wasn't
         // created (e.g. helpers disabled).  We replicate that here.
+        //
+        // CRITICAL: bone.parentIndex is a bone-array-pos (Index into
+        // irModel.bones), NOT a nodeIndex. To look up the parent's Max
+        // node we translate via irModel.bones[parentIdx].nodeIndex
+        // before indexing nodeMap[]. This used to "happen to work"
+        // without BoneOptimizer because bone-array-pos coincidentally
+        // matched nodeIndex on most models, but the moment the optimizer
+        // compacts the bones array (or a model has non-bone nodes
+        // interleaved among bones) the two index spaces diverge.
         for (const auto& bone : irModel.bones) {
             if (bone.nodeIndex < 0 || bone.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
                 continue;
             INode* boneNode = nodeMap[bone.nodeIndex];
             if (!boneNode) continue;
 
-            // Walk up the parent chain until we find one that exists in nodeMap
-            int32_t parentIdx = bone.parentIndex;
-            while (parentIdx >= 0 && parentIdx < static_cast<int32_t>(nodeMap.size())
-                   && !nodeMap[parentIdx]) {
-                parentIdx = irModel.nodes[parentIdx].parentIndex;
+            // Walk the bone-array parent chain until we find a parent whose
+            // Max node was actually created.
+            int32_t parentBoneArrayPos = bone.parentIndex;
+            INode* parent = nullptr;
+            while (parentBoneArrayPos >= 0
+                   && parentBoneArrayPos < static_cast<int32_t>(irModel.bones.size())) {
+                int32_t parentNodeIdx = irModel.bones[parentBoneArrayPos].nodeIndex;
+                if (parentNodeIdx >= 0
+                    && parentNodeIdx < static_cast<int32_t>(nodeMap.size())
+                    && nodeMap[parentNodeIdx]) {
+                    parent = nodeMap[parentNodeIdx];
+                    break;
+                }
+                // This bone's Max node wasn't created — walk up via the
+                // bone-array parent chain (which is also bone-array-pos).
+                parentBoneArrayPos = irModel.bones[parentBoneArrayPos].parentIndex;
             }
 
-            if (parentIdx >= 0 && parentIdx < static_cast<int32_t>(nodeMap.size())) {
-                INode* parent = nodeMap[parentIdx];
-                if (parent)
-                    parent->AttachChild(boneNode);
-            }
+            if (parent)
+                parent->AttachChild(boneNode);
         }
     }
 
@@ -2488,20 +2801,30 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             modelDir = fullPath.substr(0, lastSep + 1);
     }
 
-    // Pre-resolve all textures and PE1 model files (including CASC extraction)
-    // so every builder can find them on disk without needing the CASC handle.
+    // ── CASC + MPQ archive storages ─────────────────────────────────────
+    // Both storages are opened BEFORE the texture pre-resolution and held
+    // open until the end of DoImport so that resolveTexturePathFull() inside
+    // buildMaterials and Wc3Particle2Builder can still extract textures that
+    // weren't covered by the pre-resolution (e.g. IFL animation textures).
+    void* cascPtr = nullptr;
+    void* mpqPtr  = nullptr;
+    if (opts.core.importTextures) {
+        if (opts.searchCASC)
+            cascPtr = mdx_scene::openCascStorage(opts.cascDirectory);
+        if (opts.searchMPQ)
+            mpqPtr = mdx_scene::openMpqStorage(opts.mpqDirectory);
+    }
+
+    // Pre-resolve all textures and PE1 model files (including CASC/MPQ extraction)
+    // so every builder can find them on disk without needing the archive handles.
     // PE1 model files are parsed recursively to extract their textures and
     // any nested PE1 model references (with cycle detection).
     if (opts.core.importTextures) {
-        void* cascPtr = nullptr;
-        if (opts.searchCASC)
-            cascPtr = mdx_scene::openCascStorage(opts.cascDirectory);
-
         // Resolve all textures from the main model
         for (const auto& irTex : irModel.textures) {
             if (!irTex.filePath.empty()) {
                 std::wstring wpath(irTex.filePath.begin(), irTex.filePath.end());
-                mdx_scene::resolveTexturePathFull(modelDir, wpath, cascPtr);
+                mdx_scene::resolveTexturePathFull(modelDir, wpath, cascPtr, mpqPtr);
             }
         }
 
@@ -2531,18 +2854,18 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 return {};
             };
 
-            // Resolve a model file, falling back to CASC extraction.
+            // Resolve a model file, falling back to CASC/MPQ extraction.
             auto resolveModelFull = [&](const std::wstring& relPath) -> std::wstring {
                 // Check disk first (both extensions)
                 auto onDisk = resolveModelOnDisk(relPath);
                 if (!onDisk.empty()) return onDisk;
 
-                // Try CASC extraction with original path
-                auto extracted = mdx_scene::resolveTexturePathFull(modelDir, relPath, cascPtr);
+                // Try archive extraction with original path
+                auto extracted = mdx_scene::resolveTexturePathFull(modelDir, relPath, cascPtr, mpqPtr);
                 std::error_code ec;
                 if (!extracted.empty() && fs::exists(extracted, ec)) return extracted;
 
-                // Try CASC with alternate extension
+                // Try archive with alternate extension
                 std::wstring altPath = relPath;
                 if (altPath.size() > 4) {
                     std::wstring ext = altPath.substr(altPath.size() - 4);
@@ -2553,7 +2876,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                         altPath = altPath.substr(0, altPath.size() - 4) + L".mdx";
                     else
                         return {};
-                    extracted = mdx_scene::resolveTexturePathFull(modelDir, altPath, cascPtr);
+                    extracted = mdx_scene::resolveTexturePathFull(modelDir, altPath, cascPtr, mpqPtr);
                     if (!extracted.empty() && fs::exists(extracted, ec)) return extracted;
                 }
                 return {};
@@ -2622,8 +2945,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                         if (!tex.fileName.empty()) {
                             std::wstring wTexPath(tex.fileName.begin(), tex.fileName.end());
                             // Try relative to child model first, then parent model dir
-                            mdx_scene::resolveTexturePathFull(childDir, wTexPath, cascPtr);
-                            mdx_scene::resolveTexturePathFull(modelDir, wTexPath, cascPtr);
+                            mdx_scene::resolveTexturePathFull(childDir, wTexPath, cascPtr, mpqPtr);
+                            mdx_scene::resolveTexturePathFull(modelDir, wTexPath, cascPtr, mpqPtr);
                         }
                     }
                     for (const auto& subPE : subModel.particleEmitters) {
@@ -2634,10 +2957,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             }
         }
 
-        if (cascPtr) {
-            mdx_scene::closeCascStorage(cascPtr);
-            cascPtr = nullptr;
-        }
+        // NOTE: Storages stay open here — closed at the very end of DoImport
+        // so material/particle builders can still hit the archives.
     }
 
     // 10. Build materials and assign to meshes
@@ -2645,7 +2966,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     if (opts.core.importMaterials) {
         mdx_scene::Wc3MaterialBuilder matBuilder;
         materials = matBuilder.buildMaterials(
-            irModel, opts.core.importTextures, modelDir, nullptr, gi, reporter);
+            irModel, opts.core.importTextures, modelDir, cascPtr, mpqPtr, gi, reporter);
 
         for (size_t mi = 0; mi < irModel.meshes.size(); ++mi) {
             int32_t matIdx = irModel.meshes[mi].materialIndex;
@@ -2674,7 +2995,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         }
         if (opts.core.importParticleEmitters2) {
             mdx_scene::Wc3Particle2Builder pe2Builder;
-            pe2Builder.buildParticles(irModel, nodeMap, modelDir, nullptr, gi, reporter);
+            pe2Builder.buildParticles(irModel, nodeMap, modelDir, cascPtr, mpqPtr, gi, reporter);
         }
         if (opts.core.importRibbonEmitters) {
             mdx_scene::Wc3RibbonBuilder ribBuilder;
@@ -3270,8 +3591,38 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             // wipe animation controllers we just set up. The filter mode and opacity
             // map were already configured in C++ during material build.
             ExecuteMAXScriptScript(
+                // Sync each Wc3Material's opacity to its StandardMaterial delegate so the
+                // viewport renderer (which reads the delegate, not the wrapper) honors the
+                // animation. Empirically verified against box_export_2.mdx with KMTA Bezier
+                // alpha tracks: without this sync, the box stays at 100% opacity even when
+                // sub.opacity drops to 0, because Max renders from delg.opacity which still
+                // has its initial value.
+                //
+                // Subtlety: MaxScript's get/set on Wc3Material.opacity and Standardmaterial.
+                // opacity both use the 0..100 UI scale, so the static value assignment
+                // (sub.delegate.opacity = sub.opacity) is correct as-is. But when assigning
+                // a CONTROLLER, Max treats the controller's stored values as the internal
+                // 0..1 scale and re-multiplies by 100 for display, producing 10000.0 from
+                // a 100.0 key. We therefore copy the controller and divide its values and
+                // tangents by 100 before attaching to the delegate.
                 _M("for m in sceneMaterials do ("
                      "local isComp = try(m.materialList != undefined)catch(false);"
+                     "fn syncOpacity sub = ("
+                       "if sub == undefined or (try(sub.delegate)catch(undefined)) == undefined then return false;"
+                       "try(sub.delegate.opacity = sub.opacity)catch();"
+                       "local aCtrl = try(sub.opacity.controller)catch(undefined);"
+                       "if aCtrl != undefined and (try((classOf aCtrl) == bezier_float or (classOf aCtrl) == linear_float or (classOf aCtrl) == on_off)catch(false)) do ("
+                         "try("
+                           "local cc = copy aCtrl;"
+                           "for i = 1 to cc.keys.count do ("
+                             "cc.keys[i].value = cc.keys[i].value / 100.0;"
+                             "try(cc.keys[i].inTangent  = cc.keys[i].inTangent  / 100.0)catch();"
+                             "try(cc.keys[i].outTangent = cc.keys[i].outTangent / 100.0)catch()"
+                           ");"
+                           "setPropertyController sub.delegate \"opacity\" cc"
+                         ")catch()"
+                       ")"
+                     ");"
                      "if isComp do ("
                        "local hasAdditive = false;"
                        "for i = 1 to m.materialList.count do ("
@@ -3293,13 +3644,12 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                          ");"
                          "local tex = try(sub.diffuseMap)catch(undefined);"
                          "if tex != undefined do try(showTextureMap m tex true)catch();"
-                         "try(sub.delegate.opacity = sub.opacity)catch();"
-                         "local aCtrl = try(sub.opacity.controller)catch(undefined);"
-                         "if aCtrl != undefined do try(sub.delegate.opacity.controller = aCtrl)catch()"
+                         "syncOpacity sub"
                        ")"
                      ");"
                      "if not isComp do ("
-                       "try(m.showInViewport = true)catch()"
+                       "try(m.showInViewport = true)catch();"
+                       "syncOpacity m"
                      ")"
                    ")"),
 #if MAX_PRODUCT_YEAR_NUMBER >= 2022
@@ -3326,14 +3676,19 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                         L"append savedBmpCtrls #(bm, uC, vC, wC)"
                     L");"
                     // Phase A2: save Wc3Material anim_* + opacity controllers
+                    // We also save delegate.opacity.controller because the opacity sync
+                    // performed earlier (syncOpacity in the showInViewport pass) attaches
+                    // a scaled controller copy to the StandardMaterial delegate, and the
+                    // tiling fix below can trigger a paramblock refresh that wipes it.
                     L"local savedMatCtrls = #();"
                     L"fn saveMatCtrl m = ("
                       L"local uC = try(m.anim_UOffset.controller)catch(undefined);"
                       L"local vC = try(m.anim_VOffset.controller)catch(undefined);"
                       L"local wC = try(m.anim_WAngle.controller)catch(undefined);"
                       L"local oC = try(m.opacity.controller)catch(undefined);"
-                      L"if uC != undefined or vC != undefined or wC != undefined or oC != undefined do "
-                        L"append savedMatCtrls #(m, uC, vC, wC, oC)"
+                      L"local dC = try(m.delegate.opacity.controller)catch(undefined);"
+                      L"if uC != undefined or vC != undefined or wC != undefined or oC != undefined or dC != undefined do "
+                        L"append savedMatCtrls #(m, uC, vC, wC, oC, dC)"
                     L");"
                     L"for m in sceneMaterials do ("
                       L"if classof m == Wdx_Wc3Material do saveMatCtrl m;"
@@ -3399,6 +3754,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                         L"try(bm.coords.W_Angle.controller = entry[4])catch()"
                     L");"
                     // Phase C2: restore Wc3Material anim_* + opacity controllers
+                    // Including delegate.opacity (entry[6]) so the opacity sync set up
+                    // earlier survives the tiling fix's paramblock refresh.
                     L"for entry in savedMatCtrls do ("
                       L"local m = entry[1];"
                       L"if entry[2] != undefined do "
@@ -3408,7 +3765,9 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                       L"if entry[4] != undefined do "
                         L"try(m.anim_WAngle.controller = entry[4])catch();"
                       L"if entry[5] != undefined do "
-                        L"try(m.opacity.controller = entry[5])catch()"
+                        L"try(m.opacity.controller = entry[5])catch();"
+                      L"if entry[6] != undefined do "
+                        L"try(m.delegate.opacity.controller = entry[6])catch()"
                     L");"
                     // Phase C3: push material UV controllers down to diffuseMap.coords.
                     // This is needed because the bitmap's own controllers may have
@@ -3533,7 +3892,15 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                         ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
                            << L"if n != undefined do ("
                            << L"for m in n.modifiers do ("
-                           << L"if (classOf m) as string == \"Wc3VertexMod\" do ("
+                           // Match the Wc3VertexMod modifier robustly. Depending
+                           // on Max version (classOf m) as string returns either
+                           // the plugin classname (Wdx_Wc3VertexMod) or the UI
+                           // `name:` field ("Wc3 Vertex Color"). Accept both,
+                           // plus the historical "Wc3VertexMod" string for safety.
+                           << L"local cn = (classOf m) as string;"
+                           << L"if (cn == \"Wdx_Wc3VertexMod\" or "
+                           <<     L"cn == \"Wc3 Vertex Color\" or "
+                           <<     L"cn == \"Wc3VertexMod\") do ("
                            << L"m.VertexColor.controller = bezier_color();"
                            << L"local c = m.VertexColor.controller;";
 
@@ -3976,6 +4343,16 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     }
 
     gi->ForceCompleteRedraw();
+
+    // ── Close archive storages opened above ─────────────────────────────
+    if (cascPtr) {
+        mdx_scene::closeCascStorage(cascPtr);
+        cascPtr = nullptr;
+    }
+    if (mpqPtr) {
+        mdx_scene::closeMpqStorage(mpqPtr);
+        mpqPtr = nullptr;
+    }
 
     ILOG << "\n==== Import Complete ====\n";
     ILOG.flush();

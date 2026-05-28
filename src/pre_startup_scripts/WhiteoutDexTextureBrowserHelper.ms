@@ -22,18 +22,26 @@
 global WhiteoutDexTextureBrowserDLL = undefined
 (
     local bundleRoot = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
-    local maxYear = (maxVersion())[8]
+    local altRoot    = (systemTools.getEnvVariable "ALLUSERSPROFILE") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
+    local maxYear    = (maxVersion())[8]
+    local maxYearStr = maxYear as string
     
-    -- Max 2026+ uses .NET 8 DLL, Max 2022-2025 uses .NET Framework 4.8.1
-    local dllFolder = if maxYear >= 2026 then "Max2026+" else "Max2022-2025"
-    local dllPath = bundleRoot + "\\native plugins\\" + dllFolder + "\\WhiteoutDexTextureBrowser.dll"
+    -- Try multiple folder naming conventions, in priority order:
+    --   1. Per-year folder (e.g. "Max2027") — matches the layout used by the
+    --      .dle / .dlo / .bmi native plugins listed in PackageContents.xml.
+    --   2. Grouped folder ("Max2026+" for .NET 8, "Max2022-2025" for .NET FW 4.8.1)
+    --      — older DLL layout from earlier WhiteoutDex builds.
+    local groupFolder = if maxYear >= 2026 then "Max2026+" else "Max2022-2025"
+    local candidateFolders = #( ("Max" + maxYearStr), groupFolder )
     
-    -- Also check ProgramData as alternate location
-    local dllPath2 = (systemTools.getEnvVariable "ALLUSERSPROFILE") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\native plugins\\" + dllFolder + "\\WhiteoutDexTextureBrowser.dll"
-    
-    local finalPath = if doesFileExist dllPath then dllPath
-                      else if doesFileExist dllPath2 then dllPath2
-                      else undefined
+    local finalPath = undefined
+    for folder in candidateFolders while finalPath == undefined do
+    (
+        local p1 = bundleRoot + "\\native plugins\\" + folder + "\\WhiteoutDexTextureBrowser.dll"
+        local p2 = altRoot    + "\\native plugins\\" + folder + "\\WhiteoutDexTextureBrowser.dll"
+        if doesFileExist p1 then finalPath = p1
+        else if doesFileExist p2 then finalPath = p2
+    )
     
     if finalPath != undefined then
     (
@@ -41,7 +49,7 @@ global WhiteoutDexTextureBrowserDLL = undefined
         (
             dotNet.loadAssembly finalPath
             WhiteoutDexTextureBrowserDLL = dotNetClass "WhiteoutDex.WhiteoutDexTextureBrowser"
-            format "WhiteoutDex: Native DLL loaded from '%'\n" (filenameFromPath finalPath)
+            format "WhiteoutDex: Native DLL loaded from '%'\n" finalPath
         )
         catch
         (
@@ -52,7 +60,7 @@ global WhiteoutDexTextureBrowserDLL = undefined
     else
     (
         format "WhiteoutDex WARNING: WhiteoutDexTextureBrowser.dll not found.\n"
-        format "  Expected at: %\n" dllPath
+        format "  Searched folders: % under '%' and '%'\n" candidateFolders bundleRoot altRoot
         format "  MPQ/CASC support will be unavailable.\n"
     )
 )
@@ -820,9 +828,24 @@ else
 
 -- Slot targeting: set by Wc3Material ⚙ buttons before opening browser
 -- Format: #(materialRef, "slotName") or undefined for default behavior
--- slotName: "diffuse", "normal", "orm", "emissive", "reflection"
+-- slotName: "diffuse", "normal", "orm", "emissive", "reflection",
+--           "environment" (alias for reflection, used by Wc3Material),
+--           "team_color"  (no filter; targets teamColorMap on Wc3Material)
 global WhiteoutDexTexBrowserTarget = undefined
 global WhiteoutDexTexBrowserInitCategory = 0  -- 0=All, 1=Units, 2=Buildings, 3=Doodads, 4=Abilities, 5=Environment, 6=Icons
+
+-- Maps an internal slotName to a SlotFilter value the C++ form understands.
+-- The form recognizes only: "" / "diffuse" / "normal" / "orm" / "emissive" / "reflection".
+-- Unknown values produce an empty result list, so we translate aliases here.
+fn _ntbMapSlotToFilter slotName =
+(
+    case slotName of
+    (
+        "environment": "reflection"  -- Wc3Material's environmentMap == reflection filter
+        "team_color":  ""            -- TeamGlow doesn't follow _suffix convention
+        default:       slotName
+    )
+)
 
 -- Validates whether a filename matches the expected naming convention for a slot
 fn _ntbValidateSlot fileName slotName =
@@ -830,18 +853,62 @@ fn _ntbValidateSlot fileName slotName =
     local baseName = toLower (getFilenameFile fileName)
     case slotName of
     (
-        "diffuse":    true  -- diffuse accepts anything
-        "normal":     (findString baseName "_normal" != undefined)
-        "orm":        (findString baseName "_orm" != undefined)
-        "emissive":   (findString baseName "_emissive" != undefined)
-        "reflection": (findString baseName "_environment" != undefined or findString baseName "_env" != undefined)
-        default:      true
+        "diffuse":     true  -- diffuse accepts anything
+        "normal":      (findString baseName "_normal" != undefined)
+        "orm":         (findString baseName "_orm" != undefined)
+        "emissive":    (findString baseName "_emissive" != undefined)
+        "reflection":  (findString baseName "_environment" != undefined or findString baseName "_env" != undefined)
+        "environment": (findString baseName "_environment" != undefined or findString baseName "_env" != undefined)
+        "team_color":  true  -- TeamGlow textures don't follow the _suffix convention
+        default:       true
     )
 )
 
 -- Assigns a texture file to a specific slot on an existing Warcraft3 material
 fn _ntbAssignToSlot mat slotName filePath archivePath:"" =
 (
+    -- ── New Wc3Material plugin (Build 2.x) ───────────────────────────────
+    -- Detected by presence of `diffuseMap` + `diffusePrefix` properties.
+    -- Property names: diffuseMap / normalMap / ormMap / emissiveMap /
+    --                 teamColorMap / environmentMap   plus  *Prefix.
+    if (isProperty mat #diffuseMap) and (isProperty mat #diffusePrefix) then
+    (
+        local bmpTex = BitmapTexture filename:filePath
+        local fName = filenameFromPath filePath
+
+        -- Compute prefix path if AutoPrefixPath enabled in the browser form
+        local dirPath = ""
+        try (
+            if ::WhiteoutDexTexBrowser != undefined and ::WhiteoutDexTexBrowser.form != undefined and ::WhiteoutDexTexBrowser.form.AutoPrefixPath then
+            (
+                local srcPath = if archivePath != undefined and archivePath != "" then archivePath else filePath
+                if srcPath.count > 4 and srcPath[1] == "[" then
+                (
+                    local closeBracket = findString srcPath "] "
+                    if closeBracket != undefined then
+                        srcPath = substring srcPath (closeBracket + 2) -1
+                )
+                srcPath = substituteString srcPath "/" "\\"
+                dirPath = getFilenamePath srcPath
+            )
+        ) catch()
+
+        case slotName of
+        (
+            "diffuse":     ( mat.diffuseMap     = bmpTex ; mat.diffusePrefix     = dirPath )
+            "normal":      ( mat.normalMap      = bmpTex ; mat.normalPrefix      = dirPath )
+            "orm":         ( mat.ormMap         = bmpTex ; mat.ormPrefix         = dirPath )
+            "emissive":    ( mat.emissiveMap    = bmpTex ; mat.emissivePrefix    = dirPath )
+            "team_color":  ( mat.teamColorMap   = bmpTex ; mat.teamColorPrefix   = dirPath )
+            "environment": ( mat.environmentMap = bmpTex ; mat.environmentPrefix = dirPath )
+            "reflection":  ( mat.environmentMap = bmpTex ; mat.environmentPrefix = dirPath )  -- alias
+            default: ( format "WhiteoutDex TexBrowser: Unknown slot '%' for Wc3Material\n" slotName )
+        )
+        format "WhiteoutDex TexBrowser: Assigned '%' to % slot (Wc3Material)\n" fName slotName
+        return undefined
+    )
+
+    -- ── Legacy Warcraft3 material (Build 1.x) ───────────────────────────
     local bmpTex = BitmapTexture filename:filePath
     local fName = filenameFromPath filePath
     
@@ -990,10 +1057,12 @@ fn _ntbOnApply s e = (
                     local fName = filenameFromPath filePath
                     local slotLabel = case targetSlot of
                     (
-                        "normal": "Normal Map (_Normal)"
-                        "orm": "ORM Map (_ORM)"
-                        "emissive": "Emissive Map (_Emissive)"
-                        "reflection": "Environment Map (_EnvironmentMap)"
+                        "normal":      "Normal Map (_Normal)"
+                        "orm":         "ORM Map (_ORM)"
+                        "emissive":    "Emissive Map (_Emissive)"
+                        "reflection":  "Environment Map (_EnvironmentMap)"
+                        "environment": "Environment Map (_EnvironmentMap)"
+                        "team_color":  "Team Color Map"
                         default: targetSlot
                     )
                     local msg = fName + " does not look like a " + slotLabel + " texture.\nAssign anyway?"
@@ -1050,10 +1119,12 @@ fn _ntbOnMtlSlot s e = (
                     local fName = filenameFromPath filePath
                     local slotLabel = case targetSlot of
                     (
-                        "normal": "Normal Map (_Normal)"
-                        "orm": "ORM Map (_ORM)"
-                        "emissive": "Emissive Map (_Emissive)"
-                        "reflection": "Environment Map (_EnvironmentMap)"
+                        "normal":      "Normal Map (_Normal)"
+                        "orm":         "ORM Map (_ORM)"
+                        "emissive":    "Emissive Map (_Emissive)"
+                        "reflection":  "Environment Map (_EnvironmentMap)"
+                        "environment": "Environment Map (_EnvironmentMap)"
+                        "team_color":  "Team Color Map"
                         default: targetSlot
                     )
                     local msg = fName + " does not look like a " + slotLabel + " texture.\nAssign anyway?"
@@ -1106,7 +1177,7 @@ struct WhiteoutDexTexBrowserStruct
                 (
                     -- Update slot filter on existing form
                     if ::WhiteoutDexTexBrowserTarget != undefined and ::WhiteoutDexTexBrowserTarget.count == 2 then
-                        f.SlotFilter = ::WhiteoutDexTexBrowserTarget[2]
+                        f.SlotFilter = _ntbMapSlotToFilter ::WhiteoutDexTexBrowserTarget[2]
                     else
                         f.SlotFilter = ""
                     f.BringToFront()
@@ -1160,7 +1231,7 @@ struct WhiteoutDexTexBrowserStruct
         
         -- Set slot filter if targeting a specific texture slot
         if ::WhiteoutDexTexBrowserTarget != undefined and ::WhiteoutDexTexBrowserTarget.count == 2 then
-            f.SlotFilter = ::WhiteoutDexTexBrowserTarget[2]
+            f.SlotFilter = _ntbMapSlotToFilter ::WhiteoutDexTexBrowserTarget[2]
         else
             f.SlotFilter = ""
         

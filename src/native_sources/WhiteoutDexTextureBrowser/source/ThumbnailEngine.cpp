@@ -12,12 +12,16 @@
  */
 
 #include "ThumbnailEngine.h"
-#include "MPQReader.h"
 
 #ifndef WHITEOUT_HAS_CASC
 #define WHITEOUT_HAS_CASC 1
 #endif
 #include <whiteout/storages/casc/storage.h>
+
+#ifndef WHITEOUT_HAS_MPQ
+#define WHITEOUT_HAS_MPQ 1
+#endif
+#include <whiteout/storages/mpq/storage.h>
 
 #include <algorithm>
 #include <cstring>
@@ -51,43 +55,14 @@ void ThumbnailEngine::cancel() {
 }
 
 // ============================================================================
-//  detectFormat  —  identify texture type by magic bytes
+//  decodeAndResize  —  detect + decode (via lib) + resize to thumbnail
 // ============================================================================
 
-ThumbnailEngine::TextureFormat
-ThumbnailEngine::detectFormat(const uint8_t* data, size_t len) {
-    if (!data || len < 4) return TextureFormat::Unknown;
-
-    // BLP: "BLP1" or "BLP2"
-    if (data[0] == 'B' && data[1] == 'L' && data[2] == 'P' &&
-        (data[3] == '1' || data[3] == '2'))
-        return TextureFormat::BLP;
-
-    // DDS: "DDS " (0x20534444)
-    if (data[0] == 'D' && data[1] == 'D' && data[2] == 'S' && data[3] == ' ')
-        return TextureFormat::DDS;
-
-    return TextureFormat::Unknown;
-}
-
-// ============================================================================
-//  decodeTexture  —  detect + decode + resize to thumbnail
-// ============================================================================
-
-DecodedImage ThumbnailEngine::decodeTexture(const uint8_t* data,
-                                             size_t len) const {
-    TextureFormat fmt = detectFormat(data, len);
-
-    switch (fmt) {
-    case TextureFormat::BLP:
-        return blpDecoder_.decodeThumbnail(data, len, thumbW_, thumbH_);
-
-    case TextureFormat::DDS:
-        return ddsDecoder_.decodeThumbnail(data, len, thumbW_, thumbH_);
-
-    default:
-        return {};
-    }
+DecodedImage ThumbnailEngine::decodeAndResize(std::span<const uint8_t> data) const {
+    DecodedImage full = decodeAuto(data);
+    if (!full.valid()) return {};
+    if (full.width <= thumbW_ && full.height <= thumbH_) return full;
+    return boxResize(full, thumbW_, thumbH_);
 }
 
 // ============================================================================
@@ -101,7 +76,7 @@ DecodedImage ThumbnailEngine::decodeTexture(const uint8_t* data,
 //    Each worker processes its chunk sequentially:
 //      for each file in chunk:
 //        1. extractFn(path) → raw bytes
-//        2. detectFormat + decode → DecodedImage
+//        2. decode + resize via decodeAndResize → DecodedImage
 //        3. store result
 //
 //  This is simpler and more cache-friendly than a shared work-queue,
@@ -168,7 +143,8 @@ std::vector<ThumbnailResult> ThumbnailEngine::processBatch(
             }
 
             // Step 2: Detect format + decode + resize
-            DecodedImage thumb = decodeTexture(rawData.data(), rawData.size());
+            DecodedImage thumb = decodeAndResize(
+                std::span<const uint8_t>{rawData.data(), rawData.size()});
 
             if (!thumb.valid()) {
                 results[i].success = false;
@@ -221,46 +197,27 @@ std::vector<ThumbnailResult> ThumbnailEngine::processBatch(
 }
 
 // ============================================================================
-//  generateFromMPQ (single reader)
+//  generateFromMPQ  (searches archives in order — first match wins)
 // ============================================================================
 
 std::vector<ThumbnailResult> ThumbnailEngine::generateFromMPQ(
-    const MPQReader& reader,
+    const std::vector<whiteout::storages::mpq::Storage>& archives,
     const std::vector<std::string>& paths,
     ThumbnailProgressFn progress) const
 {
-    ExtractFn extractFn = [&reader](const std::string& path,
-                                     std::vector<uint8_t>& outData,
-                                     std::string& outError) -> bool {
-        MpqResult r = reader.extractFile(path, outData);
-        if (r != MpqResult::Ok) {
-            outError = "MPQ extract error: " + std::to_string(static_cast<int>(r));
-            return false;
+    ExtractFn extractFn = [&archives](const std::string& path,
+                                       std::vector<uint8_t>& outData,
+                                       std::string& outError) -> bool {
+        for (const auto& a : archives) {
+            if (!a) continue;
+            auto data = a.readFile(path);
+            if (data) {
+                outData = std::move(*data);
+                return true;
+            }
         }
-        return true;
-    };
-
-    return processBatch(paths, extractFn, progress);
-}
-
-// ============================================================================
-//  generateFromMPQ (manager — searches all open archives)
-// ============================================================================
-
-std::vector<ThumbnailResult> ThumbnailEngine::generateFromMPQ(
-    const MPQManager& manager,
-    const std::vector<std::string>& paths,
-    ThumbnailProgressFn progress) const
-{
-    ExtractFn extractFn = [&manager](const std::string& path,
-                                      std::vector<uint8_t>& outData,
-                                      std::string& outError) -> bool {
-        MpqResult r = manager.extractFile(path, outData);
-        if (r != MpqResult::Ok) {
-            outError = "MPQ extract error: " + std::to_string(static_cast<int>(r));
-            return false;
-        }
-        return true;
+        outError = "MPQ: file not found in any open archive";
+        return false;
     };
 
     return processBatch(paths, extractFn, progress);

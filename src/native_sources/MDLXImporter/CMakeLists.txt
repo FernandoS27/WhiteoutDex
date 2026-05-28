@@ -1,8 +1,9 @@
 # ============================================================================
 # MDLXImporter — MDX/MDL Scene Importer (.dle)
-# Links: MaxCore (static, scene construction + IR types)
-#        whiteout_lib    (MDX parser)
-#        maxscrpt.lib    (Scripted plugin creation / paramblock access)
+# Links: MaxCore                          (static, scene construction + IR types)
+#        whiteout_lib                     (MDX parser)
+#        maxscrpt.lib                     (Scripted plugin / paramblock access)
+#        WhiteoutDexTextureBrowser_native (MPQ archive reader, sibling project)
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
 project(MDLXImporter LANGUAGES CXX)
@@ -24,6 +25,22 @@ target_link_libraries(MDLXImporter PRIVATE
 
 if(TARGET whiteout_casc)
     target_link_libraries(MDLXImporter PRIVATE whiteout_casc)
+endif()
+
+# ── MPQ archive support ───────────────────────────────────────────────────
+# Required by src/scene/mpq_texture_resolver.cpp. Pulls in whiteout_mpq
+# transitively through WhiteoutDexTextureBrowser_native.
+if(TARGET WhiteoutDexTextureBrowser_native)
+    target_link_libraries(MDLXImporter PRIVATE WhiteoutDexTextureBrowser_native)
+    message(STATUS "MDLXImporter: MPQ via WhiteoutDexTextureBrowser_native target")
+elseif(TARGET whiteout_mpq)
+    target_link_libraries(MDLXImporter PRIVATE whiteout_mpq)
+    message(STATUS "MDLXImporter: MPQ via whiteout_mpq target")
+else()
+    message(FATAL_ERROR
+        "MDLXImporter: neither WhiteoutDexTextureBrowser_native nor whiteout_mpq "
+        "is available. MPQ texture extraction requires one of them in the parent "
+        "CMake hierarchy.")
 endif()
 
 target_compile_options(MDLXImporter PRIVATE

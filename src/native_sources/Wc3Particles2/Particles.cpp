@@ -591,11 +591,21 @@ void Wc3Particles2DlgProc::BrowseForMdlFile(HWND hWnd)
     OPENFILENAME ofn{};
     ofn.lStructSize  = sizeof(ofn);
     ofn.hwndOwner    = hWnd;
-    ofn.lpstrFilter  = _T("Texture Files\0*.tga\0All Files\0*.*\0");
+    // Multi-format filter: BLP/DDS for Wc3 native, TGA for legacy MDX,
+    // PNG/JPG/BMP for working files. Default to "all texture files" so the
+    // dialog isn't artificially restrictive.
+    ofn.lpstrFilter  = _T("Texture Files\0*.blp;*.dds;*.tga;*.png;*.jpg;*.jpeg;*.bmp\0")
+                       _T("BLP (Wc3)\0*.blp\0")
+                       _T("DDS\0*.dds\0")
+                       _T("TGA\0*.tga\0")
+                       _T("PNG\0*.png\0")
+                       _T("JPEG\0*.jpg;*.jpeg\0")
+                       _T("BMP\0*.bmp\0")
+                       _T("All Files\0*.*\0");
     ofn.lpstrFile    = fileBuf;
     ofn.nMaxFile     = MAX_PATH;
     ofn.Flags        = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
-    ofn.lpstrDefExt  = _T("tga");
+    ofn.lpstrDefExt  = _T("blp");
 
     if (GetOpenFileName(&ofn)) {
     /// Try UNC path conversion so mapped drives are stored as network paths.

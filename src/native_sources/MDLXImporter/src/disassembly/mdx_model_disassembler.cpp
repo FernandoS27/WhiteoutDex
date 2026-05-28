@@ -279,6 +279,13 @@ void MdxModelDisassembler::mapBones(const wdx::Model& mdx, ir::IRModel& ir) {
             irBone.pivotPoint = Point3(pp.x, pp.y, pp.z);
         }
 
+        // MDX visibility-gate fields (see intermediate_types.h ir::Bone).
+        // Sentinel 0xFFFFFFFF (wdx::Bone::MULTIPLE_GEOSETS) → -1 in IR.
+        irBone.geosetIndex = (bone.geosetId == wdx::Bone::MULTIPLE_GEOSETS)
+            ? -1 : static_cast<int32_t>(bone.geosetId);
+        irBone.geosetAnimationIndex = (bone.geosetAnimationId == wdx::Bone::MULTIPLE_GEOSETS)
+            ? -1 : static_cast<int32_t>(bone.geosetAnimationId);
+
         // Bind pose — stored in raw MDX coords, transformed later
         if (version_ >= 1200 && bone.node.objectId < mdx.bindPoses.size()) {
             const auto& bp = mdx.bindPoses[bone.node.objectId];
@@ -736,14 +743,20 @@ void MdxModelDisassembler::mapGeosetAnimations(const wdx::Model& mdx, ir::IRMode
         ir::IRModel::GeosetAnim irGA;
         irGA.meshIndex = static_cast<int32_t>(ga.geosetId);
         irGA.alpha = ga.alpha;
-        irGA.color = Color(ga.color.z, ga.color.y, ga.color.x);  // MDX BGR → RGB
+        // Static GeosetAnim color is stored as RGB on disk (verified
+        // empirically against round-trip export text). This is inconsistent
+        // with the animated KGAC keys below which use BGR — but it matches
+        // what the engine and other importers (NeoDex) produce.
+        irGA.color = Color(ga.color.x, ga.color.y, ga.color.z);
         irGA.dropShadow = hasFlag(ga.flags, wdx::GeosetAnimation::Flag::DropShadow);
         irGA.usesColor  = hasFlag(ga.flags, wdx::GeosetAnimation::Flag::Color);
 
         if (ga.alphaTracks.isUsed)
             irGA.alphaTrackIndex = storeFloatTrack(ir, mapFloatTrack(ga.alphaTracks));
         if (ga.colorTracks.isUsed) {
-            // GeosetAnimation color is BGR in MDX — swap to RGB
+            // Animated KGAC keys are BGR on disk (despite the static color
+            // above being RGB — this asymmetry is a known MDX format quirk).
+            // Swap to RGB for IR / 3ds Max consumption.
             auto bgrTrack = mapTrack<whiteout::Vector3f, Color>(
                 ga.colorTracks,
                 [](const whiteout::Vector3f& v) { return Color(v.z, v.y, v.x); });
@@ -769,11 +782,14 @@ void MdxModelDisassembler::mapLights(const wdx::Model& mdx, ir::IRModel& ir) {
 
         irLight.attenuationStart = light.attenuationStart;
         irLight.attenuationEnd = light.attenuationEnd;
-        // MDX stores all colors as BGR (official format spec: gamedevs.org).
-        // Swap z,y,x → RGB for 3ds Max. Matches the KGAC handling above.
-        irLight.color = Color(light.color.z, light.color.y, light.color.x);
+        // Static color values are stored as RGB direct in the MDX (verified
+        // empirically — applying a BGR-swap here used to produce wrong tints
+        // on every Reforged light). Only the animated KLAC/KAMB tracks below
+        // are stored BGR and need the swap. Same asymmetry as GeosetAnim
+        // color (KGAC).
+        irLight.color = Color(light.color.x, light.color.y, light.color.z);
         irLight.intensity = light.intensity;
-        irLight.ambientColor = Color(light.ambientColor.z, light.ambientColor.y, light.ambientColor.x);
+        irLight.ambientColor = Color(light.ambientColor.x, light.ambientColor.y, light.ambientColor.z);
         irLight.ambientIntensity = light.ambientIntensity;
 
         if (light.attenuationStartTracks.isUsed)

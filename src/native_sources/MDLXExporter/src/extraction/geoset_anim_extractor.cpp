@@ -18,7 +18,7 @@
 //   * Wc3VertexMod modifier detection (name-based, scripted-plugin-safe)
 //   * Static UsesColor / UsesDropShadow / VertexColor extraction
 //   * Animated VertexColor → ir::ColorTrack (KGAC) with GlobalSeq tagging
-//   * RGB→BGR swap (Max stores RGB, MDX stores BGR)
+//   * RGB→BGR swap on KGAC keys (animated only); static color stays RGB
 //   * Sparse emit: only push a GeosetAnim if there's something to say
 
 #include "geoset_anim_extractor.h"
@@ -438,9 +438,15 @@ void extractGeosetAnims(const std::vector<core::SceneNode>& nodes,
                 Color c = readColorParam(vmod, L"VertexColor");
                 ga_log("    VertexColor(RGB)=(%.3f, %.3f, %.3f)\n", c.r, c.g, c.b);
 
-                // MDX stores BGR — swap now so the builder can emit as-is
-                ga.color = Color(c.b, c.g, c.r);
-                ga_log("    stored(BGR)=(%.3f, %.3f, %.3f)\n",
+                // ─── MDX GeosetAnim color convention is ASYMMETRIC ───
+                // Static color (this path)        : stored as RGB in MDX
+                // Animated color keys (KGAC track): stored as BGR in MDX
+                // Confirmed empirically against game/Magos rendering: the
+                // animated path needs the swap, the static path does NOT.
+                // The NeoDex MaxScript tool has the same split (IOFixColor
+                // static = RGB, animated = BGR).
+                ga.color = c;
+                ga_log("    stored(RGB)=(%.3f, %.3f, %.3f)\n",
                        ga.color.r, ga.color.g, ga.color.b);
 
                 if (modDropShadow) dropShadowCount++;

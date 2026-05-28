@@ -90,7 +90,7 @@
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>$(NativeBuildDir)\Release\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_casc.lib;$(NativeBuildDir)\_deps\zlib-build\Release\zlibstatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(NativeBuildDir)\Release\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Release\zlibstatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -111,7 +111,7 @@
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>$(NativeBuildDir)\Debug\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_casc.lib;$(NativeBuildDir)\_deps\zlib-build\Debug\zlibstaticd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(NativeBuildDir)\Debug\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Debug\zlibstaticd.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -132,10 +132,7 @@
   <ItemGroup>
     <ClInclude Include="$(SourceDir)\ManagedWrapper.h" />
     <ClInclude Include="$(SourceDir)\TextureBrowserForm.h" />
-    <ClInclude Include="$(SourceDir)\MPQReader.h" />
-    <ClInclude Include="$(SourceDir)\CASCReader.h" />
-    <ClInclude Include="$(SourceDir)\BLPDecoder.h" />
-    <ClInclude Include="$(SourceDir)\DDSDecoder.h" />
+    <ClInclude Include="$(SourceDir)\ImageDecode.h" />
     <ClInclude Include="$(SourceDir)\ThumbnailEngine.h" />
   </ItemGroup>
 

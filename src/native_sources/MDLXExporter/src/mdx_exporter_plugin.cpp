@@ -16,8 +16,11 @@
 #include <optimization/vertex_optimizer.h>
 #include <optimization/keyframe_optimizer.h>
 #include <optimization/bone_optimizer.h>
+#include <util/max_helpers.h>
 
 #include <unordered_set>
+#include <algorithm>
+#include <decomp.h>
 #include <util/error_reporter.h>
 
 #include "extraction/wc3_material_extractor.h"
@@ -37,8 +40,11 @@
 #include "assembly/mdx_sequence_manager.h"
 #include "assembly/mdx_model_builder.h"
 
+#include "texture/texture_export.h"
+
 #include <whiteout/models/mdx/writer.h>
 #include <MaxDirectories.h>
+#include <shellapi.h>
 #include <cmath>
 
 extern HINSTANCE GetDllInstance();
@@ -82,24 +88,53 @@ void loadOptionsFromINI(Interface* gi, MdxExportOptions& opts) {
     auto mn=gs(L"ModelName"); if(!mn.empty()) opts.modelName=wcharToUtf8(mn.c_str());
     auto ver=gs(L"ExportVersion"); if(!ver.empty()){int v=_wtoi(ver.c_str()); opts.version=(v==2||v==1200)?1200:800;}
     auto m=gs(L"MergeSimilarMeshes"); if(!m.empty()) opts.mergeGeosets=iniBool(m);
-    auto fn=gs(L"FixNormals"); if(!fn.empty()) opts.fixNormals=iniBool(fn);
     auto fsn=gs(L"FixSharedNormals"); if(!fsn.empty()) opts.fixSharedNormals=iniBool(fsn);
-    auto th=gs(L"Threshold"); if(!th.empty()) opts.fixNormalsThreshold=(float)_wtof(th.c_str());
-    auto sm=gs(L"ExportSmoothgroups"); if(!sm.empty()) opts.exportSmoothgroups=iniBool(sm);
     auto kb=gs(L"KeepUnusedBonesHelpers"); if(!kb.empty()) opts.keepUnusedBonesHelpers=iniBool(kb);
     auto nq=gs(L"DisableSkinQuantize"); if(!nq.empty()) opts.disableSkinQuantize=iniBool(nq);
-    auto et=gs(L"ExtentsType"); if(!et.empty()) opts.extentsType=_wtoi(et.c_str());
+    auto ai=gs(L"AutoIncrementFilename"); if(!ai.empty()) opts.autoIncrementFilename=iniBool(ai);
+    auto of=gs(L"OpenFolderAfterExport"); if(!of.empty()) opts.openFolderAfterExport=iniBool(of);
+    // Texture conversion (shared)
+    auto tc=gs(L"TexConvertEnabled"); if(!tc.empty()) opts.texConvertEnabled=iniBool(tc);
+    auto tm=gs(L"TexGenerateMipmaps"); if(!tm.empty()) opts.texGenerateMipmaps=iniBool(tm);
+    auto to=gs(L"TexOverwriteExisting"); if(!to.empty()) opts.texOverwriteExisting=iniBool(to);
+    // BLP-specific
+    auto bc=gs(L"BlpCompression"); if(!bc.empty()) opts.blpCompression=_wtoi(bc.c_str());
+    auto bj=gs(L"BlpJpegQuality"); if(!bj.empty()) opts.blpJpegQuality=_wtoi(bj.c_str());
+    auto bd=gs(L"BlpDithering"); if(!bd.empty()) opts.blpDithering=iniBool(bd);
+    // DDS-specific
+    auto df=gs(L"DdsFormat"); if(!df.empty()) opts.ddsFormat=_wtoi(df.c_str());
     auto ep=gs(L"ExtentsPrecision"); if(!ep.empty()) opts.extentsPrecision=_wtoi(ep.c_str());
+    // exportSmoothgroups: forced true via struct default
+    // extentsType: forced 1 (animation-dependent) via struct default
 }
 
 void collectSkinBoneNodes(const std::vector<core::SceneNode>& sceneNodes, std::vector<INode*>& out) {
+    // Collect every INode referenced by any Skin modifier in the scene.
+    // The collected list is what BoneExtractor uses to decide which scene
+    // nodes are "real bones" (BONE chunk) vs "helpers" (HELP chunk).
+    //
+    // Important: do NOT gate on GetContextInterface(). For FBX-imported
+    // meshes that interface can return null (binding context is established
+    // lazily) even though the skin's GetNumBones/GetBone enumeration is
+    // perfectly valid — and skin weights still extract correctly via the
+    // GetVertexWeight* APIs. The earlier `if (!ctx) continue;` bailout
+    // caused FBX skeletons (where bones are typically Dummy objects, not
+    // BoneGeometry) to be entirely missed from the skin reference list,
+    // which then routed every node into the HELP chunk.
+    //
+    // Multiple meshes can reference the same bone — dedupe via a set so
+    // the output list stays clean.
+    std::unordered_set<INode*> seen;
     for (auto& sn : sceneNodes) {
-        if (sn.category==core::NodeCategory::Mesh && sn.maxNode) {
-            auto* skin=core::ModifierReader::findSkin(sn.maxNode);
-            if (!skin) continue;
-            auto* ctx=skin->GetContextInterface(sn.maxNode);
-            if (!ctx) continue;
-            for (int i=0;i<skin->GetNumBones();i++) { INode* b=skin->GetBone(i); if(b) out.push_back(b); }
+        if (sn.category != core::NodeCategory::Mesh || !sn.maxNode) continue;
+        auto* skin = core::ModifierReader::findSkin(sn.maxNode);
+        if (!skin) continue;
+        int n = skin->GetNumBones();
+        for (int i = 0; i < n; ++i) {
+            INode* b = skin->GetBone(i);
+            if (b && seen.insert(b).second) {
+                out.push_back(b);
+            }
         }
     }
 }
@@ -232,16 +267,37 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
                 ELOG << " sum=" << tw << "\n";
             }
         } else {
-            int32_t ni=(int32_t)irModel.nodes.size();
-            ir::IRModel::Node irn; irn.name="Mesh "+mesh.name; irn.maxNode=sn.maxNode;
-            irn.worldTM=sn.maxNode->GetNodeTM(0); irn.pivotPoint=irn.worldTM.GetTrans();
+            // Unskinned mesh: check if parent is already a bone/helper.
+            // Matches NeoDex generateFakeBone: "else if m.parent != undefined then m.parent"
+            // → parent becomes a BONE (not helper) and the mesh is skinned to it.
             INode* par=sn.maxNode->GetParentNode();
-            if(par&&!par->IsRootNode()) for(int32_t j=0;j<(int32_t)irModel.nodes.size();++j) if(irModel.nodes[j].maxNode==par){irn.parentIndex=j;break;}
-            irModel.nodes.push_back(std::move(irn));
-            ir::Bone sb; sb.name="Mesh "+mesh.name; sb.nodeIndex=ni; sb.pivotPoint=irModel.nodes[ni].pivotPoint; sb.bindPose=irModel.nodes[ni].worldTM;
-            irModel.bones.push_back(std::move(sb));
-            for(auto& v:mesh.vertices){v.skinInfluences.clear();v.skinInfluences.push_back({ni,1.0f});}
-            ELOG << "  mesh '" << mesh.name << "' unskinned -> synth bone irNode[" << ni << "]\n";
+            auto parentIt=boneResult.nodeToIndex.end();
+            if(par&&!par->IsRootNode())
+                parentIt=boneResult.nodeToIndex.find(par);
+
+            if(parentIt!=boneResult.nodeToIndex.end()) {
+                // Parent is already in bone list → skin mesh to parent, promote to bone
+                int32_t parentBoneIdx=parentIt->second;
+                int32_t parentNodeIdx=irModel.bones[parentBoneIdx].nodeIndex;
+                irModel.bones[parentBoneIdx].isHelper=false; // promote helper→bone
+                irModel.bones[parentBoneIdx].nodeFlags |= core::collectNodeFlags(sn.maxNode);
+                for(auto& v:mesh.vertices){v.skinInfluences.clear();v.skinInfluences.push_back({parentNodeIdx,1.0f});}
+                ELOG << "  mesh '" << mesh.name << "' unskinned -> parent bone '"
+                     << irModel.bones[parentBoneIdx].name << "' (promoted to BONE)\n";
+            } else {
+                // No parent in bone list → create synthetic bone (original behavior)
+                int32_t ni=(int32_t)irModel.nodes.size();
+                ir::IRModel::Node irn; irn.name="Mesh "+mesh.name; irn.maxNode=sn.maxNode;
+                irn.worldTM=sn.maxNode->GetNodeTM(0); irn.pivotPoint=irn.worldTM.GetTrans();
+                irn.nodeFlags=core::collectNodeFlags(sn.maxNode);
+                if(par&&!par->IsRootNode()) for(int32_t j=0;j<(int32_t)irModel.nodes.size();++j) if(irModel.nodes[j].maxNode==par){irn.parentIndex=j;break;}
+                irModel.nodes.push_back(std::move(irn));
+                ir::Bone sb; sb.name="Mesh "+mesh.name; sb.nodeIndex=ni; sb.pivotPoint=irModel.nodes[ni].pivotPoint; sb.bindPose=irModel.nodes[ni].worldTM;
+                sb.nodeFlags=irModel.nodes[ni].nodeFlags;
+                irModel.bones.push_back(std::move(sb));
+                for(auto& v:mesh.vertices){v.skinInfluences.clear();v.skinInfluences.push_back({ni,1.0f});}
+                ELOG << "  mesh '" << mesh.name << "' unskinned -> synth bone irNode[" << ni << "]\n";
+            }
         }
         irModel.meshes.push_back(std::move(mesh));
     } EFLUSH;
@@ -278,7 +334,25 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         ELOG << "  [" << i << "] '" << s.name << "' ticks=" << s.startTime << "-" << s.endTime
              << " " << (s.isLooping?"loop":"nonloop") << " rarity=" << s.rarity << "\n";
     }
-    if(irModel.sequences.empty()) ELOG << "  *** NO SEQUENCES! Check CA or NoteTracks on root ***\n";
+    if(irModel.sequences.empty()) {
+        // Default sequence: a 'Stand' from frame 10 to 60. Without at least
+        // one sequence, MDX has no animation interval and most viewers
+        // (Magos, the game itself) treat the model as broken. Frame 10-60
+        // matches the convention used by NeoDex and Blizzard's stock models
+        // (frame 0 is reserved as the bind-pose / baseline frame).
+        int tpf = GetTicksPerFrame();
+        ir::Sequence stand;
+        stand.name      = "Stand";
+        stand.startTime = 10 * tpf;
+        stand.endTime   = 60 * tpf;
+        stand.isLooping = true;
+        stand.rarity    = 0.0f;
+        stand.moveSpeed = 0.0f;
+        irModel.sequences.push_back(std::move(stand));
+        ELOG << "  *** No sequences in scene — auto-inserted default 'Stand' "
+             << "(frames 10-60, ticks " << irModel.sequences[0].startTime
+             << "-" << irModel.sequences[0].endTime << ", looping) ***\n";
+    }
     EFLUSH;
 
     // Bake
@@ -303,11 +377,24 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
             auto& k=na.translation.keys[0]; bool z=fabsf(k.value.x)<0.01f&&fabsf(k.value.y)<0.01f&&fabsf(k.value.z)<0.01f;
             ELOG << "    TR key0 t=" << k.time << " v=(" << k.value.x << "," << k.value.y << "," << k.value.z << ") " << (z?"DELTA":"ABSOLUTE") << "\n";
             if(z) dT++; else aT++;
+            // Dump all subsequent translation keys to see the actual motion curve
+            for (size_t ki = 1; ki < na.translation.keys.size(); ++ki) {
+                auto& kk = na.translation.keys[ki];
+                ELOG << "    TR key" << ki << " t=" << kk.time
+                     << " v=(" << kk.value.x << "," << kk.value.y << "," << kk.value.z << ")\n";
+            }
         }
         if(!na.rotation.empty()){
             auto& k=na.rotation.keys[0]; bool id=fabsf(k.value.x)<0.01f&&fabsf(k.value.y)<0.01f&&fabsf(k.value.z)<0.01f&&fabsf(fabsf(k.value.w)-1.0f)<0.01f;
             ELOG << "    RT key0 t=" << k.time << " q=(" << k.value.x << "," << k.value.y << "," << k.value.z << "," << k.value.w << ") " << (id?"DELTA":"ABSOLUTE") << "\n";
             if(id) dR++; else aR++;
+            // Also dump all subsequent keys so we can see the actual animation curve
+            for (size_t ki = 1; ki < na.rotation.keys.size(); ++ki) {
+                auto& kk = na.rotation.keys[ki];
+                ELOG << "    RT key" << ki << " t=" << kk.time
+                     << " q=(" << kk.value.x << "," << kk.value.y << ","
+                     << kk.value.z << "," << kk.value.w << ")\n";
+            }
         }
         if(!na.scale.empty()){
             auto& k=na.scale.keys[0];
@@ -338,6 +425,178 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         ELOG << "Keyframe optimizer: exempting " << visibilityTrackIndices.size()
              << " visibility floatTrack(s) from reduction\n";
 
+        // ── PE2 Rotation Fix (NeoDex-compatible) ─────────────────
+        // The AnimDispatcher bakes rotations as parent-relative deltas,
+        // so a statically-rotated PE2 produces all-identity KGRT keys.
+        // But MDX needs the WORLD rotation in the KGRT track with
+        // identity at frame 0 (bind pose) — otherwise the emitter
+        // direction is wrong during playback.
+        //
+        // Solution: read the world rotation directly from the INode
+        // (same as NeoDex: `at time 0f obj.rotation`), then:
+        //   - If world rotation is identity → nothing to do
+        //   - If world rotation is non-identity → replace baked keys
+        //     with: identity at t=0, world rotation at seq starts/ends
+        //
+        // Matches NeoDex: createParticle2RotationFix / fixAnimatedParticle2Rotation
+        // (Wc3Animation.ms lines 3048-3160)
+        {
+            int pe2Fixed = 0;
+            const Quat identityQ(0.0f, 0.0f, 0.0f, 1.0f);
+
+            auto isQuatIdentity = [](const Quat& q) -> bool {
+                return fabsf(q.x) < 0.01f && fabsf(q.y) < 0.01f &&
+                       fabsf(q.z) < 0.01f &&
+                       (fabsf(q.w - 1.0f) < 0.01f || fabsf(q.w + 1.0f) < 0.01f);
+            };
+
+            for (auto& pe : irModel.particleEmitters) {
+                if (pe.variant != 2) continue;
+
+                // Get the INode for this PE2
+                if (pe.nodeIndex < 0 ||
+                    pe.nodeIndex >= static_cast<int32_t>(irModel.nodes.size()))
+                    continue;
+                INode* maxNode = irModel.nodes[pe.nodeIndex].maxNode;
+                if (!maxNode) continue;
+
+                // Read world rotation at frame 0 from INode
+                // (equivalent to NeoDex: `at time 0f obj.rotation`)
+                Matrix3 nodeTM = maxNode->GetNodeTM(0);
+                AffineParts ap;
+                decomp_affine(nodeTM, &ap);
+                Quat worldRot = ap.q;
+
+                ELOG << "  PE2 node[" << pe.nodeIndex << "] '"
+                     << irModel.nodes[pe.nodeIndex].name
+                     << "' worldRot=(" << worldRot.x << "," << worldRot.y
+                     << "," << worldRot.z << "," << worldRot.w << ")";
+
+                if (isQuatIdentity(worldRot)) {
+                    ELOG << " → identity, skip\n";
+                    continue;
+                }
+                ELOG << " → non-identity, fixing\n";
+
+                // Find the NodeAnimation for this PE2
+                ir::NodeAnimation* anim = nullptr;
+                for (auto& na : irModel.nodeAnimations) {
+                    if (na.nodeIndex == pe.nodeIndex) { anim = &na; break; }
+                }
+                if (!anim) continue;
+
+                // Check if the rotation is truly animated (non-constant)
+                // by comparing world rotation at multiple times.
+                // If constant → Case B (synthetic track).
+                // If varying → Case A (resample with zeroed frame 0).
+                bool isRotAnimated = false;
+                {
+                    Control* tmCtrl = maxNode->GetTMController();
+                    Control* rotCtrl = tmCtrl ? tmCtrl->GetRotationController() : nullptr;
+                    if (rotCtrl && rotCtrl->NumKeys() > 0) {
+                        // Check if any key has a different rotation
+                        for (int ki = 0; ki < rotCtrl->NumKeys(); ki++) {
+                            TimeValue t = rotCtrl->GetKeyTime(ki);
+                            if (t == 0) continue;
+                            Matrix3 tm2 = maxNode->GetNodeTM(t);
+                            AffineParts ap2;
+                            decomp_affine(tm2, &ap2);
+                            float dot = fabsf(ap.q.x*ap2.q.x + ap.q.y*ap2.q.y +
+                                              ap.q.z*ap2.q.z + ap.q.w*ap2.q.w);
+                            if (dot < 0.9999f) { isRotAnimated = true; break; }
+                        }
+                    }
+                }
+
+                auto& rotKeys = anim->rotation.keys;
+
+                if (isRotAnimated) {
+                    // Case A: rotation IS animated → resample from INode
+                    // with identity at frame 0
+                    ELOG << "    Case A: animated rotation, resampling\n";
+
+                    // Collect unique times from existing baked keys
+                    std::vector<TimeValue> times;
+                    for (auto& k : rotKeys)
+                        times.push_back(k.time);
+                    // Ensure sequence boundaries are included
+                    for (auto& seq : irModel.sequences) {
+                        bool hasStart = false, hasEnd = false;
+                        for (auto t : times) {
+                            if (t == seq.startTime) hasStart = true;
+                            if (t == seq.endTime) hasEnd = true;
+                        }
+                        if (!hasStart) times.push_back(seq.startTime);
+                        if (!hasEnd) times.push_back(seq.endTime);
+                    }
+                    std::sort(times.begin(), times.end());
+                    times.erase(std::unique(times.begin(), times.end()), times.end());
+
+                    rotKeys.clear();
+                    for (TimeValue t : times) {
+                        ir::Keyframe<Quat> k;
+                        k.time = t;
+                        if (t == 0) {
+                            k.value = identityQ;
+                        } else {
+                            Matrix3 tm = maxNode->GetNodeTM(t);
+                            AffineParts ap2;
+                            decomp_affine(tm, &ap2);
+                            k.value = ap2.q;
+                        }
+                        rotKeys.push_back(k);
+                    }
+                    anim->rotation.interpolation = ir::InterpolationType::Linear;
+                    ELOG << "    Resampled " << rotKeys.size() << " keys\n";
+                } else {
+                    // Case B: NOT animated → create synthetic track
+                    // Identity at t=0, worldRot at all sequence boundaries
+                    ELOG << "    Case B: static rotation, creating synthetic KGRT\n";
+
+                    rotKeys.clear();
+
+                    // t=0: identity
+                    ir::Keyframe<Quat> k0;
+                    k0.time = 0;
+                    k0.value = identityQ;
+                    rotKeys.push_back(k0);
+
+                    // Sequence starts/ends: world rotation
+                    for (auto& seq : irModel.sequences) {
+                        bool hasStart = false, hasEnd = false;
+                        for (auto& k : rotKeys) {
+                            if (k.time == seq.startTime) hasStart = true;
+                            if (k.time == seq.endTime) hasEnd = true;
+                        }
+                        if (!hasStart) {
+                            ir::Keyframe<Quat> ks;
+                            ks.time = seq.startTime;
+                            ks.value = worldRot;
+                            rotKeys.push_back(ks);
+                        }
+                        if (!hasEnd) {
+                            ir::Keyframe<Quat> ke;
+                            ke.time = seq.endTime;
+                            ke.value = worldRot;
+                            rotKeys.push_back(ke);
+                        }
+                    }
+
+                    std::sort(rotKeys.begin(), rotKeys.end(),
+                        [](const ir::Keyframe<Quat>& a, const ir::Keyframe<Quat>& b) {
+                            return a.time < b.time;
+                        });
+
+                    anim->rotation.interpolation = ir::InterpolationType::Linear;
+                    ELOG << "    Created " << rotKeys.size() << " keys\n";
+                }
+
+                pe2Fixed++;
+            }
+            if (pe2Fixed > 0)
+                ELOG << "  PE2 rotation fix: " << pe2Fixed << " node(s) corrected\n";
+        }
+
         core::KeyframeOptimizer ko;
 
         // Node animations: full optimization
@@ -363,6 +622,56 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         EFLUSH;
     }
 
+    // Remove unused bones/helpers (matches NeoDex optimizeBonesAndHelpers).
+    // Bones are kept if they are: skin-referenced, have animation, or are
+    // ancestors of a kept bone. Controlled by the "Keep Unused" checkbox.
+    if (!opts.keepUnusedBonesHelpers) {
+        ELOG << "\n==== Bone Optimizer ====\n";
+        size_t before = irModel.bones.size();
+        core::BoneOptimizer bo;
+        bo.optimize(irModel);
+        ELOG << "Bones: " << before << " -> " << irModel.bones.size()
+             << " (" << (before - irModel.bones.size()) << " removed)\n";
+        EFLUSH;
+    }
+
+    // Fix texture extensions in MDX paths (matches NeoDex GetImageFile).
+    // BitmapTex::GetMapName() returns the disk path (.tga, .png, etc.)
+    // but MDX must reference the game format: .blp for v800, .dds for v1200.
+    // NeoDex always forces .blp via: (getFilenameFile s) + ".blp"
+    // This runs BEFORE texture conversion so the converter sees the
+    // correct target extension; it also works when conversion is off.
+    {
+        const char* targetExt = (opts.version >= 1200) ? ".dds" : ".blp";
+        int fixed = 0;
+        for (auto& tex : irModel.textures) {
+            if (tex.filePath.empty()) continue;
+            auto dot = tex.filePath.rfind('.');
+            if (dot == std::string::npos) continue;
+            std::string ext = tex.filePath.substr(dot);
+            // Skip if already correct, or if it's a known game format
+            if (ext == targetExt) continue;
+            if (ext == ".blp" || ext == ".dds") continue;
+            // Swap .tga/.png/.bmp/.jpg/.jpeg to target format
+            tex.filePath = tex.filePath.substr(0, dot) + targetExt;
+            fixed++;
+            ELOG << "  texPath fix: '" << tex.filePath.substr(0, dot) << ext
+                 << "' -> '" << tex.filePath << "'\n";
+        }
+        if (fixed > 0) {
+            ELOG << "Fixed " << fixed << " texture extension(s) to " << targetExt << "\n";
+        }
+    }
+
+    // Texture conversion (BLP for v800, DDS for v1200) — runs on the IR
+    // before the model build so converted file paths land in the MDX. Uses
+    // WhiteoutLib parsers/writers; skips textures whose source bitmap was
+    // not captured (e.g. IFL frames, replaceable-only entries).
+    if (opts.texConvertEnabled) {
+        ELOG << "\n==== Texture Conversion ====\n"; EFLUSH;
+        mdx_export::convertExportTextures(irModel, wcharToUtf8(name), opts, reporter);
+    }
+
     // Build
     ELOG << "\n==== Model Build ====\n"; EFLUSH;
     MdxModelBuilder builder;
@@ -373,16 +682,81 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     for(size_t i=0;i<mdxModel.pivotPoints.size();i++){auto& p=mdxModel.pivotPoints[i]; ELOG<<"  pivot["<<i<<"]=("<<p.x<<","<<p.y<<","<<p.z<<")\n";}
     EFLUSH;
 
-    // Name + Write
-    std::string filePath=wcharToUtf8(name);
-    if(!opts.modelName.empty()) mdxModel.modelName=opts.modelName;
-    else { auto sl=filePath.find_last_of("/\\"); auto st=(sl!=std::string::npos)?filePath.substr(sl+1):filePath; auto dt=st.rfind('.'); if(dt!=std::string::npos) st=st.substr(0,dt); mdxModel.modelName=st; }
+    // ── Name + Write ────────────────────────────────────────────────────
+    //
+    // Path comes from Max's File→Export save dialog. Optional post-processing:
+    //   - Auto-increment: if file exists, walk _1, _2, ... to find a free name
+    //   - Open folder: ShellExecute the export directory after a successful write
+    //
+    std::string filePath = wcharToUtf8(name);
+
+    auto fileExistsW = [](const std::wstring& wp) {
+        return GetFileAttributesW(wp.c_str()) != INVALID_FILE_ATTRIBUTES;
+    };
+
+    auto utf8ToWide = [](const std::string& s) -> std::wstring {
+        if (s.empty()) return {};
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+        if (wlen <= 0) return {};
+        std::wstring w(static_cast<size_t>(wlen - 1), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), wlen);
+        return w;
+    };
+
+    if (opts.autoIncrementFilename && fileExistsW(utf8ToWide(filePath))) {
+        // Strip an existing trailing _<digits> from the base name first, so
+        // running auto-increment twice doesn't yield base_1_1.mdx.
+        auto sl = filePath.find_last_of("/\\");
+        std::string dir  = (sl != std::string::npos) ? filePath.substr(0, sl + 1) : "";
+        std::string base = (sl != std::string::npos) ? filePath.substr(sl + 1)    : filePath;
+        std::string ext;
+        auto dt = base.rfind('.');
+        if (dt != std::string::npos) { ext = base.substr(dt); base = base.substr(0, dt); }
+
+        auto us = base.rfind('_');
+        if (us != std::string::npos && us + 1 < base.size()) {
+            bool allDigits = true;
+            for (size_t i = us + 1; i < base.size(); ++i)
+                if (base[i] < '0' || base[i] > '9') { allDigits = false; break; }
+            if (allDigits) base = base.substr(0, us);
+        }
+
+        int counter = 1;
+        std::string candidate = dir + base + "_" + std::to_string(counter) + ext;
+        while (fileExistsW(utf8ToWide(candidate))) {
+            ++counter;
+            candidate = dir + base + "_" + std::to_string(counter) + ext;
+        }
+        ELOG << "AutoIncrement: " << filePath << " -> " << candidate << "\n";
+        filePath = candidate;
+    }
+
+    if (!opts.modelName.empty()) mdxModel.modelName = opts.modelName;
+    else {
+        auto sl = filePath.find_last_of("/\\");
+        auto st = (sl != std::string::npos) ? filePath.substr(sl + 1) : filePath;
+        auto dt = st.rfind('.');
+        if (dt != std::string::npos) st = st.substr(0, dt);
+        mdxModel.modelName = st;
+    }
 
     whiteout::mdx::Writer writer;
     writer.write(filePath, mdxModel);
     ELOG << "\n==== Written: " << filePath << " ====\n";
 
-    if(reporter.hasWarnings()||reporter.hasErrors()) reporter.showSummaryDialog(gi->GetMAXHWnd());
+    if (reporter.hasWarnings() || reporter.hasErrors())
+        reporter.showSummaryDialog(gi->GetMAXHWnd());
+
+    // Open folder after export
+    if (opts.openFolderAfterExport) {
+        auto sl = filePath.find_last_of("/\\");
+        if (sl != std::string::npos) {
+            std::string dir = filePath.substr(0, sl);
+            std::wstring wdir = utf8ToWide(dir);
+            ShellExecuteW(nullptr, L"open", wdir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            ELOG << "Opened folder: " << dir << "\n";
+        }
+    }
 
     ELOG << "\n==== Export Complete ====\n"; EFLUSH;
     return IMPEXP_SUCCESS;

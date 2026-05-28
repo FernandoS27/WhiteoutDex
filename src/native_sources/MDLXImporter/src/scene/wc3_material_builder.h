@@ -13,11 +13,13 @@ public:
     /// Create Wc3Material instances for all IR materials.
     /// Returns mapping from IR material index → Max Mtl*.
     /// cascStorage: opaque pointer from mdx_scene::openCascStorage (or nullptr).
+    /// mpqStorage:  opaque pointer from mdx_scene::openMpqStorage  (or nullptr).
     std::vector<Mtl*> buildMaterials(
         const ir::IRModel& irModel,
         bool importTextures,
         const std::wstring& modelDir,
         void* cascStorage,
+        void* mpqStorage,
         Interface* gi,
         core::ExportErrorReporter& reporter);
 
@@ -34,6 +36,8 @@ private:
         const std::vector<Texmap*>& texmapsFlat,
         const LayerTexmapsFn& buildLayerTexmaps,
         const std::wstring& modelDir,
+        void* cascStorage,
+        void* mpqStorage,
         Interface* gi,
         core::ExportErrorReporter& reporter);
 

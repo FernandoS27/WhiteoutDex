@@ -163,9 +163,9 @@ struct WdxVisibilityKeyer
 						for key in visCon.keys do
 							append savedKeys #(key.time, try(key.value) catch(1.0))
 						
-						obj.visibility = case interpDropdown.selected of
+						obj.visibility.controller = case interpDropdown.selected of
 						(
-							"None": on_off()
+							"None": boolean_float()
 							"Linear": linear_float()
 							"Bezier": bezier_float()
 							"Hermite (TCB)": tcb_float()
@@ -302,7 +302,7 @@ struct WdxVisibilityKeyer
 			)
 			
 			::WdxVisibilityKeyer.isPoppedOut = true
-			createDialog mainRollout width:440 height:242 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
+			createDialog mainRollout width:440 height:242 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 		)
 		
 		-- Rollout Handlers
@@ -418,7 +418,7 @@ struct WdxVisibilityKeyer
         (
 			obj.visibility = case this.visConInterTypes[this.visConInterSelection] of
 			(
-				"None": on_off()
+				"None": boolean_float()
 				"Linear": linear_float()
 				"Bezier": bezier_float()
 				"Hermite (TCB)": tcb_float()

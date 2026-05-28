@@ -107,7 +107,7 @@ struct WdxObjectSettings
 			)
 			
 			::WdxObjectSettings.isPoppedOut = true
-			createDialog mainRollout width:440 height:232 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
+			createDialog mainRollout width:440 height:232 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 		)
 		
 		on mainRollout close do
@@ -142,7 +142,7 @@ struct WdxObjectSettings
 			)
 		)
 
-		-- Localization
+		-- Localization + initial value load
 		on mainRollout open do
 		(
 			if ::WdxL != undefined then
@@ -168,6 +168,12 @@ struct WdxObjectSettings
 				selectChk.text = ::WdxL.t "obj_unselectable_chk"
 				selectChk.tooltip = ::WdxL.t "obj_makes_the_object_nonselectabl_tip"
 			)
+			-- Refresh checkbox state from the current selection on every open.
+			-- Without this, the dialog only updates on #selectionSetChanged,
+			-- so if you select a node FIRST and THEN open the dialog (or if
+			-- nodes get their user props set programmatically by the importer
+			-- before the selection changes), the checkboxes show stale values.
+			try ( ::WdxObjectSettings.whiteoutDexSTLoadFNSettings() ) catch()
 		)
 	),
 

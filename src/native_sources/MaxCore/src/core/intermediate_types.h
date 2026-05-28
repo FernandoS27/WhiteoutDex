@@ -79,6 +79,23 @@ struct Bone {
     Matrix3 bindPose;
     bool isHelper = false;
     uint32_t nodeFlags = 0;  // MDX node flags (DontInherit, Billboard, etc.)
+
+    // MDX Bone chunk visibility gating fields (see whiteout::mdx::Bone in
+    // structures.h: geosetId / geosetAnimationId).
+    //
+    // -1 encodes MDX MULTIPLE_GEOSETS (0xFFFFFFFF):
+    //   * geosetIndex == -1           → bone is always visible (never gated).
+    //   * geosetAnimationIndex == -1  → bone has no visibility gate authored.
+    //
+    // Rule (per Previewd engine): when the bone IS gated, its visibility
+    // follows the KGAO alpha track of
+    //   IRModel::geosetAnims[geosetAnimationIndex]
+    // NOT the GeosetAnim whose meshIndex happens to match geosetIndex.
+    // Additionally, hidden bones hide their entire subtree (ancestor
+    // inheritance) — non-bone descendants must multiply their own
+    // visibility by the product of ancestor bone gates.
+    int32_t geosetIndex = -1;
+    int32_t geosetAnimationIndex = -1;
 };
 
 // ── Materials & Textures ────────────────────────────────────
@@ -88,6 +105,12 @@ struct Texture {
     int32_t replaceableId = 0;
     bool wrapU = true;
     bool wrapV = true;
+
+    // Export-only: full on-disk path of the source bitmap. Populated by the
+    // exporter when the texture comes from a Max BitmapTex; left empty when
+    // the texture has no file backing (e.g. replaceable-id-only entries).
+    // Used to drive optional texture conversion at export time.
+    std::string sourceDiskPath;
 };
 
 enum class BlendMode : uint32_t {

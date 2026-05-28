@@ -49,6 +49,7 @@ public:
         std::vector<INode*>& nodeMap,
         const std::wstring& modelDir,
         void* cascStorage,
+        void* mpqStorage,
         Interface* gi,
         core::ExportErrorReporter& reporter);
 };

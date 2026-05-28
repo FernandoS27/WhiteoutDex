@@ -21,6 +21,7 @@ MaterialMap extractMaterials(const std::vector<core::SceneNode>& nodes,
 // Shared helpers — exported for use by particle/ribbon extractors that
 // need to add their own texture entries (e.g. PE2 particle texture).
 int32_t findOrAddTexture(ir::IRModel& model, const std::string& path,
-                         int32_t replaceableId, bool wrapU, bool wrapV);
+                         int32_t replaceableId, bool wrapU, bool wrapV,
+                         const std::string& sourceDiskPath = "");
 
 } // namespace mdx_extract
