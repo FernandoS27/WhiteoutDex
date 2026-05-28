@@ -1,2 +1,0 @@
-#include "resource.h"
-IDI_WHITEOUT_ICON ICON "../../../../resources/flakes_icon.ico"

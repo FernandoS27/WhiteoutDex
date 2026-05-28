@@ -1,3 +1,7 @@
 [submodule "external/WhiteoutLib"]
 	path = external/WhiteoutLib
 	url = https://github.com/FernandoS27/WhiteoutLib
+[submodule "external/WhiteoutFlakes"]
+	path = external/WhiteoutFlakes
+	url = https://github.com/FernandoS27/WhiteoutFlakes.git
+	branch = parent-whiteoutlib-guard

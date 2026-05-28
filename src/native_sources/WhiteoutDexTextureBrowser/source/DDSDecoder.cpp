@@ -84,7 +84,7 @@ bool DDSDecoder::detectAlpha(const uint8_t* rgba, int width, int height) {
 DecodedImage DDSDecoder::decode(const uint8_t* data, size_t length) const {
     if (!data || length < 4) return {};
 
-    dds::Parser parser(dds::Parser::ParseMode::Lenient);
+    dds::Parser parser;
     auto texture = parser.parse(
         std::span<const whiteout::u8>{data, length});
 

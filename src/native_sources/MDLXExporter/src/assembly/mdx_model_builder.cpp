@@ -65,23 +65,22 @@ Track<MdxT> convertTrack(const ir::Track<IrT>& irTrack,
     bool hasTangents = (irTrack.interpolation == ir::InterpolationType::Hermite ||
                         irTrack.interpolation == ir::InterpolationType::Bezier);
 
+    out.timestamps.resize(irTrack.keys.size());
     if (hasTangents) {
         using TK = typename Track<MdxT>::TangentKey;
-        out.keys_data.resize(irTrack.keys.size() * sizeof(TK));
-        auto* tangentKeys = reinterpret_cast<TK*>(out.keys_data.data());
+        out.keys_data.resize(irTrack.keys.size() * sizeof(TK) / sizeof(MdxT));
+        auto tangentKeys = out.tangentKeys();
         for (size_t k = 0; k < irTrack.keys.size(); k++) {
-            tangentKeys[k].frame = mdx_transform::ticksToMs(irTrack.keys[k].time);
+            out.timestamps[k] = mdx_transform::ticksToMs(irTrack.keys[k].time);
             tangentKeys[k].value = valueFn(irTrack.keys[k].value);
             tangentKeys[k].inTan = valueFn(irTrack.keys[k].inTangent);
             tangentKeys[k].outTan = valueFn(irTrack.keys[k].outTangent);
         }
     } else {
-        using K = typename Track<MdxT>::Key;
-        out.keys_data.resize(irTrack.keys.size() * sizeof(K));
-        auto* keys = reinterpret_cast<K*>(out.keys_data.data());
+        out.keys_data.resize(irTrack.keys.size());
         for (size_t k = 0; k < irTrack.keys.size(); k++) {
-            keys[k].frame = mdx_transform::ticksToMs(irTrack.keys[k].time);
-            keys[k].value = valueFn(irTrack.keys[k].value);
+            out.timestamps[k] = mdx_transform::ticksToMs(irTrack.keys[k].time);
+            out.keys_data[k] = valueFn(irTrack.keys[k].value);
         }
     }
 
@@ -683,8 +682,9 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             corn.speed = irPe.speed;
             corn.replaceableId = irPe.replaceableId;
             corn.path = irPe.modelPath;
-            corn.color = {irPe.segmentColors[0].r, irPe.segmentColors[0].g,
-                          irPe.segmentColors[0].b, irPe.segmentAlpha[0]};
+            corn.color = Vector3f(irPe.segmentColors[0].r, irPe.segmentColors[0].g,
+                                  irPe.segmentColors[0].b);
+            corn.alpha = irPe.segmentAlpha[0];
             model.cornEmitters.push_back(std::move(corn));
         }
     }
@@ -860,21 +860,18 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             (track.interpolationType == InterpolationType::Hermite ||
              track.interpolationType == InterpolationType::Bezier);
         if (hasTangents) {
-            using TK = typename Track<Vector3f>::TangentKey;
-            auto* keys = reinterpret_cast<TK*>(track.keys_data.data());
-            for (uint32_t k = 0; k < track.keyCount; ++k) {
+            auto keys = track.tangentKeys();
+            for (size_t k = 0; k < keys.size(); ++k) {
                 keys[k].value.x -= origin.x;
                 keys[k].value.y -= origin.y;
                 keys[k].value.z -= origin.z;
                 // Tangents are velocity-like deltas — do NOT shift them
             }
         } else {
-            using K = typename Track<Vector3f>::Key;
-            auto* keys = reinterpret_cast<K*>(track.keys_data.data());
-            for (uint32_t k = 0; k < track.keyCount; ++k) {
-                keys[k].value.x -= origin.x;
-                keys[k].value.y -= origin.y;
-                keys[k].value.z -= origin.z;
+            for (size_t k = 0; k < track.keys_data.size(); ++k) {
+                track.keys_data[k].x -= origin.x;
+                track.keys_data[k].y -= origin.y;
+                track.keys_data[k].z -= origin.z;
             }
         }
     };
@@ -960,7 +957,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             auto* fx = dynamic_cast<mdx_extract::FaceFXExtensionData*>(node.ext.get());
             if (!fx) continue;
             FaceEffect fe;
-            fe.target = fx->facefxName;
+            fe.name = fx->facefxName;
             fe.path = fx->facefxPath;
             model.faceEffects.push_back(std::move(fe));
         }
@@ -1054,19 +1051,17 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
 
                 int showKeys = tr.keyCount > 10 ? 10 : static_cast<int>(tr.keyCount);
                 if (!hasTangents) {
-                    using K = Track<Vector3f>::Key;
-                    auto* keys = reinterpret_cast<const K*>(tr.keys_data.data());
+                    auto keys = tr.keys();
                     for (int k = 0; k < showKeys; ++k) {
-                        dbg << "    [" << k << "] t=" << keys[k].frame << "ms"
-                            << " v=(" << keys[k].value.x << ", " << keys[k].value.y
-                            << ", " << keys[k].value.z << ")\n";
+                        dbg << "    [" << k << "] t=" << tr.timestamps[k] << "ms"
+                            << " v=(" << keys[k].x << ", " << keys[k].y
+                            << ", " << keys[k].z << ")\n";
                     }
                     if (tr.keyCount > 10u) dbg << "    ... (" << tr.keyCount << " total)\n";
                 } else {
-                    using TK = Track<Vector3f>::TangentKey;
-                    auto* keys = reinterpret_cast<const TK*>(tr.keys_data.data());
+                    auto keys = tr.tangentKeys();
                     for (int k = 0; k < showKeys; ++k) {
-                        dbg << "    [" << k << "] t=" << keys[k].frame << "ms"
+                        dbg << "    [" << k << "] t=" << tr.timestamps[k] << "ms"
                             << " v=(" << keys[k].value.x << ", " << keys[k].value.y
                             << ", " << keys[k].value.z << ")\n";
                     }
@@ -1091,19 +1086,17 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
                     << static_cast<int>(sc.interpolationType) << "\n";
                 int showSc = sc.keyCount > 10 ? 10 : static_cast<int>(sc.keyCount);
                 if (!scTangents) {
-                    using K = Track<Vector3f>::Key;
-                    auto* keys = reinterpret_cast<const K*>(sc.keys_data.data());
+                    auto keys = sc.keys();
                     for (int k = 0; k < showSc; ++k) {
-                        dbg << "    [" << k << "] t=" << keys[k].frame << "ms"
-                            << " s=(" << keys[k].value.x << ", " << keys[k].value.y
-                            << ", " << keys[k].value.z << ")\n";
+                        dbg << "    [" << k << "] t=" << sc.timestamps[k] << "ms"
+                            << " s=(" << keys[k].x << ", " << keys[k].y
+                            << ", " << keys[k].z << ")\n";
                     }
                     if (sc.keyCount > 10u) dbg << "    ... (" << sc.keyCount << " total)\n";
                 } else {
-                    using TK = Track<Vector3f>::TangentKey;
-                    auto* keys = reinterpret_cast<const TK*>(sc.keys_data.data());
+                    auto keys = sc.tangentKeys();
                     for (int k = 0; k < showSc; ++k) {
-                        dbg << "    [" << k << "] t=" << keys[k].frame << "ms"
+                        dbg << "    [" << k << "] t=" << sc.timestamps[k] << "ms"
                             << " s=(" << keys[k].value.x << ", " << keys[k].value.y
                             << ", " << keys[k].value.z << ")\n";
                     }

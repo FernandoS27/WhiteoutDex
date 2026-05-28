@@ -130,23 +130,22 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
             bool hasTangents = (irTrack.interpolation == ir::InterpolationType::Hermite ||
                                 irTrack.interpolation == ir::InterpolationType::Bezier);
 
+            layer.alphaTracks.timestamps.resize(irTrack.keys.size());
             if (hasTangents) {
                 using TK = Track<whiteout::f32>::TangentKey;
-                layer.alphaTracks.keys_data.resize(irTrack.keys.size() * sizeof(TK));
-                auto* tangentKeys = reinterpret_cast<TK*>(layer.alphaTracks.keys_data.data());
+                layer.alphaTracks.keys_data.resize(irTrack.keys.size() * sizeof(TK) / sizeof(whiteout::f32));
+                auto tangentKeys = layer.alphaTracks.tangentKeys();
                 for (size_t k = 0; k < irTrack.keys.size(); k++) {
-                    tangentKeys[k].frame = mdx_transform::ticksToMs(irTrack.keys[k].time);
+                    layer.alphaTracks.timestamps[k] = mdx_transform::ticksToMs(irTrack.keys[k].time);
                     tangentKeys[k].value = irTrack.keys[k].value;
                     tangentKeys[k].inTan = irTrack.keys[k].inTangent;
                     tangentKeys[k].outTan = irTrack.keys[k].outTangent;
                 }
             } else {
-                using K = Track<whiteout::f32>::Key;
-                layer.alphaTracks.keys_data.resize(irTrack.keys.size() * sizeof(K));
-                auto* keys = reinterpret_cast<K*>(layer.alphaTracks.keys_data.data());
+                layer.alphaTracks.keys_data.resize(irTrack.keys.size());
                 for (size_t k = 0; k < irTrack.keys.size(); k++) {
-                    keys[k].frame = mdx_transform::ticksToMs(irTrack.keys[k].time);
-                    keys[k].value = irTrack.keys[k].value;
+                    layer.alphaTracks.timestamps[k] = mdx_transform::ticksToMs(irTrack.keys[k].time);
+                    layer.alphaTracks.keys_data[k] = irTrack.keys[k].value;
                 }
             }
 
@@ -168,12 +167,11 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
                 : Track<whiteout::u32>::kNoGlobalSequence;
             layer.textureIdTracks.keyCount = irTrack.keys.size();
 
-            using K = Track<whiteout::u32>::Key;
-            layer.textureIdTracks.keys_data.resize(irTrack.keys.size() * sizeof(K));
-            auto* keys = reinterpret_cast<K*>(layer.textureIdTracks.keys_data.data());
+            layer.textureIdTracks.timestamps.resize(irTrack.keys.size());
+            layer.textureIdTracks.keys_data.resize(irTrack.keys.size());
             for (size_t k = 0; k < irTrack.keys.size(); k++) {
-                keys[k].frame = mdx_transform::ticksToMs(irTrack.keys[k].time);
-                keys[k].value = static_cast<whiteout::u32>(irTrack.keys[k].value);
+                layer.textureIdTracks.timestamps[k] = mdx_transform::ticksToMs(irTrack.keys[k].time);
+                layer.textureIdTracks.keys_data[k] = static_cast<whiteout::u32>(irTrack.keys[k].value);
             }
 
             MDX_LOG(_T("      texId animated: %d keys\n"), (int)irTrack.keys.size());
