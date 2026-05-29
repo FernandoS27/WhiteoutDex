@@ -153,3 +153,74 @@ if(NOT BUILD_COMMON_ONLY)
     add_subdirectory(Wc3Particles2)
     add_subdirectory(Wc3Ribbon)
 endif()
+
+# ===========================================================================
+# Install rules
+#
+# Components, each tied to a relative destination so the *same* build dir
+# can be installed multiple times with different --prefix values:
+#
+#   plugins   → Max<year>/*.{dle,dlo,dlx,bmi}
+#   standalone→ Standalone/*               (exe + shaders + DLLs)
+#   scripts   → scripts/{macroscripts,pre_startup_scripts,…}/*
+#   manifest  → PackageContents.xml
+#
+# Typical invocations:
+#   cmake --install <build> --prefix output                                 (suite layout)
+#   cmake --install <build> --prefix <AppData>/…/WhiteoutDex/native plugins \
+#         --component plugins                                               (AppData plugins)
+#   cmake --install <build> --prefix <AppData>/…/WhiteoutDex \
+#         --component scripts                                               (AppData scripts)
+# ===========================================================================
+if(NOT BUILD_COMMON_ONLY)
+    set(WDX_PLUGIN_DEST "Max${MAX_VERSION}")
+
+    install(TARGETS
+        MDLXExporter MDLXImporter
+        blp Wc3Particles1 Wc3Particles2 Wc3Ribbon
+        RUNTIME     DESTINATION "${WDX_PLUGIN_DEST}" COMPONENT plugins
+        LIBRARY     DESTINATION "${WDX_PLUGIN_DEST}" COMPONENT plugins
+    )
+
+    if(TARGET WhiteoutFlakesMaxPlugin)
+        install(TARGETS WhiteoutFlakesMaxPlugin
+            RUNTIME DESTINATION "${WDX_PLUGIN_DEST}" COMPONENT plugins
+            LIBRARY DESTINATION "${WDX_PLUGIN_DEST}" COMPONENT plugins
+        )
+    endif()
+
+    # Standalone viewer ships as a folder (exe + shaders/ + DLLs). The
+    # WhiteoutFlakes subproject writes the whole tree to <build>/standalone,
+    # so copy it wholesale rather than reasoning about individual targets.
+    if(EXISTS "${CMAKE_BINARY_DIR}/standalone" OR TARGET WhiteoutFlakesStandalone)
+        install(DIRECTORY "${CMAKE_BINARY_DIR}/standalone/"
+            DESTINATION "Standalone"
+            COMPONENT standalone
+            USE_SOURCE_PERMISSIONS
+            OPTIONAL
+        )
+    endif()
+
+    # MaxScript assets at the repo root (shared across every Max version).
+    set(WDX_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+    install(DIRECTORY "${WDX_REPO_ROOT}/src/macroscripts/"
+        DESTINATION "scripts/macroscripts" COMPONENT scripts
+        FILES_MATCHING PATTERN "*.mcr"
+    )
+    install(DIRECTORY "${WDX_REPO_ROOT}/src/pre_startup_scripts/"
+        DESTINATION "scripts/pre_startup_scripts" COMPONENT scripts
+        FILES_MATCHING PATTERN "*.ms"
+    )
+    install(DIRECTORY "${WDX_REPO_ROOT}/src/post_startup_scripts/"
+        DESTINATION "scripts/post_startup_scripts" COMPONENT scripts
+        FILES_MATCHING PATTERN "*.ms"
+    )
+    install(DIRECTORY "${WDX_REPO_ROOT}/src/scripted_plugins/"
+        DESTINATION "scripts/scripted_plugins" COMPONENT scripts
+        FILES_MATCHING PATTERN "*.ms"
+    )
+
+    install(FILES "${WDX_REPO_ROOT}/PackageContents.xml"
+        DESTINATION "." COMPONENT manifest
+    )
+endif()
