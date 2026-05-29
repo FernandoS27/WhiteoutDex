@@ -1115,11 +1115,8 @@ void MdxModelDisassembler::mapCornEmitters(const wdx::Model& mdx, ir::IRModel& i
             irPE.visibilityTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(corn.visibilityTracks));
         if (corn.colorTracks.isUsed)
-            irPE.colorTrackIndex = storeVec4Track(ir,
-                mapVec4Track(corn.colorTracks));
-        if (corn.lifeSpanVariationTracks.isUsed)
-            irPE.lifespanVariationTrackIndex = storeFloatTrack(ir,
-                mapFloatTrack(corn.lifeSpanVariationTracks));
+            irPE.colorTrackIndex = storeColorTrack(ir,
+                mapColorTrack(corn.colorTracks));
 
         ir.particleEmitters.push_back(std::move(irPE));
     }
@@ -1133,7 +1130,7 @@ void MdxModelDisassembler::mapFaceEffects(const wdx::Model& mdx, ir::IRModel& ir
     for (const auto& ffx : mdx.faceEffects) {
         ir::Attachment irAtt;
         irAtt.nodeIndex = -1; // FaceEffects don't have a node in the hierarchy
-        irAtt.name = ffx.target;
+        irAtt.name = ffx.name;
         irAtt.path = ffx.path;
         irAtt.attachmentId = -1; // Marker for FaceFX
         ir.attachments.push_back(std::move(irAtt));

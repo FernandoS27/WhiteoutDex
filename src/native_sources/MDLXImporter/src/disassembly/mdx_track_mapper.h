@@ -20,13 +20,12 @@ inline ir::InterpolationType mapInterpolation(whiteout::mdx::InterpolationType t
 }
 
 // ── Generic track mapper ────────────────────────────────────
-// const_cast is safe: we only reinterpret the raw byte buffer for reading.
-// Global sequence ID is read directly from the source track.
+// Track storage is SoA: timestamps[] holds frame numbers; keys() / tangentKeys()
+// expose value-only spans. We zip them index-wise to rebuild AoS Keyframes.
 
 template <typename SrcT, typename DstT, typename Convert>
-ir::Track<DstT> mapTrack(const whiteout::mdx::Track<SrcT>& csrc, Convert convert)
+ir::Track<DstT> mapTrack(const whiteout::mdx::Track<SrcT>& src, Convert convert)
 {
-    auto& src = const_cast<whiteout::mdx::Track<SrcT>&>(csrc);
     ir::Track<DstT> dst;
     dst.interpolation = mapInterpolation(src.interpolationType);
     dst.globalSequenceIndex = (src.globalSequenceId == whiteout::mdx::Track<SrcT>::kNoGlobalSequence)
@@ -35,22 +34,22 @@ ir::Track<DstT> mapTrack(const whiteout::mdx::Track<SrcT>& csrc, Convert convert
     if (whiteout::mdx::isSmoothInterpolation(src.interpolationType)) {
         auto keys = src.tangentKeys();
         dst.keys.reserve(keys.size());
-        for (const auto& k : keys) {
+        for (size_t i = 0; i < keys.size(); ++i) {
             ir::Keyframe<DstT> kf;
-            kf.time = mdx_coord::msToTicks(k.frame);
-            kf.value = convert(k.value);
-            kf.inTangent = convert(k.inTan);
-            kf.outTangent = convert(k.outTan);
+            kf.time = mdx_coord::msToTicks(src.timestamps[i]);
+            kf.value = convert(keys[i].value);
+            kf.inTangent = convert(keys[i].inTan);
+            kf.outTangent = convert(keys[i].outTan);
             kf.hasTangents = true;
             dst.keys.push_back(kf);
         }
     } else {
         auto keys = src.keys();
         dst.keys.reserve(keys.size());
-        for (const auto& k : keys) {
+        for (size_t i = 0; i < keys.size(); ++i) {
             ir::Keyframe<DstT> kf;
-            kf.time = mdx_coord::msToTicks(k.frame);
-            kf.value = convert(k.value);
+            kf.time = mdx_coord::msToTicks(src.timestamps[i]);
+            kf.value = convert(keys[i]);
             dst.keys.push_back(kf);
         }
     }
@@ -85,17 +84,16 @@ inline ir::FloatTrack mapFloatTrack(const whiteout::mdx::Track<float>& src)
 
 inline ir::IntTrack mapIntTrack(const whiteout::mdx::Track<uint32_t>& src)
 {
-    auto& msrc = const_cast<whiteout::mdx::Track<uint32_t>&>(src);
     ir::Track<int32_t> dst;
-    dst.interpolation = mapInterpolation(msrc.interpolationType);
-    dst.globalSequenceIndex = (msrc.globalSequenceId == whiteout::mdx::Track<uint32_t>::kNoGlobalSequence)
-        ? -1 : static_cast<int32_t>(msrc.globalSequenceId);
-    auto keys = msrc.keys();
+    dst.interpolation = mapInterpolation(src.interpolationType);
+    dst.globalSequenceIndex = (src.globalSequenceId == whiteout::mdx::Track<uint32_t>::kNoGlobalSequence)
+        ? -1 : static_cast<int32_t>(src.globalSequenceId);
+    auto keys = src.keys();
     dst.keys.reserve(keys.size());
-    for (const auto& k : keys) {
+    for (size_t i = 0; i < keys.size(); ++i) {
         ir::Keyframe<int32_t> kf;
-        kf.time = mdx_coord::msToTicks(k.frame);
-        kf.value = static_cast<int32_t>(k.value);
+        kf.time = mdx_coord::msToTicks(src.timestamps[i]);
+        kf.value = static_cast<int32_t>(keys[i]);
         dst.keys.push_back(kf);
     }
     return dst;

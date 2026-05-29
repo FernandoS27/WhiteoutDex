@@ -86,7 +86,7 @@ bool BLPDecoder::detectAlpha(const uint8_t* rgba, int width, int height) {
 DecodedImage BLPDecoder::decode(const uint8_t* data, size_t length) const {
     if (!data || length < 4) return {};
 
-    blp::Parser parser(blp::Parser::ParseMode::Lenient);
+    blp::Parser parser;
     auto texture = parser.parse(
         std::span<const whiteout::u8>{data, length});
 

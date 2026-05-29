@@ -17,6 +17,7 @@
 
 #include "wc3_event_extractor.h"
 #include "../mdx_class_ids.h"
+#include <algorithm>
 #include <scene/paramblock_reader.h>
 #include <iparamb2.h>
 #include <maxscript/maxscript.h>

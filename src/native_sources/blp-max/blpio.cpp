@@ -178,7 +178,7 @@ BMMRES BlpBitmapIO::GetImageInfo(BitmapInfo* bi) {
     if (fileData.empty())
         return BMMRES_IOERROR;
 
-    blp::Parser parser(blp::Parser::ParseMode::Lenient);
+    blp::Parser parser;
     auto texture = parser.parse(
         std::span<const whiteout::u8>{fileData.data(), fileData.size()});
 
@@ -231,7 +231,7 @@ BitmapStorage* BlpBitmapIO::Load(BitmapInfo* pbi, Bitmap* pmap, BMMRES* status) 
         return nullptr;
     }
 
-    blp::Parser parser(blp::Parser::ParseMode::Lenient);
+    blp::Parser parser;
     auto texture = parser.parse(
         std::span<const whiteout::u8>{fileData.data(), fileData.size()});
 
@@ -330,7 +330,7 @@ BMMRES BlpBitmapIO::Write(int /*frame*/) {
     opts.ditherStrength = userData_.ditherStrength;
 
     // Writer uses thread pool for parallel palette quantization
-    blp::Writer writer(blp::Writer::WriteMode::Lenient, getPool());
+    blp::Writer writer(getPool());
     auto blpData = writer.write(tex, opts);
     if (blpData.empty())
         return BMMRES_IOERROR;
