@@ -36,6 +36,49 @@ std::string wstrToUtf8(const wchar_t* wstr) {
     return result;
 }
 
+// ── NeoDex compatibility: try alternative parameter names ──────────
+// NeoDex "Warcraft 3" material uses different param names than WhiteoutDex.
+// These helpers try the primary (WhiteoutDex) name first, then fall back
+// to the NeoDex alternative. Both materials extend Standard, so the
+// ParamBlockReader functions work the same way on both.
+//
+// Note: uses full namespace core::ParamBlockReader because the local
+// "using PBR = ..." alias is only in scope inside individual functions.
+static bool readBoolFB(ReferenceTarget* ref, const wchar_t* primary,
+                       const wchar_t* fallback, TimeValue t, BOOL& val) {
+    if (core::ParamBlockReader::readBoolByName(ref, primary, t, val)) return true;
+    if (fallback && core::ParamBlockReader::readBoolByName(ref, fallback, t, val)) return true;
+    return false;
+}
+static bool readIntFB(ReferenceTarget* ref, const wchar_t* primary,
+                      const wchar_t* fallback, TimeValue t, int& val) {
+    if (core::ParamBlockReader::readIntByName(ref, primary, t, val)) return true;
+    if (fallback && core::ParamBlockReader::readIntByName(ref, fallback, t, val)) return true;
+    return false;
+}
+static bool readFloatFB(ReferenceTarget* ref, const wchar_t* primary,
+                        const wchar_t* fallback, TimeValue t, float& val) {
+    if (core::ParamBlockReader::readFloatByName(ref, primary, t, val)) return true;
+    if (fallback && core::ParamBlockReader::readFloatByName(ref, fallback, t, val)) return true;
+    return false;
+}
+static bool readStringFB(ReferenceTarget* ref, const wchar_t* primary,
+                         const wchar_t* fallback, TimeValue t, std::wstring& val) {
+    if (core::ParamBlockReader::readStringByName(ref, primary, t, val)) return true;
+    if (fallback && core::ParamBlockReader::readStringByName(ref, fallback, t, val)) return true;
+    return false;
+}
+// Try primary name first, then NeoDex alternative for controller lookup
+static Control* getParamCtrlFB(ReferenceTarget* ref, const wchar_t* primary,
+                               const wchar_t* fallback);  // forward decl, defined after getParamController
+// NeoDex fallback for texmap lookup
+static bool readTexmapFB(ReferenceTarget* ref, const wchar_t* primary,
+                         const wchar_t* fallback, Texmap*& val) {
+    if (core::ParamBlockReader::readTexmapByName(ref, primary, val) && val) return true;
+    if (fallback && core::ParamBlockReader::readTexmapByName(ref, fallback, val) && val) return true;
+    return false;
+}
+
 // Return just the filename (no directory) from the bitmap's disk path.
 // The WC3 texture path prefix (e.g. "Textures\", "war3mapImported\") is
 // stored separately on the Wc3Material and must be prepended by the caller
@@ -103,23 +146,52 @@ std::string extractBitmapPath(Texmap* tex) {
     return extractBitmapFileName(tex);
 }
 
+// Full on-disk path of the BitmapTex (or BitmapTex delegate of a Wc3Bitmap).
+// Used by the exporter to feed texture conversion at write-time.
+std::string extractBitmapDiskPath(Texmap* tex) {
+    if (!tex) return {};
+    if (tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+        auto* bmt = static_cast<BitmapTex*>(tex);
+        const MCHAR* mp = bmt->GetMapName();
+        return mp ? wstrToUtf8(mp) : std::string{};
+    }
+    if (tex->ClassID() == mdx_ids::WC3_BITMAP) {
+        for (int i = 0; i < tex->NumRefs(); i++) {
+            ReferenceTarget* ref = tex->GetReference(i);
+            if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
+                auto* bmt = static_cast<BitmapTex*>(ref);
+                const MCHAR* mp = bmt->GetMapName();
+                return mp ? wstrToUtf8(mp) : std::string{};
+            }
+        }
+    }
+    return {};
+}
+
 } // end anonymous namespace — findOrAddTexture is exported via header
 
 int32_t findOrAddTexture(ir::IRModel& model, const std::string& path,
-                         int32_t replaceableId, bool wrapU, bool wrapV)
+                         int32_t replaceableId, bool wrapU, bool wrapV,
+                         const std::string& sourceDiskPath)
 {
     // Look for an existing match
     for (size_t i = 0; i < model.textures.size(); i++) {
         auto& t = model.textures[i];
         if (t.filePath == path && t.replaceableId == replaceableId &&
-            t.wrapU == wrapU && t.wrapV == wrapV)
+            t.wrapU == wrapU && t.wrapV == wrapV) {
+            // Populate source disk path on the first reuse if it wasn't
+            // captured at the original insertion point.
+            if (t.sourceDiskPath.empty() && !sourceDiskPath.empty())
+                t.sourceDiskPath = sourceDiskPath;
             return static_cast<int32_t>(i);
+        }
     }
     ir::Texture tex;
     tex.filePath = path;
     tex.replaceableId = replaceableId;
     tex.wrapU = wrapU;
     tex.wrapV = wrapV;
+    tex.sourceDiskPath = sourceDiskPath;
     model.textures.push_back(std::move(tex));
     return static_cast<int32_t>(model.textures.size() - 1);
 }
@@ -181,6 +253,8 @@ BitmapProperties extractBitmapProperties(Texmap* tex) {
 
         int replId = 1; // 1-based: 1 = Not Used
         PBR::readIntByName(ref, L"replaceableId", t, replId);
+        // NeoDex fallback: param is called "retexture"
+        if (replId == 0) PBR::readIntByName(ref, L"retexture", t, replId);
         props.replaceableId = std::max(0, replId - 1);
 
         BOOL flag = FALSE;
@@ -268,6 +342,15 @@ static Control* getParamController(ReferenceTarget* ref, const wchar_t* name) {
     return GetControlInterface(anim);
 }
 
+// NeoDex fallback for controller lookup
+static Control* getParamCtrlFB(ReferenceTarget* ref, const wchar_t* primary,
+                               const wchar_t* fallback) {
+    Control* c = getParamController(ref, primary);
+    if (c) return c;
+    if (fallback) c = getParamController(ref, fallback);
+    return c;
+}
+
 // Evaluate a float controller at a specific time.
 static float evalFloat(Control* ctrl, TimeValue t, float defaultVal = 0.0f) {
     if (!ctrl) return defaultVal;
@@ -340,14 +423,90 @@ static void readFloatKeys(Control* ctrl,
     inTans.reserve(n); outTans.reserve(n);
 
     if (cidA == HYBRIDINTERP_FLOAT_CLASS_ID) {
-        // Bezier: inTan/outTan are the tangent slopes
+        // NeoDex-compatible Bezier tangent extraction (Wc3Animation.ms FloatKeys +
+        // ProcessBezier). Max's IBezFloatKey.intan/.outtan are internal tangent
+        // SLOPES (value/tick), NOT the control-point values that MDX expects.
+        // NeoDex solves this by sampling the controller at 1/3 and 2/3 points
+        // between each pair of keys, then applying BezierInTan/BezierOutTan
+        // formulas to reconstruct the cubic Bezier control points.
         hasTangents = true;
+
+        // ── Pass 1: read key times and evaluate values ──
+        struct TempKey { TimeValue time; float value; float sampleIn; float sampleOut; };
+        std::vector<TempKey> tk(n);
         for (int i = 0; i < n; i++) {
             IBezFloatKey k; ikc->GetKey(i, &k);
-            times.push_back(k.time);
-            values.push_back(k.val);
-            inTans.push_back(k.intan);
-            outTans.push_back(k.outtan);
+            tk[i].time = k.time;
+            Interval valid = FOREVER;
+            ctrl->GetValue(k.time, &tk[i].value, valid);
+        }
+
+        // ── Pass 2: sample at 1/3 and 2/3 points between adjacent keys ──
+        // NeoDex FloatKeys (line 2521-2528):
+        //   in1  = c.value at (prevKey.time + 2/3 * (curKey.time - prevKey.time))
+        //   out1 = c.value at (curKey.time  + 1/3 * (nextKey.time - curKey.time))
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                TimeValue t23 = tk[i-1].time +
+                    (TimeValue)(2.0 * (double)(tk[i].time - tk[i-1].time) / 3.0);
+                Interval v = FOREVER;
+                ctrl->GetValue(t23, &tk[i].sampleIn, v);
+            } else {
+                tk[i].sampleIn = tk[i].value;
+            }
+
+            if (i < n - 1) {
+                TimeValue t13 = tk[i].time +
+                    (TimeValue)((double)(tk[i+1].time - tk[i].time) / 3.0);
+                Interval v = FOREVER;
+                ctrl->GetValue(t13, &tk[i].sampleOut, v);
+            } else {
+                tk[i].sampleOut = tk[i].value;
+            }
+        }
+
+        // ── Pass 3: compute MDX Bezier control points ──
+        // NeoDex ProcessBezier (line 283-284):
+        //   BezierOutTan(pe, pd, a, d) = 3*pe + (2*d - 5*a - 9*pd) / 6
+        //   BezierInTan (pe, pd, a, d) = 3*pd + (2*a - 9*pe - 5*d) / 6
+        //
+        // For segment key[i] → key[i+1]:
+        //   pe = key[i].sampleOut    (sampled at 1/3 from i to i+1)
+        //   pd = key[i+1].sampleIn   (sampled at 2/3 from i to i+1)
+        //   a  = key[i].value
+        //   d  = key[i+1].value
+        for (int i = 0; i < n; i++) {
+            float val = tk[i].value;
+            float inTan, outTan;
+
+            if (i > 0) {
+                float pe = tk[i-1].sampleOut;
+                float pd = tk[i].sampleIn;
+                float a  = tk[i-1].value;
+                float d  = tk[i].value;
+                inTan = 3.0f*pd + (2.0f*a - 9.0f*pe - 5.0f*d) / 6.0f;
+            } else {
+                inTan = val;
+            }
+
+            if (i < n - 1) {
+                float pe = tk[i].sampleOut;
+                float pd = tk[i+1].sampleIn;
+                float a  = tk[i].value;
+                float d  = tk[i+1].value;
+                outTan = 3.0f*pe + (2.0f*d - 5.0f*a - 9.0f*pd) / 6.0f;
+            } else {
+                outTan = val;
+            }
+
+            // Snap tangents near value (NeoDex ProcessBezier lines 293-296)
+            if (fabsf(inTan - val) < 0.01f) inTan = val;
+            if (fabsf(outTan - val) < 0.01f) outTan = val;
+
+            times.push_back(tk[i].time);
+            values.push_back(val);
+            inTans.push_back(inTan);
+            outTans.push_back(outTan);
         }
     } else if (cidA == TCBINTERP_FLOAT_CLASS_ID) {
         // TCB: store as Hermite-style tangents (tens/cont/bias converted)
@@ -399,8 +558,17 @@ static int32_t extractVec3FromTwoFloats(ReferenceTarget* mtlRef,
                                         ir::IRModel& model,
                                         float negateFactor = 1.0f)
 {
-    Control* ctrlU = getParamController(mtlRef, uParamName);
-    Control* ctrlV = getParamController(mtlRef, vParamName);
+    // NeoDex fallback map
+    static const std::unordered_map<std::wstring, const wchar_t*> fbMap = {
+        {L"anim_UOffset", L"Wc3_U_Offset"},
+        {L"anim_VOffset", L"Wc3_V_Offset"},
+        {L"anim_UTiling", L"Wc3_U_Tiling"},
+        {L"anim_VTiling", L"Wc3_V_Tiling"},
+    };
+    auto fbU = fbMap.find(uParamName);
+    auto fbV = fbMap.find(vParamName);
+    Control* ctrlU = getParamCtrlFB(mtlRef, uParamName, fbU != fbMap.end() ? fbU->second : nullptr);
+    Control* ctrlV = getParamCtrlFB(mtlRef, vParamName, fbV != fbMap.end() ? fbV->second : nullptr);
     if (!ctrlU && !ctrlV) return -1;
 
     // Read per-controller keys with tangents
@@ -469,7 +637,7 @@ static int32_t extractVec3FromTwoFloats(ReferenceTarget* mtlRef,
 // non-trivial and rarely needed for UV rotation.
 static int32_t extractQuatFromAngle(ReferenceTarget* mtlRef, ir::IRModel& model)
 {
-    Control* ctrl = getParamController(mtlRef, L"anim_WAngle");
+    Control* ctrl = getParamCtrlFB(mtlRef, L"anim_WAngle", L"Wc3_W_Angle");
     if (!ctrl) return -1;
     auto keyTimes = collectKeyTimes(ctrl);
     if (keyTimes.empty()) return -1;
@@ -618,9 +786,19 @@ static int32_t extractVec3FromThreeFloats(ReferenceTarget* mtlRef,
                                           ir::IRModel& model,
                                           float signA = 1.0f)
 {
-    Control* ctrlA = getParamController(mtlRef, paramA);
-    Control* ctrlB = getParamController(mtlRef, paramB);
-    Control* ctrlC = getParamController(mtlRef, paramC);
+    // NeoDex fallback: Wc3_U_Offset, Wc3_V_Offset (paramC = WOffset, no NeoDex equivalent)
+    static const std::unordered_map<std::wstring, const wchar_t*> fbMap = {
+        {L"anim_UOffset", L"Wc3_U_Offset"},
+        {L"anim_VOffset", L"Wc3_V_Offset"},
+        {L"anim_UTiling", L"Wc3_U_Tiling"},
+        {L"anim_VTiling", L"Wc3_V_Tiling"},
+    };
+    auto fbA = fbMap.find(paramA);
+    auto fbB = fbMap.find(paramB);
+    auto fbC = fbMap.find(paramC);
+    Control* ctrlA = getParamCtrlFB(mtlRef, paramA, fbA != fbMap.end() ? fbA->second : nullptr);
+    Control* ctrlB = getParamCtrlFB(mtlRef, paramB, fbB != fbMap.end() ? fbB->second : nullptr);
+    Control* ctrlC = getParamCtrlFB(mtlRef, paramC, fbC != fbMap.end() ? fbC->second : nullptr);
     if (!ctrlA && !ctrlB && !ctrlC) return -1;
 
     // Read per-controller keys with tangents
@@ -717,18 +895,18 @@ static int32_t extractTextureAnimationFromMaterial(ReferenceTarget* mtlRef,
     if (!mtlRef) return -1;
     using PBR = core::ParamBlockReader;
 
-    Control* ctrlU    = getParamController(mtlRef, L"anim_UOffset");
-    Control* ctrlV    = getParamController(mtlRef, L"anim_VOffset");
-    Control* ctrlWOff = getParamController(mtlRef, L"anim_WOffset");  // Z-component
-    Control* ctrlW    = getParamController(mtlRef, L"anim_WAngle");   // rotation
-    Control* ctrlUT   = getParamController(mtlRef, L"anim_UTiling");
-    Control* ctrlVT   = getParamController(mtlRef, L"anim_VTiling");
+    Control* ctrlU    = getParamCtrlFB(mtlRef, L"anim_UOffset", L"Wc3_U_Offset");
+    Control* ctrlV    = getParamCtrlFB(mtlRef, L"anim_VOffset", L"Wc3_V_Offset");
+    Control* ctrlWOff = getParamController(mtlRef, L"anim_WOffset");  // Z-component (no NeoDex equivalent)
+    Control* ctrlW    = getParamCtrlFB(mtlRef, L"anim_WAngle",  L"Wc3_W_Angle");   // rotation
+    Control* ctrlUT   = getParamCtrlFB(mtlRef, L"anim_UTiling", L"Wc3_U_Tiling");
+    Control* ctrlVT   = getParamCtrlFB(mtlRef, L"anim_VTiling", L"Wc3_V_Tiling");
 
     if (!ctrlU && !ctrlV && !ctrlWOff && !ctrlW && !ctrlUT && !ctrlVT) return -1;
 
     // Cache lookup by diffuseMap pointer
     Texmap* diffuseTexForAnim = nullptr;
-    PBR::readTexmapByName(mtlRef, L"diffuseMap", diffuseTexForAnim);
+    readTexmapFB(mtlRef, L"diffuseMap", L"texture", diffuseTexForAnim);
     if (diffuseTexForAnim) {
         auto cached = g_texAnimCache.find(diffuseTexForAnim);
         if (cached != g_texAnimCache.end())
@@ -1006,9 +1184,9 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     PBR::readFloatByName(mtlRef, L"opacity", t, opacity);
     layer.alpha = opacity / 100.0f;
 
-    // Flags
+    // Flags (NeoDex: twosides, NoDephTest, NoDephSet — different spelling)
     BOOL flagVal = FALSE;
-    if (PBR::readBoolByName(mtlRef, L"twoSided", t, flagVal) && flagVal)
+    if (readBoolFB(mtlRef, L"twoSided", L"twosides", t, flagVal) && flagVal)
         layer.twoSided = true;
     flagVal = FALSE;
     if (PBR::readBoolByName(mtlRef, L"unshaded", t, flagVal) && flagVal)
@@ -1017,10 +1195,10 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     if (PBR::readBoolByName(mtlRef, L"unfogged", t, flagVal) && flagVal)
         layer.unfogged = true;
     flagVal = FALSE;
-    if (PBR::readBoolByName(mtlRef, L"noDepthTest", t, flagVal) && flagVal)
+    if (readBoolFB(mtlRef, L"noDepthTest", L"NoDephTest", t, flagVal) && flagVal)
         layer.noDepthTest = true;
     flagVal = FALSE;
-    if (PBR::readBoolByName(mtlRef, L"noDepthSet", t, flagVal) && flagVal)
+    if (readBoolFB(mtlRef, L"noDepthSet", L"NoDephSet", t, flagVal) && flagVal)
         layer.noDepthWrite = true;
 
     // Priority plane
@@ -1044,8 +1222,9 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         matProps.flags |= 0x20;
 
     // Material flags — SortOrder (1=unused, 2=nearToFar, 3=farToNear)
+    // NeoDex: SortPrimsFarZ
     int sortOrder = 1;
-    PBR::readIntByName(mtlRef, L"sortOrder", t, sortOrder);
+    readIntFB(mtlRef, L"sortOrder", L"SortPrimsFarZ", t, sortOrder);
     if (sortOrder == 2) matProps.flags |= 0x08;
     else if (sortOrder == 3) matProps.flags |= 0x10;
 
@@ -1069,7 +1248,7 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     bool matReplaceableIdFound = false;
     {
         int dropdownVal = 0;
-        if (PBR::readIntByName(mtlRef, L"replaceableId", t, dropdownVal)) {
+        if (readIntFB(mtlRef, L"replaceableId", L"retexture", t, dropdownVal)) {
             matReplaceableIdFound = true;
             // Dropdown is 1-based; convert to MDX 0-based. Clamp negatives.
             matReplaceableId = std::max(0, dropdownVal - 1);
@@ -1100,9 +1279,10 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
 
     // --- Diffuse texture ---
     Texmap* texmap = nullptr;
-    bool hasTexmap = PBR::readTexmapByName(mtlRef, L"diffuseMap", texmap) && texmap;
+    bool hasTexmap = readTexmapFB(mtlRef, L"diffuseMap", L"texture", texmap);
     if (hasTexmap) {
         std::string fileName = extractBitmapFileName(texmap);
+        std::string srcDisk = extractBitmapDiskPath(texmap);
         BitmapProperties bmpProps = extractBitmapProperties(texmap);
 
         // Material-level replaceableId wins over bitmap-level (new scheme).
@@ -1188,14 +1368,16 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
             texRef.textureIndex = (iflFirstTex >= 0)
                 ? iflFirstTex
                 : findOrAddTexture(model, texPath,
-                    bmpProps.replaceableId, bmpProps.wrapU, bmpProps.wrapV);
+                    bmpProps.replaceableId, bmpProps.wrapU, bmpProps.wrapV,
+                    srcDisk);
             texRef.slot = ir::TextureSlot::Diffuse;
             layer.textureRefs.push_back(texRef);
         } else {
             // Static diffuse — original behaviour
             ir::TextureRef texRef;
             texRef.textureIndex = findOrAddTexture(model, texPath,
-                bmpProps.replaceableId, bmpProps.wrapU, bmpProps.wrapV);
+                bmpProps.replaceableId, bmpProps.wrapU, bmpProps.wrapV,
+                srcDisk);
             texRef.slot = ir::TextureSlot::Diffuse;
             layer.textureRefs.push_back(texRef);
         }
@@ -1263,7 +1445,8 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         BitmapProperties bp = extractBitmapProperties(normalMap);
         ir::TextureRef ref;
         ref.textureIndex = findOrAddTexture(model, path, bp.replaceableId,
-                                            bp.wrapU, bp.wrapV);
+                                            bp.wrapU, bp.wrapV,
+                                            extractBitmapDiskPath(normalMap));
         ref.slot = ir::TextureSlot::Normal;
         layer.textureRefs.push_back(ref);
     }
@@ -1275,7 +1458,8 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         BitmapProperties bp = extractBitmapProperties(ormMap);
         ir::TextureRef ref;
         ref.textureIndex = findOrAddTexture(model, path, bp.replaceableId,
-                                            bp.wrapU, bp.wrapV);
+                                            bp.wrapU, bp.wrapV,
+                                            extractBitmapDiskPath(ormMap));
         ref.slot = ir::TextureSlot::ORM;
         layer.textureRefs.push_back(ref);
     }
@@ -1287,7 +1471,8 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         BitmapProperties bp = extractBitmapProperties(emissiveMap);
         ir::TextureRef ref;
         ref.textureIndex = findOrAddTexture(model, path, bp.replaceableId,
-                                            bp.wrapU, bp.wrapV);
+                                            bp.wrapU, bp.wrapV,
+                                            extractBitmapDiskPath(emissiveMap));
         ref.slot = ir::TextureSlot::Emissive;
         layer.textureRefs.push_back(ref);
     }
@@ -1335,7 +1520,8 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         BitmapProperties bp = extractBitmapProperties(envMap);
         ir::TextureRef ref;
         ref.textureIndex = findOrAddTexture(model, path, bp.replaceableId,
-                                            bp.wrapU, bp.wrapV);
+                                            bp.wrapU, bp.wrapV,
+                                            extractBitmapDiskPath(envMap));
         ref.slot = ir::TextureSlot::Environment;
         layer.textureRefs.push_back(ref);
     }
@@ -1377,7 +1563,8 @@ bool isWc3Composite(Mtl* mtl) {
     for (int i = 0; i < n; i++) {
         Mtl* sub = mtl->GetSubMtl(i);
         if (!sub) continue;
-        if (sub->ClassID() != mdx_ids::WC3_MATERIAL)
+        if (sub->ClassID() != mdx_ids::WC3_MATERIAL &&
+            sub->ClassID() != mdx_ids::NEODEX_MATERIAL)
             return false;
         hasWc3 = true;
     }
@@ -1393,7 +1580,8 @@ void extractCompositeMaterial(Mtl* mtl, ir::IRModel& model,
     int n = mtl->NumSubMtls();
     for (int i = 0; i < n; i++) {
         Mtl* sub = mtl->GetSubMtl(i);
-        if (!sub || sub->ClassID() != mdx_ids::WC3_MATERIAL) continue;
+        if (!sub || (sub->ClassID() != mdx_ids::WC3_MATERIAL &&
+                     sub->ClassID() != mdx_ids::NEODEX_MATERIAL)) continue;
         auto* ref = dynamic_cast<ReferenceTarget*>(sub);
         if (!ref) continue;
 
@@ -1428,7 +1616,8 @@ void extractStdMaterial(Mtl* mtl, ir::IRModel& model) {
     if (diffTex) {
         std::string path = extractBitmapPath(diffTex);
         ir::TextureRef ref;
-        ref.textureIndex = findOrAddTexture(model, path, 0, true, true);
+        ref.textureIndex = findOrAddTexture(model, path, 0, true, true,
+                                            extractBitmapDiskPath(diffTex));
         ref.slot = ir::TextureSlot::Diffuse;
         layer.textureRefs.push_back(ref);
     }
@@ -1477,7 +1666,8 @@ MaterialMap extractMaterials(const std::vector<core::SceneNode>& nodes,
 
         int32_t idx = static_cast<int32_t>(model.materials.size());
         auto* ref = dynamic_cast<ReferenceTarget*>(mtl);
-        if (ref && mtl->ClassID() == mdx_ids::WC3_MATERIAL) {
+        if (ref && (mtl->ClassID() == mdx_ids::WC3_MATERIAL ||
+                    mtl->ClassID() == mdx_ids::NEODEX_MATERIAL)) {
             extractWc3Material(ref, model, reporter);
         } else if (isWc3Composite(mtl)) {
             extractCompositeMaterial(mtl, model, reporter);

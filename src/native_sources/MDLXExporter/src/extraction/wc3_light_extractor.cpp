@@ -54,13 +54,6 @@ std::ofstream& liteLog() {
 #define LLOG liteLog()
 #define LFLUSH liteLog().flush()
 
-// Apply BGR swap when copying a Max RGB color into IR storage.
-// The builder writes IR Color fields directly into MDX bytes without
-// any swap, so we must pre-swap here.
-inline Color rgbToBgrSwap(const Color& rgb) {
-    return Color(rgb.b, rgb.g, rgb.r);
-}
-
 // ── Float track extraction ──
 //
 // For a named float parameter on the Wc3Light ref, produce an IR
@@ -238,15 +231,21 @@ void extractLights(const std::vector<core::SceneNode>& nodes,
         //   ShadowValue → intensity
         //   AmbColor    → ambientColor
         //   AmbValue    → ambientIntensity
+        // ─── MDX Light color convention is ASYMMETRIC ───
+        // Static color (this path)        : stored as RGB in MDX
+        // Animated color keys (KLBC track): stored as BGR in MDX
+        // Same quirk as GeosetAnim VertexColor — confirmed empirically
+        // against game/Magos rendering. NeoDex IOFixColor splits
+        // identically (static = RGB, animated = BGR).
         Color primaryRGB(1.0f, 1.0f, 1.0f);
         PBR::readColorByName(ref, L"ShadowColor", t, primaryRGB);
-        light.color = rgbToBgrSwap(primaryRGB);
+        light.color = primaryRGB;
 
         PBR::readFloatByName(ref, L"ShadowValue", t, light.intensity);
 
         Color ambRGB(0.0f, 0.0f, 0.0f);
         PBR::readColorByName(ref, L"AmbColor", t, ambRGB);
-        light.ambientColor = rgbToBgrSwap(ambRGB);
+        light.ambientColor = ambRGB;
 
         PBR::readFloatByName(ref, L"AmbValue", t, light.ambientIntensity);
 
@@ -256,9 +255,9 @@ void extractLights(const std::vector<core::SceneNode>& nodes,
              << "  attStart=" << light.attenuationStart
              << "  attEnd="   << light.attenuationEnd << "\n";
         LLOG << "    primary  RGB=(" << primaryRGB.r << "," << primaryRGB.g << "," << primaryRGB.b << ")"
-             << " → BGR stored  intensity=" << light.intensity << "\n";
+             << " stored as RGB  intensity=" << light.intensity << "\n";
         LLOG << "    ambient  RGB=(" << ambRGB.r << "," << ambRGB.g << "," << ambRGB.b << ")"
-             << " → BGR stored  ambIntensity=" << light.ambientIntensity << "\n";
+             << " stored as RGB  ambIntensity=" << light.ambientIntensity << "\n";
 
         // ── Animation tracks ──
         //

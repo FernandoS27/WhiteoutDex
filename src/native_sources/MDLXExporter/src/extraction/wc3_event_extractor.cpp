@@ -25,6 +25,7 @@
 #include <sstream>
 #include <string>
 #include <fstream>
+#include <algorithm>
 #include <windows.h>
 
 namespace mdx_extract {

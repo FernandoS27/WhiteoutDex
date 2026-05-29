@@ -6,7 +6,7 @@
 namespace core {
 
 // The Link Constraint ClassID — verified from Max SDK
-static const Class_ID LINK_CONSTRAINT_CLASS_ID(0x32892AA7, 0x1E7845FE);
+static const Class_ID LINK_CONSTRAINT_CLASS_ID(0x873fe764, 0xaabe8601);
 
 ControllerType ControllerReader::detect(Control* ctrl) {
     if (!ctrl) return ControllerType::None;
@@ -89,13 +89,18 @@ bool ControllerReader::isIKAffected(INode* node) {
     if (!node) return false;
     Control* tmCtrl = node->GetTMController();
     if (!tmCtrl) return false;
-    Control* posCtrl = tmCtrl->GetPositionController();
-    if (posCtrl) {
-        ControllerType pType = detect(posCtrl);
-        if (pType == ControllerType::Unknown) {
-            return false; // Conservative: only flag IK if explicitly detected
-        }
+
+    // NeoDex check: classOf o.transform.controller == IKControl
+    // In C++ SDK: IK-affected nodes have their TM controller replaced with
+    // "IKControl". Check the ClassName, as IKControl has no public ClassID define.
+    MSTR className;
+    tmCtrl->GetClassName(className);
+    const wchar_t* cn = className.data();
+    if (cn) {
+        if (_wcsicmp(cn, L"IKControl") == 0) return true;
+        if (_wcsicmp(cn, L"IK Control") == 0) return true;
     }
+
     return false;
 }
 

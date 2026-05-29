@@ -92,6 +92,65 @@ if(PREBUILT_COMMON_DIR)
             INTERFACE_COMPILE_DEFINITIONS "WHITEOUT_HAS_MPQ=1"
         )
     endif()
+
+    # ── zlibstatic (built via FetchContent during BUILD_COMMON_ONLY) ──────
+    # FetchContent puts sources in _deps/zlib-src and builds in _deps/zlib-build.
+    # The .lib lands at _deps/zlib-build/<Config>/zlibstatic.lib.
+    set(_zlib_lib_release "${PREBUILT_COMMON_DIR}/_deps/zlib-build/Release/zlibstatic.lib")
+    set(_zlib_lib_debug   "${PREBUILT_COMMON_DIR}/_deps/zlib-build/Debug/zlibstaticd.lib")
+    set(_zlib_inc_src     "${PREBUILT_COMMON_DIR}/_deps/zlib-src")
+    set(_zlib_inc_bin     "${PREBUILT_COMMON_DIR}/_deps/zlib-build")
+    if(EXISTS "${_zlib_lib_release}")
+        add_library(zlibstatic STATIC IMPORTED GLOBAL)
+        set_target_properties(zlibstatic PROPERTIES
+            IMPORTED_LOCATION         "${_zlib_lib_release}"
+            IMPORTED_LOCATION_RELEASE "${_zlib_lib_release}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_zlib_inc_src};${_zlib_inc_bin}"
+        )
+        if(EXISTS "${_zlib_lib_debug}")
+            set_target_properties(zlibstatic PROPERTIES
+                IMPORTED_LOCATION_DEBUG "${_zlib_lib_debug}")
+        endif()
+        message(STATUS "Imported zlibstatic: ${_zlib_lib_release}")
+    else()
+        message(WARNING "zlibstatic not found at ${_zlib_lib_release} — MPQ support will not work")
+    endif()
+
+    # ── WhiteoutDexTextureBrowser_native (output dir = build_common root) ──
+    # The TextureBrowser CMakeLists sets ARCHIVE_OUTPUT_DIRECTORY = CMAKE_BINARY_DIR,
+    # so the .lib lands at <build_common>/<Config>/WhiteoutDexTextureBrowser_native.lib.
+    set(_tb_lib_release "${PREBUILT_COMMON_DIR}/Release/WhiteoutDexTextureBrowser_native.lib")
+    set(_tb_lib_debug   "${PREBUILT_COMMON_DIR}/Debug/WhiteoutDexTextureBrowser_native.lib")
+    set(_tb_src_dir     "${CMAKE_CURRENT_SOURCE_DIR}/WhiteoutDexTextureBrowser/Source")
+    if(EXISTS "${_tb_lib_release}")
+        add_library(WhiteoutDexTextureBrowser_native STATIC IMPORTED GLOBAL)
+        set_target_properties(WhiteoutDexTextureBrowser_native PROPERTIES
+            IMPORTED_LOCATION         "${_tb_lib_release}"
+            IMPORTED_LOCATION_RELEASE "${_tb_lib_release}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_tb_src_dir}"
+        )
+        if(EXISTS "${_tb_lib_debug}")
+            set_target_properties(WhiteoutDexTextureBrowser_native PROPERTIES
+                IMPORTED_LOCATION_DEBUG "${_tb_lib_debug}")
+        endif()
+        # Forward transitive deps that the .lib was originally built with.
+        set(_tb_deps whiteout_lib)
+        if(TARGET zlibstatic)
+            list(APPEND _tb_deps zlibstatic)
+        endif()
+        if(TARGET whiteout_casc)
+            list(APPEND _tb_deps whiteout_casc)
+        endif()
+        if(TARGET whiteout_mpq)
+            list(APPEND _tb_deps whiteout_mpq)
+        endif()
+        set_target_properties(WhiteoutDexTextureBrowser_native PROPERTIES
+            INTERFACE_LINK_LIBRARIES "${_tb_deps}")
+        message(STATUS "Imported WhiteoutDexTextureBrowser_native: ${_tb_lib_release}")
+    else()
+        message(WARNING "WhiteoutDexTextureBrowser_native not found at ${_tb_lib_release} — MPQ support will not work")
+    endif()
+
 else()
     set(WHITEOUT_ENABLE_CASC    ON  CACHE BOOL "" FORCE)
     set(WHITEOUT_ENABLE_MPQ     ON  CACHE BOOL "" FORCE)

@@ -109,16 +109,35 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
     Modifier* skinMod = core::findModifierByClassID(node, core_ids::SKIN_CLASS_ID);
     MLOG << "  Skin modifier: " << (skinMod ? "FOUND" : "NOT FOUND") << "\n";
 
-    // Check if any skin bone has a Link Constraint controller.
-    // Link Constraint bones change parent during animation, so the raw mesh
-    // position (skin disabled) doesn't match the frame-0 bone position.
-    // In that case, we read the SKINNED mesh at frame 0 instead.
-    bool useSkinned = false;
+    // Mesh extraction policy (matches NeoDex):
+    //
+    // For ANY skinned mesh, read the mesh AFTER the Skin modifier evaluates,
+    // at TimeValue 0 (the bind pose). This is critical for FBX-imported
+    // models where the editable-mesh state under the Skin modifier sits in
+    // an arbitrary "authoring" pose that doesn't correspond to the bones'
+    // bind-time positions. The Skin modifier transforms it to the actual
+    // bind pose during evaluation.
+    //
+    // Symptom of the previous policy (only useSkinned=true for Link
+    // Constraint bones): the entire mesh appeared offset relative to the
+    // bone hierarchy by the editable-mesh→bind-pose delta. Bones animated
+    // correctly, but the mesh sat in the wrong place — typically a
+    // translation along the rig's primary axis. For Shanks's hat-bone
+    // chain this manifested as a small visual drift that LOOKED like an
+    // animation bug but was actually a static mesh-pose offset.
+    //
+    // NeoDex (NeoDexSceneParser.ms LoadObjects → meshOps.GetMesh @t=0)
+    // always reads the post-skin mesh at frame 0. Match that exactly.
+    //
+    // Link-Constraint detection logic kept below for diagnostic logging
+    // (and in case any future per-bone path needs it), but it no longer
+    // gates the useSkinned decision.
+    bool useSkinned = (skinMod != nullptr);
     if (skinMod) {
         ISkin* skinCheck = static_cast<ISkin*>(skinMod->GetInterface(I_SKIN));
         if (skinCheck) {
             int numBones = skinCheck->GetNumBones();
-            MLOG << "  Checking " << numBones << " skin bones for Link Constraint...\n";
+            MLOG << "  Checking " << numBones << " skin bones for Link Constraint (diagnostic)...\n";
             for (int b = 0; b < numBones; ++b) {
                 INode* boneNode = skinCheck->GetBone(b);
                 if (boneNode) {
@@ -144,8 +163,7 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
                          << " isLink=" << (isLC ? "YES" : "no") << "\n";
 
                     if (isLC) {
-                        useSkinned = true;
-                        MLOG << "  ** Link Constraint detected → using skinned bind pose **\n";
+                        MLOG << "  ** Link Constraint present (using skinned bind pose, as always now) **\n";
                         break;
                     }
                 }
@@ -233,9 +251,10 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
     }
 
     // Transform vertices & normals from object-space to world-space.
-    // For unskinned extraction: vertices are in object space → apply GetObjectTM.
-    // For skinned extraction (Link Constraint): Skin deforms into node-local space,
-    // so apply GetNodeTM (NOT GetObjectTM which would double-apply object offset).
+    // Vertices from EvalWorldState are in OBJECT space (before object offset).
+    // GetObjectTM = objectOffset × nodeTM = full transform to world space.
+    // Both paths use GetObjectTM to correctly handle meshes with non-identity
+    // object offsets (e.g. objectOffsetPos = [0, -1, -195]).
     if (!useSkinned) {
         Matrix3 worldTM = node->GetObjectTM(t);
         Matrix3 normalTM = worldTM;
@@ -246,14 +265,17 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
         }
         MLOG << "  Transform: GetObjectTM applied (unskinned path)\n";
     } else {
-        Matrix3 nodeTM = node->GetNodeTM(0);
-        Matrix3 normalTM = nodeTM;
+        // Skinned bind pose: use GetObjectTM(0) — NOT GetNodeTM(0).
+        // GetNodeTM omits the object offset, causing displacement when
+        // objectOffsetPos is non-zero (e.g. FBX imports, Reset XForm).
+        Matrix3 objTM = node->GetObjectTM(0);
+        Matrix3 normalTM = objTM;
         normalTM.NoTrans();
         for (auto& vert : result.vertices) {
-            vert.position = vert.position * nodeTM;
+            vert.position = vert.position * objTM;
             vert.normal = Normalize(vert.normal * normalTM);
         }
-        MLOG << "  Transform: GetNodeTM(0) applied (skinned bind pose path)\n";
+        MLOG << "  Transform: GetObjectTM(0) applied (skinned bind pose path)\n";
     }
 
     // Debug: log vertex bounds after world transform

@@ -417,7 +417,7 @@ struct WdxAnimTools
 			local scaleFactor = modelHeight / 100.0
 			if scaleFactor < 0.01 then scaleFactor = 0.01
 			
-			local obj = Wdx_AttachPoint()
+			local obj = Wdx_Wc3AttachPoint()
 			case type of
 			(
 				#head:
@@ -722,7 +722,7 @@ struct WdxAnimTools
 			)
 			
 			::WdxAnimTools.isGeneralPoppedOut = true
-			createDialog generalRoll width:440 height:202 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
+			createDialog generalRoll width:440 height:202 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 		)
 		
 		on generalRoll close do
@@ -853,7 +853,7 @@ struct WdxAnimTools
 			)
 			
 			::WdxAnimTools.isSkinPoppedOut = true
-			createDialog skinRoll width:440 height:92 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
+			createDialog skinRoll width:440 height:92 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 		)
 		
 		on skinRoll close do
@@ -1030,7 +1030,7 @@ struct WdxAnimTools
 			)
 			
 			::WdxAnimTools.isControllersPoppedOut = true
-			createDialog controllersRoll width:440 height:177 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
+			createDialog controllersRoll width:440 height:177 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 		)
 		
 		on controllersRoll close do
@@ -1335,7 +1335,7 @@ struct WdxAnimTools
 			)
 			
 			::WdxAnimTools.isScalerPoppedOut = true
-			createDialog scalerRoll width:440 height:172 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
+			createDialog scalerRoll width:440 height:172 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 		)
 		
 		on scalerRoll close do

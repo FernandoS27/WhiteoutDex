@@ -29,30 +29,34 @@ bool hasSkinModifier(INode* node);
 // Walk the modifier stack to find a modifier by ClassID
 Modifier* findModifierByClassID(INode* node, Class_ID id);
 
-// Read MDX node behavior flags from a Max node's user properties and
-// inheritance flags.  Returns a bitmask matching MDX Node::NodeFlag layout:
+// Read MDX node behavior flags from a Max node's user properties.
+// Returns a bitmask matching MDX Node::NodeFlag layout:
 //   0x01 DontInheritTranslation, 0x02 DontInheritRotation,
 //   0x04 DontInheritScaling,     0x08 Billboarded,
 //   0x10 BillboardedLockX,       0x20 BillboardedLockY,
 //   0x40 BillboardedLockZ,       0x80 CameraAnchored
 inline uint32_t collectNodeFlags(INode* node) {
     uint32_t flags = 0;
-    Control* tmCtrl = node->GetTMController();
-    if (tmCtrl) {
-        DWORD inherit = tmCtrl->GetInheritanceFlags();
-        if (!(inherit & INHERIT_POS_X) || !(inherit & INHERIT_POS_Y) || !(inherit & INHERIT_POS_Z))
-            flags |= 0x1;
-        if (!(inherit & INHERIT_ROT_X) || !(inherit & INHERIT_ROT_Y) || !(inherit & INHERIT_ROT_Z))
-            flags |= 0x2;
-        if (!(inherit & INHERIT_SCL_X) || !(inherit & INHERIT_SCL_Y) || !(inherit & INHERIT_SCL_Z))
-            flags |= 0x4;
-    }
     int val = 0;
-    if (node->GetUserPropInt(_T("Billboarded"), val) && val)      flags |= 0x8;
-    if (node->GetUserPropInt(_T("BillboardedLockX"), val) && val) flags |= 0x10;
-    if (node->GetUserPropInt(_T("BillboardedLockY"), val) && val) flags |= 0x20;
-    if (node->GetUserPropInt(_T("BillboardedLockZ"), val) && val) flags |= 0x40;
-    if (node->GetUserPropInt(_T("CameraAnchored"), val) && val)   flags |= 0x80;
+    // DontInherit — read from UserProperties (written by importer/ObjectSettings).
+    // Note: GetInheritanceFlags() returns 0 for some controller types (e.g. after
+    // import), which falsely triggers all DontInherit flags. UserProperties are
+    // reliable since the importer and ObjectSettings dialog write them explicitly.
+    if (node->GetUserPropInt(_T("DontInheritTranslation"), val) && val) flags |= 0x1;
+    val = 0;
+    if (node->GetUserPropInt(_T("DontInheritRotation"), val) && val)    flags |= 0x2;
+    val = 0;
+    if (node->GetUserPropInt(_T("DontInheritScaling"), val) && val)     flags |= 0x4;
+    val = 0;
+    if (node->GetUserPropInt(_T("Billboarded"), val) && val)            flags |= 0x8;
+    val = 0;
+    if (node->GetUserPropInt(_T("BillboardedLockX"), val) && val)       flags |= 0x10;
+    val = 0;
+    if (node->GetUserPropInt(_T("BillboardedLockY"), val) && val)       flags |= 0x20;
+    val = 0;
+    if (node->GetUserPropInt(_T("BillboardedLockZ"), val) && val)       flags |= 0x40;
+    val = 0;
+    if (node->GetUserPropInt(_T("CameraAnchored"), val) && val)        flags |= 0x80;
     return flags;
 }
 

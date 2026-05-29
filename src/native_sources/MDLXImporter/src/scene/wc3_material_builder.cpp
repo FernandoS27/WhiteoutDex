@@ -333,9 +333,11 @@ std::wstring extractTextureFromCASC(
 
 /// Resolve texture path. When CASC is available and cascStorage is non-null,
 /// textures not found locally are extracted from the Reforged archive.
+/// When mpqStorage is non-null, falls back to MPQ extraction for Classic v800.
 std::wstring resolveTexturePathFull(
     const std::wstring& modelDir, const std::wstring& relPath,
-    void* cascStorage)
+    void* cascStorage,
+    void* mpqStorage)
 {
     namespace fs = std::filesystem;
     auto wpath = resolveTexturePath(modelDir, relPath);
@@ -348,7 +350,8 @@ std::wstring resolveTexturePathFull(
     }
 
 #if defined(WHITEOUT_HAS_CASC)
-    // Try CASC extraction
+    // Try CASC extraction first (Reforged is the more common case for
+    // user-installed assets in 2024+; fall through to MPQ if not found).
     if (cascStorage) {
         auto* storage = static_cast<whiteout::storages::casc::Storage*>(cascStorage);
         auto extracted = extractTextureFromCASC(*storage, modelDir, relPath);
@@ -356,6 +359,13 @@ std::wstring resolveTexturePathFull(
             return extracted;
     }
 #endif
+
+    // Try MPQ extraction (Classic v800 archives)
+    if (mpqStorage) {
+        auto extracted = extractTextureFromMPQ(mpqStorage, modelDir, relPath);
+        if (!extracted.empty())
+            return extracted;
+    }
 
     // Return the best-guess path (even if file doesn't exist)
     return wpath;
@@ -387,10 +397,41 @@ using mdx_scene::resolveTexturePathFull;
 /// replaceableId is NOT set here — it is stored on the Wc3Material later
 /// (see buildSingleLayerWc3Material).
 /// sphereEnvMap is also set on the Wc3Material level via StdUVGen.
+/// Standard Warcraft III ReplaceableID → texture path mapping.
+/// MDX models with replaceableId > 0 often have an empty filePath because the
+/// game engine resolves the path at render time. We construct the canonical
+/// path so the importer can hand the renderer (or CASC/MPQ extractor) a real
+/// file to load. Returns empty string for unknown IDs.
+static std::wstring replaceableIdToPath(int32_t id) {
+    switch (id) {
+    case 1:  return L"ReplaceableTextures\\TeamColor\\TeamColor00.blp";
+    case 2:  return L"ReplaceableTextures\\TeamGlow\\TeamGlow00.blp";
+    case 11: return L"ReplaceableTextures\\Cliff\\Cliff0.blp";
+    case 21: return L"ReplaceableTextures\\LordaeronTree\\LordaeronSummerTree.blp";
+    case 22: return L"ReplaceableTextures\\AshenvaleTree\\AshenTree.blp";
+    case 23: return L"ReplaceableTextures\\BarrensTree\\BarrensTree.blp";
+    case 24: return L"ReplaceableTextures\\NorthrendTree\\NorthTree.blp";
+    case 25: return L"ReplaceableTextures\\Mushroom\\MushroomTree.blp";
+    case 31: return L"ReplaceableTextures\\RuinsTree\\RuinsTree.blp";
+    case 32: return L"ReplaceableTextures\\OutlandMushroomTree\\MushroomTree.blp";
+    default: return {};
+    }
+}
+
+/// Local logging helper (the file-scope `wlog` lives in a different anonymous
+/// namespace and isn't visible from here). Narrows a wide string for ostream
+/// output; non-ASCII becomes '?'.
+static std::string wlog_local(const std::wstring& ws) {
+    std::string s; s.reserve(ws.size());
+    for (wchar_t c : ws) s += (c < 128) ? static_cast<char>(c) : '?';
+    return s;
+}
+
 Texmap* createNativeBitmap(const ir::Texture& irTex, const std::wstring& modelDir,
-                           void* cascStorage, Interface* /*gi*/)
+                           void* cascStorage, void* mpqStorage, Interface* /*gi*/)
 {
-    MLOG << "[TEX] createNativeBitmap for '" << irTex.filePath << "'" << std::endl;
+    MLOG << "[TEX] createNativeBitmap for '" << irTex.filePath << "'"
+         << " replaceableId=" << irTex.replaceableId << std::endl;
 
     BitmapTex* bmpTex = NewDefaultBitmapTex();
     if (!bmpTex) {
@@ -398,11 +439,30 @@ Texmap* createNativeBitmap(const ir::Texture& irTex, const std::wstring& modelDi
         return nullptr;
     }
 
-    // Set the file path
+    // Decide which path to resolve. Priority:
+    //   1. Explicit filePath from the MDX (covers most cases).
+    //   2. ReplaceableID-derived canonical path when filePath is empty
+    //      (e.g. v800 TeamColor / TeamGlow / Cliff / Tree textures that the
+    //      engine fills in at render time).
+    std::wstring relPath;
     if (!irTex.filePath.empty()) {
-        auto wpath = resolveTexturePathFull(modelDir, toWstr(irTex.filePath), cascStorage);
+        relPath = toWstr(irTex.filePath);
+    } else if (irTex.replaceableId > 0) {
+        relPath = replaceableIdToPath(irTex.replaceableId);
+        if (!relPath.empty()) {
+            MLOG << "[TEX]   replaceableId=" << irTex.replaceableId
+                 << " -> derived path '" << wlog_local(relPath) << "'" << std::endl;
+        } else {
+            MLOG << "[TEX]   replaceableId=" << irTex.replaceableId
+                 << " has no canonical path mapping - leaving slot empty" << std::endl;
+        }
+    }
+
+    if (!relPath.empty()) {
+        auto wpath = resolveTexturePathFull(modelDir, relPath,
+                                            cascStorage, mpqStorage);
         bmpTex->SetMapName(wpath.c_str());
-        MLOG << "[TEX]   SetMapName '" << irTex.filePath << "'" << std::endl;
+        MLOG << "[TEX]   SetMapName '" << wlog_local(wpath) << "'" << std::endl;
     }
 
     // Configure tiling (wrap) on the StdUVGen
@@ -504,7 +564,8 @@ IFLGenResult generateIFLForLayer(
     const ir::MaterialLayer& layer,
     const ir::IRModel& irModel,
     const std::wstring& modelDir,
-    void* cascStorage = nullptr)
+    void* cascStorage = nullptr,
+    void* mpqStorage = nullptr)
 {
     IFLGenResult result{L"", 0, 1.0f, 0};
 
@@ -561,7 +622,7 @@ IFLGenResult generateIFLForLayer(
         // Use the same path resolution as createNativeBitmap so the
         // IFL and the non-animated fallback point at consistent files.
         std::wstring fullPath = resolveTexturePathFull(
-            modelDir, toWstr(irTex.filePath), cascStorage);
+            modelDir, toWstr(irTex.filePath), cascStorage, mpqStorage);
 
         // Convert wide path to UTF-8 for IFL file (narrow ASCII output).
         // Standard library's wstring→string conversion via std::string
@@ -640,6 +701,8 @@ static Mtl* buildSingleLayerWc3Material(
     const ir::IRModel& irModel,
     const std::vector<Texmap*>& texmaps,
     const std::wstring& modelDir,
+    void* cascStorage,
+    void* mpqStorage,
     Interface* gi,
     bool showInViewport = true)
 {
@@ -823,7 +886,7 @@ static Mtl* buildSingleLayerWc3Material(
         if (layer.textureIdTrackIndex >= 0 && diffuseTexmap &&
             diffuseTexmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
         {
-            IFLGenResult ifl = generateIFLForLayer(layer, irModel, modelDir);
+            IFLGenResult ifl = generateIFLForLayer(layer, irModel, modelDir, cascStorage, mpqStorage);
             if (!ifl.iflPath.empty()) {
                 BitmapTex* bmpTex = static_cast<BitmapTex*>(diffuseTexmap);
                 std::string narrowPath(ifl.iflPath.begin(), ifl.iflPath.end());
@@ -868,11 +931,12 @@ namespace mdx_scene {
 
 std::vector<Mtl*> Wc3MaterialBuilder::buildMaterials(
     const ir::IRModel& irModel, bool importTextures,
-    const std::wstring& modelDir, void* cascStorage,
+    const std::wstring& modelDir, void* cascStorage, void* mpqStorage,
     Interface* gi, core::ExportErrorReporter& reporter)
 {
     MLOG << "[CASC] buildMaterials: importTextures=" << importTextures
-         << " cascStorage=" << (cascStorage ? "yes" : "null") << std::endl;
+         << " cascStorage=" << (cascStorage ? "yes" : "null")
+         << " mpqStorage="  << (mpqStorage  ? "yes" : "null") << std::endl;
 
     // Step 1: Baseline — create 1 Wc3Bitmap per MDX texture entry (as before).
     // These are the "default" instances used by layers WITHOUT texture animation,
@@ -881,7 +945,7 @@ std::vector<Mtl*> Wc3MaterialBuilder::buildMaterials(
     if (importTextures) {
         texmapsFlat.reserve(irModel.textures.size());
         for (const auto& irTex : irModel.textures)
-            texmapsFlat.push_back(createNativeBitmap(irTex, modelDir, cascStorage, gi));
+            texmapsFlat.push_back(createNativeBitmap(irTex, modelDir, cascStorage, mpqStorage, gi));
     }
 
     // Step 2: For layers that use a DIFFERENT texture animation on the same
@@ -936,7 +1000,7 @@ std::vector<Mtl*> Wc3MaterialBuilder::buildMaterials(
                     } else {
                         // Different valid animation on same texture → fresh bitmap
                         const auto& irTex = irModel.textures[texIdx];
-                        Texmap* bmp = createNativeBitmap(irTex, modelDir, cascStorage, gi);
+                        Texmap* bmp = createNativeBitmap(irTex, modelDir, cascStorage, mpqStorage, gi);
                         bitmapCache[key] = bmp;
                         MLOG << "[TEX-ANIM] Cloned bitmap for texIdx=" << texIdx
                              << " taIdx=" << taIdx
@@ -972,7 +1036,7 @@ std::vector<Mtl*> Wc3MaterialBuilder::buildMaterials(
     for (const auto& irMat : irModel.materials) {
         materials.push_back(buildWc3Material(
             irMat, irModel, texmapsFlat, buildLayerTexmaps,
-            modelDir, gi, reporter));
+            modelDir, cascStorage, mpqStorage, gi, reporter));
     }
 
     return materials;
@@ -982,7 +1046,9 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
     const ir::Material& irMat, const ir::IRModel& irModel,
     const std::vector<Texmap*>& texmapsFlat,
     const LayerTexmapsFn& buildLayerTexmaps,
-    const std::wstring& modelDir, Interface* gi, core::ExportErrorReporter& reporter)
+    const std::wstring& modelDir,
+    void* cascStorage, void* mpqStorage,
+    Interface* gi, core::ExportErrorReporter& reporter)
 {
     if (irMat.layers.empty())
         return nullptr;
@@ -991,7 +1057,8 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
     if (irMat.layers.size() == 1) {
         auto layerTexmaps = buildLayerTexmaps(irMat.layers[0]);
         Mtl* mtl = buildSingleLayerWc3Material(
-            irMat.layers[0], irMat, irModel, layerTexmaps, modelDir, gi);
+            irMat.layers[0], irMat, irModel, layerTexmaps, modelDir,
+            cascStorage, mpqStorage, gi);
 
         if (mtl) {
             if (!irMat.name.empty()) {
@@ -1015,7 +1082,8 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
         // CompositeMaterial not available — fall back to first layer only
         auto layerTexmaps = buildLayerTexmaps(irMat.layers[0]);
         Mtl* mtl = buildSingleLayerWc3Material(
-            irMat.layers[0], irMat, irModel, layerTexmaps, modelDir, gi);
+            irMat.layers[0], irMat, irModel, layerTexmaps, modelDir,
+            cascStorage, mpqStorage, gi);
         if (mtl && !irMat.name.empty()) {
             MSTR name;
             name.printf(_T("%hs"), irMat.name.c_str());
@@ -1043,7 +1111,8 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
         compMtl->DeleteMe();
         auto layerTexmaps = buildLayerTexmaps(irMat.layers[0]);
         Mtl* mtl = buildSingleLayerWc3Material(
-            irMat.layers[0], irMat, irModel, layerTexmaps, modelDir, gi);
+            irMat.layers[0], irMat, irModel, layerTexmaps, modelDir,
+            cascStorage, mpqStorage, gi);
         return mtl;
     }
 
@@ -1065,7 +1134,8 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
         // different texture animations, each gets its own bitmap instance.
         auto layerTexmaps = buildLayerTexmaps(irMat.layers[j]);
         Mtl* subMtl = buildSingleLayerWc3Material(
-            irMat.layers[j], irMat, irModel, layerTexmaps, modelDir, gi, isLastLayer);
+            irMat.layers[j], irMat, irModel, layerTexmaps, modelDir,
+            cascStorage, mpqStorage, gi, isLastLayer);
 
         if (subMtl) {
             MSTR subName;

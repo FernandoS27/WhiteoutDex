@@ -52,22 +52,32 @@ BoneExtractor::BoneResult BoneExtractor::extract(
             bone.nodeIndex = sn.nodeIndex;
             bone.type = detectBoneType(sn.maxNode);
 
-            // v800 helper classification (matches NeoDex behavior):
-            // If the node is explicitly a Helper category → helper.
-            // If the node is a Bone category but NOT referenced by any Skin modifier → helper.
-            // Bones that directly deform vertices (skin-referenced) stay as bones.
-            // For v1200 (Reforged), the model builder will write all as bones regardless.
-            if (sn.category == NodeCategory::Helper) {
-                bone.isHelper = true;
-            } else if (!skinRefSet.empty() && skinRefSet.find(sn.maxNode) == skinRefSet.end()) {
-                // Bone not referenced by any Skin modifier → helper
-                bone.isHelper = true;
-            } else {
-                bone.isHelper = false;
-            }
+            // v800 bone-vs-helper classification — matches NeoDex semantics
+            // exactly. NeoDex's rule (NeoDexSceneParser.ms LoadObjects /
+            // processSkinning, lines 427-469) is:
+            //
+            //   • Any node referenced by the Skin modifier (regardless of
+            //     class — Dummy, Bone, Biped, Point Helper, …) is loaded
+            //     as a Wc3Bone → BONE chunk.
+            //   • Every other node is loaded as a Wc3Helper → HELP chunk.
+            //
+            // Class does NOT enter the decision. This matters for FBX-
+            // imported skeletons, where the bones are typically Dummy
+            // objects (Helper SuperClass). The previous logic explicitly
+            // marked Helper-class nodes as helpers BEFORE checking skin
+            // refs, which mis-routed every FBX-Dummy bone into the HELP
+            // chunk and produced the empty-BONE-chunk export the user
+            // observed.
+            //
+            // For v1200 (Reforged) the model builder writes everything to
+            // the BONE chunk regardless, so this distinction only matters
+            // for v800.
+            bool isSkinReferenced = (skinRefSet.find(sn.maxNode) != skinRefSet.end());
+            bone.isHelper = !isSkinReferenced;
 
             bone.pivotPoint = sn.maxNode->GetNodeTM(0).GetTrans();
             bone.bindPose = sn.maxNode->GetNodeTM(0);
+            bone.nodeFlags = collectNodeFlags(sn.maxNode);
 
             // ── BONE_MAIN focused debug ───────────────────────────
             if (bone.name == "Bone_Main") {
@@ -194,7 +204,11 @@ BoneExtractor::BoneResult BoneExtractor::extract(
             }
             bone.nodeIndex = -1;
             bone.type = detectBoneType(anc);
-            bone.isHelper = true; // Ancestors not in skin → always helper
+            // Same skin-based rule as Stage 1: only nodes referenced by a
+            // Skin modifier go to the BONE chunk. Ancestors that happen to
+            // be skin-referenced (rare but possible in deeply-nested rigs)
+            // stay bones; the rest become helpers.
+            bone.isHelper = (skinRefSet.find(anc) == skinRefSet.end());
             bone.pivotPoint = anc->GetNodeTM(0).GetTrans();
             bone.bindPose = anc->GetNodeTM(0);
             bone.nodeFlags = collectNodeFlags(anc);

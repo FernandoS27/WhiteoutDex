@@ -8,21 +8,25 @@
  */
 
 #include "ManagedWrapper.h"
-#include "MPQReader.h"
 #include "SharedPool.h"
-#include "BLPDecoder.h"
-#include "DDSDecoder.h"
+#include "ImageDecode.h"
 #include "ThumbnailEngine.h"
 
-// WHITEOUT_HAS_CASC must be defined before including the CASC header.
-// CMake sets this via target properties, but the vcxproj compiles separately.
+// WHITEOUT_HAS_CASC / WHITEOUT_HAS_MPQ must be defined before the headers.
+// CMake sets them via target properties, but the vcxproj compiles separately.
 #ifndef WHITEOUT_HAS_CASC
 #define WHITEOUT_HAS_CASC 1
 #endif
 #include <whiteout/storages/casc/storage.h>
 
+#ifndef WHITEOUT_HAS_MPQ
+#define WHITEOUT_HAS_MPQ 1
+#endif
+#include <whiteout/storages/mpq/storage.h>
+
 #include <filesystem>
 #include <fstream>
+#include <unordered_set>
 
 #include <msclr/marshal_cppstd.h>
 #include <vcclr.h>
@@ -41,9 +45,55 @@ namespace WhiteoutDex {
 //  Thread-safe initialization guaranteed by C++11.
 // ============================================================================
 
-static whiteoutdex::MPQManager& getMpqManager() {
-    static whiteoutdex::MPQManager instance;
+// ============================================================================
+//  MPQ state — wraps WhiteoutLib's mpq::Storage and adds multi-archive
+//  search semantics (mirrors the old MPQManager).
+//  Replaces the old whiteoutdex::MPQManager (~1000 lines → tiny wrapper).
+// ============================================================================
+
+struct MpqState {
+    std::vector<whiteout::storages::mpq::Storage> archives;
+};
+
+static MpqState& getMpqState() {
+    static MpqState instance;
     return instance;
+}
+
+// Case-insensitive substring filter; merges file lists from all open
+// archives, dropping duplicates. Mirrors MPQManager::listAllPaths.
+static std::vector<std::string> listAllMpqPaths(const std::string& filter) {
+    auto& st = getMpqState();
+    std::string fl = filter;
+    std::transform(fl.begin(), fl.end(), fl.begin(), ::tolower);
+
+    std::unordered_set<std::string> seen;
+    std::vector<std::string> out;
+    for (const auto& a : st.archives) {
+        if (!a) continue;
+        for (const auto& name : a.listFiles()) {
+            if (!fl.empty()) {
+                std::string nl = name;
+                std::transform(nl.begin(), nl.end(), nl.begin(), ::tolower);
+                if (nl.find(fl) == std::string::npos) continue;
+            }
+            std::string key = name;
+            std::transform(key.begin(), key.end(), key.begin(), ::tolower);
+            if (seen.insert(key).second) out.push_back(name);
+        }
+    }
+    return out;
+}
+
+// Search archives in order; first archive that has the file wins.
+static std::optional<std::vector<uint8_t>> readMpqFile(const std::string& innerPath) {
+    auto& st = getMpqState();
+    for (const auto& a : st.archives) {
+        if (!a) continue;
+        auto data = a.readFile(innerPath);
+        if (data) return data;
+    }
+    return std::nullopt;
 }
 
 // ============================================================================
@@ -151,16 +201,6 @@ struct CascState {
 
 static CascState& getCascState() {
     static CascState instance;
-    return instance;
-}
-
-static whiteoutdex::BLPDecoder& getBlpDecoder() {
-    static whiteoutdex::BLPDecoder instance;
-    return instance;
-}
-
-static whiteoutdex::DDSDecoder& getDdsDecoder() {
-    static whiteoutdex::DDSDecoder instance;
     return instance;
 }
 
@@ -417,23 +457,28 @@ static void retryFailedWithStandardDecode(
 // ============================================================================
 
 int WhiteoutDexTextureBrowser::MPQ_Open(System::String^ path) {
-
-    return getMpqManager().openArchive(toNative(path));
+    auto& st = getMpqState();
+    auto storage = whiteout::storages::mpq::Storage::open(
+        toNative(path), whiteoutdex::getSharedPool());
+    if (!storage) return -1;
+    st.archives.push_back(std::move(*storage));
+    return static_cast<int>(st.archives.size()) - 1;
 }
 
 void WhiteoutDexTextureBrowser::MPQ_Close(int handle) {
-
-    getMpqManager().closeArchive(handle);
+    auto& st = getMpqState();
+    if (handle < 0 || handle >= static_cast<int>(st.archives.size())) return;
+    st.archives[handle].close();
 }
 
 void WhiteoutDexTextureBrowser::MPQ_CloseAll() {
-
-    getMpqManager().closeAll();
+    auto& st = getMpqState();
+    for (auto& a : st.archives) a.close();
+    st.archives.clear();
 }
 
 int WhiteoutDexTextureBrowser::MPQ_Count() {
-
-    return getMpqManager().archiveCount();
+    return static_cast<int>(getMpqState().archives.size());
 }
 
 array<System::String^>^ WhiteoutDexTextureBrowser::MPQ_ListFiles(int handle) {
@@ -443,14 +488,13 @@ array<System::String^>^ WhiteoutDexTextureBrowser::MPQ_ListFiles(int handle) {
 array<System::String^>^ WhiteoutDexTextureBrowser::MPQ_ListFiles(
     int handle, System::String^ filter)
 {
-
-    if (handle < 0 || handle >= getMpqManager().archiveCount())
+    auto& st = getMpqState();
+    if (handle < 0 || handle >= static_cast<int>(st.archives.size()))
         return gcnew array<System::String^>(0);
-    if (!getMpqManager().isOpen(handle))
+    if (!st.archives[handle])
         return gcnew array<System::String^>(0);
 
-    std::vector<std::string> paths;
-    getMpqManager().listAllPaths(paths, filter ? toNative(filter) : "");
+    auto paths = listAllMpqPaths(filter ? toNative(filter) : "");
     return toManagedArray(paths);
 }
 
@@ -461,37 +505,47 @@ array<System::String^>^ WhiteoutDexTextureBrowser::MPQ_ListAllFiles() {
 array<System::String^>^ WhiteoutDexTextureBrowser::MPQ_ListAllFiles(
     System::String^ filter)
 {
-
-    std::vector<std::string> paths;
-    getMpqManager().listAllPaths(paths, filter ? toNative(filter) : "");
+    auto paths = listAllMpqPaths(filter ? toNative(filter) : "");
     return toManagedArray(paths);
 }
 
 array<System::Byte>^ WhiteoutDexTextureBrowser::MPQ_Extract(
     int handle, System::String^ innerPath)
 {
-
     (void)handle;
-    std::vector<uint8_t> data;
-    whiteoutdex::MpqResult r = getMpqManager().extractFile(toNative(innerPath), data);
-    if (r != whiteoutdex::MpqResult::Ok) return nullptr;
-    return toManagedBytes(data);
+    auto data = readMpqFile(toNative(innerPath));
+    if (!data) return nullptr;
+    return toManagedBytes(*data);
 }
 
 bool WhiteoutDexTextureBrowser::MPQ_ExtractToDisk(
     int handle, System::String^ innerPath, System::String^ destPath)
 {
-
     (void)handle;
-    whiteoutdex::MpqResult r = getMpqManager().extractFileToDisk(
-        toNative(innerPath), toNative(destPath));
-    return (r == whiteoutdex::MpqResult::Ok);
+    auto data = readMpqFile(toNative(innerPath));
+    if (!data) return false;
+
+    std::string dest = toNative(destPath);
+    try {
+        auto parent = std::filesystem::path(dest).parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent);
+    } catch (...) { return false; }
+
+    std::ofstream ofs(dest, std::ios::binary);
+    if (!ofs) return false;
+    ofs.write(reinterpret_cast<const char*>(data->data()),
+              static_cast<std::streamsize>(data->size()));
+    return ofs.good();
 }
 
 bool WhiteoutDexTextureBrowser::MPQ_HasFile(int handle, System::String^ innerPath) {
-
-    if (handle < 0 || handle >= getMpqManager().archiveCount()) return false;
-    return getMpqManager().findArchiveContaining(toNative(innerPath)) >= 0;
+    auto& st = getMpqState();
+    if (handle < 0 || handle >= static_cast<int>(st.archives.size())) return false;
+    std::string p = toNative(innerPath);
+    for (const auto& a : st.archives) {
+        if (a && a.fileExists(p)) return true;
+    }
+    return false;
 }
 
 // ============================================================================
@@ -608,61 +662,44 @@ System::String^ WhiteoutDexTextureBrowser::CASC_GetShaderType(System::String^ ca
 // ============================================================================
 
 System::Drawing::Bitmap^ WhiteoutDexTextureBrowser::DecodeBLP(System::String^ filePath) {
-
-    whiteoutdex::DecodedImage img = getBlpDecoder().decodeFile(toNative(filePath));
-    return toBitmap(img);
+    return toBitmap(whiteoutdex::decodeBlpFile(toNative(filePath)));
 }
 
 System::Drawing::Bitmap^ WhiteoutDexTextureBrowser::DecodeBLPFromMemory(
     array<System::Byte>^ data)
 {
-
     if (data == nullptr || data->Length == 0) return nullptr;
     pin_ptr<System::Byte> pin = &data[0];
-    whiteoutdex::DecodedImage img = getBlpDecoder().decode(
-        reinterpret_cast<const uint8_t*>(pin),
-        static_cast<size_t>(data->Length));
-    return toBitmap(img);
+    return toBitmap(whiteoutdex::decodeBlp(
+        std::span<const uint8_t>{reinterpret_cast<const uint8_t*>(pin),
+                                 static_cast<size_t>(data->Length)}));
 }
 
 System::Drawing::Bitmap^ WhiteoutDexTextureBrowser::DecodeDDS(System::String^ filePath) {
-
-    whiteoutdex::DecodedImage img = getDdsDecoder().decodeFile(toNative(filePath));
-    return toBitmap(img);
+    return toBitmap(whiteoutdex::decodeDdsFile(toNative(filePath)));
 }
 
 System::Drawing::Bitmap^ WhiteoutDexTextureBrowser::DecodeDDSFromMemory(
     array<System::Byte>^ data)
 {
-
     if (data == nullptr || data->Length == 0) return nullptr;
     pin_ptr<System::Byte> pin = &data[0];
-    whiteoutdex::DecodedImage img = getDdsDecoder().decode(
-        reinterpret_cast<const uint8_t*>(pin),
-        static_cast<size_t>(data->Length));
-    return toBitmap(img);
+    return toBitmap(whiteoutdex::decodeDds(
+        std::span<const uint8_t>{reinterpret_cast<const uint8_t*>(pin),
+                                 static_cast<size_t>(data->Length)}));
 }
 
 System::Drawing::Bitmap^ WhiteoutDexTextureBrowser::DecodeTexture(
     array<System::Byte>^ data)
 {
-
     if (data == nullptr || data->Length < 4) return nullptr;
     pin_ptr<System::Byte> pin = &data[0];
-    const uint8_t* ptr = reinterpret_cast<const uint8_t*>(pin);
+    std::span<const uint8_t> bytes{
+        reinterpret_cast<const uint8_t*>(pin),
+        static_cast<size_t>(data->Length)};
 
-    // BLP
-    if (ptr[0] == 'B' && ptr[1] == 'L' && ptr[2] == 'P') {
-        whiteoutdex::DecodedImage img = getBlpDecoder().decode(
-            ptr, static_cast<size_t>(data->Length));
-        return toBitmap(img);
-    }
-    // DDS
-    if (ptr[0] == 'D' && ptr[1] == 'D' && ptr[2] == 'S') {
-        whiteoutdex::DecodedImage img = getDdsDecoder().decode(
-            ptr, static_cast<size_t>(data->Length));
-        return toBitmap(img);
-    }
+    auto img = whiteoutdex::decodeAuto(bytes);
+    if (img.valid()) return toBitmap(img);
 
     // Fallback: PNG, JPG, BMP, GIF, TIFF via System.Drawing
     return tryDecodeStandard(data);
@@ -681,7 +718,7 @@ array<ThumbnailEntry^>^ WhiteoutDexTextureBrowser::GenerateThumbnailsMPQ(
     auto paths = toNativeVector(fileList);
     getThumbEngine().setThumbnailSize(thumbSize, thumbSize);
 
-    auto results = getThumbEngine().generateFromMPQ(getMpqManager(), paths);
+    auto results = getThumbEngine().generateFromMPQ(getMpqState().archives, paths);
 
     array<ThumbnailEntry^>^ out = gcnew array<ThumbnailEntry^>(
         static_cast<int>(results.size()));

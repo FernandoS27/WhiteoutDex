@@ -9,8 +9,11 @@
 #include "subsample_engine.h"
 
 #include <modstack.h>  // IDerivedObject (full definition for GetObjRef etc.)
+#include <istdplug.h> // IKeyControl, ILinFloatKey, etc.
 
 #include <cmath>
+#include <algorithm>
+#include <functional>
 #include <fstream>
 
 // Debug logging — writes to %TEMP%\mdlx_anim_debug.log
@@ -47,8 +50,14 @@ static std::ofstream& pre2Log() {
 namespace core {
 
 // ── Helper: check if a value is "identity" (no real animation) ──
-
-static bool isZeroVec(const Point3& v, float eps = 0.0001f) {
+//
+// FIX 2026-05-02: epsilon raised from 0.0001 to 0.001.
+// GetNodeTM resampling produces sub-mm float drift on bones whose parent
+// is animated. The old 0.0001 epsilon let phantom-translation values
+// (e.g. 0.00012) through, producing spurious 2-key tracks on bones that
+// have NO source animation. 0.001 (= 1 mm at typical scene scales)
+// strips drift while preserving any real animation.
+static bool isZeroVec(const Point3& v, float eps = 0.001f) {
     return fabsf(v.x) < eps && fabsf(v.y) < eps && fabsf(v.z) < eps;
 }
 
@@ -90,10 +99,39 @@ static Quat slerpQuat(const Quat& a, const Quat& b, float t) {
 }
 
 // Quaternion distance (angle between two quaternions)
+//
+// FIX 2026-05-02: switched from 2*acos(|dot|) to 4*asin(|a-b|/2) to fix
+// catastrophic float32 precision loss for near-identical quaternions.
+//
+// THE BUG: For two quats with relative rotation ~0.022° (well above the
+// reducer tolerance of 0.0057°), the dot product equals 1 - 1.8e-8.
+// Float32 epsilon at 1.0 is 1.19e-7, so 1.8e-8 falls BELOW representable
+// precision — dot rounds to exactly 1.0, acos(1.0) = 0, and the reducer
+// reports zero error. Result: every key in a sub-degree rotation animation
+// gets marked "redundant" and discarded, leaving only boundary keys.
+// Confirmed on Moria_platform: 131-key Chain_R004 track collapsed to 3
+// identity keys despite a clearly visible 0.4° peak in the source.
+//
+// THE FIX: For unit quaternions q1, q2 with relative rotation θ, the
+// vector distance |q1 - q2| = 2|sin(θ/4)|, so θ = 4·asin(|q1-q2|/2).
+// Computing |q1-q2| via direct subtraction has NO catastrophic
+// cancellation — small differences are preserved at full mantissa
+// precision, regardless of how close to identity both quats are.
+// We also try |q1+q2| (handles q ≡ -q hemisphere ambiguity) and use
+// whichever gives the smaller distance.
 static float quatError(const Quat& a, const Quat& b) {
-    float dot = fabsf(a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w);
-    if (dot > 1.0f) dot = 1.0f;
-    return 2.0f * acosf(dot); // angle in radians
+    // Same-hemisphere distance
+    float dx1 = a.x - b.x, dy1 = a.y - b.y, dz1 = a.z - b.z, dw1 = a.w - b.w;
+    float dist1Sq = dx1*dx1 + dy1*dy1 + dz1*dz1 + dw1*dw1;
+
+    // Opposite-hemisphere distance (q and -q represent same rotation)
+    float dx2 = a.x + b.x, dy2 = a.y + b.y, dz2 = a.z + b.z, dw2 = a.w + b.w;
+    float dist2Sq = dx2*dx2 + dy2*dy2 + dz2*dz2 + dw2*dw2;
+
+    float minDistSq = (dist1Sq < dist2Sq) ? dist1Sq : dist2Sq;
+    float halfDist = sqrtf(minDistSq) * 0.5f;
+    if (halfDist >= 1.0f) return 3.14159265f; // 180° apart
+    return 4.0f * asinf(halfDist);
 }
 
 // Remove redundant keys from a rotation track.
@@ -193,6 +231,132 @@ static bool isTrackAllIdentityScale(const ir::Vec3Track& track) {
         if (!isIdentityScale(key.value)) return false;
     }
     return true;
+}
+
+// ── Mirror-safe rotation extraction ──────────────────────────────
+// Extract a pure rotation quaternion from a world TM that may have
+// negative determinant (mirrored transforms from scale [-1,-1,-1]).
+// Normalizes rows to remove scale, then flips one row if det < 0
+// so that Quat() receives a proper rotation matrix (det = +1).
+// For non-mirrored transforms (det > 0) this is identical to the
+// old code — the det check never fires.
+static Quat extractRotation(const Matrix3& tm) {
+    Matrix3 m = tm;
+    m.NoTrans();
+    Point3 r0 = Normalize(m.GetRow(0));
+    Point3 r1 = Normalize(m.GetRow(1));
+    Point3 r2 = Normalize(m.GetRow(2));
+    // Negative determinant = mirrored transform.
+    // Absorb the mirror into scale by flipping one axis.
+    float det = DotProd(r0, CrossProd(r1, r2));
+    if (det < 0.0f) r0 = -r0;
+    return Quat(Matrix3(r0, r1, r2, Point3(0,0,0)));
+}
+
+// ── Key-time sampling helpers ─────────────────────────────────────
+// Instead of sampling at every frame (160 ticks), FK nodes are sampled
+// only at their controller's key times. This matches NeoDex's approach
+// and reduces key count from ~257 to ~8-33 per bone per sequence.
+
+// Collect key times from a controller within a sequence range.
+// Always includes sequence start and end as boundary keys.
+static std::vector<TimeValue> collectKeyTimes(Control* ctrl,
+                                               TimeValue seqStart,
+                                               TimeValue seqEnd) {
+    std::vector<TimeValue> times;
+    if (ctrl) {
+        int nk = ctrl->NumKeys();
+        if (nk > 0) {
+            // First try: Control::GetKeyTime (works for most controllers)
+            for (int i = 0; i < nk; i++) {
+                TimeValue kt = ctrl->GetKeyTime(i);
+                if (kt >= seqStart && kt <= seqEnd)
+                    times.push_back(kt);
+            }
+
+            // Sanity check: if controller reports many keys but we found
+            // very few in this sequence range, GetKeyTime might be broken.
+            // Fall back to per-frame sampling for this sequence.
+            if (times.size() <= 2 && nk > 100) {
+                // Estimate how many keys should be in this range
+                TimeValue totalRange = ctrl->GetKeyTime(nk - 1) - ctrl->GetKeyTime(0);
+                TimeValue seqRange = seqEnd - seqStart;
+                if (totalRange > 0) {
+                    int expected = static_cast<int>((float)nk * seqRange / totalRange);
+                    if (expected > 5 && times.size() <= 2) {
+                        // GetKeyTime is likely broken — fall back to per-frame
+                        times.clear();
+                        for (TimeValue t = seqStart; t <= seqEnd; t += 160)
+                            times.push_back(t);
+                        if (times.back() != seqEnd)
+                            times.push_back(seqEnd);
+                        return times;
+                    }
+                }
+            }
+        }
+    }
+    if (times.empty() || times.front() != seqStart)
+        times.insert(times.begin(), seqStart);
+    if (times.back() != seqEnd)
+        times.push_back(seqEnd);
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+    return times;
+}
+
+// For Euler_XYZ rotation: merge key times from all 3 sub-controllers.
+static std::vector<TimeValue> collectEulerKeyTimes(Control* rotCtrl,
+                                                     TimeValue seqStart,
+                                                     TimeValue seqEnd) {
+    std::vector<TimeValue> times;
+    if (rotCtrl) {
+        for (int axis = 0; axis < 3 && axis < rotCtrl->NumSubs(); axis++) {
+            Animatable* sub = rotCtrl->SubAnim(axis);
+            Control* subCtrl = sub ? GetControlInterface(sub) : nullptr;
+            if (subCtrl) {
+                int nk = subCtrl->NumKeys();
+                for (int i = 0; i < nk; i++) {
+                    TimeValue kt = subCtrl->GetKeyTime(i);
+                    if (kt >= seqStart && kt <= seqEnd)
+                        times.push_back(kt);
+                }
+            }
+        }
+    }
+    times.push_back(seqStart);
+    times.push_back(seqEnd);
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+    return times;
+}
+
+// Generate per-frame times (fallback for IK/Biped/CAT/Link/procedural)
+static std::vector<TimeValue> generateFrameTimes(TimeValue seqStart,
+                                                  TimeValue seqEnd,
+                                                  int frameInterval = 160) {
+    std::vector<TimeValue> times;
+    for (TimeValue t = seqStart; t <= seqEnd; t += frameInterval)
+        times.push_back(t);
+    if (times.empty() || times.back() != seqEnd)
+        times.push_back(seqEnd);
+    return times;
+}
+
+// Filter pre-collected IK key times to a sequence range + boundaries.
+static std::vector<TimeValue> filterIKKeyTimes(
+        const std::vector<TimeValue>& allIKKeys,
+        TimeValue seqStart, TimeValue seqEnd) {
+    std::vector<TimeValue> times;
+    times.push_back(seqStart);
+    for (TimeValue t : allIKKeys) {
+        if (t > seqStart && t < seqEnd)
+            times.push_back(t);
+    }
+    times.push_back(seqEnd);
+    // Already sorted (allIKKeys is sorted), just dedup
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+    return times;
 }
 
 // ─── Patch C: PRE2 cyclic rotation extraction ────────────────────────
@@ -373,6 +537,8 @@ static bool extractPre2CyclicRotation(INode* maxNode, int32_t nodeIdx,
         Point3 r0 = Normalize(localTM.GetRow(0));
         Point3 r1 = Normalize(localTM.GetRow(1));
         Point3 r2 = Normalize(localTM.GetRow(2));
+        float det = DotProd(r0, CrossProd(r1, r2));
+        if (det < 0.0f) r0 = -r0;
         Quat localRot = Quat(Matrix3(r0, r1, r2, Point3(0, 0, 0)));
 
         // Log RAW value before any adjustments
@@ -436,6 +602,76 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
          << " sequences=" << sequences.size() << "\n";
     ALOG << "  Using GetValue() approach (Autodesk-recommended)\n";
     AFLUSH;
+
+    // ── Pre-scan: collect key times from all IK chains ──────────
+    // IK-affected bones are driven by IK goals, not by their own
+    // controllers. NeoDex reads keys from the IK chain helpers and
+    // their targets, then samples GetNodeTM only at those times.
+    // We do the same: collect key times from all IK_Chain_Object
+    // helpers + their parent hierarchies + VH targets.
+    std::vector<TimeValue> ikMergedKeyTimes;
+    {
+        auto collectKeysFromNode = [](INode* n, std::vector<TimeValue>& out) {
+            if (!n) return;
+            Control* tmC = n->GetTMController();
+            if (!tmC) return;
+            // Position keys
+            Control* pc = tmC->GetPositionController();
+            if (pc) {
+                int nk = pc->NumKeys();
+                for (int i = 0; i < nk; i++)
+                    out.push_back(pc->GetKeyTime(i));
+            }
+            // Rotation keys
+            Control* rc = tmC->GetRotationController();
+            if (rc) {
+                int nk = rc->NumKeys();
+                for (int i = 0; i < nk; i++)
+                    out.push_back(rc->GetKeyTime(i));
+            }
+        };
+
+        // Walk all scene nodes looking for IK_Chain_Object helpers
+        INode* sceneRoot = GetCOREInterface()->GetRootNode();
+        std::function<void(INode*)> scanForIKChains = [&](INode* parent) {
+            for (int i = 0; i < parent->NumberOfChildren(); i++) {
+                INode* child = parent->GetChildNode(i);
+                if (!child) continue;
+
+                ObjectState os = child->EvalWorldState(0);
+                if (os.obj) {
+                    MSTR className;
+                    os.obj->GetClassName(className);
+                    const wchar_t* cn = className.data();
+                    if (cn && (wcsstr(cn, L"IK") != nullptr ||
+                               wcsstr(cn, L"ik") != nullptr)) {
+                        // Collect keys from this IK helper
+                        collectKeysFromNode(child, ikMergedKeyTimes);
+                        // Collect from its parent chain
+                        INode* p = child->GetParentNode();
+                        while (p && !p->IsRootNode()) {
+                            collectKeysFromNode(p, ikMergedKeyTimes);
+                            p = p->GetParentNode();
+                        }
+                        // Collect from children (potential swivel targets)
+                        for (int c = 0; c < child->NumberOfChildren(); c++)
+                            collectKeysFromNode(child->GetChildNode(c), ikMergedKeyTimes);
+                    }
+                }
+                scanForIKChains(child);
+            }
+        };
+        scanForIKChains(sceneRoot);
+
+        // Deduplicate and sort
+        std::sort(ikMergedKeyTimes.begin(), ikMergedKeyTimes.end());
+        ikMergedKeyTimes.erase(
+            std::unique(ikMergedKeyTimes.begin(), ikMergedKeyTimes.end()),
+            ikMergedKeyTimes.end());
+
+        ALOG << "  IK chain scan: " << ikMergedKeyTimes.size() << " merged key times\n";
+        AFLUSH;
+    }
 
     for (size_t nodeIdx = 0; nodeIdx < irModel.nodes.size(); ++nodeIdx) {
         auto& irNode = irModel.nodes[nodeIdx];
@@ -512,19 +748,11 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
         Quat worldBindRot(0.0f,0.0f,0.0f,1.0f), parentWorldBindRot(0.0f,0.0f,0.0f,1.0f);
         if (needsRotDelta) {
             Matrix3 wb = maxNode->GetNodeTM(0);
-            wb.NoTrans();
-            Point3 r0 = Normalize(wb.GetRow(0));
-            Point3 r1 = Normalize(wb.GetRow(1));
-            Point3 r2 = Normalize(wb.GetRow(2));
-            worldBindRot = Quat(Matrix3(r0, r1, r2, Point3(0,0,0)));
+            worldBindRot = extractRotation(wb);
 
             if (parentNode && !parentNode->IsRootNode()) {
                 Matrix3 pb = parentNode->GetNodeTM(0);
-                pb.NoTrans();
-                r0 = Normalize(pb.GetRow(0));
-                r1 = Normalize(pb.GetRow(1));
-                r2 = Normalize(pb.GetRow(2));
-                parentWorldBindRot = Quat(Matrix3(r0, r1, r2, Point3(0,0,0)));
+                parentWorldBindRot = extractRotation(pb);
             }
         }
 
@@ -545,10 +773,8 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
         // IMPORTANT: we still fall through to the regular translation/
         // scale pipeline below. Only the rotation is short-circuited.
         //
-        // Scope: intentionally limited to Wc3Particles2 nodes. Extending
-        // to HELP nodes was tried and reverted — did not resolve the
-        // helper-parented particle orientation issue, and risked regressing
-        // regular helper animations. Left for a future dedicated patch.
+        // Scope: PE2 nodes only. Light rotation global sequences are
+        // handled separately in the light extractor.
         bool pre2CyclicHandled = false;
         if (isWc3Particles2Node(maxNode)) {
             Control* rotCtrl = tmCtrl->GetRotationController();
@@ -565,6 +791,26 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
         bool hasAnyRealTranslation = false;
         bool hasAnyRealRotation = false;
         bool hasAnyRealScale = false;
+
+        // ── FK key-time sampling: detect controller types once per node ──
+        Control* posCtrlFK = tmCtrl->GetPositionController();
+        Control* rotCtrlFK = tmCtrl->GetRotationController();
+        Control* sclCtrlFK = tmCtrl->GetScaleController();
+        ControllerType posTypeFK = ControllerReader::detect(posCtrlFK);
+        ControllerType rotTypeFK = ControllerReader::detect(rotCtrlFK);
+
+        bool isFKPosNode = (posTypeFK == ControllerType::Bezier_Position ||
+                            posTypeFK == ControllerType::TCB_Position ||
+                            posTypeFK == ControllerType::Linear_Position);
+        bool isFKRotNode = (rotTypeFK == ControllerType::Bezier_Rotation ||
+                            rotTypeFK == ControllerType::TCB_Rotation ||
+                            rotTypeFK == ControllerType::Linear_Rotation ||
+                            rotTypeFK == ControllerType::Euler_XYZ);
+        bool needsPerFrame = isBipedNode || isLinkNode || isCATNode;
+        bool isIKNode = ControllerReader::isIKAffected(maxNode);
+
+        ALOG << "    keyTimeMode: pos=" << (isFKPosNode && !needsPerFrame && !isIKNode ? "KEY" : (isIKNode ? "IK-KEY" : "FRAME"))
+             << " rot=" << (isFKRotNode && !needsPerFrame && !isIKNode ? "KEY" : (isIKNode ? "IK-KEY" : "FRAME")) << "\n";
 
         for (const auto& seq : sequences) {
             ir::NodeAnimation nodeAnim;
@@ -632,10 +878,26 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 nodeAnim.rotation.keys.clear();
             }
 
-            // ── Translation delta using world TMs ──
-            // Computes local position using scale-normalized parent TM.
-            // This ensures translation deltas are in the same scale as pivot points,
-            // even when parent nodes have non-unit scale (e.g. 151x).
+            // ── Translation delta — literal NeoDex PositionKeys port ──
+            // Reference: NeoDex Wc3Animation.ms, fn PositionKeys, default branch:
+            //   correctionQuat = at time 0f o.parent.transform.rotationPart as quat
+            //   parentScale    = at time 0f o.parent.scale
+            //   p              = at time 0f c.value
+            //   for t in allKeyTimes do (
+            //       relativeAnimVector = (at time t c.value) - p
+            //       if o.parent != undefined then
+            //           relativeAnimVector = relativeAnimVector * parentScale
+            //       relativeAnimVector *= correctionQuat
+            //       append keys (KeyData t relativeAnimVector)
+            //   )
+            //
+            // Notes:
+            //   - For this scene's constant-uniform parent scale, this produces
+            //     the same KGTR values as the older normalize-then-rotate logic.
+            //     Both are byte-identical to NeoDex's output (verified). Kept the
+            //     literal port because it's clearer semantically and handles
+            //     animated parent scale correctly (the older code would diverge
+            //     in that case by losing scale info via double normalization).
             {
                 // Log what the FK sampler produced BEFORE we replace it
                 int fkKeyCount = static_cast<int>(nodeAnim.translation.keys.size());
@@ -649,28 +911,31 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 nodeAnim.translation.interpolation = ir::InterpolationType::Linear;
                 const int frameInterval = 160;
 
-                // Precompute bind-time parent (scale-normalized)
+                // ── Bind-time setup (NeoDex constants) ─────────────────────────
+                Point3 parentScale_bind(1.0f, 1.0f, 1.0f);
+                Matrix3 parentRot_bind;
+                parentRot_bind.IdentityMatrix();
+                Point3 cValue_0(0, 0, 0);
+
                 Point3 worldBindPos = maxNode->GetNodeTM(0).GetTrans();
-                Point3 localBindPos = worldBindPos; // fallback for root bones
-
-                // Parent scale info for debug
-                float parentRowLen = 1.0f;
-
-                // Parent bind rotation matrix — needed to convert delta from
-                // Max parent-local space to MDX parent-local space.
-                Matrix3 parentBindRot;
-                parentBindRot.IdentityMatrix();
 
                 if (parentNode && !parentNode->IsRootNode()) {
-                    Matrix3 pb = parentNode->GetNodeTM(0);
-                    Point3 pbPos = pb.GetTrans();
-                    pb.NoTrans();
-                    parentRowLen = Length(pb.GetRow(0));
-                    pb.SetRow(0, Normalize(pb.GetRow(0)));
-                    pb.SetRow(1, Normalize(pb.GetRow(1)));
-                    pb.SetRow(2, Normalize(pb.GetRow(2)));
-                    localBindPos = (worldBindPos - pbPos) * Inverse(pb);
-                    parentBindRot = pb;
+                    Matrix3 parentBindTM_full = parentNode->GetNodeTM(0);
+                    cValue_0 = (maxNode->GetNodeTM(0) * Inverse(parentBindTM_full)).GetTrans();
+
+                    Matrix3 parentBindTM_noT = parentBindTM_full;
+                    parentBindTM_noT.NoTrans();
+                    parentScale_bind = Point3(
+                        Length(parentBindTM_noT.GetRow(0)),
+                        Length(parentBindTM_noT.GetRow(1)),
+                        Length(parentBindTM_noT.GetRow(2))
+                    );
+                    parentRot_bind = parentBindTM_noT;
+                    parentRot_bind.SetRow(0, Normalize(parentRot_bind.GetRow(0)));
+                    parentRot_bind.SetRow(1, Normalize(parentRot_bind.GetRow(1)));
+                    parentRot_bind.SetRow(2, Normalize(parentRot_bind.GetRow(2)));
+                } else {
+                    cValue_0 = worldBindPos;
                 }
 
                 ALOG << "    TRANS node[" << nodeIdx << "] '" << irNode.name << "'"
@@ -679,40 +944,44 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                      << " fkLast=(" << fkLastVal.x << "," << fkLastVal.y << "," << fkLastVal.z << ")"
                      << "\n";
                 ALOG << "      worldBindPos=(" << worldBindPos.x << "," << worldBindPos.y << "," << worldBindPos.z << ")"
-                     << " localBindPos=(" << localBindPos.x << "," << localBindPos.y << "," << localBindPos.z << ")"
-                     << " parentScale=" << parentRowLen
+                     << " cValue_0=(" << cValue_0.x << "," << cValue_0.y << "," << cValue_0.z << ")"
+                     << " parentScale_bind=(" << parentScale_bind.x << "," << parentScale_bind.y << "," << parentScale_bind.z << ")"
                      << " evalLocalBind=(" << bindPos.x << "," << bindPos.y << "," << bindPos.z << ")"
                      << "\n";
 
                 int transLogCount = 0;
-                for (TimeValue t = seq.startTime; t <= seq.endTime; t += frameInterval) {
+                auto transTimes = isIKNode
+                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    : (!needsPerFrame && isFKPosNode)
+                        ? collectKeyTimes(posCtrlFK, seq.startTime, seq.endTime)
+                        : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
+                for (TimeValue t : transTimes) {
+                    Point3 cValue_t;
                     Point3 worldPos = maxNode->GetNodeTM(t).GetTrans();
-                    Point3 localPos = worldPos; // fallback for root bones
 
                     if (parentNode && !parentNode->IsRootNode()) {
-                        Matrix3 pt = parentNode->GetNodeTM(t);
-                        Point3 ptPos = pt.GetTrans();
-                        pt.NoTrans();
-                        pt.SetRow(0, Normalize(pt.GetRow(0)));
-                        pt.SetRow(1, Normalize(pt.GetRow(1)));
-                        pt.SetRow(2, Normalize(pt.GetRow(2)));
-                        localPos = (worldPos - ptPos) * Inverse(pt);
+                        Matrix3 parentTM_t_full = parentNode->GetNodeTM(t);
+                        cValue_t = (maxNode->GetNodeTM(t) * Inverse(parentTM_t_full)).GetTrans();
+                    } else {
+                        cValue_t = worldPos;
                     }
 
-                    Point3 delta = localPos - localBindPos;
+                    Point3 delta = cValue_t - cValue_0;
 
-                    // Convert from Max parent-local to MDX parent-local space
-                    delta = delta * parentBindRot;
+                    delta.x *= parentScale_bind.x;
+                    delta.y *= parentScale_bind.y;
+                    delta.z *= parentScale_bind.z;
+
+                    delta = delta * parentRot_bind;
 
                     if (fabsf(delta.x) < 0.0001f) delta.x = 0.0f;
                     if (fabsf(delta.y) < 0.0001f) delta.y = 0.0f;
                     if (fabsf(delta.z) < 0.0001f) delta.z = 0.0f;
 
-                    // Log first 5 frames and every 100th frame
                     if (transLogCount < 5 || (t % (frameInterval * 100)) == 0) {
                         ALOG << "      t=" << t
                              << " world=(" << worldPos.x << "," << worldPos.y << "," << worldPos.z << ")"
-                             << " local=(" << localPos.x << "," << localPos.y << "," << localPos.z << ")"
+                             << " cValue_t=(" << cValue_t.x << "," << cValue_t.y << "," << cValue_t.z << ")"
                              << " delta=(" << delta.x << "," << delta.y << "," << delta.z << ")"
                              << "\n";
                     }
@@ -745,45 +1014,53 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 Quat invParentWorldBind = Inverse(parentWorldBindRot);
                 int logCount = 0;
                 const int frameInterval = 160; // 1 frame at 30fps
+                auto rotTimes = isIKNode
+                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    : (!needsPerFrame && isFKRotNode)
+                        ? (rotTypeFK == ControllerType::Euler_XYZ
+                            ? collectEulerKeyTimes(rotCtrlFK, seq.startTime, seq.endTime)
+                            : collectKeyTimes(rotCtrlFK, seq.startTime, seq.endTime))
+                        : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
 
-                for (TimeValue t = seq.startTime; t <= seq.endTime; t += frameInterval) {
-                    Matrix3 wt = maxNode->GetNodeTM(t);
-                    wt.NoTrans();
-                    Point3 r0 = Normalize(wt.GetRow(0));
-                    Point3 r1 = Normalize(wt.GetRow(1));
-                    Point3 r2 = Normalize(wt.GetRow(2));
-                    Quat worldRot = Quat(Matrix3(r0, r1, r2, Point3(0,0,0)));
+                if (logCount == 0) {
+                    ALOG << "    ROT seq[" << seq.startTime << "-" << seq.endTime
+                         << "] rotTimes=" << rotTimes.size()
+                         << " ctrlNumKeys=" << (rotCtrlFK ? rotCtrlFK->NumKeys() : -1)
+                         << " isFKRot=" << isFKRotNode
+                         << " isIK=" << isIKNode
+                         << " needsPerFrame=" << needsPerFrame << "\n";
+                }
+
+                for (TimeValue t : rotTimes) {
+                    Quat worldRot = extractRotation(maxNode->GetNodeTM(t));
 
                     Quat parentWorldRot(0.0f,0.0f,0.0f,1.0f);
                     if (parentNode && !parentNode->IsRootNode()) {
-                        Matrix3 pt = parentNode->GetNodeTM(t);
-                        pt.NoTrans();
-                        r0 = Normalize(pt.GetRow(0));
-                        r1 = Normalize(pt.GetRow(1));
-                        r2 = Normalize(pt.GetRow(2));
-                        parentWorldRot = Quat(Matrix3(r0, r1, r2, Point3(0,0,0)));
+                        parentWorldRot = extractRotation(parentNode->GetNodeTM(t));
                     }
 
+                    // Delta-from-bind rotation (matches NeoDex GetRot):
+                    // MDX KGRT stores rotation CHANGE from bind pose.
                     Quat worldDelta = invWorldBind * worldRot;
                     Quat parentDelta = invParentWorldBind * parentWorldRot;
-                    Quat result = worldDelta * Inverse(parentDelta);
+                    Quat localRot = worldDelta * Inverse(parentDelta);
 
                     // Hemisphere consistency: force w >= 0, then check prev-key
-                    if (result.w < 0.0f) {
-                        result.x = -result.x; result.y = -result.y;
-                        result.z = -result.z; result.w = -result.w;
+                    if (localRot.w < 0.0f) {
+                        localRot.x = -localRot.x; localRot.y = -localRot.y;
+                        localRot.z = -localRot.z; localRot.w = -localRot.w;
                     }
                     if (!nodeAnim.rotation.keys.empty()) {
                         const Quat& prev = nodeAnim.rotation.keys.back().value;
-                        if ((prev.x*result.x + prev.y*result.y + prev.z*result.z + prev.w*result.w) < 0.0f) {
-                            result.x = -result.x; result.y = -result.y;
-                            result.z = -result.z; result.w = -result.w;
+                        if ((prev.x*localRot.x + prev.y*localRot.y + prev.z*localRot.z + prev.w*localRot.w) < 0.0f) {
+                            localRot.x = -localRot.x; localRot.y = -localRot.y;
+                            localRot.z = -localRot.z; localRot.w = -localRot.w;
                         }
                     }
 
                     ir::Keyframe<Quat> key;
                     key.time = t;
-                    key.value = result;
+                    key.value = localRot;
                     nodeAnim.rotation.keys.push_back(key);
 
                     if (logCount < 6) {
@@ -791,7 +1068,7 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                              << " worldRot=(" << worldRot.x << "," << worldRot.y << "," << worldRot.z << "," << worldRot.w << ")"
                              << " wDelta=(" << worldDelta.x << "," << worldDelta.y << "," << worldDelta.z << "," << worldDelta.w << ")"
                              << " pDelta=(" << parentDelta.x << "," << parentDelta.y << "," << parentDelta.z << "," << parentDelta.w << ")"
-                             << " result=(" << result.x << "," << result.y << "," << result.z << "," << result.w << ")\n";
+                             << " localRot=(" << localRot.x << "," << localRot.y << "," << localRot.z << "," << localRot.w << ")\n";
                         logCount++;
                     }
                 }
@@ -827,7 +1104,12 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 if (bindSy < 0.0001f) bindSy = 1.0f;
                 if (bindSz < 0.0001f) bindSz = 1.0f;
 
-                for (TimeValue t = seq.startTime; t <= seq.endTime; t += frameInterval) {
+                auto sclTimes = isIKNode
+                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    : (!needsPerFrame)
+                        ? collectKeyTimes(sclCtrlFK, seq.startTime, seq.endTime)
+                        : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
+                for (TimeValue t : sclTimes) {
                     Matrix3 nodeTM = maxNode->GetNodeTM(t);
                     Matrix3 parTM;
                     parTM.IdentityMatrix();
@@ -860,7 +1142,11 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 size_t rtBefore = nodeAnim.rotation.keys.size();
                 size_t scBefore = nodeAnim.scale.keys.size();
 
-                reduceTranslationKeys(nodeAnim.translation, 0.05f);
+                // Translation tolerance: 0.001 units. Original value before
+                // the drift-investigation detour. Drift was caused by a
+                // mesh bind-pose bug in mesh_extractor.cpp, not by key
+                // density — see useSkinned policy there.
+                reduceTranslationKeys(nodeAnim.translation, 0.001f);
 
                 // Detect multi-revolution rotation (>360°) by summing
                 // frame-to-frame angular changes. Quaternion slerp can't
@@ -881,9 +1167,18 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                     ALOG << "    MULTI-REV detected: cumulative=" << (cumulativeAngle * 57.2958f)
                          << " deg — skipping rotation reduction\n";
                 } else {
-                    reduceRotationKeys(nodeAnim.rotation, 0.01f);
+                    // Tolerance 0.0001 rad ≈ 0.0057°. Tightened from the
+                    // original 0.01 rad (0.573°) which was too aggressive
+                    // for fine mechanical motion such as chain-link sway:
+                    // any animation whose largest delta was below ~0.5°
+                    // would be slerp-merged into the boundary keys, leaving
+                    // only Identity start/end keys. Anything below 0.0001
+                    // rad is true numeric noise (well under one quat-
+                    // component LSB at typical float precision).
+                    reduceRotationKeys(nodeAnim.rotation, 0.0001f);
                 }
 
+                // Scale tolerance: 0.005 — 0.5% deviation allowed.
                 reduceTranslationKeys(nodeAnim.scale, 0.005f);
 
                 if (trBefore > 2 || rtBefore > 2 || scBefore > 2) {
@@ -898,16 +1193,36 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
             // ── Check if this sequence has real animation ──
             if (!isTrackAllZero(nodeAnim.translation))
                 hasAnyRealTranslation = true;
-            if (!isTrackAllIdentityRot(nodeAnim.rotation))
+            // ROTATION FIX (Bone_maozi2 "ein bisschen daneben" bug):
+            // The OLD check used isTrackAllIdentityRot, which returned true for
+            // bones whose rotation tracks were animated in Max but always landed
+            // near identity after bind-delta correction (typical for bones whose
+            // local rotation doesn't change but whose parent rotates a lot —
+            // e.g. Bone_maozi2 under Bone_maozi). The rotation track was then
+            // stripped on lines below, causing the renderer to fall back on the
+            // bone's bind-pose rotation instead of explicit identity quats.
+            // For bones with non-identity bind rotation (Bone_maozi2 has ~91° on
+            // Y from FBX import), these two paths give visually different
+            // results — hence the small position drift on the chain end.
+            // NeoDex (Wc3Animation.ms PositionKeys/RotationKeys) emits these
+            // identity tracks intact; we now match that behavior by treating
+            // ANY non-empty rotation track as real.
+            if (!nodeAnim.rotation.keys.empty())
                 hasAnyRealRotation = true;
             if (!isTrackAllIdentityScale(nodeAnim.scale))
                 hasAnyRealScale = true;
 
             // ── Strip identity-only tracks for this sequence ──
+            // Translation/scale: stripping all-zero / all-identity is safe — the
+            //   renderer's "no track" path produces the same runtime values.
+            // Rotation: NOT safe to strip when bind rotation is non-identity,
+            //   because "no KGRT" leaves bind rotation in effect at runtime,
+            //   while "KGRT with identity" overrides it with zero rotation.
+            //   The two paths give different visual results, so we must emit
+            //   the track even when all keys are identity. (NeoDex behavior.)
             if (isTrackAllZero(nodeAnim.translation))
                 nodeAnim.translation.keys.clear();
-            if (isTrackAllIdentityRot(nodeAnim.rotation))
-                nodeAnim.rotation.keys.clear();
+            // [REMOVED] isTrackAllIdentityRot strip — see comment above.
             if (isTrackAllIdentityScale(nodeAnim.scale))
                 nodeAnim.scale.keys.clear();
 

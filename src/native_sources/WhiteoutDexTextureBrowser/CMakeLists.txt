@@ -3,16 +3,10 @@
 # Parent provides: whiteout_lib, whiteout_casc, zlibstatic
 # No Max SDK dependency.
 # ============================================================================
-option(WHITEOUTDEX_BUILD_TESTS "Build standalone test executable" OFF)
-
 add_library(WhiteoutDexTextureBrowser_native STATIC
     Source/SharedPool.h
-    Source/MPQReader.h
-    Source/MPQReader.cpp
-    Source/BLPDecoder.h
-    Source/BLPDecoder.cpp
-    Source/DDSDecoder.h
-    Source/DDSDecoder.cpp
+    Source/ImageDecode.h
+    Source/ImageDecode.cpp
     Source/ThumbnailEngine.h
     Source/ThumbnailEngine.cpp
 )
@@ -32,6 +26,7 @@ target_include_directories(WhiteoutDexTextureBrowser_native PUBLIC
 target_link_libraries(WhiteoutDexTextureBrowser_native PUBLIC
     whiteout_lib
     whiteout_casc
+    whiteout_mpq
     zlibstatic
 )
 
@@ -42,6 +37,7 @@ target_compile_definitions(WhiteoutDexTextureBrowser_native PRIVATE
     _CRT_SECURE_NO_WARNINGS
     NOMINMAX
     WHITEOUT_HAS_CASC=1
+    WHITEOUT_HAS_MPQ=1
 )
 
 if(MSVC)
@@ -51,13 +47,3 @@ if(MSVC)
     )
 endif()
 
-# ---------------------------------------------------------------------------
-# Standalone test (optional)
-# ---------------------------------------------------------------------------
-if(WHITEOUTDEX_BUILD_TESTS)
-    add_executable(WhiteoutDexTextureBrowser_test tests/MPQReaderTest.cpp)
-    target_link_libraries(WhiteoutDexTextureBrowser_test PRIVATE WhiteoutDexTextureBrowser_native)
-    if(MSVC)
-        target_compile_options(WhiteoutDexTextureBrowser_test PRIVATE /W3 /EHsc)
-    endif()
-endif()

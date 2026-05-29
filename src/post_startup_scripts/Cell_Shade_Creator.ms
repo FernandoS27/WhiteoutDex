@@ -366,7 +366,7 @@ rollout WdxCellShadeCreator "Wc3 Cell Shade Creator" width:192 height:360
         currentColor = c
         pnlColor.BackColor = cc.FromArgb (c.r as integer) (c.g as integer) (c.b as integer)
         updateRGBLabel()
-        CellShade.updateColor c
+        WdxCellShade.updateColor c
     )
 
     fn updateToggleVisuals =
@@ -391,7 +391,7 @@ rollout WdxCellShadeCreator "Wc3 Cell Shade Creator" width:192 height:360
         )
     )
 
-    fn selectFilter idx = ( filterIndex = idx ; updateFilterVisuals() ; CellShade.updateFilterMode idx )
+    fn selectFilter idx = ( filterIndex = idx ; updateFilterVisuals() ; WdxCellShade.updateFilterMode idx )
 
     fn styleSwatch ctrl idx =
     (
@@ -400,6 +400,8 @@ rollout WdxCellShadeCreator "Wc3 Cell Shade Creator" width:192 height:360
         ctrl.BackColor = bgDN
         ctrl.Cursor = (dotNetClass "System.Windows.Forms.Cursors").Hand
     )
+
+    fn swClick idx = ( setCurrentColor swColors[idx] )
 
     -- Swatch events
     on sw1 MouseEnter s e do sw1.Image = swBmpsHover[1] ; on sw1 MouseLeave s e do sw1.Image = swBmpsNormal[1] ; on sw1 MouseClick s e do swClick 1
@@ -410,8 +412,6 @@ rollout WdxCellShadeCreator "Wc3 Cell Shade Creator" width:192 height:360
     on sw6 MouseEnter s e do sw6.Image = swBmpsHover[6] ; on sw6 MouseLeave s e do sw6.Image = swBmpsNormal[6] ; on sw6 MouseClick s e do swClick 6
     on sw7 MouseEnter s e do sw7.Image = swBmpsHover[7] ; on sw7 MouseLeave s e do sw7.Image = swBmpsNormal[7] ; on sw7 MouseClick s e do swClick 7
     on sw8 MouseEnter s e do sw8.Image = swBmpsHover[8] ; on sw8 MouseLeave s e do sw8.Image = swBmpsNormal[8] ; on sw8 MouseClick s e do swClick 8
-
-    fn swClick idx = ( setCurrentColor swColors[idx] )
 
     -- Color picker
     on pnlColor MouseClick s e do
@@ -424,11 +424,11 @@ rollout WdxCellShadeCreator "Wc3 Cell Shade Creator" width:192 height:360
     )
 
     -- Spinner
-    on spnThick changed val do CellShade.updateThickness spnThick.value
+    on spnThick changed val do WdxCellShade.updateThickness spnThick.value
 
     -- Toggles
-    on btnFlipL MouseClick s e do ( flipNormals = true ; updateToggleVisuals() ; CellShade.updateNormals true )
-    on btnFlipR MouseClick s e do ( flipNormals = false ; updateToggleVisuals() ; CellShade.updateNormals false )
+    on btnFlipL MouseClick s e do ( flipNormals = true ; updateToggleVisuals() ; WdxCellShade.updateNormals true )
+    on btnFlipR MouseClick s e do ( flipNormals = false ; updateToggleVisuals() ; WdxCellShade.updateNormals false )
 
     -- Filter
     on fltNone  MouseClick s e do selectFilter 1
@@ -444,9 +444,9 @@ rollout WdxCellShadeCreator "Wc3 Cell Shade Creator" width:192 height:360
     on btnCreate MouseClick s e do
     (
         if selection.count == 0 then ( messageBox (if ::WdxL != undefined then ::WdxL.t "csh_msg_no_selection" else "Please select the model first!") title:"Cell Shade" ; return undefined )
-        local src = CellShade.getValidMeshObjects (selection as array)
+        local src = WdxCellShade.getValidMeshObjects (selection as array)
         if src.count == 0 then ( messageBox (if ::WdxL != undefined then ::WdxL.t "csh_msg_no_valid_mesh" else "No valid mesh objects!\n(Editable Poly/Mesh required)") title:"Cell Shade" ; return undefined )
-        CellShade.createOutlines src filterIndex flipNormals spnThick.value currentColor
+        WdxCellShade.createOutlines src filterIndex flipNormals spnThick.value currentColor
     )
 
     -- ============================================================
@@ -570,4 +570,4 @@ rollout WdxCellShadeCreator "Wc3 Cell Shade Creator" width:192 height:360
 )
 
 
-CreateDialog WdxCellShadeCreator
+CreateDialog WdxCellShadeCreator style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)

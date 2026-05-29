@@ -57,26 +57,26 @@ category:"Warcraft III Plugins"
 		label        l7          "Control:"              pos:[12,124] align:#left
 		dropdownlist DE_DDL      items:#("None", "Linear", "Bezier", "Hermite") pos:[58,121] width:92 tooltip:"Interpolation type for Decay End"
 		-----------------------------------------------------------------------------------------------------
-		group "Ambient Light"
-		(
-			colorPicker Dif_Color    height:32 width:142   pos:[8,167]  color:(color 255 230 142)
-			label        l8          "Control:"          pos:[12,207] align:#left
-			dropdownlist DifColor_DDL items:#("None", "Linear", "Bezier", "Hermite") pos:[58,204] width:92 tooltip:"Interpolation type for Ambient Color"
-			label        l9          "Strength ....."       pos:[12,232] align:#left     width:70
-			spinner      Dif_Value                          pos:[79,231] height:16      fieldwidth:59     range:[0,10000,0]
-			label        l10         "Control:"          pos:[12,256] align:#left
-			dropdownlist DifVal_DDL  items:#("None", "Linear", "Bezier", "Hermite") pos:[58,253] width:92 tooltip:"Interpolation type for Ambient Strength"
-		)
-		-----------------------------------------------------------------------------------------------------
 		group "Shadow Light"
 		(
-			colorPicker Amb_Color    height:32 width:142   pos:[8,299]  color:(color 122 172 255)
-			label        l11         "Control:"          pos:[12,339] align:#left
-			dropdownlist AmbColor_DDL items:#("None", "Linear", "Bezier", "Hermite") pos:[58,336] width:92 tooltip:"Interpolation type for Shadow Color"
-			label        l12         "Strength ....."       pos:[12,364] align:#left     width:70
-			spinner      Amb_Value                          pos:[79,363] height:16      fieldwidth:59     range:[0,10000,0]
-			label        l13         "Control:"          pos:[12,388] align:#left
-			dropdownlist AmbVal_DDL  items:#("None", "Linear", "Bezier", "Hermite") pos:[58,385] width:92 tooltip:"Interpolation type for Shadow Strength"
+			colorPicker Amb_Color    height:32 width:142   pos:[8,167]  color:(color 122 172 255)
+			label        l11         "Control:"          pos:[12,207] align:#left
+			dropdownlist AmbColor_DDL items:#("None", "Linear", "Bezier", "Hermite") pos:[58,204] width:92 tooltip:"Interpolation type for Shadow Color"
+			label        l12         "Strength ....."       pos:[12,232] align:#left     width:70
+			spinner      Amb_Value                          pos:[79,231] height:16      fieldwidth:59     range:[0,10000,0]
+			label        l13         "Control:"          pos:[12,256] align:#left
+			dropdownlist AmbVal_DDL  items:#("None", "Linear", "Bezier", "Hermite") pos:[58,253] width:92 tooltip:"Interpolation type for Shadow Strength"
+		)
+		-----------------------------------------------------------------------------------------------------
+		group "Ambient Light"
+		(
+			colorPicker Dif_Color    height:32 width:142   pos:[8,299]  color:(color 255 230 142)
+			label        l8          "Control:"          pos:[12,339] align:#left
+			dropdownlist DifColor_DDL items:#("None", "Linear", "Bezier", "Hermite") pos:[58,336] width:92 tooltip:"Interpolation type for Ambient Color"
+			label        l9          "Strength ....."       pos:[12,364] align:#left     width:70
+			spinner      Dif_Value                          pos:[79,363] height:16      fieldwidth:59     range:[0,10000,0]
+			label        l10         "Control:"          pos:[12,388] align:#left
+			dropdownlist DifVal_DDL  items:#("None", "Linear", "Bezier", "Hermite") pos:[58,385] width:92 tooltip:"Interpolation type for Ambient Strength"
 		)
 
 		-- ==================== Generic Helper Functions ====================

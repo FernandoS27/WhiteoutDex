@@ -189,7 +189,7 @@ struct WdxNodeManager
 			)
 			
 			::WdxNodeManager.isPoppedOut = true
-			createDialog mainRollout width:420 height:365 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
+			createDialog mainRollout width:420 height:365 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 		)
 		
 		-- Close handler: dock back into Manager

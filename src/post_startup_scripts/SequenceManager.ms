@@ -1284,6 +1284,74 @@ struct WdxSequenceManager
 						deselectKeys con
 						true
 					)
+
+					-- Helper: kopiert Keys eines animatable Property via Property-Setter.
+					-- Schreiben am Controller direkt (copyPasteKeys / addNewKey + key.value)
+					-- umgeht den on-set-Handler scripted Plugins UND die SetValue-Notifications
+					-- nativer ParamBlock2-Plugins. Der Pfad setProperty + animate-on + at-time
+					-- geht zwingend durch den Setter und triggert alle Sync-Notifications,
+					-- so wie der Spinner in der UI das auch tut.
+					fn copyParamKeysViaSetter target paramName srcInterval offset =
+					(
+						if target == undefined or paramName == undefined then return false
+						local hasProp = false
+						try ( hasProp = isProperty target paramName ) catch()
+						if not hasProp then return false
+						
+						-- Controller via subAnim ermitteln, NICHT über (getProperty x).controller -
+						-- getProperty liefert den Wert (Float), der hat keinen Controller.
+						local con = undefined
+						try
+						(
+							local nSubs = target.numSubs
+							for sIdx = 1 to nSubs while con == undefined do
+							(
+								try
+								(
+									local nmStr = (getSubAnimName target sIdx) as string
+									if nmStr.count > 0 and nmStr[1] == "#" then nmStr = substring nmStr 2 -1
+									if (stricmp nmStr paramName) == 0 do
+									(
+										local sa = target[sIdx]
+										if sa != undefined do con = sa.controller
+									)
+								) catch()
+							)
+						) catch()
+						
+						if con == undefined or con.keys == undefined or con.keys.count == 0 then return false
+						
+						-- Skip globale (cycle) Animationen
+						local isGlobal = false
+						try ( isGlobal = (getAfterORT con == #cycle) ) catch()
+						if isGlobal then return false
+						
+						-- Snapshot der Quell-Keys (Zeit + Wert) bevor irgendetwas geschrieben wird
+						local snapTimes = #()
+						local snapVals  = #()
+						for k in con.keys where k.time >= srcInterval.start and k.time <= srcInterval.end do
+						(
+							append snapTimes k.time
+							try ( append snapVals k.value ) catch ( append snapVals undefined )
+						)
+						if snapTimes.count == 0 then return false
+						
+						-- Werte an Offset-Zeiten via setProperty schreiben.
+						-- "with animate on at time T" erzeugt den Key und triggert den Setter.
+						for sIdx = 1 to snapTimes.count do
+						(
+							if snapVals[sIdx] != undefined do
+							(
+								try
+								(
+									with animate on
+										at time (snapTimes[sIdx] + offset)
+											setProperty target paramName snapVals[sIdx]
+								) catch()
+							)
+						)
+						true
+					)
 					
 					try
 					(
@@ -1311,50 +1379,124 @@ struct WdxSequenceManager
 							)
 							catch()
 							
-							-- Material: Alpha + Texture Animations
+							-- Material: Wc3Material animatable params via Property-Setter.
+							-- Iterative Worklist (statt Rekursion) durch MultiMaterial / Composite / Blend / Shellac.
 							try
 							(
-								local mat = obj.material
-								if mat != undefined and (classOf mat == Warcraft3) then
+								local matWorklist = #()
+								local visitedMats = #()
+								if obj.material != undefined do append matWorklist obj.material
+								
+								while matWorklist.count > 0 do
 								(
-									local matCons = #()
-									try ( if mat.Alpha.isAnimated then append matCons mat.Alpha.controller ) catch()
-									try ( if mat.Wc3_U_Offset.isAnimated then append matCons mat.Wc3_U_Offset.controller ) catch()
-									try ( if mat.Wc3_V_Offset.isAnimated then append matCons mat.Wc3_V_Offset.controller ) catch()
-									try ( if mat.Wc3_W_Angle.isAnimated then append matCons mat.Wc3_W_Angle.controller ) catch()
-									try ( if mat.Wc3_U_Tiling.isAnimated then append matCons mat.Wc3_U_Tiling.controller ) catch()
-									try ( if mat.Wc3_V_Tiling.isAnimated then append matCons mat.Wc3_V_Tiling.controller ) catch()
-									try ( if mat.MatColor.isAnimated then append matCons mat.MatColor.controller ) catch()
+									local mat = matWorklist[matWorklist.count]
+									deleteItem matWorklist matWorklist.count
 									
-									for con in matCons do
-										copyControllerKeys con srcInterval timeOffset self.bumpTime
+									if mat != undefined and (findItem visitedMats mat) == 0 do
+									(
+										append visitedMats mat
+										
+										-- Wc3Material params (Wc3Material.ms Z. 297-308)
+										local matParams = #(
+											"opacity",
+											"anim_UOffset", "anim_VOffset", "anim_WOffset",
+											"anim_WAngle",
+											"anim_UTiling", "anim_VTiling",
+											"alpha"  -- Legacy StandardMaterial-Fallback
+										)
+										for paramName in matParams do
+											copyParamKeysViaSetter mat paramName srcInterval timeOffset
+										
+										-- Sub-Materials zur Worklist
+										try
+										(
+											if classOf mat == MultiMaterial do
+												for sm in mat.materialList where sm != undefined do append matWorklist sm
+										) catch()
+										try
+										(
+											local n = getNumSubMtls mat
+											if n > 0 do
+												for i = 1 to n do
+												(
+													local sm = getSubMtl mat i
+													if sm != undefined do append matWorklist sm
+												)
+										) catch()
+									)
 								)
 							)
 							catch()
-							
-							-- Plugin parameters: Light, Particle1, Ribbon
+
+							-- Plugin-Params: alle bekannten animatable Properties durchprobieren.
+							-- Klassen-unabhaengig: try/catch macht unbekannte Props harmlos.
+							-- Deckt sowohl alte (BlizzParticle1, Wdx_Light) als auch neue Plugin-Varianten
+							-- (Wc3Particles1Emitter, Wc3Particles2Emitter, RibbonObj) ab.
 							try
 							(
 								local bo = obj.baseObject
-								local cls = classOf bo
-								
-								local pluginParams = case cls of
-								(
-									Wdx_Light: #("DecayStart", "DecayEnd", "AmbColor", "AmbValue", "ShadowColor", "ShadowValue")
-									BlizzParticle1: #("radius", "longitude", "latitude", "PartEmit", "Life", "Gravity")
-									BlizRibbon: #("slots", "Above", "Below", "vertexcolor", "alpha")
-									default: #()
+								local pluginParams = #(
+									-- Light (Wdx_Light / Wdx_Wc3Light)
+									"DecayStart", "DecayEnd", "AmbColor", "AmbValue", "ShadowColor", "ShadowValue",
+									-- AttachPoint (Wdx_Wc3AttachPoint)
+									"A_Visibility",
+									-- BlizzParticle1 (legacy)
+									"radius", "PartEmit",
+									-- Wc3Particles1Emitter (C++ verifiziert)
+									"Speed", "EmissionRate", "Gravity", "Latitude", "Longitude",
+									-- Wc3Particles2 (Property-Namen aus subAnim verifiziert):
+									-- speed, variation, width, length, Parts_Sec, Cone_Angle, gravity
+									-- (Speed und Gravity sind bereits oben gelistet)
+									"Variation", "Parts_Sec", "Cone_Angle", "width", "length",
+									-- BlizzParticle2 legacy size/scale-Tracks (falls vorhanden)
+									"startscale", "middlescale", "endscale", "taillength",
+									-- BlizRibbon legacy
+									"slots", "Above", "Below", "vertexcolor", "alpha",
+									-- Wc3Ribbon / RibbonObj (C++ verifiziert)
+									"Height Above", "Height Below", "Edges Per Second", "Edge Lifetime", "Color", "Texture Slot"
 								)
-								
 								for paramName in pluginParams do
+									copyParamKeysViaSetter bo paramName srcInterval timeOffset
+							)
+							catch()
+
+							-- Modifier: Wc3VertexMod / Wdx_Wc3VertexMod (KGAC VertexColor)
+							try
+							(
+								for m in obj.modifiers do
 								(
 									try
 									(
-										local prop = getProperty bo paramName
-										if prop.isAnimated and prop.controller != undefined then
-											copyControllerKeys prop.controller srcInterval timeOffset self.bumpTime
-									)
-									catch()
+										local mClass = (classOf m) as string
+										if mClass == "Wc3VertexMod" or mClass == "Wdx_Wc3VertexMod" do
+											copyParamKeysViaSetter m "VertexColor" srcInterval timeOffset
+									) catch()
+								)
+							)
+							catch()
+
+							-- Wc3 RefEvent keyList (Frame-Tab, KEINE Controller-Keys)
+							try
+							(
+								local boCls = (classOf obj.baseObject) as string
+								if boCls == "Wdx_Wc3Event" or boCls == "Wdx_Event" or boCls == "Wc3_Event" do
+								(
+									try
+									(
+										local kl = obj.baseObject.keyList
+										if kl != undefined and kl.count > 0 do
+										(
+											local startF = (srcInterval.start as integer) / ticksperframe
+											local endF   = (srcInterval.end   as integer) / ticksperframe
+											local offF   = (timeOffset       as integer) / ticksperframe
+											for k in kl where k >= startF and k <= endF do
+											(
+												local nk = k + offF
+												if (findItem obj.baseObject.keyList nk) == 0 do
+													append obj.baseObject.keyList nk
+											)
+										)
+									) catch()
 								)
 							)
 							catch()
@@ -1962,7 +2104,7 @@ struct WdxSequenceManager
 			)
 			
 			::WdxSequenceManager.isPoppedOut = true
-			createDialog mainRollout width:444 height:402 style:#(#style_titlebar, #style_sysmenu, #style_minimizebox, #style_resizing)
+			createDialog mainRollout width:444 height:402 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 		)
 
         on mainRollout open do

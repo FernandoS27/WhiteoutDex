@@ -2,7 +2,6 @@
 -- Wc3 Material — FINAL (native Bitmaptexture edition)
 -- material plugin for 3ds Max (2016 - 2027)
 -- Extends Standard material with WC3/Reforged material parameters
--- Parameters prefixed with  to avoid conflicts with NeoDex
 -- Works with: standard Bitmaptexture only (Wc3Bitmap no longer required)
 --
 -- All animation metadata lives here:
@@ -452,29 +451,60 @@ extends:Standard replaceUI:true version:12
 	---------------------------------------------------------------------------
 	rollout texMapRollout "Material Texture Maps"
 	(
+		-- Helper: open the WhiteoutDex Texture Browser targeted at a specific slot
+		-- Defined first so the `on btnBrw* pressed` handlers can reference it.
+		-- `mat` is passed explicitly because `this` inside a local fn is not
+		-- guaranteed to resolve to the plugin owner across all MaxScript versions.
+		fn openTexBrowser mat slotName =
+		(
+			if ::WhiteoutDexTexBrowser == undefined or ::WhiteoutDexTextureBrowserDLL == undefined then
+			(
+				messageBox "WhiteoutDex Texture Browser is not available.\n\nMake sure WhiteoutDexTextureBrowser.dll is installed and that you have set the MPQ / CASC paths in WhiteoutDex Settings." \
+					title:"WhiteoutDex" beep:false
+				return undefined
+			)
+			::WhiteoutDexTexBrowserTarget = #(mat, slotName)
+			try (::WhiteoutDexTexBrowser.show()) catch
+				(messageBox ("Texture Browser could not be opened:\n" + (getCurrentException())) title:"WhiteoutDex" beep:false)
+		)
+
 		label		lblDiff			"Diffuse ............................................................." align:#left height:16
-		mapbutton	mbDiffuse		"(None)" width:300 height:20 align:#center
+		mapbutton	mbDiffuse		"(None)" width:270 height:20 align:#left across:2
+		button		btnBrwDiff		"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtDiffPrefix	"Path Prefix: " width:300 align:#center
 		label		lblSep3			"" height:2
 		label		lblNorm			"Normal ............................................................" align:#left height:16
-		mapbutton	mbNormal		"(None)" width:300 height:20 align:#center
+		mapbutton	mbNormal		"(None)" width:270 height:20 align:#left across:2
+		button		btnBrwNorm		"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtNormPrefix	"Path Prefix: " width:300 align:#center
 		label		lblSep4			"" height:2
 		label		lblORM			"ORM ................................................................." align:#left height:16
-		mapbutton	mbORM			"(None)" width:300 height:20 align:#center
+		mapbutton	mbORM			"(None)" width:270 height:20 align:#left across:2
+		button		btnBrwORM		"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtORMPrefix	"Path Prefix: " width:300 align:#center
 		label		lblSep5			"" height:2
 		label		lblEmis			"Emissive ........................................................." align:#left height:16
-		mapbutton	mbEmissive		"(None)" width:300 height:20 align:#center
+		mapbutton	mbEmissive		"(None)" width:270 height:20 align:#left across:2
+		button		btnBrwEmis		"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtEmisPrefix	"Path Prefix: " width:300 align:#center
 		label		lblSepTC		"" height:2
 		label		lblTeamCol		"Team Color (HD, optional) ............................" align:#left height:16
-		mapbutton	mbTeamColor		"(None)" width:300 height:20 align:#center
+		mapbutton	mbTeamColor		"(None)" width:270 height:20 align:#left across:2
+		button		btnBrwTeamCol	"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtTeamColPrefix "Path Prefix: " width:300 align:#center
 		label		lblSep6			"" height:2
 		label		lblEnv			"Environment ................................................." align:#left height:16
-		mapbutton	mbEnv			"(None)" width:300 height:20 align:#center
+		mapbutton	mbEnv			"(None)" width:270 height:20 align:#left across:2
+		button		btnBrwEnv		"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtEnvPrefix	"Path Prefix: " width:300 align:#center
+
+		-- Browser-button handlers: open Texture Browser pre-targeted to this material slot
+		on btnBrwDiff    pressed do openTexBrowser this "diffuse"
+		on btnBrwNorm    pressed do openTexBrowser this "normal"
+		on btnBrwORM     pressed do openTexBrowser this "orm"
+		on btnBrwEmis    pressed do openTexBrowser this "emissive"
+		on btnBrwTeamCol pressed do openTexBrowser this "team_color"
+		on btnBrwEnv     pressed do openTexBrowser this "environment"
 
 		on texMapRollout open do
 		(
