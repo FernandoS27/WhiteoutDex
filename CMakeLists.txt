@@ -321,3 +321,203 @@ if(TARGET managed_stage)
     add_dependencies(deploy_output  managed_stage)
     add_dependencies(deploy_appdata managed_stage)
 endif()
+
+# ============================================================================
+# Inno Setup installer (`installer` target)
+#
+# Configures packaging/Whiteout_Setup.iss.in into a build-local .iss with all
+# Source/ paths pointing at the stage tree, then runs iscc.exe to produce a
+# single .exe under <build>/installer/. The per-version [Files] block is
+# generated from WDX_MAX_VERSIONS, so the installer ships exactly the Max
+# versions this build actually produced.
+#
+# Override the Inno Setup compiler with -DISCC=<path>; auto-detected from
+# the standard "C:\Program Files (x86)\Inno Setup 6" install otherwise.
+# ============================================================================
+find_program(ISCC ISCC.exe
+    PATHS
+        "$ENV{ProgramFiles\(x86\)}/Inno Setup 6"
+        "$ENV{ProgramFiles}/Inno Setup 6"
+        "$ENV{ProgramFiles\(x86\)}/Inno Setup 5"
+    DOC "Inno Setup compiler (iscc.exe)")
+
+if(NOT ISCC)
+    message(STATUS "Inno Setup compiler not found — `installer` target will be unavailable. "
+                   "Install Inno Setup 6 from https://jrsoftware.org/isdl.php, "
+                   "or pass -DISCC=<path-to-iscc.exe>.")
+else()
+    message(STATUS "Inno Setup: ${ISCC}")
+
+    # Read version from version.txt at the repo root so the installer stays
+    # in lockstep with whatever the runtime reports.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/version.txt")
+        file(READ "${CMAKE_SOURCE_DIR}/version.txt" WDX_VERSION)
+        string(STRIP "${WDX_VERSION}" WDX_VERSION)
+    else()
+        set(WDX_VERSION "0.0.0")
+    endif()
+
+    set(WDX_REPO_ROOT             "${CMAKE_SOURCE_DIR}")
+    set(WDX_INSTALLER_OUTPUT_DIR  "${CMAKE_BINARY_DIR}/installer")
+
+    # Emit one [Files] line per (Max version × plugin file). skipifsourcedoesntexist
+    # lets a partial stage tree (e.g. .NET 8 SDK missing → no managed wrapper for
+    # Max ≥ 2026) still pack into a valid installer.
+    set(WDX_NATIVE_PLUGINS_BLOCK "")
+    foreach(v IN LISTS WDX_MAX_VERSIONS)
+        string(APPEND WDX_NATIVE_PLUGINS_BLOCK
+            "Source: \"${WDX_STAGE_DIR}\\Max${v}\\*\"; "
+            "DestDir: \"{app}\\native plugins\\Max${v}\"; "
+            "Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist\n")
+    endforeach()
+
+    # ----------------------------------------------------------------------
+    # PackageContents.xml — generated alongside the .iss so the manifest
+    # tracks WDX_MAX_VERSIONS, the actual installer layout (native plugins/,
+    # scripts/), and the live MaxScript file set.
+    # ----------------------------------------------------------------------
+
+    # The shipped per-version plugin set — only files Max loads via the native
+    # plug-in ABI (LibVersion / LibNumberClasses / …). WhiteoutDexTextureBrowser.dll
+    # is the C++/CLI managed wrapper; it's loaded via dotNet.loadAssembly from
+    # WhiteoutDexTextureBrowserHelper.ms at runtime, so listing it here makes
+    # Max try (and fail) to bind to native exports it doesn't have. The .dll
+    # still ships into the same Max<year>/ folder because the installer copies
+    # the entire stage tree — we just don't reference it from the manifest.
+    set(_wdx_native_plugin_files
+        blp.bmi
+        MDLXExporter.dle
+        MDLXImporter.dle
+        Wc3Particles1.dlo
+        Wc3Particles2.dlo
+        Wc3Ribbon.dlo
+        WhiteoutFlakes.dlx
+    )
+
+    list(SORT WDX_MAX_VERSIONS COMPARE NATURAL)
+    list(GET WDX_MAX_VERSIONS 0 WDX_SERIES_MIN)
+    list(GET WDX_MAX_VERSIONS -1 WDX_SERIES_MAX)
+
+    # Per-(version × plugin) <Components> blocks. Each one carries SeriesMin
+    # = SeriesMax = year because the binary itself is version-specific.
+    set(WDX_NATIVE_PLUGINS_COMPONENTS "")
+    foreach(v IN LISTS WDX_MAX_VERSIONS)
+        string(APPEND WDX_NATIVE_PLUGINS_COMPONENTS
+            "    <!-- Max ${v} -->\n")
+        foreach(_p IN LISTS _wdx_native_plugin_files)
+            string(APPEND WDX_NATIVE_PLUGINS_COMPONENTS
+                "    <Components Description=\"plugins parts\">\n"
+                "        <RuntimeRequirements OS=\"Win64\" Platform=\"3ds Max\""
+                " SeriesMin=\"${v}\" SeriesMax=\"${v}\" />\n"
+                "        <ComponentEntry ModuleName=\"./native plugins/Max${v}/${_p}\" />\n"
+                "    </Components>\n")
+        endforeach()
+        string(APPEND WDX_NATIVE_PLUGINS_COMPONENTS "\n")
+    endforeach()
+
+    # MaxScript ComponentEntry lists, derived from CONFIGURE_DEPENDS globs so
+    # CMake re-runs whenever a script is added/removed. The MenuCallback /
+    # MenuInstaller files are emitted in their own version-restricted blocks
+    # by the template, so we exclude them here.
+    function(_wdx_emit_script_entries out_var subdir glob excludes)
+        file(GLOB _files CONFIGURE_DEPENDS
+             "${CMAKE_SOURCE_DIR}/src/${subdir}/${glob}")
+        list(SORT _files)
+        set(_lines "")
+        foreach(_f IN LISTS _files)
+            get_filename_component(_name "${_f}" NAME)
+            if(_name IN_LIST excludes)
+                continue()
+            endif()
+            string(APPEND _lines
+                "        <ComponentEntry ModuleName=\"./scripts/${subdir}/${_name}\" />\n")
+        endforeach()
+        set(${out_var} "${_lines}" PARENT_SCOPE)
+    endfunction()
+
+    _wdx_emit_script_entries(WDX_PRE_STARTUP_ENTRIES
+        "pre_startup_scripts" "*.ms" "WhiteoutDexMenuCallback.ms")
+    _wdx_emit_script_entries(WDX_POST_STARTUP_ENTRIES
+        "post_startup_scripts" "*.ms" "WhiteoutDexMenuInstaller.ms")
+    _wdx_emit_script_entries(WDX_SCRIPTED_PLUGINS_ENTRIES
+        "scripted_plugins" "*.ms" "")
+    _wdx_emit_script_entries(WDX_MACROSCRIPTS_ENTRIES
+        "macroscripts" "*.mcr" "")
+
+    # Per-version menu glue. The menu API changed in Max 2025: 2016-2024 load
+    # WhiteoutDexMenuInstaller.ms (post-startup), 2025+ load WhiteoutDexMenuCallback.ms
+    # (pre-startup). Emit each <Components> block only when WDX_MAX_VERSIONS
+    # actually overlaps the relevant range — otherwise the inverted
+    # SeriesMin/SeriesMax fails Max's manifest validation.
+    set(WDX_MENU_CALLBACK_COMPONENTS "")
+    if(WDX_SERIES_MAX GREATER_EQUAL 2025)
+        if(WDX_SERIES_MIN GREATER 2025)
+            set(_callback_min ${WDX_SERIES_MIN})
+        else()
+            set(_callback_min 2025)
+        endif()
+        set(WDX_MENU_CALLBACK_COMPONENTS
+"
+    <!-- Max 2025+: new menu callback API. -->
+    <Components Description=\"pre-start-up scripts parts\">
+        <RuntimeRequirements OS=\"Win64\" Platform=\"3ds Max\"
+                             SeriesMin=\"${_callback_min}\" SeriesMax=\"${WDX_SERIES_MAX}\" />
+        <ComponentEntry ModuleName=\"./scripts/pre_startup_scripts/WhiteoutDexMenuCallback.ms\" />
+    </Components>")
+    endif()
+
+    set(WDX_MENU_INSTALLER_COMPONENTS "")
+    if(WDX_SERIES_MIN LESS_EQUAL 2024)
+        if(WDX_SERIES_MAX LESS 2024)
+            set(_installer_max ${WDX_SERIES_MAX})
+        else()
+            set(_installer_max 2024)
+        endif()
+        set(WDX_MENU_INSTALLER_COMPONENTS
+"
+    <!-- Max 2016-2024: legacy menu installer. -->
+    <Components Description=\"post-start-up scripts parts\">
+        <RuntimeRequirements OS=\"Win64\" Platform=\"3ds Max\"
+                             SeriesMin=\"${WDX_SERIES_MIN}\" SeriesMax=\"${_installer_max}\" />
+        <ComponentEntry ModuleName=\"./scripts/post_startup_scripts/WhiteoutDexMenuInstaller.ms\" />
+    </Components>")
+    endif()
+
+    # ProductCode must be a real {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX} GUID
+    # per the package spec — Max 2016 rejects the manifest with anything else.
+    # Derive deterministically from the version so it stays stable for a given
+    # release; the .iss's Pascal post-install hook overwrites it again with a
+    # date-stamped variant.
+    string(UUID WDX_PRODUCT_CODE_BARE
+        NAMESPACE "4583feeb-c403-46e3-9c96-4563a4a34e24"
+        NAME      "WhiteoutDex-${WDX_VERSION}"
+        TYPE      SHA1
+        UPPER)
+    set(WDX_PRODUCT_CODE "{${WDX_PRODUCT_CODE_BARE}}")
+
+    set(_pkg_in  "${CMAKE_SOURCE_DIR}/packaging/PackageContents.xml.in")
+    set(_pkg_out "${CMAKE_BINARY_DIR}/packaging/PackageContents.xml")
+    configure_file("${_pkg_in}" "${_pkg_out}" @ONLY)
+
+    # Expose the generated PackageContents.xml path to the .iss template so
+    # the installer ships the freshly-rendered manifest, not the stale one
+    # at the repo root.
+    set(WDX_PACKAGE_CONTENTS_XML "${_pkg_out}")
+
+    # Generate the working .iss next to the template so relative paths inside
+    # the script (compiler:Default.isl etc.) resolve identically.
+    set(_iss_in  "${CMAKE_SOURCE_DIR}/packaging/Whiteout_Setup.iss.in")
+    set(_iss_out "${CMAKE_BINARY_DIR}/packaging/Whiteout_Setup.iss")
+    configure_file("${_iss_in}" "${_iss_out}" @ONLY)
+
+    add_custom_target(installer
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${WDX_INSTALLER_OUTPUT_DIR}"
+        COMMAND "${ISCC}" "${_iss_out}"
+        DEPENDS ${_per_version_targets} "${_iss_in}" "${_pkg_in}"
+        COMMENT "Building WhiteoutDex_Setup_v${WDX_VERSION}.exe via Inno Setup"
+        VERBATIM
+    )
+    if(TARGET managed_stage)
+        add_dependencies(installer managed_stage)
+    endif()
+endif()

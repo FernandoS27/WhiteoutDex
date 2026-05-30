@@ -90,8 +90,14 @@
                 httpClient.Dispose()
                 result
             ) catch (
+                local _ex = getCurrentException()
                 try (httpClient.Dispose()) catch ()
-                throw
+                -- Max 2016's MaxScript compiler rejects bare `throw` even
+                -- inside catch — pass the captured exception explicitly so
+                -- the script still compiles on every version. (On Max <
+                -- 2026 this branch is unreachable anyway: _useHttpClient
+                -- is gated to build ≥ 28000.)
+                throw _ex
             )
         )
         else
@@ -120,8 +126,14 @@
                 (dotNetClass "System.IO.File").WriteAllBytes destPath bytes
                 httpClient.Dispose()
             ) catch (
+                local _ex = getCurrentException()
                 try (httpClient.Dispose()) catch ()
-                throw
+                -- Max 2016's MaxScript compiler rejects bare `throw` even
+                -- inside catch — pass the captured exception explicitly so
+                -- the script still compiles on every version. (On Max <
+                -- 2026 this branch is unreachable anyway: _useHttpClient
+                -- is gated to build ≥ 28000.)
+                throw _ex
             )
         )
         else

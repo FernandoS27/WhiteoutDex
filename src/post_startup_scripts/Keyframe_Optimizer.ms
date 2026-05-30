@@ -376,7 +376,9 @@ namespace KeyReducer
 "
 
     format "[KeyReducer] Compiling C# from embedded source...\n"
-    local maxVer = (maxVersion())[8]
+    -- (maxVersion())[8] is only populated on Max 2017+; derive year from
+    -- the build number for cross-version compatibility (Max 2016+).
+    local maxVer = ((maxVersion())[1] / 1000) + 1998
     format "[KeyReducer] Detected 3ds Max %\n" maxVer
     try
     (

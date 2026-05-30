@@ -187,24 +187,27 @@ struct WhiteoutDexSidebarStruct
     
     fn show =
     (
+        -- Use bare member names (not `this.xxx`); the explicit `this`
+        -- keyword in struct methods was added after Max 2016 and resolves
+        -- to undefined there at runtime.
         try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
         try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
         createDialog ::WhiteoutDexSidebarRollout width:38 height:590 \
             style:#(#style_titlebar, #style_border, #style_sysmenu)
-        this.isOpen = true
+        isOpen = true
     ),
-    
+
     fn hide =
     (
         try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
         try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
-        this.isOpen = false
+        isOpen = false
     ),
-    
+
     fn toggle =
     (
-        if this.isOpen then this.hide()
-        else this.show()
+        if isOpen then hide()
+        else show()
     )
 )
 WhiteoutDexSidebar = WhiteoutDexSidebarStruct()

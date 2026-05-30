@@ -46,7 +46,9 @@ global whiteoutdexSkinToolsApply = 2
 global WhiteoutDexHasNativeBLP = false
 (
     local bundleRoot = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
-    local maxYear = (maxVersion())[8]
+    -- (maxVersion())[8] is only populated on Max 2017+; derive year from
+    -- the build number for cross-version compatibility (Max 2016+).
+    local maxYear = ((maxVersion())[1] / 1000) + 1998
     local bmiPath = bundleRoot + "\\native plugins\\Max" + (maxYear as string) + "\\blp.bmi"
     local bmiPath2 = (systemTools.getEnvVariable "ALLUSERSPROFILE") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\native plugins\\Max" + (maxYear as string) + "\\blp.bmi"
     WhiteoutDexHasNativeBLP = (doesFileExist bmiPath) or (doesFileExist bmiPath2)

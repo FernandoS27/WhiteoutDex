@@ -22,7 +22,11 @@
 global WhiteoutDexNativeDLL = undefined
 (
     local bundleRoot = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
-    local maxYear = (maxVersion())[8]
+    -- (maxVersion())[8] is the year, but only on Max 2017+. Derive from
+    -- the build number ([1]) instead so this script works on Max 2016 too:
+    --   Max 2016 → 18000/1000 + 1998 = 2016
+    --   Max 2026 → 28000/1000 + 1998 = 2026
+    local maxYear = ((maxVersion())[1] / 1000) + 1998
     
     -- Max 2026+ uses .NET 8 DLL, Max 2022-2025 uses .NET Framework 4.8.1
     local dllFolder = if maxYear >= 2026 then "Max2026+" else "Max2022-2025"

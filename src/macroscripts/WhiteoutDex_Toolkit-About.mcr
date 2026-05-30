@@ -257,17 +257,6 @@ internalCategory:"WhiteoutDex Toolkit"
 		html += "  <div class='card-title'>Third-Party Software</div>\n"
 
 		html += "  <div class='credits-section'>\n"
-		html += "    <div class='credits-label'>WhiteoutTexCLI</div>\n"
-		html += "    <div class='credits-names'>\n"
-		html += "      BLP texture conversion powered by <span class='lead'>WhiteoutTexCLI.exe</span><br>\n"
-		html += "      <span style='color:#666;'>Part of the WhiteoutTex project</span><br>\n"
-		html += "      <a href='action:whiteoutlib' style='color:#0099dd; text-decoration:none;'>View WhiteoutLib License</a>\n"
-		html += "    </div>\n"
-		html += "  </div>\n"
-
-		html += "  <hr class='credits-divider'>\n"
-
-		html += "  <div class='credits-section'>\n"
 		html += "    <div class='credits-label'>Included Libraries</div>\n"
 		html += "    <div class='credits-names'>\n"
 		html += "      <span class='lead'>Dear ImGui</span> <span style='color:#666;'>&#x2014; Omar Cornut (MIT)</span><br>\n"

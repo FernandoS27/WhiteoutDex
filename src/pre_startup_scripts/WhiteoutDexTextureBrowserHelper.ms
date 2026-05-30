@@ -23,7 +23,9 @@ global WhiteoutDexTextureBrowserDLL = undefined
 (
     local bundleRoot = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
     local altRoot    = (systemTools.getEnvVariable "ALLUSERSPROFILE") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
-    local maxYear    = (maxVersion())[8]
+    -- (maxVersion())[8] is only populated on Max 2017+; derive year from
+    -- the build number for cross-version compatibility (Max 2016+).
+    local maxYear    = ((maxVersion())[1] / 1000) + 1998
     local maxYearStr = maxYear as string
     
     -- Try multiple folder naming conventions, in priority order:
