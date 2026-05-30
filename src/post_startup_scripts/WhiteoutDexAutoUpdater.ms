@@ -17,6 +17,19 @@
     -- True if running on Max 2026+ (.NET 8 where WebClient is obsolete)
     local _useHttpClient = ((maxVersion())[1] >= 28000)
 
+    -- Max 2016 ships .NET 4.5 with SSL3/TLS 1.0 selected by the default
+    -- ServicePointManager.SecurityProtocol. GitHub disabled TLS < 1.2 in
+    -- early 2018, so every WebClient/HttpClient call fails with
+    -- "Could not create SSL/TLS secure channel" until we opt in. The
+    -- numeric value of SecurityProtocolType.Tls12 is 3072 (0xC00); we
+    -- use the int directly because the symbolic enum member doesn't
+    -- exist on .NET versions earlier than 4.5.
+    try (
+        local spm = dotNetClass "System.Net.ServicePointManager"
+        local current = spm.SecurityProtocol.value__
+        spm.SecurityProtocol = (current as integer + 3072) as integer
+    ) catch ()
+
     fn _ndxGetInstallPath = (
         local p = undefined
         try (

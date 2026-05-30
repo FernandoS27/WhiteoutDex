@@ -21,7 +21,7 @@
 
 global WhiteoutDexTextureBrowserDLL = undefined
 (
-    local bundleRoot = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
+    local bundleRoot = (::WhiteoutDexInstallRoot)
     local altRoot    = (systemTools.getEnvVariable "ALLUSERSPROFILE") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
     -- (maxVersion())[8] is only populated on Max 2017+; derive year from
     -- the build number for cross-version compatibility (Max 2016+).

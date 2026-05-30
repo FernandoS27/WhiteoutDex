@@ -80,6 +80,11 @@ set(WDX_STAGE_DIR "${CMAKE_BINARY_DIR}/stage")
 ExternalProject_Add(common_libs
     SOURCE_DIR        "${CMAKE_SOURCE_DIR}/src/native_sources"
     BINARY_DIR        "${CMAKE_BINARY_DIR}/common"
+    # common_libs stays on /MD because its output feeds the C++/CLI managed
+    # wrapper, which is required to use the shared CRT. The per-version Max
+    # plug-in sub-builds below get their own /MT copy of whiteout_lib (we no
+    # longer pass PREBUILT_COMMON_DIR to them) so the .dlx / .dle / .dlo /
+    # .bmi binaries have no external VCRUNTIME140* dependency.
     CONFIGURE_COMMAND "${CMAKE_COMMAND}" ${_sub_gen_args} -DBUILD_COMMON_ONLY=ON
                       "<SOURCE_DIR>"
     BUILD_COMMAND     "${CMAKE_COMMAND}" --build <BINARY_DIR> --config Release
@@ -94,15 +99,43 @@ ExternalProject_Add(common_libs
 #   stage/scripts/{macroscripts,…}/*
 #   stage/PackageContents.xml
 # ----------------------------------------------------------------------------
+# Statically link the MSVC runtime into every native plug-in so the .dlx /
+# .dle / .dlo / .bmi binaries have no dependency on VCRUNTIME140*.dll or
+# MSVCP140.dll. Without this WhiteoutFlakes.dlx fails to load on machines
+# (notably Max 2016 hosts) that don't have the VC++ 2015-2022 redistributable
+# installed — Max swallows the load failure silently, leaving ndxStart
+# undefined and the user staring at "Renderer could not be started." with no
+# hint. CMP0091 NEW makes CMAKE_MSVC_RUNTIME_LIBRARY actually take effect on
+# CMake 3.15+; we propagate it through ExternalProject_Add CMAKE_ARGS so the
+# subprojects (and every transitive FetchContent / add_subdirectory) honour it.
+set(_wdx_static_runtime_args
+    -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+    "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    # Disable Tracy + WebGPU in the per-version sub-builds: both run
+    # aggressive C++ global-init machinery (Tracy spins worker threads and
+    # opens a TCP listener; Dawn registers backends from static
+    # constructors). On Max 2016 hosts those have been observed to make
+    # the plug-in silently fail to load — Max's plug-in loader gives no
+    # error, ndxStart just never registers. The renderer's API treats
+    # these as opt-in instrumentation, so turning them off doesn't affect
+    # the preview window functionality the plug-in actually needs.
+    -DWDX_ENABLE_TRACY=OFF
+    -DWDX_ENABLE_WEBGPU=OFF
+)
+
 set(_per_version_targets "")
 foreach(v IN LISTS WDX_MAX_VERSIONS)
     set(_tgt plugins_Max${v})
     ExternalProject_Add(${_tgt}
         SOURCE_DIR        "${CMAKE_SOURCE_DIR}/src/native_sources"
         BINARY_DIR        "${CMAKE_BINARY_DIR}/build_${v}"
+        # No PREBUILT_COMMON_DIR — that would pull /MD common_libs into a
+        # /MT plug-in build (link error LNK2038). Each per-version sub-build
+        # rebuilds whiteout_lib + zlib statically; the cost is the only-once
+        # whiteout_lib compile per Max year.
         CONFIGURE_COMMAND "${CMAKE_COMMAND}" ${_sub_gen_args}
                           -DMAX_VERSION=${v}
-                          -DPREBUILT_COMMON_DIR=${CMAKE_BINARY_DIR}/common
+                          ${_wdx_static_runtime_args}
                           "<SOURCE_DIR>"
         BUILD_COMMAND     "${CMAKE_COMMAND}" --build <BINARY_DIR> --config Release
         # Install our 4 named components only — WhiteoutFlakes's subdir adds

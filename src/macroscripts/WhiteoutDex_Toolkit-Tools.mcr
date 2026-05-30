@@ -171,7 +171,7 @@ macroScript WhiteoutDex_KeyframeOptimizer
 	(
 		try
 		(
-			local scriptPath = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\post_startup_scripts\\Keyframe_Optimizer.ms"
+			local scriptPath = (::WhiteoutDexInstallRoot) + "\\post_startup_scripts\\Keyframe_Optimizer.ms"
 			fileIn scriptPath
 		) catch (messageBox ("KFO error:\n" + (getCurrentException())))
 	)
@@ -186,7 +186,7 @@ macroScript WhiteoutDex_CellShadeCreator
 	(
 		try
 		(
-			local scriptPath = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\post_startup_scripts\\Cell_Shade_Creator.ms"
+			local scriptPath = (::WhiteoutDexInstallRoot) + "\\post_startup_scripts\\Cell_Shade_Creator.ms"
 			fileIn scriptPath
 		) catch (messageBox ("Cell Shade error:\n" + (getCurrentException())))
 	)

@@ -6,7 +6,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 (
 	rollout settingsRollout "WhiteoutDex Settings" width:340 height:480
 	(
-		local sidebarIni = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\WhiteoutDex_Settings.ini"
+		local sidebarIni = (::WhiteoutDexInstallRoot) + "\\WhiteoutDex_Settings.ini"
 		
 		groupBox langGrp "Language / 语言 / Sprache / Язык / 言語 / 언어" pos:[8,4] width:324 height:72
 		
@@ -167,7 +167,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 		-- Auto-Update: manual check
 		on btn_checkNow pressed do
 		(
-			local updaterPath = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\post-start-up scripts parts\\WhiteoutDexAutoUpdater.ms"
+			local updaterPath = (::WhiteoutDexInstallRoot) + "\\post-start-up scripts parts\\WhiteoutDexAutoUpdater.ms"
 			if doesFileExist updaterPath then
 			(
 				-- Force check regardless of auto-check setting

@@ -230,15 +230,15 @@ parameters main rollout:params2
 			(
 				params2.title = ::WdxL.t "popcorn_event_flags_title"
 				l2.text = ::WdxL.t "popcorn_always_on_lbl"
-				flagAlways.tooltip = ::WdxL.t "popcorn_effect_is_always_active_tip"
+				try (flagAlways.tooltip = ::WdxL.t "popcorn_effect_is_always_active_tip") catch ()
 				l3.text = ::WdxL.t "popcorn_birth_lbl"
-				flagBirth.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_birth_tip"
+				try (flagBirth.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_birth_tip") catch ()
 				l4.text = ::WdxL.t "popcorn_death_lbl"
-				flagDeath.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_death_tip"
+				try (flagDeath.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_death_tip") catch ()
 				l5.text = ::WdxL.t "popcorn_dissipate_lbl"
-				flagDissipate.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_dissipate_tip"
+				try (flagDissipate.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_dissipate_tip") catch ()
 				l6.text = ::WdxL.t "popcorn_portrait_lbl"
-				flagPortrait.tooltip = ::WdxL.t "popcorn_effect_plays_in_portrait_view_tip"
+				try (flagPortrait.tooltip = ::WdxL.t "popcorn_effect_plays_in_portrait_view_tip") catch ()
 			)
 		)
 	)
@@ -261,13 +261,13 @@ parameters main rollout:params2
 			(
 				params3.title = ::WdxL.t "popcorn_emission_settings_title"
 				l7.text = ::WdxL.t "popcorn_alpha_lbl"
-				alpha.tooltip = ::WdxL.t "popcorn_particle_alpha_opacity_tip"
+				try (alpha.tooltip = ::WdxL.t "popcorn_particle_alpha_opacity_tip") catch ()
 				l8.text = ::WdxL.t "popcorn_emission_rate_lbl"
-				emissionRate.tooltip = ::WdxL.t "popcorn_particles_emitted_per_second_tip"
+				try (emissionRate.tooltip = ::WdxL.t "popcorn_particles_emitted_per_second_tip") catch ()
 				l9.text = ::WdxL.t "popcorn_life_span_lbl"
-				lifeSpan.tooltip = ::WdxL.t "popcorn_particle_lifetime_in_seconds_tip"
+				try (lifeSpan.tooltip = ::WdxL.t "popcorn_particle_lifetime_in_seconds_tip") catch ()
 				l10.text = ::WdxL.t "popcorn_speed_lbl"
-				speed.tooltip = ::WdxL.t "popcorn_particle_emission_speed_tip"
+				try (speed.tooltip = ::WdxL.t "popcorn_particle_emission_speed_tip") catch ()
 				l11.text = ::WdxL.t "popcorn__replaceable_texture_lbl"
 			)
 		)
@@ -316,10 +316,10 @@ parameters main rollout:params2
 			(
 				params4.title = ::WdxL.t "popcorn_color_settings_title"
 				l12.text = ::WdxL.t "popcorn__base_color_lbl"
-				btn_baseColor.tooltip = ::WdxL.t "popcorn_change_color_tip"
+				try (btn_baseColor.tooltip = ::WdxL.t "popcorn_change_color_tip") catch ()
 				l13.text = ::WdxL.t "popcorn_color_multiplier_lbl"
 				l14.text = ::WdxL.t "popcorn__team_color_lbl"
-				btn_teamColor.tooltip = ::WdxL.t "popcorn_change_team_color_tip"
+				try (btn_teamColor.tooltip = ::WdxL.t "popcorn_change_team_color_tip") catch ()
 				l15.text = ::WdxL.t "popcorn_team_color_alpha_lbl"
 			)
 		)

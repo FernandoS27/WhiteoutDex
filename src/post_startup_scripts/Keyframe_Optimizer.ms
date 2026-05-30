@@ -465,10 +465,10 @@ rollout wdxPanelParams "Optimization Parameters"
             wdxPanelParams.title = ::WdxL.t "kfo_params_title"
             lblThreshold.text = ::WdxL.t "kfo_threshold_lbl"
             lblStep.text = ::WdxL.t "kfo_step_lbl"
-            spnThreshold.tooltip = ::WdxL.t "kfo_threshold_tip"
-            spnStep.tooltip = ::WdxL.t "kfo_step_tip"
+            try (spnThreshold.tooltip = ::WdxL.t "kfo_threshold_tip") catch ()
+            try (spnStep.tooltip = ::WdxL.t "kfo_step_tip") catch ()
             chkDebug.text = ::WdxL.t "kfo_debug_chk"
-            chkDebug.tooltip = ::WdxL.t "kfo_debug_tip"
+            try (chkDebug.tooltip = ::WdxL.t "kfo_debug_tip") catch ()
         )
     )
 )

@@ -321,30 +321,30 @@ struct WdxVisibilityKeyer
 			(
 				mainRollout.title = ::WdxL.t "vis_visibility_keyer_title"
 				visToggleBtn.text = ::WdxL.t "vis_visibility_on_btn"
-				visToggleBtn.tooltip = ::WdxL.t "vis_toggle_visibility_onoff_for_s_tip"
+				try (visToggleBtn.tooltip = ::WdxL.t "vis_toggle_visibility_onoff_for_s_tip") catch ()
 				visConAddBtn.text = ::WdxL.t "vis_add_btn"
-				visConAddBtn.tooltip = ::WdxL.t "vis_add_a_visibility_controller_to_tip"
+				try (visConAddBtn.tooltip = ::WdxL.t "vis_add_a_visibility_controller_to_tip") catch ()
 				visConRemoveBtn.text = ::WdxL.t "vis_remove_btn"
-				visConRemoveBtn.tooltip = ::WdxL.t "vis_remove_visibility_controllers_tip"
+				try (visConRemoveBtn.tooltip = ::WdxL.t "vis_remove_visibility_controllers_tip") catch ()
 				visConCopyBtn.text = ::WdxL.t "vis_copy_btn"
-				visConCopyBtn.tooltip = ::WdxL.t "vis_copy_visibility_keyframes_from_tip"
+				try (visConCopyBtn.tooltip = ::WdxL.t "vis_copy_visibility_keyframes_from_tip") catch ()
 				visConPasteBtn.text = ::WdxL.t "vis_paste_btn"
-				visConPasteBtn.tooltip = ::WdxL.t "vis_paste_copied_visibility_keyfra_tip"
-				interpDropdown.tooltip = ::WdxL.t "vis_select_interpolation_type_for_tip"
+				try (visConPasteBtn.tooltip = ::WdxL.t "vis_paste_copied_visibility_keyfra_tip") catch ()
+				try (interpDropdown.tooltip = ::WdxL.t "vis_select_interpolation_type_for_tip") catch ()
 				visConChangeTypeBtn.text = ::WdxL.t "vis_change_type_btn"
-				visConChangeTypeBtn.tooltip = ::WdxL.t "vis_change_the_type_of_visibility_tip"
+				try (visConChangeTypeBtn.tooltip = ::WdxL.t "vis_change_the_type_of_visibility_tip") catch ()
 				singleKeShowBtn.text = ::WdxL.t "vis_set_show_key_btn"
-				singleKeShowBtn.tooltip = ::WdxL.t "vis_create_a_visibility_key_at_cur_tip"
+				try (singleKeShowBtn.tooltip = ::WdxL.t "vis_create_a_visibility_key_at_cur_tip") catch ()
 				singleKeHideBtn.text = ::WdxL.t "vis_set_hide_key_btn"
-				singleKeHideBtn.tooltip = ::WdxL.t "vis_create_a_visibility_key_at_cur_tip_2"
+				try (singleKeHideBtn.tooltip = ::WdxL.t "vis_create_a_visibility_key_at_cur_tip_2") catch ()
 				curTimeIntShowBtn.text = ::WdxL.t "vis_show_interval_btn"
-				curTimeIntShowBtn.tooltip = ::WdxL.t "vis_set_the_object_to_be_visible_f_tip"
+				try (curTimeIntShowBtn.tooltip = ::WdxL.t "vis_set_the_object_to_be_visible_f_tip") catch ()
 				curTimeIntHideBtn.text = ::WdxL.t "vis_hide_interval_btn"
-				curTimeIntHideBtn.tooltip = ::WdxL.t "vis_set_the_object_to_be_hidden_fo_tip"
+				try (curTimeIntHideBtn.tooltip = ::WdxL.t "vis_set_the_object_to_be_hidden_fo_tip") catch ()
 				selSeqShowBtn.text = ::WdxL.t "vis_show_sequences_btn"
-				selSeqShowBtn.tooltip = ::WdxL.t "vis_make_objects_visible_during_th_tip"
+				try (selSeqShowBtn.tooltip = ::WdxL.t "vis_make_objects_visible_during_th_tip") catch ()
 				selSeqHideBtn.text = ::WdxL.t "vis_hide_sequences_btn"
-				selSeqHideBtn.tooltip = ::WdxL.t "vis_make_objects_hidden_during_the_tip"
+				try (selSeqHideBtn.tooltip = ::WdxL.t "vis_make_objects_hidden_during_the_tip") catch ()
 			)
         )
 		

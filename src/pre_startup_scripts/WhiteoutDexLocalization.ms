@@ -12463,7 +12463,7 @@ struct WhiteoutDexLocalizationStruct
 	public fn init =
 	(
 		-- Setup INI
-		local bundleRoot = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
+		local bundleRoot = (::WhiteoutDexInstallRoot)
 		this.iniPath = bundleRoot + "\\WhiteoutDex_Settings.ini"
 		
 		-- Load all translations

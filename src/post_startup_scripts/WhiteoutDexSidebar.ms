@@ -15,8 +15,8 @@ try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
 
 rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
 (
-    local iniFile = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\WhiteoutDex_Settings.ini"
-    local iconPath = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\whiteoutdex_icons\\"
+    local iniFile = (::WhiteoutDexInstallRoot) + "\\WhiteoutDex_Settings.ini"
+    local iconPath = (::WhiteoutDexInstallRoot) + "\\whiteoutdex_icons\\"
     local btnSize = 28
     local btnW = 32
     local xOfs = 3
@@ -187,34 +187,35 @@ struct WhiteoutDexSidebarStruct
     
     fn show =
     (
-        -- Use bare member names (not `this.xxx`); the explicit `this`
-        -- keyword in struct methods was added after Max 2016 and resolves
-        -- to undefined there at runtime.
+        -- Max 2016 doesn't expose `this` inside struct methods AND can't
+        -- resolve bare `member = value` either ("Struct member access
+        -- requires instance"). Route every member touch through the
+        -- global instance so it works on every Max version.
         try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
         try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
         createDialog ::WhiteoutDexSidebarRollout width:38 height:590 \
             style:#(#style_titlebar, #style_border, #style_sysmenu)
-        isOpen = true
+        ::WhiteoutDexSidebar.isOpen = true
     ),
 
     fn hide =
     (
         try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
         try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
-        isOpen = false
+        ::WhiteoutDexSidebar.isOpen = false
     ),
 
     fn toggle =
     (
-        if isOpen then hide()
-        else show()
+        if ::WhiteoutDexSidebar.isOpen then ::WhiteoutDexSidebar.hide()
+        else ::WhiteoutDexSidebar.show()
     )
 )
 WhiteoutDexSidebar = WhiteoutDexSidebarStruct()
 
 -- Auto-show if enabled in settings
 (
-    local iniFile = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\WhiteoutDex_Settings.ini"
+    local iniFile = (::WhiteoutDexInstallRoot) + "\\WhiteoutDex_Settings.ini"
     local enabled = getINISetting iniFile "Sidebar" "Enabled"
     if enabled != "0" then WhiteoutDexSidebar.show()
 )

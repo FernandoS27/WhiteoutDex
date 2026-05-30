@@ -764,19 +764,19 @@ struct WdxAnimTools
 			(
 				generalRoll.title = ::WdxL.t "anim_general_tools_title"
 				addSEkeysbtn.text = ::WdxL.t "anim_addnstart_and_ending_keysnto_selected_ob_btn"
-				addSEkeysbtn.tooltip = ::WdxL.t "anim_adds_keyframes_to_frame_0_and_tip"
+				try (addSEkeysbtn.tooltip = ::WdxL.t "anim_adds_keyframes_to_frame_0_and_tip") catch ()
 				PosChk.text = ::WdxL.t "anim_position_chk"
-				PosChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip"
+				try (PosChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip") catch ()
 				RotChk.text = ::WdxL.t "anim_rotation_chk"
-				RotChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip_2"
+				try (RotChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip_2") catch ()
 				ScaChk.text = ::WdxL.t "anim_scaling_chk"
-				ScaChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip_3"
+				try (ScaChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip_3") catch ()
 				continuityBtn.text = ::WdxL.t "anim_set_continuity_to_zero_btn"
-				continuityBtn.tooltip = ::WdxL.t "anim_sets_the_continuity_parameter_tip"
+				try (continuityBtn.tooltip = ::WdxL.t "anim_sets_the_continuity_parameter_tip") catch ()
 				fixSquadbtn.text = ::WdxL.t "anim_fix_nonlinearnrotation_problemsnon_selec_btn"
-				fixSquadbtn.tooltip = ::WdxL.t "anim_nonlinear_rotation_keys_may_a_tip"
+				try (fixSquadbtn.tooltip = ::WdxL.t "anim_nonlinear_rotation_keys_may_a_tip") catch ()
 				createAttachmentPointsBtn.text = ::WdxL.t "anim_create_attachment_points_btn"
-				createAttachmentPointsBtn.tooltip = ::WdxL.t "anim_automatically_create_attachmen_tip"
+				try (createAttachmentPointsBtn.tooltip = ::WdxL.t "anim_automatically_create_attachmen_tip") catch ()
 			)
 		)
     ),
@@ -895,9 +895,9 @@ struct WdxAnimTools
 			(
 				skinRoll.title = ::WdxL.t "anim_skinning_title"
 				saveBtn.text = ::WdxL.t "anim_save_and_unlink_btn"
-				saveBtn.tooltip = ::WdxL.t "anim_saves_parent_relationships_of_tip"
+				try (saveBtn.tooltip = ::WdxL.t "anim_saves_parent_relationships_of_tip") catch ()
 				restoreBtn.text = ::WdxL.t "anim_restore_parents_btn"
-				restoreBtn.tooltip = ::WdxL.t "anim_restores_previously_saved_pare_tip"
+				try (restoreBtn.tooltip = ::WdxL.t "anim_restores_previously_saved_pare_tip") catch ()
 			)
 		)
     ),
@@ -1072,7 +1072,7 @@ struct WdxAnimTools
 			(
 				controllersRoll.title = ::WdxL.t "anim_controllers_title"
 				controllerBtn.text = ::WdxL.t "anim_apply_to_selected_btn"
-				controllerBtn.tooltip = ::WdxL.t "anim_applies_the_selected_controlle_tip"
+				try (controllerBtn.tooltip = ::WdxL.t "anim_applies_the_selected_controlle_tip") catch ()
 			)
 		)
     ),

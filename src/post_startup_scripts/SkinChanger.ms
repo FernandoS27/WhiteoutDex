@@ -143,7 +143,7 @@ struct WdxSkinChanger
                 mainRollout.title = ::WdxL.t "skin_change_skin_data_to_wc3_title"
                 changeSkinBtn.text = ::WdxL.t "skin_change_skin_data_to_wc3_btn"
                 removeZeroBtn.text = ::WdxL.t "skin_remove_zero_weights_btn"
-                spnThreshold.tooltip = ::WdxL.t "skin_weights_at_or_below_this_value_tip"
+                try (spnThreshold.tooltip = ::WdxL.t "skin_weights_at_or_below_this_value_tip") catch ()
             )
         )
     ), 

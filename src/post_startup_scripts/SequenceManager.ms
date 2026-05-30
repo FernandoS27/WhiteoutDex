@@ -927,20 +927,20 @@ struct WdxSequenceManager
                     (
                         newSequenceRollout.title = ::WdxL.t "seq_new_sequence_title"
                         presetLbl.text = ::WdxL.t "seq_preset_lbl"
-                        presetDDL.tooltip = ::WdxL.t "seq_select_animation_preset_tip"
+                        try (presetDDL.tooltip = ::WdxL.t "seq_select_animation_preset_tip") catch ()
                         nameLbl.text = ::WdxL.t "seq_name_lbl"
-                        nameEdt.tooltip = ::WdxL.t "seq_enter_the_name_of_the_new_sequ_tip"
+                        try (nameEdt.tooltip = ::WdxL.t "seq_enter_the_name_of_the_new_sequ_tip") catch ()
                         startFrameLbl.text = ::WdxL.t "seq_start_frame_lbl"
                         endFrameLbl.text = ::WdxL.t "seq_end_frame_lbl"
                         rarityChk.text = ::WdxL.t "seq_rarity_chk"
-                        rarityChk.tooltip = ::WdxL.t "seq_enabledisable_rarity_of_the_a_tip"
+                        try (rarityChk.tooltip = ::WdxL.t "seq_enabledisable_rarity_of_the_a_tip") catch ()
                         movespeedChk.text = ::WdxL.t "seq_move_speed_chk"
-                        movespeedChk.tooltip = ::WdxL.t "seq_enabledisable_movement_speed_tip"
+                        try (movespeedChk.tooltip = ::WdxL.t "seq_enabledisable_movement_speed_tip") catch ()
                         nonloopingChk.text = ::WdxL.t "seq_non_looping_chk"
                         okBtn.text = ::WdxL.t "seq_ok_btn"
-                        okBtn.tooltip = ::WdxL.t "seq_create_new_sequence_and_close_tip"
+                        try (okBtn.tooltip = ::WdxL.t "seq_create_new_sequence_and_close_tip") catch ()
                         cancelBtn.text = ::WdxL.t "seq_cancel_btn"
-                        cancelBtn.tooltip = ::WdxL.t "seq_cancel_without_creating_a_sequ_tip"
+                        try (cancelBtn.tooltip = ::WdxL.t "seq_cancel_without_creating_a_sequ_tip") catch ()
                     )
                 )
             )
@@ -1583,8 +1583,8 @@ struct WdxSequenceManager
 					-- Reset Ranges für read-only Anzeige
 					startFrameSpn.range = [0, 0, 0]
 					endFrameSpn.range = [0, duration.frame as integer, duration.frame as integer]
-					startFrameSpn.tooltip = "Global Sequence - read only"
-					endFrameSpn.tooltip = "Global Sequence - read only"
+					try (startFrameSpn.tooltip = "Global Sequence - read only") catch ()
+					try (endFrameSpn.tooltip = "Global Sequence - read only") catch ()
 					
 					ignoreChk.triState = 0
 					nonloopingChk.triState = 0
@@ -1615,8 +1615,8 @@ struct WdxSequenceManager
 					local minEndFrame = (seq.starttime.frame as integer) + 1
 					endFrameSpn.range = [minEndFrame, bounds[2], seq.endtime.frame as integer]
 					
-					startFrameSpn.tooltip = "Valid range: " + bounds[1] as string + " to " + maxStartFrame as string + " (limited by adjacent sequences)"
-					endFrameSpn.tooltip = "Valid range: " + minEndFrame as string + " to " + bounds[2] as string + " (limited by adjacent sequences)"
+					try (startFrameSpn.tooltip = "Valid range: " + bounds[1] as string + " to " + maxStartFrame as string + " (limited by adjacent sequences)") catch ()
+					try (endFrameSpn.tooltip = "Valid range: " + minEndFrame as string + " to " + bounds[2] as string + " (limited by adjacent sequences)") catch ()
 					
 					ignoreChk.triState = if self.isSequenceIgnored seq.name then 1 else 0
 					nonloopingChk.triState = if seq.loop then 1 else 0
@@ -1643,8 +1643,8 @@ struct WdxSequenceManager
 				-- Reset Spinner Ranges bei Mehrfachauswahl
 				startFrameSpn.range = [-999999, 999999, 0]
 				endFrameSpn.range = [-999999, 999999, 0]
-				startFrameSpn.tooltip = "Multiple sequences selected"
-				endFrameSpn.tooltip = "Multiple sequences selected"
+				try (startFrameSpn.tooltip = "Multiple sequences selected") catch ()
+				try (endFrameSpn.tooltip = "Multiple sequences selected") catch ()
 				
 				-- Wenn NUR Globals selektiert sind, alles deaktivieren
 				if selectionIsOnlyGlobals() then
@@ -2132,45 +2132,45 @@ struct WdxSequenceManager
 			(
 				mainRollout.title = ::WdxL.t "seq_sequence_manager_title"
 				filterClearBtn.text = ::WdxL.t "seq_clear_btn"
-				filterClearBtn.tooltip = ::WdxL.t "seq_clear_the_search_field_and_sho_tip"
+				try (filterClearBtn.tooltip = ::WdxL.t "seq_clear_the_search_field_and_sho_tip") catch ()
 				selectAllBtn.text = ::WdxL.t "seq_all_btn"
-				selectAllBtn.tooltip = ::WdxL.t "seq_select_all_sequences_in_the_li_tip"
+				try (selectAllBtn.tooltip = ::WdxL.t "seq_select_all_sequences_in_the_li_tip") catch ()
 				selectNoneBtn.text = ::WdxL.t "seq_none_btn"
-				selectNoneBtn.tooltip = ::WdxL.t "seq_deselect_all_sequences_tip"
+				try (selectNoneBtn.tooltip = ::WdxL.t "seq_deselect_all_sequences_tip") catch ()
 				selectInvertBtn.text = ::WdxL.t "seq_invert_btn"
-				selectInvertBtn.tooltip = ::WdxL.t "seq_invert_the_current_selection_tip"
+				try (selectInvertBtn.tooltip = ::WdxL.t "seq_invert_the_current_selection_tip") catch ()
 				sequenceNewBtn.text = ::WdxL.t "seq_new_btn"
-				sequenceNewBtn.tooltip = ::WdxL.t "seq_create_a_new_animation_sequenc_tip"
+				try (sequenceNewBtn.tooltip = ::WdxL.t "seq_create_a_new_animation_sequenc_tip") catch ()
 				sequenceDeleteBtn.text = ::WdxL.t "seq_delete_selected_btn"
-				sequenceDeleteBtn.tooltip = ::WdxL.t "seq_delete_selected_sequences_tip"
+				try (sequenceDeleteBtn.tooltip = ::WdxL.t "seq_delete_selected_sequences_tip") catch ()
 				duplicateBtn.text = ::WdxL.t "seq_duplicate_btn"
-				duplicateBtn.tooltip = ::WdxL.t "seq_duplicate_selected_sequences_tip"
+				try (duplicateBtn.tooltip = ::WdxL.t "seq_duplicate_selected_sequences_tip") catch ()
 				globalsBtn.text = ::WdxL.t "seq_globals_btn"
-				globalsBtn.tooltip = ::WdxL.t "seq_open_the_global_sequence_manag_tip"
+				try (globalsBtn.tooltip = ::WdxL.t "seq_open_the_global_sequence_manag_tip") catch ()
 				nameLbl.text = ::WdxL.t "seq_name_lbl_2"
-				nameEdt.tooltip = ::WdxL.t "seq_edit_name_of_the_selected_sequ_tip"
+				try (nameEdt.tooltip = ::WdxL.t "seq_edit_name_of_the_selected_sequ_tip") catch ()
 				startFrameLbl.text = ::WdxL.t "seq_start_frame_lbl_2"
-				setStartFrameBtn.tooltip = ::WdxL.t "seq_set_current_frame_as_start_fra_tip"
+				try (setStartFrameBtn.tooltip = ::WdxL.t "seq_set_current_frame_as_start_fra_tip") catch ()
 				endFrameLbl.text = ::WdxL.t "seq_end_frame_lbl_2"
-				setEndFrameBtn.tooltip = ::WdxL.t "seq_set_current_frame_as_end_frame_tip"
+				try (setEndFrameBtn.tooltip = ::WdxL.t "seq_set_current_frame_as_end_frame_tip") catch ()
 				rarityChk.text = ::WdxL.t "seq_rarity_chk_2"
-				rarityChk.tooltip = ::WdxL.t "seq_enabledisable_rarity_of_the_a_tip_2"
+				try (rarityChk.tooltip = ::WdxL.t "seq_enabledisable_rarity_of_the_a_tip_2") catch ()
 				movespeedChk.text = ::WdxL.t "seq_move_speed_chk_2"
-				movespeedChk.tooltip = ::WdxL.t "seq_enabledisable_movement_speed_tip_2"
+				try (movespeedChk.tooltip = ::WdxL.t "seq_enabledisable_movement_speed_tip_2") catch ()
 				nonloopingChk.text = ::WdxL.t "seq_non_looping_chk_2"
-				nonloopingChk.tooltip = ::WdxL.t "seq_animation_will_not_loop_when_p_tip"
+				try (nonloopingChk.tooltip = ::WdxL.t "seq_animation_will_not_loop_when_p_tip") catch ()
 				ignoreChk.text = ::WdxL.t "seq_ignore_chk"
-				ignoreChk.tooltip = ::WdxL.t "seq_if_this_checkbox_is_enabled_t_tip"
+				try (ignoreChk.tooltip = ::WdxL.t "seq_if_this_checkbox_is_enabled_t_tip") catch ()
 				nudgeKeysStartLbl.text = ::WdxL.t "seq_start_lbl"
 				nudgeKeysEndLbl.text = ::WdxL.t "seq_end_lbl"
-				nudgeKeysStartDownBtn.tooltip = ::WdxL.t "seq_move_the_start_frame_of_the_se_tip"
-				nudgeKeysStartUpBtn.tooltip = ::WdxL.t "seq_move_the_start_frame_of_the_se_tip_2"
-				nudgeKeysEndDownBtn.tooltip = ::WdxL.t "seq_move_the_end_frame_of_the_sele_tip"
-				nudgeKeysEndUpBtn.tooltip = ::WdxL.t "seq_move_the_end_frame_of_the_sele_tip_2"
+				try (nudgeKeysStartDownBtn.tooltip = ::WdxL.t "seq_move_the_start_frame_of_the_se_tip") catch ()
+				try (nudgeKeysStartUpBtn.tooltip = ::WdxL.t "seq_move_the_start_frame_of_the_se_tip_2") catch ()
+				try (nudgeKeysEndDownBtn.tooltip = ::WdxL.t "seq_move_the_end_frame_of_the_sele_tip") catch ()
+				try (nudgeKeysEndUpBtn.tooltip = ::WdxL.t "seq_move_the_end_frame_of_the_sele_tip_2") catch ()
 				fileLoadBtn.text = ::WdxL.t "seq_load_btn"
-				fileLoadBtn.tooltip = ::WdxL.t "seq_load_sequences_from_a_file_tip"
+				try (fileLoadBtn.tooltip = ::WdxL.t "seq_load_sequences_from_a_file_tip") catch ()
 				fileSaveBtn.text = ::WdxL.t "seq_save_btn"
-				fileSaveBtn.tooltip = ::WdxL.t "seq_save_sequences_to_a_file_tip"
+				try (fileSaveBtn.tooltip = ::WdxL.t "seq_save_sequences_to_a_file_tip") catch ()
 			)
         )
         

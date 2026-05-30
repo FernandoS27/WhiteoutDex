@@ -123,17 +123,17 @@ struct WdxGridAndDummyCreator
             (
                 mainRollout.title = ::WdxL.t "grid_grid_and_dummy_creator_title"
                 gridCPck.caption = ::WdxL.t "grid_color_cpk"
-                gridCPck.tooltip = ::WdxL.t "grid_set_the_color_of_the_created_g_tip"
+                try (gridCPck.tooltip = ::WdxL.t "grid_set_the_color_of_the_created_g_tip") catch ()
                 gridSizeSpn.caption = ::WdxL.t "grid_size_spn"
-                gridSizeSpn.tooltip = ::WdxL.t "grid_set_the_size_of_the_grid_in_wo_tip"
+                try (gridSizeSpn.tooltip = ::WdxL.t "grid_set_the_size_of_the_grid_in_wo_tip") catch ()
                 createGridBtn.text = ::WdxL.t "grid_create_grid_btn"
-                createGridBtn.tooltip = ::WdxL.t "grid_create_a_new_grid_with_current_tip"
+                try (createGridBtn.tooltip = ::WdxL.t "grid_create_a_new_grid_with_current_tip") catch ()
                 pointsCPck.caption = ::WdxL.t "grid_color_cpk_2"
-                pointsCPck.tooltip = ::WdxL.t "grid_set_the_color_of_the_created_p_tip"
+                try (pointsCPck.tooltip = ::WdxL.t "grid_set_the_color_of_the_created_p_tip") catch ()
                 pointsSizeSpn.caption = ::WdxL.t "grid_size_spn_2"
-                pointsSizeSpn.tooltip = ::WdxL.t "grid_set_the_size_of_point_objects_tip"
+                try (pointsSizeSpn.tooltip = ::WdxL.t "grid_set_the_size_of_point_objects_tip") catch ()
                 createPointsBtn.text = ::WdxL.t "grid_create_points_btn"
-                createPointsBtn.tooltip = ::WdxL.t "grid_create_point_objects_at_select_tip"
+                try (createPointsBtn.tooltip = ::WdxL.t "grid_create_point_objects_at_select_tip") catch ()
             )
         )
     ),
