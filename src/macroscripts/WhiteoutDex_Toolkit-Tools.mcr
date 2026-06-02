@@ -159,8 +159,15 @@ macroScript WhiteoutDex_KeyframeOptimizer
 	(
 		try
 		(
-			local scriptPath = (::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\Keyframe_Optimizer.ms"
-			fileIn scriptPath
+			-- Keyframe_Optimizer.ms is auto-loaded on Max startup (it lives in
+			-- post_startup_scripts), so wdxOpenKfoDialog should already be defined.
+			-- Re-fileIn defensively in case the user installed mid-session.
+			if ::wdxOpenKfoDialog == undefined do
+			(
+				local scriptPath = (::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\Keyframe_Optimizer.ms"
+				fileIn scriptPath
+			)
+			::wdxOpenKfoDialog()
 		) catch (messageBox ("KFO error:\n" + (getCurrentException())))
 	)
 )
@@ -174,8 +181,12 @@ macroScript WhiteoutDex_CellShadeCreator
 	(
 		try
 		(
-			local scriptPath = (::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\Cell_Shade_Creator.ms"
-			fileIn scriptPath
+			if ::wdxOpenCellShadeDialog == undefined do
+			(
+				local scriptPath = (::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\Cell_Shade_Creator.ms"
+				fileIn scriptPath
+			)
+			::wdxOpenCellShadeDialog()
 		) catch (messageBox ("Cell Shade error:\n" + (getCurrentException())))
 	)
 )

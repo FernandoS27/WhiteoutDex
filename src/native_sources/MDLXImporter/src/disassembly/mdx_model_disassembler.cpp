@@ -442,9 +442,7 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                     }
                     irLayer.textureRefs.push_back(ref);
                 }
-            } else if (layer.textureId != 0 && layer.textureId < mdx.textures.size()) {
-                // Raw v800 without sub-textures (textureId is the actual diffuse texture index).
-                // textureId == 0 is the reset value for v1100+ layers — not a real texture ref.
+            } else if (layer.textureId < mdx.textures.size()) {
                 ir::TextureRef ref;
                 ref.textureIndex = static_cast<int32_t>(layer.textureId);
                 ref.slot = ir::TextureSlot::Diffuse;

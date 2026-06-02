@@ -1193,11 +1193,14 @@ rollout wdxPanelMethods "Optimization Methods"
 )
 
 -----------------------------------------------------------------------
--- Create the floating dialog
+-- Open the floating dialog (called from the macroscript on demand —
+-- not at script load, so Max startup doesn't pop the window).
 -----------------------------------------------------------------------
-try ( closeRolloutFloater wdxKfoFloater ) catch()
-global wdxKfoFloater = newRolloutFloater (if ::WdxL != undefined then ::WdxL.t "kfo_title" else "Keyframe Optimizer") 257 510
+global wdxKfoFloater
+fn wdxOpenKfoDialog =
 (
+    try ( closeRolloutFloater wdxKfoFloater ) catch()
+    wdxKfoFloater = newRolloutFloater (if ::WdxL != undefined then ::WdxL.t "kfo_title" else "Keyframe Optimizer") 257 510
     addRollout wdxPanelParams  wdxKfoFloater
     addRollout wdxPanelMethods wdxKfoFloater
 )

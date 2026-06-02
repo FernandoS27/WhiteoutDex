@@ -570,4 +570,10 @@ rollout WdxCellShadeCreator "Wc3 Cell Shade Creator" width:192 height:360
 )
 
 
-CreateDialog WdxCellShadeCreator style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
+-- Opened on demand from the macroscript — not at script load, so Max
+-- startup doesn't pop the window.
+fn wdxOpenCellShadeDialog =
+(
+    try ( destroyDialog WdxCellShadeCreator ) catch()
+    CreateDialog WdxCellShadeCreator style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
+)

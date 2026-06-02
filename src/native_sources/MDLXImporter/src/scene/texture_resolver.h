@@ -28,13 +28,11 @@ class TextureResolver {
 public:
     /// Construct + eagerly open CASC + MPQ storages. Empty `cascDir`
     /// triggers blizzard_game_finder auto-detection; empty `mpqDir`
-    /// disables MPQ entirely. `searchCASC` / `searchMPQ` are master
-    /// switches that override the dirs when false.
+    /// disables MPQ entirely. No on/off flags — both backends are always
+    /// attempted when a path is available; failures land in the log.
     TextureResolver(const std::wstring& modelDir,
                     const std::wstring& cascDir,
-                    const std::wstring& mpqDir,
-                    bool searchCASC,
-                    bool searchMPQ);
+                    const std::wstring& mpqDir);
     ~TextureResolver();
 
     TextureResolver(const TextureResolver&) = delete;

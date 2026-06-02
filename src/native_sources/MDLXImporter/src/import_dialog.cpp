@@ -114,12 +114,8 @@ void saveDialogSettingsToINI(HWND hDlg, bool isReforged) {
     writeB(L"OptimizeGeometry", getCheck(hDlg, IDC_CHK_OPT_GEOMETRY));
     writeB(L"OptimizeBonesAndHelpers", getCheck(hDlg, IDC_CHK_OPT_BONES));
 
-    // Texture search
-    if (isReforged) {
-        writeB(L"SearchCASC", getCheck(hDlg, IDC_CHK_SEARCH_TEXTURES));
-    } else {
-        writeB(L"SearchMPQ", getCheck(hDlg, IDC_CHK_SEARCH_TEXTURES));
-    }
+    // Texture search flags are no longer persisted — the resolver always
+    // tries whichever archive directory is configured (matches WhiteoutFlakes).
 
     // Mode
     writeB(L"ImportMode", getCheck(hDlg, IDC_RDO_MERGE)); // true => "Merge"
@@ -190,14 +186,10 @@ void dialogToOptions(HWND hDlg, MdlxImportOptions& opts, bool isReforged) {
     else if (getCheck(hDlg, IDC_RDO_ANIM_NO_OBJ))   c.preset = ir::CoreImportOptions::Preset::AnimatedNoObjects;
     else                                              c.preset = ir::CoreImportOptions::Preset::All;
 
-    // Texture search
-    if (isReforged) {
-        opts.searchMPQ = false;
-        opts.searchCASC = getCheck(hDlg, IDC_CHK_SEARCH_TEXTURES);
-    } else {
-        opts.searchMPQ = getCheck(hDlg, IDC_CHK_SEARCH_TEXTURES);
-        opts.searchCASC = false;
-    }
+    // Texture search flags are no longer carried in opts — the resolver
+    // always tries whichever archive directory is configured. The dialog's
+    // "Search Textures" checkbox is kept for future use but currently a no-op.
+    (void)IDC_CHK_SEARCH_TEXTURES;
 
     // Reforged objects
     if (isReforged) {
@@ -255,12 +247,10 @@ void optionsToDialog(HWND hDlg, const MdlxImportOptions& opts, bool isReforged) 
     setCheck(hDlg, IDC_RDO_ANIM_NO_OBJ,   c.preset == ir::CoreImportOptions::Preset::AnimatedNoObjects);
     setCheck(hDlg, IDC_RDO_ALL,           c.preset == ir::CoreImportOptions::Preset::All);
 
-    // Texture search
-    if (isReforged) {
-        setCheck(hDlg, IDC_CHK_SEARCH_TEXTURES, opts.searchCASC);
-    } else {
-        setCheck(hDlg, IDC_CHK_SEARCH_TEXTURES, opts.searchMPQ);
-    }
+    // Texture search checkbox is currently a no-op (kept for future use);
+    // the resolver always tries whichever archive directory is configured.
+    setCheck(hDlg, IDC_CHK_SEARCH_TEXTURES, !opts.cascDirectory.empty() ||
+                                             !opts.mpqDirectory.empty());
 
     // Reforged objects
     setCheck(hDlg, IDC_CHK_CORN_EMITTERS, opts.importCornEmitters);

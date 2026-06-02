@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <memory>
 
+// clang-format off
 #include <max.h>
 #include <maxversion.h>
 #include <maxscript/maxscript.h>
@@ -42,6 +43,7 @@
 // `Primitive WhiteoutFlakesStart_pf(...)` line silently expands to
 // nothing and MaxScript never sees the primitive.
 #include <maxscript/macros/define_instantiation_functions.h>
+// clang-format on
 
 using namespace whiteout::flakes;
 
@@ -271,21 +273,57 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
     // this .dlx — that's where the installer drops `shaders/` (BLS bundles
     // RenderPipeline::InitDevice loads via the content provider).
     //
-    // `SetInstallPath` only configures the CASC/MPQ storage roots; it does
-    // NOT set the file resolver's basePath. We need `SetBasePath` for the
-    // disk fallback that ReadFile uses for non-archive paths like
-    // `shaders/vs/hd.bls`. Without it, basePath_ stays empty, every BLS
-    // ReadFile resolves to nothing, RenderPipeline::InitBlsShaders returns
-    // false, and InitDevice fails before the renderer even tries to draw.
+    // `SetBasePath` is for the disk-side FileResolver and is the ONLY thing
+    // the BLS shader lookup cares about. Earlier this code also called
+    // `SetInstallPath(dlxDir)` — that was wrong, InstallPath drives the
+    // CASC/MPQ storage roots, and pinning it at the .dlx directory meant
+    // the renderer treated the plug-in folder as the WC3 install no matter
+    // what the user typed into the Settings dialog. The W3Path read below
+    // restores the correct user-configured value.
     {
         wchar_t buf[MAX_PATH] = {};
         if (GetModuleFileNameW(g_hInstance, buf, MAX_PATH) > 0) {
             std::filesystem::path dlxDir = std::filesystem::path(buf).parent_path();
-            // SetInstallPath takes std::string (native narrow encoding);
-            // path::string() returns that. u8string() would give std::u8string
-            // and fail to bind under C++20.
-            g_scene->GetContentProvider().SetInstallPath(dlxDir.string());
             g_scene->GetContentProvider().SetBasePath(dlxDir);
+        }
+    }
+
+    // Pull the WC3 install root the user configured in the Settings dialog
+    // (TextureBrowserHelper.ms / Toolkit-Settings.mcr both write to the same
+    // INI). Without this the renderer's CASC/MPQ lookups go nowhere —
+    // particle textures, DNC probe DDSes, ambient sound assets all fail to
+    // load and the preview ends up running on the procedural fallback.
+    //
+    //   <plugcfg>\WhiteoutDex_Settings.ini → [CASC] W3Path
+    //
+    // The importer (mdlx_import_options.cpp) and TextureBrowserHelper read
+    // from the same file; this keeps the three plug-ins consistent so the
+    // user only has to type the install path once. The captured value is
+    // re-applied to the MaxSceneAdapter's own provider further below — the
+    // adapter has its own FileContentProvider instance used during scene
+    // collection, and it needs the same root.
+    std::string userInstallPath;
+    {
+        Interface* ipForPath = GetCOREInterface();
+        if (ipForPath) {
+            MSTR pcDir = ipForPath->GetDir(APP_PLUGCFG_DIR);
+            std::wstring cascIni = std::wstring(pcDir.data()) + L"\\WhiteoutDex_Settings.ini";
+            if (GetFileAttributesW(cascIni.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                wchar_t w3buf[MAX_PATH] = {};
+                GetPrivateProfileStringW(L"CASC", L"W3Path", L"", w3buf, MAX_PATH, cascIni.c_str());
+                if (w3buf[0]) {
+                    // SetInstallPath takes UTF-8 narrow; MDX install paths
+                    // are ASCII-safe in practice (Windows refuses to install
+                    // WC3 under non-ASCII paths via Battle.net), so the
+                    // naive wide-to-narrow truncation here matches what the
+                    // importer does for the same setting.
+                    userInstallPath.reserve(MAX_PATH);
+                    for (wchar_t c : std::wstring_view(w3buf))
+                        userInstallPath += static_cast<char>(c);
+                    g_scene->GetContentProvider().SetInstallPath(userInstallPath);
+                    mprintf(_M("WhiteoutDex: CASC W3Path = '%s'\n"), w3buf);
+                }
+            }
         }
     }
 
@@ -329,14 +367,16 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
         g_scene->SetPE1BasePath(std::filesystem::path(wp));
     }
 
-    // Apply persisted Settings > IO overrides to the SceneManager's provider
-    // BEFORE the audio emitter latches onto ActiveContentProvider — the
-    // emitter would keep working through path changes (it holds a pointer)
-    // but doing this first keeps the "single source of truth" obvious.
+    // Apply persisted IO overrides (Ignore Casc/Mpq toggles + MPQ load list)
+    // from the WhiteoutFlakes-side settings file sitting next to 3dsmax.exe.
+    // We deliberately ignore its `installPath` field here — the WhiteoutDex
+    // Settings dialog writes the install path to `WhiteoutDex_Settings.ini`
+    // under plugcfg (read above), and that's the authoritative source for
+    // all three plug-ins. Letting LoadIoPathOverrides override at this point
+    // is what made the renderer treat the .dlx directory as the WC3 install
+    // for users who never created WhiteoutFlakes.ini (i.e. everyone).
     auto applyIoOverrides = [](whiteout::flakes::io::FileContentProvider& provider) {
         auto overrides = whiteout::flakes::LoadIoPathOverrides();
-        if (!overrides.installPath.empty())
-            provider.SetInstallPath(overrides.installPath);
         provider.SetIgnoreCasc(overrides.ignoreCasc);
         provider.SetIgnoreMpq(overrides.ignoreMpq);
         if (overrides.mpqListSet)
@@ -354,8 +394,12 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
     // ---- Build the live adapter ----
     g_adapter = std::make_shared<whiteout::flakes::MaxSceneAdapter>();
 
-    // Same IO overrides apply to the adapter's own provider — it's used
-    // during CollectScene below for CASC/MPQ texture reads.
+    // Same install path + IO overrides apply to the adapter's own provider —
+    // it's used during CollectScene below for CASC/MPQ texture reads. The
+    // adapter has its own FileContentProvider instance (independent of
+    // SceneManager's), so it needs the W3Path set on it too.
+    if (!userInstallPath.empty())
+        g_adapter->GetContentProvider().SetInstallPath(userInstallPath);
     applyIoOverrides(g_adapter->GetContentProvider());
     // Cross-model dedup: skip BLP/CASC decode for textures that other models
     // already uploaded. SpawnActorFromLiveSource sets this too, but we set

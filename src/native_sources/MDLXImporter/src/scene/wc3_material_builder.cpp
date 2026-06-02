@@ -567,6 +567,26 @@ static Mtl* buildSingleLayerWc3Material(
             mtl->SetActiveTexmap(diffuseTexmap);
         }
 
+        // Sync the diffuse to the StdMat2 delegate. Wc3Material is a scripted
+        // plugin extending StdMat2; its `on diffuseMap set val do` handler
+        // sets `delegate.diffuseMap = getNativeTex val` so the viewport (which
+        // renders the delegate, not the script) and the mbDiffuse button text
+        // both reflect the assignment. That handler does NOT fire when C++
+        // calls IParamBlock2::SetValue — same quirk we already work around
+        // above for opacity. Find the StdMat2 delegate among the references
+        // and update its diffuse subtexmap directly so the diffuse actually
+        // renders + the UI shows the filename instead of "(None)".
+        if (diffuseTexmap) {
+            for (int ri = 0; ri < mtl->NumRefs(); ri++) {
+                auto* r = mtl->GetReference(ri);
+                if (auto* sm = dynamic_cast<StdMat2*>(r)) {
+                    sm->SetSubTexmap(ID_DI, diffuseTexmap);
+                    sm->EnableMap(ID_DI, TRUE);
+                    break;
+                }
+            }
+        }
+
         // ── IFL texture animation (KMTF track in MDX) ──
         // Following NeoDex's proven approach: generate an .ifl file with
         // a simple filename-per-line list, then use BitmapTex's native

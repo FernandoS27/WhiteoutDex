@@ -274,29 +274,82 @@ openCascImpl(const std::wstring& explicitDir) {
     if (!explicitDir.empty()) {
         path.reserve(explicitDir.size());
         for (wchar_t c : explicitDir) path += static_cast<char>(c);
-        RLOG << "[CASC] Using explicit dir: " << path << std::endl;
+        RLOG << "[CASC] Using explicit dir: '" << path << "'" << std::endl;
     } else {
-        RLOG << "[CASC] Auto-detecting WC3 install..." << std::endl;
+        // Mirror WhiteoutFlakes' detection: prefer an install whose `Data`
+        // subdirectory exists (a real WC3 / Reforged install). Falls back
+        // to the first hit if nothing has Data — better than silently
+        // doing nothing on a portable install.
+        RLOG << "[CASC] Auto-detecting WC3 install via findBlizzardGames..." << std::endl;
         auto games = whiteout::utils::findBlizzardGames();
+        std::string fallback;
         for (const auto& g : games) {
-            RLOG << "[CASC]   " << g.name << " -> " << g.path << std::endl;
-            if (g.game == whiteout::utils::BlizzardGame::WarcraftIIIReforged ||
-                g.game == whiteout::utils::BlizzardGame::WarcraftIII) {
+            RLOG << "[CASC]   candidate: '" << g.name << "' -> '" << g.path << "'" << std::endl;
+            if (g.game != whiteout::utils::BlizzardGame::WarcraftIII &&
+                g.game != whiteout::utils::BlizzardGame::WarcraftIIIReforged)
+                continue;
+            if (fs::exists(fs::path(g.path) / "Data")) {
                 path = g.path;
                 break;
             }
+            if (fallback.empty())
+                fallback = g.path;
         }
+        if (path.empty())
+            path = std::move(fallback);
     }
     if (path.empty()) {
-        RLOG << "[CASC] No WC3 path resolved" << std::endl;
+        RLOG << "[CASC] No WC3 install resolved — CASC disabled for this import" << std::endl;
+        RLOG.flush();
         return std::nullopt;
     }
-    RLOG << "[CASC] Opening storage at: " << path << std::endl;
-    auto storage = whiteout::storages::casc::Storage::open(path);
-    if (!storage)
-        RLOG << "[CASC] Open failed" << std::endl;
-    else
-        RLOG << "[CASC] Open ok" << std::endl;
+
+    // Append `\Data` when the path points at the WC3 install root rather
+    // than its Data subdir. The docs claim both work, but in practice the
+    // casc backend opens reliably only against `<root>\Data` (matches what
+    // WhiteoutTex / the TextureBrowser helper feed it). Case-insensitive
+    // check on either separator so we don't double-append for paths that
+    // already end in Data.
+    {
+        auto endsWithData = [](const std::string& p) {
+            if (p.size() < 4) return false;
+            std::string tail = p.substr(p.size() - 4);
+            for (auto& c : tail)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (tail != "data") return false;
+            if (p.size() == 4) return true;
+            char sep = p[p.size() - 5];
+            return sep == '\\' || sep == '/';
+        };
+        if (!endsWithData(path)) {
+            // Pick the separator that already dominates the path so we don't
+            // mix slashes in the final string (some CASC backends are picky).
+            char sep = (path.find('\\') != std::string::npos ||
+                        path.find('/') == std::string::npos) ? '\\' : '/';
+            if (!path.empty() && (path.back() == '\\' || path.back() == '/'))
+                path.pop_back();
+            path.push_back(sep);
+            path += "Data";
+            RLOG << "[CASC]   appended Data subdir -> '" << path << "'" << std::endl;
+        }
+    }
+
+    RLOG << "[CASC] Opening storage at: '" << path << "'" << std::endl;
+    RLOG.flush();
+
+    // Use the &error overload so the failure reason actually lands in the
+    // log. The bare open(path) overload returns nullopt with no diagnostic,
+    // which is what made every previous round of "CASC is silently broken"
+    // impossible to debug.
+    std::string error;
+    auto storage = whiteout::storages::casc::Storage::open(path, &error);
+    if (!storage) {
+        RLOG << "[CASC] Open FAILED at '" << path << "': "
+             << (error.empty() ? std::string{"(no error message)"} : error) << std::endl;
+    } else {
+        RLOG << "[CASC] Open OK at '" << path << "'" << std::endl;
+    }
+    RLOG.flush();
     return storage;
 }
 #endif
@@ -304,26 +357,40 @@ openCascImpl(const std::wstring& explicitDir) {
 std::vector<whiteout::storages::mpq::Storage>
 openMpqImpl(const std::wstring& mpqDir) {
     std::vector<whiteout::storages::mpq::Storage> out;
-    if (mpqDir.empty()) return out;
+    if (mpqDir.empty()) {
+        RLOG << "[MPQ] mpqDir empty — MPQ disabled" << std::endl;
+        RLOG.flush();
+        return out;
+    }
     std::error_code ec;
     if (!fs::is_directory(mpqDir, ec)) {
         RLOG << "[MPQ] mpqDir not a directory: '" << wlog(mpqDir) << "'" << std::endl;
+        RLOG.flush();
         return out;
     }
+    RLOG << "[MPQ] Scanning '" << wlog(mpqDir) << "' for *.mpq..." << std::endl;
+    int scanned = 0;
     for (const auto& entry : fs::directory_iterator(mpqDir, ec)) {
         if (!entry.is_regular_file()) continue;
         std::string ext = entry.path().extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(),
                        [](unsigned char c) { return static_cast<char>(::tolower(c)); });
         if (ext != ".mpq") continue;
-        auto storage = whiteout::storages::mpq::Storage::open(entry.path().string());
+        ++scanned;
+        std::string error;
+        auto storage = whiteout::storages::mpq::Storage::open(entry.path().string(), &error);
         if (storage) {
-            RLOG << "[MPQ]   opened: " << entry.path().string() << std::endl;
+            RLOG << "[MPQ]   opened: '" << entry.path().string() << "'" << std::endl;
             out.push_back(std::move(*storage));
         } else {
-            RLOG << "[MPQ]   open failed: " << entry.path().string() << std::endl;
+            RLOG << "[MPQ]   open FAILED for '" << entry.path().string() << "': "
+                 << (error.empty() ? std::string{"(no error message)"} : error)
+                 << std::endl;
         }
     }
+    RLOG << "[MPQ] Scan complete — " << scanned << " .mpq found, "
+         << out.size() << " opened" << std::endl;
+    RLOG.flush();
     return out;
 }
 
@@ -383,20 +450,23 @@ bool writeBytesToDisk(const fs::path& outPath, const std::vector<std::uint8_t>& 
 
 TextureResolver::TextureResolver(const std::wstring& modelDir,
                                  const std::wstring& cascDir,
-                                 const std::wstring& mpqDir,
-                                 bool searchCASC,
-                                 bool searchMPQ)
+                                 const std::wstring& mpqDir)
     : impl_(std::make_unique<Impl>()) {
     impl_->modelDir = modelDir;
+
+    RLOG << "[RES] TextureResolver ctor:"
+         << " modelDir='" << wlog(modelDir) << "'"
+         << " cascDir='" << wlog(cascDir) << "'"
+         << " mpqDir='" << wlog(mpqDir) << "'" << std::endl;
+    RLOG.flush();
+
 #if defined(WHITEOUT_HAS_CASC)
-    if (searchCASC)
-        impl_->casc = openCascImpl(cascDir);
+    impl_->casc = openCascImpl(cascDir);
 #else
     (void)cascDir;
-    (void)searchCASC;
 #endif
-    if (searchMPQ)
-        impl_->mpqArchives = openMpqImpl(mpqDir);
+    impl_->mpqArchives = openMpqImpl(mpqDir);
+    RLOG.flush();
 }
 
 TextureResolver::~TextureResolver() = default;
@@ -416,6 +486,11 @@ bool TextureResolver::HasMpq() const {
 std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
     if (relPath.empty()) return {};
 
+    RLOG << "[RES] Resolve('" << wlog(relPath) << "')"
+         << " casc=" << (impl_->casc.has_value() ? "open" : "closed")
+         << " mpq=" << impl_->mpqArchives.size() << " archives"
+         << std::endl;
+
     // 1) Local disk first (with subdir peeling + alias fallback). When the
     //    resolved path actually exists, return it verbatim — no archive
     //    extraction needed.
@@ -424,6 +499,7 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
         std::error_code ec;
         if (!local.empty() && fs::exists(local, ec)) {
             RLOG << "[RES] disk hit: '" << wlog(local) << "'" << std::endl;
+            RLOG.flush();
             return local;
         }
     }
@@ -436,23 +512,26 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
     auto orderedExts = buildOrderedExts(mdxExt);
 
 #if defined(WHITEOUT_HAS_CASC)
-    // 2) CASC. SD prefix first, then HD. The MDX-stated extension is tried
-    //    before any alias inside each prefix so a real MDX `.tif` request
-    //    that has a CASC `.dds` lands extracted as `.dds` only when no
-    //    `.tif` lives in CASC.
+    // 2) CASC. SD prefix first, then HD, then the deprecated bucket (some
+    //    assets were moved out of the main war3.w3mod tree across patches
+    //    and only live in the deprecated overlay now). MDX-stated extension
+    //    is tried before any alias inside each prefix so a real MDX `.tif`
+    //    request that has a CASC `.dds` lands extracted as `.dds` only
+    //    when no `.tif` lives in CASC. Matches WhiteoutFlakes' lookup order.
     if (impl_->casc) {
         static const char* kPrefixes[] = {
             "war3.w3mod:",
             "war3.w3mod:_hd.w3mod:",
+            "war3.w3mod:_deprecated.w3mod:",
         };
-        RLOG << "[CASC] Searching for: " << archiveStem
-             << " (mdxExt='" << mdxExt << "')" << std::endl;
+        RLOG << "[CASC] Searching for: '" << archiveStem
+             << "' (mdxExt='" << mdxExt << "')" << std::endl;
         for (const char* prefix : kPrefixes) {
             for (const std::string& ext : orderedExts) {
                 std::string cascPath = std::string(prefix) + archiveStem + ext;
                 auto data = impl_->casc->readFile(cascPath);
                 if (!data || data->empty()) continue;
-                RLOG << "[CASC] Found: " << cascPath << " (" << data->size() << " bytes)" << std::endl;
+                RLOG << "[CASC] Found: '" << cascPath << "' (" << data->size() << " bytes)" << std::endl;
 
                 // Write to <modelDir>/<original-subdir>/<stem>.<actualExt>.
                 std::wstring outRel = swapExtension(relPath, narrowToWide(ext));
@@ -501,6 +580,10 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
     // 4) Nothing — fallback to the local-disk best-guess (MDX path under
     //    modelDir with the MDX extension). BitmapTex displays it so the
     //    artist can hand-edit.
+    RLOG << "[RES] MISS for '" << wlog(relPath) << "' — no source had it"
+         << " (casc=" << (impl_->casc.has_value() ? "open" : "closed")
+         << ", mpq=" << impl_->mpqArchives.size() << ")" << std::endl;
+    RLOG.flush();
     auto fallback = resolveTexturePath(impl_->modelDir, relPath);
     RLOG << "[RES] miss; fallback: '" << wlog(fallback) << "'" << std::endl;
     return fallback;

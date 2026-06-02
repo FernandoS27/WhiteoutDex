@@ -17,9 +17,12 @@
 #include <cwchar>
 #include <fstream>
 #include <numbers>
+
+// clang-format off
 #include <Windows.h>
 #include <maxscript/foundation/numbers.h>
 #include <maxscript/maxscript.h>
+// clang-format on
 
 using namespace whiteout::flakes;
 using namespace whiteout::flakes::io;
@@ -807,8 +810,31 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
         const i32 tcReplId =
             isWc3Bitmap ? std::max(0, PB2IntOr(tcTex, L"replaceableId", 0, 1) - 1) : 0;
 
+        // The MDLXImporter writes plain BitmapTex (not Wc3Bitmap) for every
+        // texture entry, so a Reforged HD model arrives here with the canonical
+        // ReplaceableTextures\TeamColor\TeamColor00.blp baked into the slot.
+        // Without this detection the static red swatch loads as a normal
+        // texture and ignores Actor::teamColor on retint.
+        const std::wstring tcPath = hasTexmap ? ResolveBitmapPath(mtl, L"teamColorMap")
+                                              : std::wstring{};
+        auto isCanonicalTeamColorPath = [](const std::wstring& w) {
+            if (w.empty()) return false;
+            std::wstring lower = w;
+            for (auto& c : lower) {
+                if (c >= L'A' && c <= L'Z') c = wchar_t(c + (L'a' - L'A'));
+                if (c == L'/') c = L'\\';
+            }
+            return lower.find(L"replaceabletextures\\teamcolor\\teamcolor") !=
+                   std::wstring::npos;
+        };
+        const bool isCanonicalTC = isCanonicalTeamColorPath(tcPath);
+
         if (isWc3Bitmap && tcReplId == 1) {
             // Live swatch placeholder.
+            layer.teamColorMapId = kHdTeamColorActive;
+        } else if (isCanonicalTC && (layer.shaderId == 1 || layer.shaderId == 24)) {
+            // Plain BitmapTex pointing at the canonical TeamColor swatch on an
+            // HD/Crystal layer — treat as live swatch so SetTeamColor retints.
             layer.teamColorMapId = kHdTeamColorActive;
         } else {
             // Try to load whatever path the user assigned; -1 if none.
