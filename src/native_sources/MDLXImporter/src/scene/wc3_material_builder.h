@@ -7,19 +7,24 @@
 #include <functional>
 
 namespace mdx_scene {
+class TextureResolver;
+}
+
+namespace mdx_scene {
 
 class Wc3MaterialBuilder {
 public:
     /// Create Wc3Material instances for all IR materials.
     /// Returns mapping from IR material index → Max Mtl*.
-    /// cascStorage: opaque pointer from mdx_scene::openCascStorage (or nullptr).
-    /// mpqStorage:  opaque pointer from mdx_scene::openMpqStorage  (or nullptr).
+    /// `resolver` is a borrowed TextureResolver that handles local disk
+    /// + CASC + MPQ lookup with extension aliases. May be nullptr; in
+    /// that case only local disk is searched (via the free-function
+    /// resolveTexturePath).
     std::vector<Mtl*> buildMaterials(
         const ir::IRModel& irModel,
         bool importTextures,
         const std::wstring& modelDir,
-        void* cascStorage,
-        void* mpqStorage,
+        TextureResolver* resolver,
         Interface* gi,
         core::ExportErrorReporter& reporter);
 
@@ -36,8 +41,7 @@ private:
         const std::vector<Texmap*>& texmapsFlat,
         const LayerTexmapsFn& buildLayerTexmaps,
         const std::wstring& modelDir,
-        void* cascStorage,
-        void* mpqStorage,
+        TextureResolver* resolver,
         Interface* gi,
         core::ExportErrorReporter& reporter);
 

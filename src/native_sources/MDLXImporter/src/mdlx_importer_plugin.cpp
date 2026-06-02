@@ -41,6 +41,7 @@
 #include <functional>
 #include <map>
 #include <sstream>
+#include <optional>
 #include <string>
 #include <vector>
 #include <set>
@@ -2801,85 +2802,46 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             modelDir = fullPath.substr(0, lastSep + 1);
     }
 
-    // ── CASC + MPQ archive storages ─────────────────────────────────────
-    // Both storages are opened BEFORE the texture pre-resolution and held
-    // open until the end of DoImport so that resolveTexturePathFull() inside
-    // buildMaterials and Wc3Particle2Builder can still extract textures that
-    // weren't covered by the pre-resolution (e.g. IFL animation textures).
-    void* cascPtr = nullptr;
-    void* mpqPtr  = nullptr;
+    // ── TextureResolver ─────────────────────────────────────────────────
+    // Single resolver instance owns the CASC + MPQ archive handles for the
+    // import session and centralises all alias/path logic (see
+    // texture_resolver.cpp). Builders just call resolver->Resolve(relPath);
+    // the resolver decides whether to read from disk or extract from an
+    // archive, picks the right alias set (textures vs models vs pkb/pkfx),
+    // and writes archive bytes into modelDir with the actual extension.
+    std::optional<mdx_scene::TextureResolver> resolverOpt;
     if (opts.core.importTextures) {
-        if (opts.searchCASC)
-            cascPtr = mdx_scene::openCascStorage(opts.cascDirectory);
-        if (opts.searchMPQ)
-            mpqPtr = mdx_scene::openMpqStorage(opts.mpqDirectory);
+        resolverOpt.emplace(modelDir, opts.cascDirectory, opts.mpqDirectory,
+                            opts.searchCASC, opts.searchMPQ);
     }
+    mdx_scene::TextureResolver* resolver = resolverOpt ? &*resolverOpt : nullptr;
 
-    // Pre-resolve all textures and PE1 model files (including CASC/MPQ extraction)
-    // so every builder can find them on disk without needing the archive handles.
-    // PE1 model files are parsed recursively to extract their textures and
-    // any nested PE1 model references (with cycle detection).
-    if (opts.core.importTextures) {
-        // Resolve all textures from the main model
+    // Pre-resolve all textures and PE1 model files (including CASC/MPQ
+    // extraction) so every builder can find them on disk without needing
+    // the archive handles. PE1 model files are parsed recursively to
+    // extract their textures and any nested PE1 model references (with
+    // cycle detection).
+    if (resolver) {
+        // Resolve all textures from the main model.
         for (const auto& irTex : irModel.textures) {
             if (!irTex.filePath.empty()) {
                 std::wstring wpath(irTex.filePath.begin(), irTex.filePath.end());
-                mdx_scene::resolveTexturePathFull(modelDir, wpath, cascPtr, mpqPtr);
+                resolver->Resolve(wpath);
             }
         }
 
-        // Recursively resolve PE1 model files and their textures.
-        // PE1 particles spawn sub-models which may have their own textures
-        // and their own PE1 emitters (forming a tree).
+        // Recursively resolve PE1 model files and their textures. PE1
+        // particles spawn sub-models which may have their own textures
+        // and their own PE1 emitters (forming a tree). The resolver's
+        // built-in `.mdx`/`.mdl` alias set means we don't need an
+        // ad-hoc extension swap dance here.
         {
             namespace fs = std::filesystem;
 
-            // Resolve a model file on disk: try modelDir + relPath directly,
-            // then try swapping .mdx↔.mdl extension.
-            auto resolveModelOnDisk = [&](const std::wstring& relPath) -> std::wstring {
-                std::error_code ec;
-                // Try exact path
-                fs::path full = fs::path(modelDir) / relPath;
-                if (fs::exists(full, ec)) return full.wstring();
-
-                // Try alternate extension (.mdx ↔ .mdl)
-                fs::path stem = full;
-                stem.replace_extension();
-                std::wstring ext = full.extension().wstring();
-                std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
-                fs::path alt;
-                if (ext == L".mdl") { alt = stem; alt += L".mdx"; }
-                else                { alt = stem; alt += L".mdl"; }
-                if (fs::exists(alt, ec)) return alt.wstring();
-                return {};
-            };
-
-            // Resolve a model file, falling back to CASC/MPQ extraction.
             auto resolveModelFull = [&](const std::wstring& relPath) -> std::wstring {
-                // Check disk first (both extensions)
-                auto onDisk = resolveModelOnDisk(relPath);
-                if (!onDisk.empty()) return onDisk;
-
-                // Try archive extraction with original path
-                auto extracted = mdx_scene::resolveTexturePathFull(modelDir, relPath, cascPtr, mpqPtr);
+                std::wstring r = resolver->Resolve(relPath);
                 std::error_code ec;
-                if (!extracted.empty() && fs::exists(extracted, ec)) return extracted;
-
-                // Try archive with alternate extension
-                std::wstring altPath = relPath;
-                if (altPath.size() > 4) {
-                    std::wstring ext = altPath.substr(altPath.size() - 4);
-                    std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
-                    if (ext == L".mdx")
-                        altPath = altPath.substr(0, altPath.size() - 4) + L".mdl";
-                    else if (ext == L".mdl")
-                        altPath = altPath.substr(0, altPath.size() - 4) + L".mdx";
-                    else
-                        return {};
-                    extracted = mdx_scene::resolveTexturePathFull(modelDir, altPath, cascPtr, mpqPtr);
-                    if (!extracted.empty() && fs::exists(extracted, ec)) return extracted;
-                }
-                return {};
+                return (!r.empty() && fs::exists(r, ec)) ? r : std::wstring{};
             };
 
             std::set<std::string> visited;
@@ -2944,9 +2906,18 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                     for (const auto& tex : subModel.textures) {
                         if (!tex.fileName.empty()) {
                             std::wstring wTexPath(tex.fileName.begin(), tex.fileName.end());
-                            // Try relative to child model first, then parent model dir
-                            mdx_scene::resolveTexturePathFull(childDir, wTexPath, cascPtr, mpqPtr);
-                            mdx_scene::resolveTexturePathFull(modelDir, wTexPath, cascPtr, mpqPtr);
+                            // The resolver was built with `modelDir` as
+                            // its base; for a child-model texture we
+                            // probe under the child's directory first
+                            // (matches PE1 lookup convention), then let
+                            // the resolver retry with its configured
+                            // base. The free-function fallback handles
+                            // the child-dir local probe without needing
+                            // a second resolver instance.
+                            std::error_code ec;
+                            auto childHit = mdx_scene::resolveTexturePath(childDir, wTexPath);
+                            if (childHit.empty() || !fs::exists(childHit, ec))
+                                resolver->Resolve(wTexPath);
                         }
                     }
                     for (const auto& subPE : subModel.particleEmitters) {
@@ -2966,7 +2937,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     if (opts.core.importMaterials) {
         mdx_scene::Wc3MaterialBuilder matBuilder;
         materials = matBuilder.buildMaterials(
-            irModel, opts.core.importTextures, modelDir, cascPtr, mpqPtr, gi, reporter);
+            irModel, opts.core.importTextures, modelDir, resolver, gi, reporter);
 
         for (size_t mi = 0; mi < irModel.meshes.size(); ++mi) {
             int32_t matIdx = irModel.meshes[mi].materialIndex;
@@ -2995,7 +2966,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         }
         if (opts.core.importParticleEmitters2) {
             mdx_scene::Wc3Particle2Builder pe2Builder;
-            pe2Builder.buildParticles(irModel, nodeMap, modelDir, cascPtr, mpqPtr, gi, reporter);
+            pe2Builder.buildParticles(irModel, nodeMap, modelDir, resolver, gi, reporter);
         }
         if (opts.core.importRibbonEmitters) {
             mdx_scene::Wc3RibbonBuilder ribBuilder;
@@ -4344,15 +4315,9 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
     gi->ForceCompleteRedraw();
 
-    // ── Close archive storages opened above ─────────────────────────────
-    if (cascPtr) {
-        mdx_scene::closeCascStorage(cascPtr);
-        cascPtr = nullptr;
-    }
-    if (mpqPtr) {
-        mdx_scene::closeMpqStorage(mpqPtr);
-        mpqPtr = nullptr;
-    }
+    // TextureResolver (in resolverOpt) closes its CASC + MPQ handles
+    // when it goes out of scope at the end of DoImport — nothing to do
+    // here.
 
     ILOG << "\n==== Import Complete ====\n";
     ILOG.flush();

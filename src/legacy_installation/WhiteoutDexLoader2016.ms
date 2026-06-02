@@ -111,7 +111,6 @@
 		wdxLoad (post + "ObjectSettings.ms")
 		wdxLoad (post + "SequenceManager.ms")
 		wdxLoad (post + "SkinChanger.ms")
-		wdxLoad (post + "TeamColorManager.ms")
 		wdxLoad (post + "VisibilityKeyer.ms")
 		wdxLoad (post + "Wc3AttachPointCallback.ms")
 		wdxLoad (post + "Wc3RefEventCallback.ms")

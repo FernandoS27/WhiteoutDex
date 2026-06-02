@@ -386,7 +386,33 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
     // Max scrubs Max's timeline; the renderer's per-frame ticker must skip
     // its own evaluation pass and let EvalFromMax push the cursor instead.
     g_actor->role = whiteout::flakes::renderer::model::ActorRole::External;
-    g_renderer->Settings().SetRenderMode(g_actor->PreferredRenderMode());
+
+    // Pick HD vs SD by walking the adapter's freshly extracted materials.
+    // `Actor::PreferredRenderMode()` would be the natural choice, but the
+    // ModelLoader::AddModel path (used by SpawnUnitFromSource) never
+    // populates `Actor::sourceTemplate`, so that accessor short-circuits to
+    // SD regardless of the layers' actual shaderIds. Reading the IR
+    // materials from the adapter directly mirrors what the renderer's
+    // PreferredRenderMode would do if sourceTemplate were wired:
+    // any layer with shaderId != 0 (HD = 1, SD_on_HD = 2, Crystal = 24)
+    // promotes the whole model to HD.
+    {
+        using whiteout::flakes::RenderMode;
+        RenderMode mode = RenderMode::SD;
+        for (const auto& md : g_adapter->GetMaterials()) {
+            for (const auto& ld : md.layers) {
+                if (ld.shaderId != 0) {
+                    mode = RenderMode::HD;
+                    break;
+                }
+            }
+            if (mode == RenderMode::HD)
+                break;
+        }
+        g_renderer->Settings().SetRenderMode(mode);
+        mprintf(_M("WhiteoutDex: render mode = %s\n"),
+                mode == RenderMode::HD ? _M("HD") : _M("SD"));
+    }
     g_renderWindow->SetFocusActor(g_actor->handle);
 
     // Push the actor's discovered sequences into the preview window so the

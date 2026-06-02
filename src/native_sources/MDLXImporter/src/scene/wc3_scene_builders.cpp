@@ -566,7 +566,7 @@ void Wc3Particle1Builder::buildParticles(
 
 void Wc3Particle2Builder::buildParticles(
     const ir::IRModel& irModel, std::vector<INode*>& nodeMap,
-    const std::wstring& modelDir, void* cascStorage, void* mpqStorage,
+    const std::wstring& modelDir, TextureResolver* resolver,
     Interface* gi, core::ExportErrorReporter& reporter)
 {
     for (const auto& irPE : irModel.particleEmitters) {
@@ -722,8 +722,10 @@ void Wc3Particle2Builder::buildParticles(
                 // consistent with what the plugin produces when the user
                 // picks a texture by hand. Re-export (if/when implemented)
                 // will need to convert this back to a relative MDX path.
-                std::wstring fullDiskPath = mdx_scene::resolveTexturePathFull(
-                    modelDir, toWstr(mdxPath), cascStorage, mpqStorage);
+                std::wstring relW = toWstr(mdxPath);
+                std::wstring fullDiskPath = resolver
+                    ? resolver->Resolve(relW)
+                    : mdx_scene::resolveTexturePath(modelDir, relW);
 
                 auto* pathPtr   = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PATH_IID));
                 auto* prefixPtr = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PREFIX_IID));

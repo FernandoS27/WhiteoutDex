@@ -778,10 +778,6 @@ struct WhiteoutDexLocalizationStruct
 			#("skin_remove_zero_weights_ptitle", "Remove Zero Weights"),
 			#("skin_remove_zero_weights_ptitle_2", "Remove Zero Weights"),
 			-- ===== TEAM COLOR MANAGER =====
-			#("tc_team_color_manager_title", "Team Color Manager"),
-			#("tc_team_color_settings_grp", "Team Color Settings"),
-			#("tc_change_color_btn", "Change Color"),
-			#("tc_team_color_spn", "Team Color:"),
 			-- ===== WC3 MATERIAL =====
 			#("mat_material_parameters_title", "Material parameters"),
 			#("mat_animation_generation_title", "Animation generation"),
@@ -2819,10 +2815,6 @@ struct WhiteoutDexLocalizationStruct
 			#("skin_remove_zero_weights_ptitle", "移除零权重"),
 			#("skin_remove_zero_weights_ptitle_2", "移除零权重"),
 			-- ===== TEAM COLOR MANAGER =====
-			#("tc_team_color_manager_title", "队伍颜色管理器"),
-			#("tc_team_color_settings_grp", "队伍颜色设置"),
-			#("tc_change_color_btn", "更改颜色"),
-			#("tc_team_color_spn", "队伍颜色:"),
 			-- ===== WC3 MATERIAL =====
 			#("mat_material_parameters_title", "材质参数"),
 			#("mat_animation_generation_title", "动画生成"),
@@ -4861,10 +4853,6 @@ struct WhiteoutDexLocalizationStruct
 			#("skin_remove_zero_weights_ptitle", "Nullgewichte entfernen"),
 			#("skin_remove_zero_weights_ptitle_2", "Nullgewichte entfernen"),
 			-- ===== TEAM COLOR MANAGER =====
-			#("tc_team_color_manager_title", "Teamfarben-Manager"),
-			#("tc_team_color_settings_grp", "Teamfarben-Einstellungen"),
-			#("tc_change_color_btn", "Farbe ändern"),
-			#("tc_team_color_spn", "Teamfarbe:"),
 			-- ===== WC3 MATERIAL =====
 			#("mat_material_parameters_title", "Materialparameter"),
 			#("mat_animation_generation_title", "Animationserzeugung"),
@@ -6901,10 +6889,6 @@ struct WhiteoutDexLocalizationStruct
 			#("skin_remove_zero_weights_ptitle", "Удалить нулевые веса"),
 			#("skin_remove_zero_weights_ptitle_2", "Удалить нулевые веса"),
 			-- ===== TEAM COLOR MANAGER =====
-			#("tc_team_color_manager_title", "Менеджер цветов команды"),
-			#("tc_team_color_settings_grp", "Настройки цветов команды"),
-			#("tc_change_color_btn", "Изменить цвет"),
-			#("tc_team_color_spn", "Цвет команды:"),
 			-- ===== WC3 MATERIAL =====
 			#("mat_material_parameters_title", "Параметры материала"),
 			#("mat_animation_generation_title", "Генерация анимации"),
@@ -8942,10 +8926,6 @@ struct WhiteoutDexLocalizationStruct
 			#("skin_remove_zero_weights_ptitle", "ゼロウェイト削除"),
 			#("skin_remove_zero_weights_ptitle_2", "ゼロウェイト削除"),
 			-- ===== TEAM COLOR MANAGER =====
-			#("tc_team_color_manager_title", "チームカラーマネージャー"),
-			#("tc_team_color_settings_grp", "チームカラー設定"),
-			#("tc_change_color_btn", "色を変更"),
-			#("tc_team_color_spn", "チームカラー:"),
 			-- ===== WC3 MATERIAL =====
 			#("mat_material_parameters_title", "マテリアルパラメータ"),
 			#("mat_animation_generation_title", "アニメーション生成"),
@@ -10983,10 +10963,6 @@ struct WhiteoutDexLocalizationStruct
 			#("skin_remove_zero_weights_ptitle", "제로 웨이트 제거"),
 			#("skin_remove_zero_weights_ptitle_2", "제로 웨이트 제거"),
 			-- ===== TEAM COLOR MANAGER =====
-			#("tc_team_color_manager_title", "팀 색상 매니저"),
-			#("tc_team_color_settings_grp", "팀 색상 설정"),
-			#("tc_change_color_btn", "색상 변경"),
-			#("tc_team_color_spn", "팀 색상:"),
 			-- ===== WC3 MATERIAL =====
 			#("mat_material_parameters_title", "머티리얼 파라미터"),
 			#("mat_animation_generation_title", "애니메이션 생성"),

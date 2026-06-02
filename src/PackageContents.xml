@@ -65,7 +65,6 @@
         <ComponentEntry ModuleName="./post_startup_scripts/ObjectSettings.ms" />
         <ComponentEntry ModuleName="./post_startup_scripts/SequenceManager.ms" />
         <ComponentEntry ModuleName="./post_startup_scripts/SkinChanger.ms" />
-        <ComponentEntry ModuleName="./post_startup_scripts/TeamColorManager.ms" />
         <ComponentEntry ModuleName="./post_startup_scripts/VisibilityKeyer.ms" />
         <ComponentEntry ModuleName="./post_startup_scripts/Wc3AttachPointCallback.ms" />
         <ComponentEntry ModuleName="./post_startup_scripts/Wc3RefEventCallback.ms" />

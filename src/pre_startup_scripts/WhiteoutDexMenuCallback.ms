@@ -65,7 +65,6 @@ struct WhiteoutDexMenuStruct
         m.CreateAction "64B61757-30BC-45F4-8365-12EEAB81C876" 647394 "WhiteoutDex_GridDummy`WhiteoutDex Toolkit"
         m.CreateAction "EAB58810-F22E-4C1E-8EDB-526362EA648C" 647394 "WhiteoutDex_ObjectTools`WhiteoutDex Toolkit"
         m.CreateAction "358E059E-5EFA-451B-92FB-969E46B8CB3C" 647394 "WhiteoutDex_ObjectSettings`WhiteoutDex Toolkit"
-        m.CreateAction "929FB127-8137-442F-9020-1F33A233A1E6" 647394 "WhiteoutDex_TeamColor`WhiteoutDex Toolkit"
         m.CreateAction "A72E1B34-5D89-4F01-B6C3-E8D7F2A19045" 647394 "WhiteoutDex_KeyframeOptimizer`WhiteoutDex Toolkit"
         m.CreateAction "B83F2C45-6E9A-4012-C7D4-F9E803B2A156" 647394 "WhiteoutDex_CellShadeCreator`WhiteoutDex Toolkit"
         m.CreateSeparator "D4944802-FCEE-4586-BBF2-E839D506F4CC"

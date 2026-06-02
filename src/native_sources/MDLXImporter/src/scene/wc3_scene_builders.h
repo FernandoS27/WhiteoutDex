@@ -8,6 +8,10 @@
 #include <vector>
 
 namespace mdx_scene {
+class TextureResolver;
+}
+
+namespace mdx_scene {
 
 /// Build Wc3_Light scripted plugin helpers from IR light data.
 class Wc3LightBuilder {
@@ -48,8 +52,7 @@ public:
         const ir::IRModel& irModel,
         std::vector<INode*>& nodeMap,
         const std::wstring& modelDir,
-        void* cascStorage,
-        void* mpqStorage,
+        TextureResolver* resolver,
         Interface* gi,
         core::ExportErrorReporter& reporter);
 };

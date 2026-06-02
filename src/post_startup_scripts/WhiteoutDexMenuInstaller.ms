@@ -80,7 +80,6 @@ fn InstallWhiteoutDexMenu =
 		addAction whiteoutDexMain "WhiteoutDex_GridDummy"
 		addAction whiteoutDexMain "WhiteoutDex_ObjectTools"
 		addAction whiteoutDexMain "WhiteoutDex_ObjectSettings"
-		addAction whiteoutDexMain "WhiteoutDex_TeamColor"
 		addAction whiteoutDexMain "WhiteoutDex_KeyframeOptimizer"
 		addAction whiteoutDexMain "WhiteoutDex_CellShadeCreator"
 		addSep whiteoutDexMain

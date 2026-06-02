@@ -127,18 +127,6 @@ macroScript WhiteoutDex_NodeManager
 	)
 )
 
-macroScript WhiteoutDex_TeamColor
-	category:"WhiteoutDex Toolkit"
-	toolTip:"Team Color Manager"
-	buttonText:"Team Color Manager"
-(
-	on execute do
-	(
-		try (destroyDialog ::WdxTeamColorManager.mainRollout) catch()
-		try (createDialog ::WdxTeamColorManager.mainRollout width:440 height:82) catch()
-	)
-)
-
 macroScript WhiteoutDex_ObjectSettings
 	category:"WhiteoutDex Toolkit"
 	toolTip:"Object Settings"
@@ -171,7 +159,7 @@ macroScript WhiteoutDex_KeyframeOptimizer
 	(
 		try
 		(
-			local scriptPath = (::WhiteoutDexInstallRoot) + "\\post_startup_scripts\\Keyframe_Optimizer.ms"
+			local scriptPath = (::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\Keyframe_Optimizer.ms"
 			fileIn scriptPath
 		) catch (messageBox ("KFO error:\n" + (getCurrentException())))
 	)
@@ -186,7 +174,7 @@ macroScript WhiteoutDex_CellShadeCreator
 	(
 		try
 		(
-			local scriptPath = (::WhiteoutDexInstallRoot) + "\\post_startup_scripts\\Cell_Shade_Creator.ms"
+			local scriptPath = (::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\Cell_Shade_Creator.ms"
 			fileIn scriptPath
 		) catch (messageBox ("Cell Shade error:\n" + (getCurrentException())))
 	)

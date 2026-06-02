@@ -13,7 +13,7 @@
 try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
 try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
 
-rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
+rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:560
 (
     local iniFile = (::WhiteoutDexInstallRoot) + "\\WhiteoutDex_Settings.ini"
     local iconPath = (::WhiteoutDexInstallRoot) + "\\whiteoutdex_icons\\"
@@ -58,16 +58,15 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
     dotNetControl btn_griddummy   "System.Windows.Forms.Button" pos:[xOfs, yStart + 9*step+4] width:btnW height:btnSize
     dotNetControl btn_objtools    "System.Windows.Forms.Button" pos:[xOfs, yStart + 10*step+4] width:btnW height:btnSize
     dotNetControl btn_nodemgr     "System.Windows.Forms.Button" pos:[xOfs, yStart + 11*step+4] width:btnW height:btnSize
-    dotNetControl btn_teamcolor   "System.Windows.Forms.Button" pos:[xOfs, yStart + 12*step+4] width:btnW height:btnSize
-    dotNetControl btn_kfoptimizer "System.Windows.Forms.Button" pos:[xOfs, yStart + 13*step+4] width:btnW height:btnSize
-    dotNetControl btn_cellshade   "System.Windows.Forms.Button" pos:[xOfs, yStart + 14*step+4] width:btnW height:btnSize
-    dotNetControl btn_objsettings "System.Windows.Forms.Button" pos:[xOfs, yStart + 15*step+4] width:btnW height:btnSize
-    dotNetControl btn_renderer    "System.Windows.Forms.Button" pos:[xOfs, yStart + 16*step+4] width:btnW height:btnSize
-    
-    dotNetControl lbl_sep2 "System.Windows.Forms.Panel" pos:[5, yStart + 17*step+4] width:28 height:1
-    
-    dotNetControl btn_settings    "System.Windows.Forms.Button" pos:[xOfs, yStart + 17*step+8] width:btnW height:btnSize
-    dotNetControl btn_about       "System.Windows.Forms.Button" pos:[xOfs, yStart + 18*step+8] width:btnW height:btnSize
+    dotNetControl btn_kfoptimizer "System.Windows.Forms.Button" pos:[xOfs, yStart + 12*step+4] width:btnW height:btnSize
+    dotNetControl btn_cellshade   "System.Windows.Forms.Button" pos:[xOfs, yStart + 13*step+4] width:btnW height:btnSize
+    dotNetControl btn_objsettings "System.Windows.Forms.Button" pos:[xOfs, yStart + 14*step+4] width:btnW height:btnSize
+    dotNetControl btn_renderer    "System.Windows.Forms.Button" pos:[xOfs, yStart + 15*step+4] width:btnW height:btnSize
+
+    dotNetControl lbl_sep2 "System.Windows.Forms.Panel" pos:[5, yStart + 16*step+4] width:28 height:1
+
+    dotNetControl btn_settings    "System.Windows.Forms.Button" pos:[xOfs, yStart + 16*step+8] width:btnW height:btnSize
+    dotNetControl btn_about       "System.Windows.Forms.Button" pos:[xOfs, yStart + 17*step+8] width:btnW height:btnSize
     
     -- ── Setup button appearance ──
     fn setupButton btn iconFileName fallbackText tooltipText =
@@ -114,7 +113,6 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
     on btn_griddummy Click do   macros.run "WhiteoutDex Toolkit" "WhiteoutDex_GridDummy"
     on btn_objtools Click do    macros.run "WhiteoutDex Toolkit" "WhiteoutDex_ObjectTools"
     on btn_nodemgr Click do     macros.run "WhiteoutDex Toolkit" "WhiteoutDex_NodeManager"
-    on btn_teamcolor Click do   macros.run "WhiteoutDex Toolkit" "WhiteoutDex_TeamColor"
     on btn_kfoptimizer Click do macros.run "WhiteoutDex Toolkit" "WhiteoutDex_KeyframeOptimizer"
     on btn_cellshade Click do   macros.run "WhiteoutDex Toolkit" "WhiteoutDex_CellShadeCreator"
     on btn_objsettings Click do macros.run "WhiteoutDex Toolkit" "WhiteoutDex_ObjectSettings"
@@ -141,7 +139,6 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
         setupButton btn_griddummy   "wdx_sb_griddummy.png"   "GRD" "Grid & Dummy Creator"
         setupButton btn_objtools    "wdx_sb_objtools.png"    "OBJ" "Object Tools"
         setupButton btn_nodemgr     "wdx_sb_nodemanager.png" "NOD" "Node Manager"
-        setupButton btn_teamcolor   "wdx_sb_teamcolor.png"    "TC"  "Team Color Manager"
         setupButton btn_kfoptimizer "wdx_sb_kfoptimizer.png"  "KFO" "Keyframe Optimizer"
         setupButton btn_cellshade   "wdx_sb_cellshade.png"    "CSH" "Cell Shade Creator"
         setupButton btn_objsettings "wdx_sb_objsettings.png"  "SET" "Object Settings"
