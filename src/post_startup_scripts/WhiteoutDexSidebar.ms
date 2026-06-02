@@ -145,9 +145,9 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
         setupButton btn_kfoptimizer "wdx_sb_kfoptimizer.png"  "KFO" "Keyframe Optimizer"
         setupButton btn_cellshade   "wdx_sb_cellshade.png"    "CSH" "Cell Shade Creator"
         setupButton btn_objsettings "wdx_sb_objsettings.png"  "SET" "Object Settings"
-        setupButton btn_renderer   "wdx_sb_renderer.png"   "RND" "Wc3 Renderer"
-        setupButton btn_settings    "wdx_sb_settings.png"    "CFG" "WhiteoutDex Settings"
-        setupButton btn_about       "wdx_sb_about.png"       "(?)" "About WhiteoutDex"
+        setupButton btn_renderer    "wdx_sb_renderer.png"     "RND" "Wc3 Renderer"
+        setupButton btn_settings    "wdx_sb_settings.png"     "CFG" "WhiteoutDex Settings"
+        setupButton btn_about       "wdx_sb_about.png"        "(?)" "About WhiteoutDex"
         
         -- Dock
         local dockState = getINISetting iniFile "Sidebar" "DockState"

@@ -99,18 +99,19 @@ ExternalProject_Add(common_libs
 #   stage/scripts/{macroscripts,…}/*
 #   stage/PackageContents.xml
 # ----------------------------------------------------------------------------
-# Statically link the MSVC runtime into every native plug-in so the .dlx /
-# .dle / .dlo / .bmi binaries have no dependency on VCRUNTIME140*.dll or
-# MSVCP140.dll. Without this WhiteoutFlakes.dlx fails to load on machines
-# (notably Max 2016 hosts) that don't have the VC++ 2015-2022 redistributable
-# installed — Max swallows the load failure silently, leaving ndxStart
-# undefined and the user staring at "Renderer could not be started." with no
-# hint. CMP0091 NEW makes CMAKE_MSVC_RUNTIME_LIBRARY actually take effect on
-# CMake 3.15+; we propagate it through ExternalProject_Add CMAKE_ARGS so the
-# subprojects (and every transitive FetchContent / add_subdirectory) honour it.
+# Link the MSVC runtime dynamically (/MD) — the *known-good* WhiteoutDex
+# binary that loads on Max 2016 was built this way and pulls in MSVCP140 /
+# VCRUNTIME140 / VCRUNTIME140_1 / api-ms-win-crt-*. Switching to /MT
+# (static runtime) caused Max 2016 to silently reject every .dlx — even a
+# 118 KB probe with no transitive dependencies — while a /MD build of the
+# same code loads cleanly. The originally claimed motivation for /MT
+# ("clean Max 2016 hosts lack the VC++ Redist") was a misdiagnosis of an
+# unrelated PackageContents.xml schema bug that we have since fixed.
+# Distribute the VC++ 2015-2022 Redistributable alongside the installer
+# if shipping to machines that haven't picked it up via Windows Update.
 set(_wdx_static_runtime_args
     -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
-    "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL$<$<CONFIG:Debug>:Debug>"
     # Disable Tracy + WebGPU in the per-version sub-builds: both run
     # aggressive C++ global-init machinery (Tracy spins worker threads and
     # opens a TCP listener; Dawn registers backends from static
@@ -424,28 +425,31 @@ else()
         Wc3Particles1.dlo
         Wc3Particles2.dlo
         Wc3Ribbon.dlo
-        WhiteoutFlakes.dlx
+        WhiteoutDexRenderer.dlx
     )
 
     list(SORT WDX_MAX_VERSIONS COMPARE NATURAL)
     list(GET WDX_MAX_VERSIONS 0 WDX_SERIES_MIN)
     list(GET WDX_MAX_VERSIONS -1 WDX_SERIES_MAX)
 
-    # Per-(version × plugin) <Components> blocks. Each one carries SeriesMin
-    # = SeriesMax = year because the binary itself is version-specific.
+    # One <Components> block per Max version, listing every plug-in for
+    # that year inside it. This matches the original working PackageContents
+    # schema; emitting one <Components> block per (version × plugin) caused
+    # Max 2016 to silently drop every entry past the first identical-spec
+    # block, leaving every .dlx / .bmi / .dle / .dlo unloaded.
     set(WDX_NATIVE_PLUGINS_COMPONENTS "")
     foreach(v IN LISTS WDX_MAX_VERSIONS)
         string(APPEND WDX_NATIVE_PLUGINS_COMPONENTS
-            "    <!-- Max ${v} -->\n")
+            "    <!-- Native Plugins Max ${v} -->\n"
+            "    <Components Description=\"plugins parts\">\n"
+            "        <RuntimeRequirements OS=\"Win64\" Platform=\"3ds Max\""
+            " SeriesMin=\"${v}\" SeriesMax=\"${v}\" />\n")
         foreach(_p IN LISTS _wdx_native_plugin_files)
             string(APPEND WDX_NATIVE_PLUGINS_COMPONENTS
-                "    <Components Description=\"plugins parts\">\n"
-                "        <RuntimeRequirements OS=\"Win64\" Platform=\"3ds Max\""
-                " SeriesMin=\"${v}\" SeriesMax=\"${v}\" />\n"
-                "        <ComponentEntry ModuleName=\"./native plugins/Max${v}/${_p}\" />\n"
-                "    </Components>\n")
+                "        <ComponentEntry ModuleName=\"./native plugins/Max${v}/${_p}\" />\n")
         endforeach()
-        string(APPEND WDX_NATIVE_PLUGINS_COMPONENTS "\n")
+        string(APPEND WDX_NATIVE_PLUGINS_COMPONENTS
+            "    </Components>\n\n")
     endforeach()
 
     # MaxScript ComponentEntry lists, derived from CONFIGURE_DEPENDS globs so

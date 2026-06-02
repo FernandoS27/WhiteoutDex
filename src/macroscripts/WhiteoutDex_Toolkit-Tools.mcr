@@ -158,7 +158,7 @@ macroScript WhiteoutDex_Renderer
 (
 	on execute do
 	(
-		try (ndxStart()) catch (messageBox "Renderer could not be started.")
+		try (WhiteoutFlakesStart()) catch (messageBox "Renderer could not be started.")
 	)
 )
 

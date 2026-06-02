@@ -8,9 +8,9 @@
 // actor's AnimationDriver holds a shared_ptr to it.
 //
 // MaxScript API:
-//   ndxStart()             → Extract scene + open renderer + start sync
-//   ndxStop()              → Stop everything + close window
-//   ndxRefreshMaterials()  → Re-read material properties (hot reload)
+//   WhiteoutFlakesStart()             → Extract scene + open renderer + start sync
+//   WhiteoutFlakesStop()              → Stop everything + close window
+//   WhiteoutFlakesRefreshMaterials()  → Re-read material properties (hot reload)
 // ============================================================================
 
 #include "cubeb_sound_emitter.h"
@@ -31,11 +31,17 @@
 #include <memory>
 
 #include <max.h>
-#include <maxscript/foundation/numbers.h>
-#include <maxscript/macros/define_instantiation_functions.h>
+#include <maxversion.h>
 #include <maxscript/maxscript.h>
 #include <maxscript/util/listener.h>
-#include <maxversion.h>
+#include <maxscript/foundation/numbers.h>
+// MUST be the LAST maxscript header in the file. Other maxscript headers
+// transitively pull in define_implementations.h which redefines
+// def_visible_primitive to a no-op, so this include must land last to
+// restore the GLOBAL-instantiation form of the macro. Otherwise our
+// `Primitive WhiteoutFlakesStart_pf(...)` line silently expands to
+// nothing and MaxScript never sees the primitive.
+#include <maxscript/macros/define_instantiation_functions.h>
 
 using namespace whiteout::flakes;
 
@@ -52,7 +58,7 @@ static HINSTANCE g_hInstance = nullptr;
 static DWORD g_lastTimeChangedTick = 0;
 
 // Convert Max time (TimeValue ticks) to milliseconds. Returns 0 if Max
-// reports a missing tick rate (rare; tested ndxStart paths).
+// reports a missing tick rate (rare; tested WhiteoutFlakesStart paths).
 static i32 MaxTimeToMs(TimeValue t) {
     i32 tpf = GetTicksPerFrame(), fps = GetFrameRate();
     return (tpf > 0 && fps > 0) ? (i32)((f32)t / (f32)tpf * 1000.0f / (f32)fps) : 0;
@@ -74,7 +80,7 @@ static void EvalFromMax(i32 timeMs) {
 // ============================================================================
 // TimeChange callback — Max scrubs the timeline; we re-evaluate the actor.
 // ============================================================================
-class NdxTimeCallback : public TimeChangeCallback {
+class WhiteoutFlakesTimeCallback : public TimeChangeCallback {
 public:
     void TimeChanged(TimeValue t) override {
         if (!g_running || !g_renderer || !g_actor)
@@ -86,7 +92,7 @@ public:
     }
 };
 
-static NdxTimeCallback* g_timeCallback = nullptr;
+static WhiteoutFlakesTimeCallback* g_timeCallback = nullptr;
 
 // ============================================================================
 // Material polling timer — detects property changes even without timeline scrub
@@ -120,7 +126,7 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
 // ============================================================================
 // Helpers
 // ============================================================================
-static void NdxCleanup() {
+static void WhiteoutFlakesCleanup() {
     if (g_materialTimerId) {
         KillTimer(nullptr, g_materialTimerId);
         g_materialTimerId = 0;
@@ -162,59 +168,72 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_hInstance = hInst;
         DisableThreadLibraryCalls(hInst);
-    }
-    if (reason == DLL_PROCESS_DETACH) {
-        NdxCleanup();
+    } else if (reason == DLL_PROCESS_DETACH) {
+        WhiteoutFlakesCleanup();
     }
     return TRUE;
 }
 
 // ============================================================================
 // Max Plugin Descriptor
+//
+// Matches the pre-imgui working pattern exactly: Create returns nullptr.
+// The MaxScript primitives below are registered at static-init time via
+// def_visible_primitive; they don't need a GUP instance to be live.
 // ============================================================================
-class WhiteoutDexExtractorClassDesc : public ClassDesc2 {
+class WhiteoutFlakesPluginClassDesc : public ClassDesc2 {
 public:
-    i32 IsPublic() override {
+    int IsPublic() override {
         return FALSE;
     }
     void* Create(BOOL) override {
         return nullptr;
     }
     const MCHAR* ClassName() override {
-        return _M("WhiteoutDexExtractor");
+        return _M("WhiteoutFlakesRenderer");
     }
 #if MAX_PRODUCT_YEAR_NUMBER >= 2022
     const MCHAR* NonLocalizedClassName() override {
-        return _M("WhiteoutDexExtractor");
+        return _M("WhiteoutFlakesRenderer");
     }
 #endif
     SClass_ID SuperClassID() override {
         return GUP_CLASS_ID;
     }
+    // Class_ID matches the pre-imgui WhiteoutDex-native-rendering plug-in
+    // (NDEX EXTR in ASCII). That ID is known to load cleanly on Max 2016
+    // -> 2027; switching to a freshly generated ID coincided with Max 2016
+    // silently rejecting the .dlx, so restore the known-good ID to remove
+    // that variable from the load-failure investigation.
     Class_ID ClassID() override {
         return Class_ID(0x4e444558, 0x45585452);
     }
     const MCHAR* Category() override {
-        return _M("WhiteoutDex");
+        return _M("WhiteoutFlakes");
     }
     const MCHAR* InternalName() override {
-        return _M("WhiteoutDexExtractor");
+        return _M("WhiteoutFlakesRenderer");
     }
     HINSTANCE HInstance() override {
         return g_hInstance;
     }
 };
 
-static WhiteoutDexExtractorClassDesc g_classDesc;
+static WhiteoutFlakesPluginClassDesc g_classDesc;
 
+// Exports match the pre-imgui working pattern exactly: just the 4 required
+// Max SDK callbacks. No LibInitialize / LibShutdown / CanAutoDefer — the
+// working old plug-in didn't export those either and Max 2016 loaded it
+// fine. Adding them seems to actually have caused Max to silently reject
+// the plug-in after LibVersion in the new build.
 extern "C" {
 __declspec(dllexport) const MCHAR* LibDescription() {
-    return _M("WhiteoutDex All-in-One Preview");
+    return _M("WhiteoutFlakes Renderer");
 }
-__declspec(dllexport) i32 LibNumberClasses() {
+__declspec(dllexport) int LibNumberClasses() {
     return 1;
 }
-__declspec(dllexport) ClassDesc* LibClassDesc(i32 i) {
+__declspec(dllexport) ClassDesc* LibClassDesc(int i) {
     return (i == 0) ? &g_classDesc : nullptr;
 }
 __declspec(dllexport) ULONG LibVersion() {
@@ -223,17 +242,18 @@ __declspec(dllexport) ULONG LibVersion() {
 }
 
 // ============================================================================
-// ndxStart() — collect scene via adapter, load into renderer
+// WhiteoutFlakesStart() — collect scene via adapter, load into renderer
 // Returns extraction time in ms, or -1 on error
 // ============================================================================
 
-def_visible_primitive(ndxStart, "ndxStart");
-Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
-    check_arg_count(ndxStart, 0, count);
+def_visible_primitive(WhiteoutFlakesStart, "WhiteoutFlakesStart");
+Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
+    check_arg_count(WhiteoutFlakesStart, 0, count);
     auto start = std::chrono::high_resolution_clock::now();
+    (void)arg_list;
 
     if (g_running)
-        NdxCleanup();
+        WhiteoutFlakesCleanup();
 
     // Host owns SceneManager + RenderService + RenderWindow.
     g_scene = new whiteout::flakes::renderer::SceneManager();
@@ -247,25 +267,37 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
     // was originally shipped with in this repo.
     g_renderer->Settings().SetDefaultBackend(whiteout::flakes::gfx::GfxApi::D3D11);
 
-    // Resolve the renderer's content root to the directory containing this
-    // .dlx — that's where the installer drops `shaders/` (BLS bundles needed
-    // by ndxStart's pipeline init). When loaded into Max,
-    // GetModuleFileName(NULL) would return Max's own exe path, which is
-    // where the engine would *otherwise* look for shaders.
+    // Point the renderer's disk file resolver at the directory containing
+    // this .dlx — that's where the installer drops `shaders/` (BLS bundles
+    // RenderPipeline::InitDevice loads via the content provider).
+    //
+    // `SetInstallPath` only configures the CASC/MPQ storage roots; it does
+    // NOT set the file resolver's basePath. We need `SetBasePath` for the
+    // disk fallback that ReadFile uses for non-archive paths like
+    // `shaders/vs/hd.bls`. Without it, basePath_ stays empty, every BLS
+    // ReadFile resolves to nothing, RenderPipeline::InitBlsShaders returns
+    // false, and InitDevice fails before the renderer even tries to draw.
     {
         wchar_t buf[MAX_PATH] = {};
         if (GetModuleFileNameW(g_hInstance, buf, MAX_PATH) > 0) {
-            std::filesystem::path dlxPath(buf);
+            std::filesystem::path dlxDir = std::filesystem::path(buf).parent_path();
             // SetInstallPath takes std::string (native narrow encoding);
             // path::string() returns that. u8string() would give std::u8string
             // and fail to bind under C++20.
-            g_scene->GetContentProvider().SetInstallPath(
-                dlxPath.parent_path().string());
+            g_scene->GetContentProvider().SetInstallPath(dlxDir.string());
+            g_scene->GetContentProvider().SetBasePath(dlxDir);
         }
     }
 
     g_renderWindow = new whiteout::flakes::RenderWindow(*g_renderer);
-    if (!g_renderWindow->Open(800, 600)) {
+    // Open() defaults to D3D12 — Settings().SetDefaultBackend() above only
+    // affects Settings::DefaultBackend() and isn't plumbed through to
+    // RenderWindow::ThreadFunc, which passes its `api` arg verbatim into
+    // RenderPipeline::InitDevice. D3D12 first-frame init has been observed
+    // to fail inside the Max 2016 host process, so we pin D3D11 explicitly
+    // here. D3D11 is the renderer's previous default and matches what the
+    // pre-imgui WhiteoutDex binary shipped with.
+    if (!g_renderWindow->Open(800, 600, whiteout::flakes::gfx::GfxApi::D3D11)) {
         mprintf(_M("WhiteoutDex: ERROR - Could not open renderer window\n"));
         delete g_renderWindow;
         g_renderWindow = nullptr;
@@ -348,7 +380,7 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
     g_actor = g_renderer->Loader().SpawnUnitFromSource(g_adapter);
     if (!g_actor) {
         mprintf(_M("WhiteoutDex: ERROR - SpawnUnitFromSource failed\n"));
-        NdxCleanup();
+        WhiteoutFlakesCleanup();
         return Integer::intern(-1);
     }
     // Max scrubs Max's timeline; the renderer's per-frame ticker must skip
@@ -379,7 +411,7 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
     EvalFromMax(MaxTimeToMs(ip->GetTime()));
 
     // Hook Max's timeline + start the polling timer for hot-reload.
-    g_timeCallback = new NdxTimeCallback();
+    g_timeCallback = new WhiteoutFlakesTimeCallback();
     ip->RegisterTimeChangeCallback(g_timeCallback);
     g_running = true;
     g_materialTimerId = SetTimer(nullptr, 0, 500, MaterialPollTimer);
@@ -397,24 +429,24 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
 }
 
 // ============================================================================
-// ndxStop() — stop sync, close renderer
+// WhiteoutFlakesStop() — stop sync, close renderer
 // ============================================================================
 
-def_visible_primitive(ndxStop, "ndxStop");
-Value* ndxStop_cf(Value** /*arg_list*/, i32 count) {
-    check_arg_count(ndxStop, 0, count);
-    NdxCleanup();
+def_visible_primitive(WhiteoutFlakesStop, "WhiteoutFlakesStop");
+Value* WhiteoutFlakesStop_cf(Value** /*arg_list*/, i32 count) {
+    check_arg_count(WhiteoutFlakesStop, 0, count);
+    WhiteoutFlakesCleanup();
     return &ok;
 }
 
 // ============================================================================
-// ndxRefreshMaterials() — force re-read of material properties
+// WhiteoutFlakesRefreshMaterials() — force re-read of material properties
 // Returns true if anything changed
 // ============================================================================
 
-def_visible_primitive(ndxRefreshMaterials, "ndxRefreshMaterials");
-Value* ndxRefreshMaterials_cf(Value** /*arg_list*/, i32 count) {
-    check_arg_count(ndxRefreshMaterials, 0, count);
+def_visible_primitive(WhiteoutFlakesRefreshMaterials, "WhiteoutFlakesRefreshMaterials");
+Value* WhiteoutFlakesRefreshMaterials_cf(Value** /*arg_list*/, i32 count) {
+    check_arg_count(WhiteoutFlakesRefreshMaterials, 0, count);
     if (!g_running || !g_renderer || !g_adapter || !g_actor)
         return &false_value;
 

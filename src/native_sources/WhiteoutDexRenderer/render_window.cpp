@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -90,28 +91,66 @@ bool RenderWindow::IsOpen() const {
 }
 
 void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
+    // DIAGNOSTIC: capture stderr to %TEMP%\WhiteoutDex_render.log so BLS
+    // shader cache, gfx backend, and render pipeline init errors all land
+    // in one place. The submodule logs failures via fprintf(stderr, ...);
+    // by default Max swallows those, hiding the real cause of InitDevice
+    // returning false. We freopen stderr at the top of the render thread
+    // and leave it pointed at the log for this thread's lifetime — close
+    // it on thread exit so the file handle releases.
+    {
+        wchar_t tmp[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, tmp);
+        std::wstring stderrPath = std::wstring(tmp) + L"WhiteoutDex_render.log";
+        FILE* dummy = nullptr;
+        _wfreopen_s(&dummy, stderrPath.c_str(), L"a", stderr);
+        std::fprintf(stderr, "\r\n==== render-thread session ====\r\n");
+        std::fflush(stderr);
+    }
+
+    auto diag = [](const char* msg) {
+        wchar_t tmp[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, tmp);
+        std::wstring logPath = std::wstring(tmp) + L"WhiteoutDex_render.log";
+        HANDLE h = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return;
+        DWORD written = 0;
+        WriteFile(h, msg, (DWORD)strlen(msg), &written, nullptr);
+        WriteFile(h, "\r\n", 2, &written, nullptr);
+        CloseHandle(h);
+    };
+    diag("---- ThreadFunc start ----");
+
     if (!Create(w, h)) {
+        diag("FAIL: Create(w,h) returned false");
         running_ = false;
         return;
     }
+    diag("OK: Create");
 
     InitImGui();
+    diag("OK: InitImGui");
 
     if (!service_.Pipeline().InitDevice(api)) {
+        diag("FAIL: Pipeline().InitDevice(api) returned false");
         ShutdownImGui();
         running_ = false;
         Destroy();
         return;
     }
+    diag("OK: InitDevice");
 
     targetId_ = service_.Pipeline().CreateSwapChainTarget(static_cast<void*>(hwnd_), w, h);
     if (targetId_ == 0) {
+        diag("FAIL: CreateSwapChainTarget returned 0");
         service_.Pipeline().Shutdown();
         ShutdownImGui();
         running_ = false;
         Destroy();
         return;
     }
+    diag("OK: CreateSwapChainTarget");
     service_.Pipeline().SetPrimaryTarget(targetId_);
     lastFbW_ = w;
     lastFbH_ = h;

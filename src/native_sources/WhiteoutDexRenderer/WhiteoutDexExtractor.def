@@ -1,4 +1,9 @@
-LIBRARY WhiteoutDexExtractor
+; Matches the pre-imgui working pattern exactly: 4 exports, nothing more.
+; The working old plug-in (downloaded reference at WhiteoutDex-native-rendering)
+; loaded on Max 2016 with this exact export set. Adding LibInitialize /
+; LibShutdown / CanAutoDefer caused Max to silently reject the plug-in after
+; LibVersion in the new build.
+LIBRARY WhiteoutDexRenderer
 EXPORTS
     LibDescription
     LibNumberClasses

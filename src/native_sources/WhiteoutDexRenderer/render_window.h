@@ -4,7 +4,7 @@
 // RenderWindow — Win32-hosted preview window for the 3ds Max plugin.
 //
 // Wraps a single Win32 HWND owned by a render thread (so Max's UI thread
-// stays free for ndxStart / TimeChanged / material polling). The whole
+// stays free for WhiteoutFlakesStart / TimeChanged / material polling). The whole
 // client area is the swap chain target; the toolbar / menus / settings
 // panel are Dear ImGui widgets drawn by the engine's BLS-backed ImGui
 // adapter, with input forwarded through imgui_impl_win32.

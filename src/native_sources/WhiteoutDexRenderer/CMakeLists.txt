@@ -39,7 +39,7 @@ set_target_properties(WhiteoutDexRenderer PROPERTIES
     CXX_STANDARD          20
     CXX_STANDARD_REQUIRED ON
     SUFFIX                ".dlx"
-    OUTPUT_NAME           "WhiteoutFlakes"
+    OUTPUT_NAME           "WhiteoutDexRenderer"
 )
 
 target_include_directories(WhiteoutDexRenderer PRIVATE
