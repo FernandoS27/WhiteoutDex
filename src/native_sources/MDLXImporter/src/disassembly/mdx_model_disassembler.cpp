@@ -200,10 +200,14 @@ ir::IRModel MdxModelDisassembler::disassemble(
     mapCameras(mdxModel, ir);
     mapCollisionShapes(mdxModel, ir);
 
-    if (version_ >= 1200) {
+    // Corn / FaceFX are nominally v1200 features, but Reforged exporters
+    // sometimes ship CORN / FAFX chunks while keeping the header version
+    // below 1200. Map whenever the parser actually found the chunks — the
+    // mappers no-op if the source vector is empty.
+    if (!mdxModel.cornEmitters.empty())
         mapCornEmitters(mdxModel, ir);
+    if (version_ >= 1200)
         mapFaceEffects(mdxModel, ir);
-    }
 
     mapNodeAnimations(mdxModel, ir);
 
@@ -1115,6 +1119,13 @@ void MdxModelDisassembler::mapCornEmitters(const wdx::Model& mdx, ir::IRModel& i
         irPE.speed = corn.speed;
         irPE.replaceableId = static_cast<int32_t>(corn.replaceableId);
         irPE.modelPath = corn.path;
+        irPE.animVisibilityGuide = corn.animVisibilityGuide;
+        // Carry the Popcorn-relevant Node flag bits straight through. The
+        // builder reads them as `flagUnshaded` (0x8000), `flagUnfogged`
+        // (0x20000) and `flagScaling` (0x40000) on the Wc3Popcorn helper.
+        // DontInherit / billboard bits stay on irNode.nodeFlags as usual.
+        irPE.flags =
+            static_cast<uint32_t>(corn.node.flags) & 0x68000u; // 0x8000 | 0x20000 | 0x40000
 
         if (corn.emissionRateTracks.isUsed)
             irPE.emissionRateTrackIndex = storeFloatTrack(ir,

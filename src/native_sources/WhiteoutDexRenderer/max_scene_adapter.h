@@ -44,6 +44,8 @@
 #define WC3VERTEXMOD_CLASS_ID Class_ID(0x7A1B2C07, 0x3D4E5F07)
 #define WC3PARTICLES1_CLASS_ID Class_ID(0x12E4F5A6, 0x3B7C8D9E)
 #define WC3ATTACHPOINT_CLASS_ID Class_ID(0x1136ac20, 0x6f9cfeb7)
+// BlizzPopcorn — Reforged v1200 PopcornFX corn emitter scripted plugin.
+#define BLIZZ_POPCORN_CLASS_ID Class_ID(0x7A1B2C09, 0x3D4E5F09)
 
 // Cross-DLL interface IDs
 #define WC3P2_TEXTURE_PATH_IID 0x7B3C8D10
@@ -120,6 +122,21 @@ struct PE1EmitterInfo {
     std::string modelPath;
 };
 
+struct PopcornEmitterInfo {
+    i32 emitterId = 0;
+    INode* node = nullptr;
+    // Static `.pkb` / `.pkfx` path and animation-state gate string read from
+    // the BlizzPopcorn paramblock at collect time. Per-frame multipliers
+    // (lifeSpan / emissionRate / speed / color) flow through Evaluate's
+    // FrameState::cornStates each tick.
+    std::string pkbPath;
+    std::string animVisibilityGuide;
+    i32 replaceableId = 0;
+    // Mirrors MDX NodeFlag 0x40000 (PopcornScaling). When true, particle
+    // scale follows the host actor's uniform world scale.
+    bool cornEffectsScaling = false;
+};
+
 struct AttachmentInfo {
     i32 index = 0;
     INode* node = nullptr;
@@ -170,6 +187,7 @@ public:
     std::vector<renderer::model::CollisionShapeData> GetCollisionShapes() override;
     std::vector<renderer::model::AttachmentConfig> GetAttachmentConfigs() override;
     std::vector<renderer::model::PE1EmitterConfig> GetPE1Configs() override;
+    std::vector<renderer::model::CornEmitterInit> GetCornEmitterInits() override;
 
     // ---- IAnimationSource ----
     renderer::model::FrameState Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTimeMs,
@@ -193,8 +211,9 @@ private:
     // Collection phases
     void CollectGeometry();
     void CollectMaterials();
-    i32 LoadTexture(const std::wstring& filePath, i32 replaceableId);
-    i32 LoadTextureFromContentProvider(const std::string& archivePath, i32 replaceableId);
+    i32 LoadTexture(const std::wstring& filePath, i32 replaceableId, u32 wrapFlags = 0x3);
+    i32 LoadTextureFromContentProvider(const std::string& archivePath, i32 replaceableId,
+                                       u32 wrapFlags = 0x3);
     // SD TEAMCOLOR / TEAMGLOW slots are reserved through LoadTexture(L"", 1|2)
     // — pixel bake lives in ReplaceableTextureManager renderer-side.
     void CollectBones();
@@ -215,6 +234,11 @@ private:
     static i32 PB2IntOr(Animatable* a, const wchar_t* name, TimeValue t, i32 def = 0);
     static f32 PB2FloatOr(Animatable* a, const wchar_t* name, TimeValue t, f32 def = 0.0f);
     static bool PB2BoolOr(Animatable* a, const wchar_t* name, TimeValue t, bool def = false);
+    // Lift WrapWidth/WrapHeight from a texmap into the renderer's wrapFlags
+    // (bit0 = repeat U, bit1 = repeat V). Wc3Bitmap exposes them as the PB2
+    // booleans `wrapU` / `wrapV`; a plain BitmapTex carries them on its
+    // StdUVGen as U_WRAP / V_WRAP. Defaults to 0x3 when unknown.
+    static u32 ReadWrapFlagsFromTexmap(Texmap* tex);
     static Object* GetBaseObject(INode* node);
     static Modifier* FindSkinModifier(INode* node);
     static Modifier* FindModifierByClassID(INode* node, Class_ID cid);
@@ -236,7 +260,7 @@ private:
     // it so the entry shows the original texture path, not the "__TC__" key).
     i32 RegisterTexture(const std::wstring& key, i32 replaceableId, std::vector<u8>&& pixels,
                         i32 width, i32 height, const std::wstring& displayPath = L"",
-                        std::string sharedKey = {});
+                        std::string sharedKey = {}, u32 wrapFlags = 0x3);
     // HD-sentinel allocation removed — adapters set teamColorMapId to
     // kHdTeamColorActive directly when the HD layer flags its team-colour
     // slot as live-driven. The HD draw binds the per-actor HD swatch at t4.
@@ -254,6 +278,7 @@ private:
         std::vector<u8> rgba;
         i32 width, height;
         std::string sharedKey;
+        u32 wrapFlags = 0x3; // bit0 = WrapWidth (repeat U), bit1 = WrapHeight (repeat V)
     };
     std::vector<LoadedTexture> loadedTextures_;
 
@@ -264,6 +289,7 @@ private:
     std::vector<TextureEntry> texEntries_;
     std::vector<ParticleEmitterInfo> particles_;
     std::vector<PE1EmitterInfo> pe1Emitters_;
+    std::vector<PopcornEmitterInfo> popcornEmitters_;
     std::vector<AttachmentInfo> attachments_;
     std::vector<RibbonEmitterInfo> ribbons_;
     std::vector<CollisionShapeInfo> collisions_;

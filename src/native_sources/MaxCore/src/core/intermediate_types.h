@@ -284,6 +284,12 @@ struct ParticleEmitter {
 
     std::string modelPath;
 
+    // CornEmitter (variant == 3) only: sequence-name visibility gate the
+    // PopcornFX runtime evaluates against the currently playing animation
+    // (e.g. "Stand=on,Death=off"). Empty for PE1 / PE2. Round-tripped
+    // verbatim — the renderer parses it, the exporter just writes it back.
+    std::string animVisibilityGuide;
+
     int32_t textureIndex = -1;
     int32_t replaceableId = 0;
     uint32_t flags = 0;

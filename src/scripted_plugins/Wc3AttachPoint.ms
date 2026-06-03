@@ -137,7 +137,9 @@ category:"Warcraft III Plugins"
 				(
 					local cascIni = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
 					local cascDir = getINISetting cascIni "CASC" "W3Path"
-					if cascDir != "" and doesFileExist (cascDir + "\\.build.info") then
+					-- WhiteoutLib opens CASC by directory; no .build.info
+					-- marker is needed for the native backend to work.
+					if cascDir != "" and doesFileExist cascDir then
 						browserAvailable = true
 				)
 			) catch()

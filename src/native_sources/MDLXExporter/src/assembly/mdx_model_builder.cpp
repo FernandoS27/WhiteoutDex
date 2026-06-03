@@ -732,6 +732,14 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             corn.speed = irPe.speed;
             corn.replaceableId = irPe.replaceableId;
             corn.path = irPe.modelPath;
+            corn.animVisibilityGuide = irPe.animVisibilityGuide;
+            // OR-merge popcorn render flags (Unshaded / PopcornUnfogged /
+            // PopcornScaling) onto the node bits. buildNode left those
+            // bits at 0 — DontInherit / billboard etc. already live on
+            // irNode.nodeFlags. Mask to just the three popcorn bits so we
+            // can't accidentally smuggle PE2-only flags through.
+            corn.node.flags = static_cast<whiteout::mdx::Node::NodeFlag>(
+                static_cast<uint32_t>(corn.node.flags) | (irPe.flags & 0x68000u));
             corn.color = Vector3f(irPe.segmentColors[0].r, irPe.segmentColors[0].g,
                                   irPe.segmentColors[0].b);
             corn.alpha = irPe.segmentAlpha[0];

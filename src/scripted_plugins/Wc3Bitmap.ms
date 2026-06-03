@@ -104,14 +104,15 @@ extends:Bitmaptexture replaceUI:true version:10
 			try ( chkWrapU.checked = delegate.coords.U_Tile ) catch()
 			try ( chkWrapV.checked = delegate.coords.V_Tile ) catch()
 			try ( chkSphereEnv.checked = (delegate.coords.mappingType == 1) ) catch()
-			-- Enable/disable MPQ/CASC browse button
+			-- Enable/disable MPQ/CASC browse button. WhiteoutLib opens CASC
+			-- by directory and doesn't require a .build.info marker.
 			local browserOK = false
 			try (
 				if ::NeoDexMPQ != undefined and ::NeoDexMPQ.getDirectory() != "" do browserOK = true
 				if not browserOK do (
 					local cascIni = getDir #plugcfg + "\\NeoDex_Settings.ini"
 					local cascDir = getINISetting cascIni "CASC" "W3Path"
-					if cascDir != "" and doesFileExist (cascDir + "\\.build.info") do browserOK = true
+					if cascDir != "" and doesFileExist cascDir do browserOK = true
 				)
 			) catch()
 			btnBrowseMPQ.enabled = browserOK

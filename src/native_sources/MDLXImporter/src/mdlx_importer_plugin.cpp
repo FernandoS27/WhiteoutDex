@@ -2541,8 +2541,9 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         // models get the Classic MPQ dialog and only true v1200+ models
         // get the Reforged CASC dialog. mdxModel.version cannot be used
         // here because the parser auto-upgrades it to 1200.
-        bool isReforged = (opts.detectedVersion >= 1200);
-        if (!showImportDialog(hInstance, gi->GetMAXHWnd(), opts, isReforged))
+        bool isReforged = (opts.detectedVersion >= 900);
+        bool hasCornEmitters = !mdxModel.cornEmitters.empty();
+        if (!showImportDialog(hInstance, gi->GetMAXHWnd(), opts, isReforged, hasCornEmitters))
             return IMPEXP_CANCEL;
     }
 
@@ -2980,16 +2981,29 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             colBuilder.buildCollisions(irModel, nodeMap, gi, reporter);
         }
 
-        // v1200-specific
-        if (opts.detectedVersion >= 1200) {
-            if (opts.importCornEmitters) {
-                mdx_scene::Wc3PopcornBuilder cornBuilder;
-                cornBuilder.buildPopcorn(irModel, nodeMap, gi, reporter);
-            }
-            if (opts.importFaceFX) {
-                mdx_scene::Wc3FaceFxBuilder ffxBuilder;
-                ffxBuilder.buildFaceFX(irModel, nodeMap, gi, reporter);
-            }
+        // Corn / FaceFX. The MDX format started shipping CORN / FAFX chunks in
+        // v1200 (Reforged), but in practice some Reforged exporters keep the
+        // version field at 1000 / 1100 while still writing the chunks — so
+        // don't gate on detectedVersion. Run the builder whenever the chunks
+        // were actually parsed; it's a no-op when nothing matches the variant.
+        {
+            std::ostringstream ss;
+            ss << "[Popcorn-gate] importObjects=" << (opts.core.importObjects ? 1 : 0)
+               << " importCornEmitters=" << (opts.importCornEmitters ? 1 : 0)
+               << " detectedVersion=" << opts.detectedVersion
+               << " mdxModel.cornEmitters=" << mdxModel.cornEmitters.size()
+               << " irModel.particleEmitters=" << irModel.particleEmitters.size();
+            mdx_scene::PopcornDiagLog(ss.str());
+        }
+        if (opts.importCornEmitters && !mdxModel.cornEmitters.empty()) {
+            mdx_scene::Wc3PopcornBuilder cornBuilder;
+            cornBuilder.buildPopcorn(irModel, nodeMap, modelDir, resolver, gi, reporter);
+        } else {
+            mdx_scene::PopcornDiagLog("[Popcorn-gate] skipped (gate false)");
+        }
+        if (opts.importFaceFX && opts.detectedVersion >= 1200) {
+            mdx_scene::Wc3FaceFxBuilder ffxBuilder;
+            ffxBuilder.buildFaceFX(irModel, nodeMap, gi, reporter);
         }
 
         // Cameras

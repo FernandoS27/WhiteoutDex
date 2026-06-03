@@ -9,6 +9,7 @@
 #include "texture_resolver.h"
 #include "../mdlx_class_ids.h"
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <cctype>
 #include <utility>
@@ -22,6 +23,35 @@
 #include <ilayermanager.h>
 #include <modstack.h>
 #include <maxscript/maxscript.h>
+
+// ── Crash-safe diagnostic log (appended to %TEMP%\mdlx_import_debug.log) ──
+// Mirrors the MLOG helper in wc3_material_builder.cpp. Used by Wc3PopcornBuilder
+// (and the import-side gate logging) so a crash mid-import still leaves a
+// readable trail. Every line is flushed immediately.
+static std::ofstream& popcornLog() {
+    static std::ofstream s_log;
+    if (!s_log.is_open()) {
+        wchar_t tmp[MAX_PATH];
+        GetTempPathW(MAX_PATH, tmp);
+        std::wstring p(tmp);
+        p += L"mdlx_import_debug.log";
+        s_log.open(p, std::ios::app);
+    }
+    return s_log;
+}
+// One-shot helper: writes the message to the persistent log AND to the
+// MAXScript Listener (when it survives). Pass narrow UTF-8 / ASCII text;
+// caller is responsible for any pre-formatting.
+namespace mdx_scene {
+void PopcornDiagLog(const std::string& msg) {
+    popcornLog() << msg << std::endl; // std::endl flushes
+    // Best-effort Listener echo — won't survive a crash but helps when the
+    // import succeeds.
+    std::wstring w(msg.begin(), msg.end());
+    mprintf(_M("%s\n"), w.c_str());
+}
+} // namespace mdx_scene
+#define PopLog(msg) ::mdx_scene::PopcornDiagLog(msg)
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -1092,21 +1122,72 @@ void Wc3VertexColorBuilder::applyVertexColors(
 
 // ── Wc3PopcornBuilder (v1200) ───────────────────────────────
 
+namespace {
+
+// PopcornFX runtime paths in MDX are sometimes authored without an extension
+// (engine appends one at load time). The TextureResolver only triggers its
+// .pkb ↔ .pkfx alias fallback when the input ends in one of those two
+// extensions, so we have to canonicalize first. Default to .pkb (the Reforged
+// runtime payload) when no extension is present — the resolver's alias
+// fallback then picks up the .pkfx sibling if that's what's actually shipped.
+std::wstring ensurePopcornExtension(const std::wstring& path) {
+    if (path.empty()) return path;
+
+    auto lastSlash = path.find_last_of(L"/\\");
+    auto lastDot = path.find_last_of(L'.');
+    const bool hasExt = (lastDot != std::wstring::npos) &&
+                        (lastSlash == std::wstring::npos || lastDot > lastSlash);
+    if (!hasExt)
+        return path + L".pkb";
+
+    std::wstring ext = path.substr(lastDot);
+    std::wstring extLower = ext;
+    for (auto& c : extLower) c = (wchar_t)::towlower(c);
+    if (extLower == L".pkb" || extLower == L".pkfx")
+        return path;
+
+    // Some pipelines store a totally unrelated extension on the runtime path
+    // (e.g. ".xml"). Treat as missing: swap to .pkb so the resolver runs its
+    // alias probe.
+    return path.substr(0, lastDot) + L".pkb";
+}
+
+} // anonymous
+
 void Wc3PopcornBuilder::buildPopcorn(
     const ir::IRModel& irModel, std::vector<INode*>& nodeMap,
+    const std::wstring& modelDir, TextureResolver* resolver,
     Interface* gi, core::ExportErrorReporter& reporter)
 {
+    int cornCount = 0;
+    for (const auto& pe : irModel.particleEmitters)
+        if (pe.variant == 3) ++cornCount;
+    {
+        std::ostringstream ss;
+        ss << "[Popcorn] buildPopcorn: " << cornCount << " corn variants of "
+           << irModel.particleEmitters.size() << " particle emitters";
+        PopLog(ss.str());
+    }
+
+    int created = 0, failed = 0;
     for (const auto& irPE : irModel.particleEmitters) {
-        if (irPE.variant != 3) continue; // Corn emitter variant
+        if (irPE.variant != 3) continue;
 
         Object* obj = static_cast<Object*>(
             gi->CreateInstance(HELPER_CLASS_ID, mdx_ids::BLIZZ_POPCORN));
         if (!obj) {
+            ++failed;
             reporter.warning(L"BlizzPopcorn scripted plugin not found — skipping corn emitter");
             continue;
         }
 
         INode* node = gi->CreateObjectNode(obj);
+        if (!node) {
+            ++failed;
+            obj->DeleteThis();
+            continue;
+        }
+
         MSTR name;
         if (irPE.nodeIndex >= 0 && irPE.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
             name.printf(_T("%hs"), irModel.nodes[irPE.nodeIndex].name.c_str());
@@ -1122,19 +1203,64 @@ void Wc3PopcornBuilder::buildPopcorn(
         auto* ref = dynamic_cast<ReferenceTarget*>(obj);
         if (ref) {
             if (!irPE.modelPath.empty()) {
-                auto wpath = toWstr(irPE.modelPath);
-                pbSetString(ref, L"popcornPath", wpath.c_str());
+                // Canonicalize extension + try to resolve through
+                // disk → CASC → MPQ. When the file actually exists on disk
+                // (resolver hit), store the absolute path so 3ds Max users
+                // can see / edit it. When the resolver only returned a
+                // best-guess (CASC/MPQ closed or miss), keep the canonical
+                // relative path instead so the renderer's content provider
+                // can try its own CASC/MPQ at draw time and round-tripping
+                // back through the exporter writes the original game path
+                // rather than a local disk leak.
+                const std::wstring rel = ensurePopcornExtension(toWstr(irPE.modelPath));
+                std::wstring resolved;
+                try {
+                    resolved = resolver
+                        ? resolver->Resolve(rel)
+                        : mdx_scene::resolveTexturePath(modelDir, rel);
+                } catch (const std::exception& e) {
+                    PopLog(std::string("[Popcorn] resolver threw: ") + e.what());
+                } catch (...) {
+                    PopLog("[Popcorn] resolver threw (non-std)");
+                }
+                std::error_code ec;
+                const bool resolvedExists =
+                    !resolved.empty() && std::filesystem::exists(resolved, ec);
+                const std::wstring& finalPath = resolvedExists ? resolved : rel;
+                pbSetString(ref, L"popcornPath", finalPath.c_str());
             }
             pbSetFloat(ref, L"LifeSpan", irPE.lifespan);
             pbSetFloat(ref, L"EmissionRate", irPE.emissionRate);
             pbSetFloat(ref, L"Speed", irPE.speed);
-            pbSetFloat(ref, L"alpha", 1.0f); // Default alpha; animated via colorTrack
-            pbSetInt(ref, L"ReplaceableId", irPE.replaceableId);
+            pbSetFloat(ref, L"alpha", 1.0f);
+            // Replaceable texture and team color are not used by Popcorn
+            // emitters at runtime — intentionally not written here.
+            // Render flags: NodeFlag bits 0x8000 Unshaded / 0x20000
+            // PopcornUnfogged / 0x40000 PopcornScaling. The disassembler
+            // pre-masked them onto irPE.flags, so we just project to bools.
+            pbSetBool(ref, L"flagUnshaded", (irPE.flags & 0x8000u)  ? TRUE : FALSE);
+            pbSetBool(ref, L"flagUnfogged", (irPE.flags & 0x20000u) ? TRUE : FALSE);
+            pbSetBool(ref, L"flagScaling",  (irPE.flags & 0x40000u) ? TRUE : FALSE);
+            // PopcornFX anim-visibility gate ("Stand=on,Death=off" etc.). The
+            // scripted plugin keeps the raw string in `rawFlags`; flagAlways /
+            // flagBirth / ... booleans are derived from it inside MaxScript.
+            // The renderer reads rawFlags directly so the engine convention
+            // ("listed names enable against implicit default-off") survives
+            // the round trip without us having to parse the string here.
+            if (!irPE.animVisibilityGuide.empty()) {
+                const std::wstring guideW = toWstr(irPE.animVisibilityGuide);
+                pbSetString(ref, L"rawFlags", guideW.c_str());
+            }
         }
 
-        // Register for animation key insertion
         if (irPE.nodeIndex >= 0 && irPE.nodeIndex < static_cast<int32_t>(nodeMap.size()))
             nodeMap[irPE.nodeIndex] = node;
+        ++created;
+    }
+    {
+        std::ostringstream ss;
+        ss << "[Popcorn] buildPopcorn done: created=" << created << " failed=" << failed;
+        PopLog(ss.str());
     }
 }
 

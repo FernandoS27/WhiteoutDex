@@ -13,6 +13,7 @@
 struct DialogState {
     MdlxImportOptions* opts;
     bool isReforged;
+    bool hasCornEmitters; // CORN chunks present in the source MDX
     bool confirmed;       // true if user clicked Import
     bool onControlSet;    // re-entrancy guard for cascading checkbox updates
 };
@@ -130,11 +131,12 @@ void saveDialogSettingsToINI(HWND hDlg, bool isReforged) {
     else if (getCheck(hDlg, IDC_RDO_ALL))            preset = 6;
     writeI(L"FastSettings", preset);
 
-    // Reforged objects
-    if (isReforged) {
+    // Reforged objects. Same visibility gating as dialogToOptions — only
+    // persist the value the user actually saw.
+    if (IsWindowVisible(GetDlgItem(hDlg, IDC_CHK_CORN_EMITTERS)))
         writeB(L"ImportCornEmitters", getCheck(hDlg, IDC_CHK_CORN_EMITTERS));
+    if (isReforged)
         writeB(L"ImportFaceFX", getCheck(hDlg, IDC_CHK_FACEFX));
-    }
 }
 
 // ── Populate options struct from dialog state ──────────────
@@ -191,11 +193,14 @@ void dialogToOptions(HWND hDlg, MdlxImportOptions& opts, bool isReforged) {
     // "Search Textures" checkbox is kept for future use but currently a no-op.
     (void)IDC_CHK_SEARCH_TEXTURES;
 
-    // Reforged objects
-    if (isReforged) {
+    // Reforged objects. The Corn Emitters checkbox is honored whenever it
+    // was actually visible (i.e. the file has corn data OR header is v1200);
+    // otherwise leave the default-true alone so legacy paths still import
+    // any stray CORN chunks. FaceFX stays Reforged-only.
+    if (IsWindowVisible(GetDlgItem(hDlg, IDC_CHK_CORN_EMITTERS)))
         opts.importCornEmitters = getCheck(hDlg, IDC_CHK_CORN_EMITTERS);
+    if (isReforged)
         opts.importFaceFX = getCheck(hDlg, IDC_CHK_FACEFX);
-    }
 }
 
 // ── Populate dialog controls from options struct ───────────
@@ -414,8 +419,12 @@ void onFastSettingsChanged(HWND hDlg, DialogState* ds) {
 
 // ── v1200 control visibility ───────────────────────────────
 
-void setupReforgedVisibility(HWND hDlg, bool isReforged) {
-    showCtrl(hDlg, IDC_CHK_CORN_EMITTERS, isReforged);
+void setupReforgedVisibility(HWND hDlg, bool isReforged, bool hasCornEmitters) {
+    // Corn Emitters checkbox is shown when EITHER the header is Reforged OR
+    // the file actually has CORN chunks (legacy header + Reforged chunks does
+    // happen in the wild). FaceFX stays Reforged-only.
+    const bool showCorn = isReforged || hasCornEmitters;
+    showCtrl(hDlg, IDC_CHK_CORN_EMITTERS, showCorn);
     showCtrl(hDlg, IDC_CHK_FACEFX, isReforged);
 
     // Update group title for texture search
@@ -428,13 +437,13 @@ void setupReforgedVisibility(HWND hDlg, bool isReforged) {
         SetDlgItemTextW(hDlg, IDC_CHK_SEARCH_TEXTURES, L"Search MPQ Archives for Textures");
     }
 
-    // If v800, shrink the Objects group slightly (hide the corn/facefx row)
-    if (!isReforged) {
+    // If neither the corn nor FaceFX row is shown, shrink the Objects group
+    // slightly so the empty row doesn't leave a gap.
+    if (!showCorn && !isReforged) {
         HWND hGrp = GetDlgItem(hDlg, IDC_GRP_OBJECTS);
         RECT rc;
         GetWindowRect(hGrp, &rc);
         MapWindowPoints(HWND_DESKTOP, hDlg, reinterpret_cast<LPPOINT>(&rc), 2);
-        // Shrink height by ~12 DLU (approx 20 pixels for the hidden row)
         MoveWindow(hGrp, rc.left, rc.top, rc.right - rc.left, (rc.bottom - rc.top) - 20, TRUE);
     }
 }
@@ -457,8 +466,8 @@ static INT_PTR CALLBACK ImportDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPA
         // Populate controls from current options
         optionsToDialog(hDlg, *ds->opts, ds->isReforged);
 
-        // Show/hide reforged-specific controls
-        setupReforgedVisibility(hDlg, ds->isReforged);
+        // Show/hide reforged-specific controls.
+        setupReforgedVisibility(hDlg, ds->isReforged, ds->hasCornEmitters);
 
         // Apply enable/disable cascading
         applyEnabledState(hDlg);
@@ -552,11 +561,13 @@ static INT_PTR CALLBACK ImportDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPA
 // ============================================================================
 
 bool showImportDialog(HINSTANCE hInstance, HWND hWndParent,
-                      MdlxImportOptions& opts, bool isReforged)
+                      MdlxImportOptions& opts, bool isReforged,
+                      bool hasCornEmitters)
 {
     DialogState ds{};
     ds.opts = &opts;
     ds.isReforged = isReforged;
+    ds.hasCornEmitters = hasCornEmitters;
     ds.confirmed = false;
     ds.onControlSet = true;
 

@@ -191,7 +191,7 @@ void convertExportTextures(ir::IRModel& model,
         return;
     }
 
-    const bool isReforged = (opts.version >= 1200);
+    const bool isReforged = (opts.version >= 900);
     const char* targetExt = isReforged ? ".dds" : ".blp";
 
     fs::path mdxDir = fs::path(widen(mdxOutputPath)).parent_path();

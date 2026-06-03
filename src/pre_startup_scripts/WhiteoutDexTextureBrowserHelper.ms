@@ -461,13 +461,12 @@ struct WhiteoutDexCASCHelperStruct
             format "WhiteoutDex CASC: Warcraft III path not set.\n"
             return false
         )
-        
-        if not (doesFileExist (this.w3path + "\\.build.info")) then
-        (
-            format "WhiteoutDex CASC: No .build.info found at '%'\n" this.w3path
-            return false
-        )
-        
+
+        -- Note: WhiteoutLib's CASC backend doesn't require .build.info to be
+        -- present at the W3Path. We used to gate here on its existence, which
+        -- printed a misleading warning for installs where the backend works
+        -- just fine. Trust the native open call to report success/failure.
+
         if this.ndx == undefined then
         (
             format "WhiteoutDex CASC: Native DLL not loaded.\n"

@@ -107,7 +107,10 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				cascPathEdt.text = dir
 				local iniPath = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
 				setINISetting iniPath "CASC" "W3Path" dir
-				if doesFileExist (dir + "\\.build.info") then
+				-- WhiteoutLib opens CASC by directory; .build.info is not a
+				-- required marker. Show "found" whenever the directory itself
+				-- exists; the native open log surfaces any real failure.
+				if doesFileExist dir then
 					cascStatusLbl.text = ::WdxL.t "set_casc_status_found"
 				else
 					cascStatusLbl.text = ::WdxL.t "set_casc_status_not_found"
@@ -205,13 +208,14 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				mpqBrowseBtn.tooltip = ::WdxL.t "set_mpq_browse_tip"
 				mpqClearBtn.text = ::WdxL.t "set_mpq_clear_btn"
 			)
-			-- CASC path
+			-- CASC path. WhiteoutLib doesn't require .build.info — check
+			-- only that the configured directory still exists.
 			local cascIni = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
 			local cascDir = getINISetting cascIni "CASC" "W3Path"
 			if cascDir != "" then
 			(
 				cascPathEdt.text = cascDir
-				if doesFileExist (cascDir + "\\.build.info") then
+				if doesFileExist cascDir then
 					cascStatusLbl.text = ::WdxL.t "set_casc_status_found"
 				else
 					cascStatusLbl.text = ::WdxL.t "set_casc_status_not_found"

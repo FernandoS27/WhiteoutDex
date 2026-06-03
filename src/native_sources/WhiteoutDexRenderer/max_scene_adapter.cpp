@@ -257,6 +257,40 @@ bool MaxSceneAdapter::PB2Texmap(Animatable* anim, const wchar_t* name, Texmap*& 
     });
 }
 
+u32 MaxSceneAdapter::ReadWrapFlagsFromTexmap(Texmap* tex) {
+    if (!tex)
+        return 0x3;
+
+    // Wc3Bitmap: the WrapWidth / WrapHeight authored values live as PB2
+    // booleans named `wrapU` / `wrapV` (see Wc3Bitmap.ms). Prefer these over
+    // the delegate's UVGen bits because the scripted plugin treats them as
+    // the source of truth.
+    if (tex->ClassID() == WC3_BITMAP_CLASS_ID) {
+        u32 flags = 0;
+        if (PB2BoolOr(tex, L"wrapU", 0, false))
+            flags |= 0x1;
+        if (PB2BoolOr(tex, L"wrapV", 0, false))
+            flags |= 0x2;
+        return flags;
+    }
+
+    // Plain BitmapTex (and the Wc3Bitmap delegate, in case we miss the PB2
+    // params for some legacy node): pull U_WRAP / V_WRAP off the StdUVGen.
+    if (BitmapTex* bmt = UnwrapBitmapTex(tex)) {
+        if (StdUVGen* uv = bmt->GetUVGen()) {
+            const int tiling = uv->GetTextureTiling();
+            u32 flags = 0;
+            if (tiling & U_WRAP)
+                flags |= 0x1;
+            if (tiling & V_WRAP)
+                flags |= 0x2;
+            return flags;
+        }
+    }
+
+    return 0x3;
+}
+
 Object* MaxSceneAdapter::GetBaseObject(INode* node) {
     if (!node)
         return nullptr;
@@ -364,12 +398,13 @@ static bool ReadFileBytesFromDisk(const std::wstring& filePath, std::vector<u8>&
 
 i32 MaxSceneAdapter::RegisterTexture(const std::wstring& key, i32 replaceableId,
                                      std::vector<u8>&& pixels, i32 width, i32 height,
-                                     const std::wstring& displayPath, std::string sharedKey) {
+                                     const std::wstring& displayPath, std::string sharedKey,
+                                     u32 wrapFlags) {
     i32 id = nextTexId_++;
     if (!key.empty())
         texPathToId_[key] = id;
-    loadedTextures_.push_back(
-        {id, replaceableId, std::move(pixels), width, height, std::move(sharedKey)});
+    loadedTextures_.push_back({id, replaceableId, std::move(pixels), width, height,
+                               std::move(sharedKey), wrapFlags});
     TextureEntry te;
     te.textureId = id;
     te.replaceableId = replaceableId;
@@ -463,7 +498,7 @@ void MaxSceneAdapter::UpdateMaterialSnapshots() {
 // (forward or back slashes are both accepted by the provider).
 // Returns a texture id on success, or -1 if not found.
 i32 MaxSceneAdapter::LoadTextureFromContentProvider(const std::string& archivePath,
-                                                    i32 replaceableId) {
+                                                    i32 replaceableId, u32 wrapFlags) {
     if (archivePath.empty())
         return -1;
 
@@ -480,7 +515,7 @@ i32 MaxSceneAdapter::LoadTextureFromContentProvider(const std::string& archivePa
         mprintf(_M("    [ContentProvider] cache hit, skipping decode: '%S'\n"),
                 archivePath.c_str());
         return RegisterTexture(wkey, replaceableId, {}, 0, 0, /*displayPath*/ L"",
-                               std::move(sharedKey));
+                               std::move(sharedKey), wrapFlags);
     }
 
     std::string foundExt;
@@ -499,7 +534,7 @@ i32 MaxSceneAdapter::LoadTextureFromContentProvider(const std::string& archivePa
         return -1;
     }
     i32 id = RegisterTexture(wkey, replaceableId, std::move(pixels), w, h,
-                             /*displayPath*/ L"", std::move(sharedKey));
+                             /*displayPath*/ L"", std::move(sharedKey), wrapFlags);
     mprintf(_M("    [ContentProvider] loaded '%S' as texId=%d (%dx%d)\n"), archivePath.c_str(), id,
             w, h);
     return id;
@@ -571,7 +606,8 @@ static std::optional<MaxBitmapRGBA> LoadMaxBitmapRGBA(
     return out;
 }
 
-i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId) {
+i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId,
+                                 u32 wrapFlags) {
     if (replaceableId != 0) {
         // Replaceable slot: adapter only declares the id. The renderer-
         // side ReplaceableTextureManager::RegisterModelSlot path bakes
@@ -585,7 +621,7 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
         auto it = texPathToId_.find(key);
         if (it != texPathToId_.end())
             return it->second;
-        return RegisterTexture(key, replaceableId, {}, 0, 0);
+        return RegisterTexture(key, replaceableId, {}, 0, 0, L"", {}, wrapFlags);
     }
 
     if (filePath.empty())
@@ -602,7 +638,8 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
     std::string sharedKey = NormalizeTextureKey(filePath);
     if (IsTextureCached(sharedKey)) {
         mprintf(_M("  Texture: [cache hit, skipping decode] '%s'\n"), filePath.c_str());
-        return RegisterTexture(filePath, 0, {}, 0, 0, /*displayPath*/ L"", std::move(sharedKey));
+        return RegisterTexture(filePath, 0, {}, 0, 0, /*displayPath*/ L"", std::move(sharedKey),
+                               wrapFlags);
     }
 
     // Primary path: delegate to 3ds Max's bitmap manager.
@@ -610,7 +647,7 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
     if (auto bmp = LoadMaxBitmapRGBA(filePath, L"Texture:", &sumR, &sumG, &sumB, &sumA)) {
         const i32 total = bmp->width * bmp->height;
         i32 id = RegisterTexture(filePath, 0, std::move(bmp->rgba), bmp->width, bmp->height,
-                                 /*displayPath*/ L"", sharedKey);
+                                 /*displayPath*/ L"", sharedKey, wrapFlags);
         mprintf(_M("  Texture %d: %dx%d avgRGBA=[%d,%d,%d,%d] '%s'\n"), id, bmp->width, bmp->height,
                 (i32)(sumR / total), (i32)(sumG / total), (i32)(sumB / total), (i32)(sumA / total),
                 filePath.c_str());
@@ -628,7 +665,7 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
         if (ReadFileBytesFromDisk(filePath, fileBytes, ext) &&
             DecodeToRGBA8(fileBytes, ext, pixels, pw, ph)) {
             i32 id = RegisterTexture(filePath, replaceableId, std::move(pixels), pw, ph,
-                                     /*displayPath*/ L"", sharedKey);
+                                     /*displayPath*/ L"", sharedKey, wrapFlags);
             mprintf(_M("  Texture %d: %dx%d [direct decode] '%s'\n"), id, pw, ph, filePath.c_str());
             return id;
         }
@@ -638,7 +675,7 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
     {
         std::string narrowName = std::filesystem::path(filePath).filename().string();
         mprintf(_M("  Texture: [ContentProvider fallback] '%S'\n"), narrowName.c_str());
-        i32 id = LoadTextureFromContentProvider(narrowName, replaceableId);
+        i32 id = LoadTextureFromContentProvider(narrowName, replaceableId, wrapFlags);
         if (id >= 0) {
             texPathToId_[filePath] = id; // alias the wide path to the archive id
             return id;
@@ -649,7 +686,7 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
     // file should NOT poison the dedup cache for everyone else.
     std::vector<u8> rgba;
     FillSolidRGBA(rgba, 4, 4, 255, 0, 255, 255);
-    i32 id = RegisterTexture(filePath, 0, std::move(rgba), 4, 4);
+    i32 id = RegisterTexture(filePath, 0, std::move(rgba), 4, 4, L"", {}, wrapFlags);
     mprintf(_M("  Texture %d: [missing] %s\n"), id, filePath.c_str());
     return id;
 }
@@ -682,6 +719,7 @@ void MaxSceneAdapter::CollectScene() {
     materials_.clear();
     particles_.clear();
     pe1Emitters_.clear();
+    popcornEmitters_.clear();
     attachments_.clear();
     ribbons_.clear();
     collisions_.clear();
@@ -782,10 +820,17 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     }
 
     // HD subtexture slots. Missing paths stay at -1; the renderer treats
-    // negative ids as "slot absent".
+    // negative ids as "slot absent". Wrap flags are lifted from the source
+    // texmap (Wc3Bitmap's wrapU/wrapV or plain BitmapTex's StdUVGen).
     auto loadSlot = [&](const wchar_t* paramName) -> i32 {
-        std::wstring path = ResolveBitmapPath(mtl, paramName);
-        return path.empty() ? -1 : LoadTexture(path, 0);
+        Texmap* slotTex = nullptr;
+        if (!PB2Texmap(mtl, paramName, slotTex) || !slotTex)
+            return -1;
+        BitmapTex* bmt = UnwrapBitmapTex(slotTex);
+        const MCHAR* fn = bmt ? bmt->GetMapName() : nullptr;
+        if (!fn || !fn[0])
+            return -1;
+        return LoadTexture(std::wstring(fn), 0, ReadWrapFlagsFromTexmap(slotTex));
     };
     layer.normalMapId = loadSlot(L"normalMap");
     layer.ormMapId = loadSlot(L"ormMap");
@@ -849,15 +894,16 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
         }
     }
 
+    Texmap* diffuseTexmap = nullptr;
+    PB2Texmap(mtl, L"diffuseMap", diffuseTexmap);
     const std::wstring baseTexPath = ResolveBitmapPath(mtl, L"diffuseMap");
     i32 baseTexId = -1;
     if (!baseTexPath.empty()) {
         mprintf(_M("    \x2192 diffuse path: '%s'\n"), baseTexPath.c_str());
-        baseTexId = LoadTexture(baseTexPath, 0);
+        baseTexId = LoadTexture(baseTexPath, 0, ReadWrapFlagsFromTexmap(diffuseTexmap));
     } else {
         // Diagnostic: distinguish "no texmap" from "texmap but not a BitmapTex".
-        Texmap* texmap = nullptr;
-        if (PB2Texmap(mtl, L"diffuseMap", texmap) && texmap)
+        if (diffuseTexmap)
             mprintf(
                 _M("    \x2192 diffuseMap texmap is NOT a BitmapTexture (e.g. Mix/Composite)\n"));
         else
@@ -931,10 +977,12 @@ void MaxSceneAdapter::CollectMaterials() {
         MaterialLayerInfo layer;
         layer.flags = 1;
         if (src->NumSubTexmaps() > 0) {
-            if (BitmapTex* bmt = UnwrapBitmapTex(src->GetSubTexmap(0))) {
+            Texmap* sub = src->GetSubTexmap(0);
+            if (BitmapTex* bmt = UnwrapBitmapTex(sub)) {
                 const MCHAR* fname = bmt->GetMapName();
                 if (fname && fname[0])
-                    layer.textureId = LoadTexture(std::wstring(fname), 0);
+                    layer.textureId =
+                        LoadTexture(std::wstring(fname), 0, ReadWrapFlagsFromTexmap(sub));
             }
         }
         mi.layers.push_back(layer);
@@ -1076,8 +1124,10 @@ void MaxSceneAdapter::CollectAttachments() {
 void MaxSceneAdapter::CollectParticleEmitters() {
     particles_.clear();
     pe1Emitters_.clear();
+    popcornEmitters_.clear();
     i32 emitterId = 0;
     i32 pe1EmitterId = 0;
+    i32 popcornEmitterId = 0;
     const std::wstring basePath = GetMaxFilePath();
 
     // True when the path exists on disk.
@@ -1174,6 +1224,59 @@ void MaxSceneAdapter::CollectParticleEmitters() {
             mprintf(_M("  [PE1 '%s'] model='%S'\n"), node->GetName(), pi.modelPath.c_str());
             if (!pi.modelPath.empty())
                 pe1Emitters_.push_back(pi);
+            return;
+        }
+
+        // BlizzPopcorn detection: ClassID comparison is unreliable for
+        // simpleManipulator scripted plugins (Max wraps the declared id
+        // opaquely — same reason WC3ATTACHPOINT_CLASS_ID above points at
+        // a NeoDex GUID). Match on the SuperClassID + class name, mirroring
+        // how CollectCollisionShapes picks up Wc3CollisionSphere / Box.
+        bool isPopcorn = false;
+        if (baseObj->SuperClassID() == HELPER_CLASS_ID) {
+            MSTR cnBuf;
+            const MCHAR* cn = GetObjectClassName(baseObj, cnBuf);
+            if (cn && (wcsstr(cn, L"Wc3 Popcorn") || wcsstr(cn, L"Wdx_Wc3Popcorn") ||
+                       wcsstr(cn, L"BlizzPopcorn")))
+                isPopcorn = true;
+        }
+        if (isPopcorn) {
+            // BlizzPopcorn (Reforged corn emitter). The popcornPath string is
+            // either the resolved local-disk .pkb / .pkfx the importer
+            // extracted, or — when extraction failed — the canonical relative
+            // path like "Effects\Foo.pkb"; the renderer's content provider
+            // handles both. animVisibilityGuide comes from rawFlags (engine's
+            // raw passthrough); empty means "always on".
+            PopcornEmitterInfo pi;
+            pi.emitterId = popcornEmitterId++;
+            pi.node = node;
+            // ReplaceableId / team color are no longer authored on the
+            // scripted plugin — engine doesn't use them for Popcorn. Keep
+            // the field defaulted to 0 in PopcornEmitterInfo.
+            pi.cornEffectsScaling = PB2BoolOr(baseObj, L"flagScaling", 0, false);
+
+            // TYPE_STRING isn't covered by the typed PB2 helpers — read both
+            // string params through the FindPB2Param scaffold.
+            auto readStr = [&](const wchar_t* name, std::string& out) {
+                FindPB2Param(static_cast<Animatable*>(baseObj), name,
+                             [&](IParamBlock2* pblock, ParamID pid, ParamDef&) {
+                                 const MCHAR* sv = nullptr;
+                                 Interval iv = FOREVER;
+                                 pblock->GetValue(pid, 0, sv, iv);
+                                 if (sv && sv[0]) {
+                                     std::wstring wp(sv);
+                                     out.assign(wp.begin(), wp.end());
+                                 }
+                             });
+            };
+            readStr(L"popcornPath", pi.pkbPath);
+            readStr(L"rawFlags", pi.animVisibilityGuide);
+
+            mprintf(_M("  [Popcorn '%s'] pkb='%S' replId=%d guide='%S'\n"),
+                    node->GetName(), pi.pkbPath.c_str(), pi.replaceableId,
+                    pi.animVisibilityGuide.c_str());
+            popcornEmitters_.push_back(pi);
+            return;
         }
     });
 }
@@ -1213,16 +1316,20 @@ void MaxSceneAdapter::CollectRibbonEmitters() {
 
         if (mtl) {
             std::wstring path;
+            Texmap* srcTex = nullptr;
             if (mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
+                PB2Texmap(mtl, L"diffuseMap", srcTex);
                 path = ResolveBitmapPath(mtl, L"diffuseMap");
-            } else if (BitmapTex* bmt = UnwrapBitmapTex(mtl->GetSubTexmap(ID_DI))) {
-                // Non-Wc3 material: the Std diffuse slot's BitmapTex.
-                const MCHAR* fname = bmt->GetMapName();
-                if (fname && fname[0])
-                    path = fname;
+            } else {
+                srcTex = mtl->GetSubTexmap(ID_DI);
+                if (BitmapTex* bmt = UnwrapBitmapTex(srcTex)) {
+                    const MCHAR* fname = bmt->GetMapName();
+                    if (fname && fname[0])
+                        path = fname;
+                }
             }
             if (!path.empty())
-                ri.textureId = LoadTexture(path, 0);
+                ri.textureId = LoadTexture(path, 0, ReadWrapFlagsFromTexmap(srcTex));
         }
         ribbons_.push_back(ri);
     });
@@ -1388,6 +1495,11 @@ std::vector<TextureData> MaxSceneAdapter::GetTextures() {
         td.format = ApplyTextureSrgbPolicy(gfx::Format::R8G8B8A8_UNORM, lt.sharedKey);
         td.width = lt.width;
         td.height = lt.height;
+        // Wrap-flag bits (0x1 = WrapWidth, 0x2 = WrapHeight) are lifted at
+        // LoadTexture time from the source texmap — Wc3Bitmap's wrapU/wrapV
+        // PB2 booleans or plain BitmapTex's StdUVGen U_WRAP/V_WRAP. The
+        // renderer's sampler manager picks the matching wrap variant.
+        td.wrapFlags = lt.wrapFlags;
         // sharedKey was stamped at LoadTexture time (file-backed slots
         // only — replaceable / sentinel paths leave it empty so they
         // stay per-model). When pixels are also empty the renderer treats
@@ -1744,6 +1856,51 @@ std::vector<PE1EmitterConfig> MaxSceneAdapter::GetPE1Configs() {
 }
 
 // ============================================================================
+// IModelSource::GetCornEmitterInits() — BlizzPopcorn → CornEffectsEmitter.
+// Static config only; per-frame multipliers + transform ship via
+// FrameState::cornStates in Evaluate.
+// ============================================================================
+
+std::vector<CornEmitterInit> MaxSceneAdapter::GetCornEmitterInits() {
+    std::vector<CornEmitterInit> result;
+    result.reserve(popcornEmitters_.size());
+    for (auto& pi : popcornEmitters_) {
+        Object* obj = GetBaseObject(pi.node);
+        if (!obj)
+            continue;
+        CornEmitterInit init;
+        init.emitterId = pi.emitterId;
+        init.pkbPath = pi.pkbPath;
+        init.animVisibilityGuide = pi.animVisibilityGuide;
+        init.replaceableId = pi.replaceableId;
+        mprintf(_M("  [Popcorn emitterId=%d] pkb='%hs' guide='%hs' replId=%d\n"),
+                pi.emitterId, pi.pkbPath.c_str(),
+                pi.animVisibilityGuide.c_str(), pi.replaceableId);
+        init.defaultLifeSpan = PB2FloatOr(obj, L"lifeSpan", 0, 0.0f);
+        init.defaultEmissionRate = PB2FloatOr(obj, L"emissionRate", 0, 0.0f);
+        init.defaultSpeed = PB2FloatOr(obj, L"speed", 0, 0.0f);
+
+        Vector4f col{1, 1, 1, 1};
+        Color cv;
+        if (PB2Color(obj, L"baseColor", 0, cv)) {
+            col.x = cv.r;
+            col.y = cv.g;
+            col.z = cv.b;
+        }
+        col.w = PB2FloatOr(obj, L"alpha", 0, 1.0f);
+        init.defaultColor = col;
+
+        // PopcornScaling (NodeFlag 0x40000) is now authored as the
+        // `flagScaling` bool on the Wc3Popcorn helper — read by
+        // CollectParticleEmitters and parked on PopcornEmitterInfo.
+        init.cornEffectsScaling = pi.cornEffectsScaling;
+
+        result.push_back(std::move(init));
+    }
+    return result;
+}
+
+// ============================================================================
 // IAnimationSource::Evaluate() — compute per-frame state from Max scene.
 // Max controls the timeline, so sequenceIdx + globalTimeMs + worldTransform +
 // cameraPos are unused here; only timeMs (advanced via Max's TimeValue) feeds in.
@@ -1832,8 +1989,11 @@ FrameState MaxSceneAdapter::Evaluate(i32 /*sequenceIdx*/, i32 timeMs, i32 /*glob
         ps.variation = PB2FloatOr(obj, L"Variation", t);
         ps.coneAngle = PB2FloatOr(obj, L"ConeAngle", t) * kDegToRad; // deg→rad
         ps.gravity = PB2FloatOr(obj, L"Gravity", t);
-        ps.width = PB2FloatOr(obj, L"Width", t);
-        ps.length = PB2FloatOr(obj, L"Height", t);
+        // Swap on the Blizzard lift: Wc3Particle2's "Width" / "Height" params
+        // are authored along Max's X / Y axes, which map to Blizzard's length /
+        // width respectively (Blizzard +X = forward = length, +Y = left = width).
+        ps.width = PB2FloatOr(obj, L"Height", t);
+        ps.length = PB2FloatOr(obj, L"Width", t);
         ps.visibility = pi.node->GetVisibility(t);
         ps.squirting = PB2BoolOr(obj, L"Squirt", t, false);
         state.particleStates.push_back(ps);
@@ -1886,6 +2046,64 @@ FrameState MaxSceneAdapter::Evaluate(i32 /*sequenceIdx*/, i32 timeMs, i32 /*glob
         ps.gravity = PB2FloatOr(obj, L"Gravity", t);
         ps.visibility = pi.node->GetVisibility(t);
         state.pe1States.push_back(ps);
+    }
+
+    // BlizzPopcorn (corn emitter) states. Mirrors MdxModelAdapter::Evaluate:
+    // pull a uniform scale off the matrix, normalize the rows, then apply
+    // the engine's 90° Z spawn-frame rotation. Per-frame multipliers come
+    // from the same PB2 fields used at registration so animated channels
+    // (Wc3Particles2-style scrubbing) propagate through.
+    if (!popcornEmitters_.empty()) {
+        const Matrix44f kCornFxSpawnFrameRotation =
+            Matrix44f::rotation_z(1.5707963267948966f);
+        for (auto& pi : popcornEmitters_) {
+            Object* obj = GetBaseObject(pi.node);
+            if (!obj)
+                continue;
+            FrameState::CornFrameState cs;
+            cs.emitterId = pi.emitterId;
+
+            Matrix44f baseM = PackMatrix(pi.node->GetNodeTM(t));
+            auto rowMag = [&](i32 r) {
+                const f32 x = baseM.data[r][0];
+                const f32 y = baseM.data[r][1];
+                const f32 z = baseM.data[r][2];
+                return std::sqrt(x * x + y * y + z * z);
+            };
+            const f32 sX = rowMag(0);
+            const f32 sY = rowMag(1);
+            const f32 sZ = rowMag(2);
+            cs.scale = (sX + sY + sZ) / 3.0f;
+            auto normalizeRow = [&](i32 r, f32 mag) {
+                if (mag > 1.0e-6f) {
+                    const f32 inv = 1.0f / mag;
+                    baseM.data[r][0] *= inv;
+                    baseM.data[r][1] *= inv;
+                    baseM.data[r][2] *= inv;
+                }
+            };
+            normalizeRow(0, sX);
+            normalizeRow(1, sY);
+            normalizeRow(2, sZ);
+            cs.transform = kCornFxSpawnFrameRotation * baseM;
+
+            cs.lifeSpanMul = PB2FloatOr(obj, L"lifeSpan", t, 1.0f);
+            cs.emissionRateMul = PB2FloatOr(obj, L"emissionRate", t, 1.0f);
+            cs.speedMul = PB2FloatOr(obj, L"speed", t, 1.0f);
+
+            Vector4f col{1, 1, 1, 1};
+            Color cv;
+            if (PB2Color(obj, L"baseColor", t, cv)) {
+                col.x = cv.r;
+                col.y = cv.g;
+                col.z = cv.b;
+            }
+            col.w = PB2FloatOr(obj, L"alpha", t, 1.0f);
+            cs.color = col;
+            cs.visibility = pi.node->GetVisibility(t);
+
+            state.cornStates.push_back(cs);
+        }
     }
 
     // Texture animations: one entry per unique (material, layer) with any
