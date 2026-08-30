@@ -114,6 +114,7 @@
 		wdxLoad (post + "VisibilityKeyer.ms")
 		wdxLoad (post + "Wc3AttachPointCallback.ms")
 		wdxLoad (post + "Wc3RefEventCallback.ms")
+		wdxLoad (post + "WhiteoutDexModelBrowser.ms")
 		-- SKIP: WhiteoutDexAutoUpdater.ms  (HTTP/.NET, Max 2018+ only)
 		-- SKIP: WhiteoutDexSidebar.ms      (.NET UI controls, Max 2018+ only)
 		wdxLoad (post + "WhiteoutDexMenuInstaller.ms")

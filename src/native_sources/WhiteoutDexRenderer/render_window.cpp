@@ -219,7 +219,18 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
             service_.Sound().SetListener(eye, fwd, cam.GetUp());
         }
 
+        // Parked while the asset picker owns ImGui — see SuspendForModal.
+        // Messages still pump (above) so the window stays responsive to the OS;
+        // we simply draw nothing and touch no ImGui state.
+        if (suspend_.load()) {
+            suspendedAck_.store(true);
+            Sleep(16);
+            continue;
+        }
+        suspendedAck_.store(false);
+
         // ---- ImGui frame ----
+        ImGui::SetCurrentContext(imguiCtx_);
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
         if (ui_)
@@ -327,7 +338,12 @@ void RenderWindow::Show() {
 
 void RenderWindow::InitImGui() {
     IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
+    // CreateContext RESTORES the previously-current context when there is one,
+    // so the new context is not necessarily selected on return. Keep the handle
+    // and select it ourselves — every ImGui call below, and every frame, acts
+    // on whatever SetCurrentContext last named.
+    imguiCtx_ = ImGui::CreateContext();
+    ImGui::SetCurrentContext(imguiCtx_);
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ApplyImGuiTheme();
@@ -354,9 +370,29 @@ void RenderWindow::ShutdownImGui() {
     if (!imguiInitialised_)
         return;
     ui_.reset();
+    ImGui::SetCurrentContext(imguiCtx_);
     ImGui_ImplWin32_Shutdown();
-    ImGui::DestroyContext();
+    ImGui::DestroyContext(imguiCtx_);
+    imguiCtx_ = nullptr;
     imguiInitialised_ = false;
+}
+
+// Park the render thread outside its ImGui section. Called from the Max thread
+// with the asset picker about to bring up a context of its own.
+void RenderWindow::SuspendForModal() {
+    if (!running_.load())
+        return;
+    suspend_.store(true);
+    // Bounded: a render thread wedged in a driver call must not take the Max UI
+    // thread down with it. If the wait times out we go ahead anyway — the worst
+    // case is one garbled preview frame, not a crash, because both windows
+    // select their own context before every ImGui call either way.
+    for (int i = 0; i < 400 && !suspendedAck_.load(); ++i)
+        Sleep(5);
+}
+
+void RenderWindow::Resume() {
+    suspend_.store(false);
 }
 
 bool RenderWindow::PumpMessages() {
@@ -385,12 +421,20 @@ LRESULT CALLBACK RenderWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 }
 
 LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // While parked, ImGui belongs to the picker: the backend handler and
+    // GetIO() both read the CURRENT context, and selecting ours here would pull
+    // it out from under the thread that is mid-frame with its own. No input is
+    // lost that matters — the picker is modal over this window.
+    const bool useImGui = imguiInitialised_ && !suspend_.load();
+    if (useImGui)
+        ImGui::SetCurrentContext(imguiCtx_);
+
     // Forward every message to ImGui first. Returning TRUE means ImGui
     // wants to consume it (e.g. clicked inside an ImGui window).
-    if (imguiInitialised_ && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
+    if (useImGui && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
         return 0;
 
-    const ImGuiIO* io = imguiInitialised_ ? &ImGui::GetIO() : nullptr;
+    const ImGuiIO* io = useImGui ? &ImGui::GetIO() : nullptr;
     const bool imguiWantsMouse = io && io->WantCaptureMouse;
     const bool imguiWantsKeys = io && io->WantCaptureKeyboard;
 

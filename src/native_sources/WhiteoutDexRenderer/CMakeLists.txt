@@ -7,7 +7,9 @@
 # parent CMakeLists provides MaxSDK + whiteout_lib + MAX_VERSION; we just
 # consume the WhiteoutFlakesLib + cubeb static libraries the submodule builds.
 #
-# MaxScript primitives exposed: ndxStart, ndxStop, ndxRefreshMaterials.
+# MaxScript primitives exposed: WhiteoutFlakesStart / Stop / PushSequences /
+# RefreshMaterials (dllmain.cpp) and the WdxBrowser* storage-browser family
+# (storage_browser_primitives.cpp).
 # ============================================================================
 
 set(WHITEOUTFLAKES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../external/WhiteoutFlakes")
@@ -23,6 +25,13 @@ add_library(WhiteoutDexRenderer SHARED
     max_scene_adapter.cpp
     render_window.cpp
     max_plugin_ui.cpp
+    # The asset picker: a modal window hosting WhiteoutFlakes' StorageExplorer
+    # (grid/tree CASC browser with live model thumbnails), plus the MaxScript
+    # primitives that drive it and the headless io::StorageBrowser listing API.
+    # Both live here rather than in their own plug-in because this .dlx is
+    # already the one linking WhiteoutFlakesLib.
+    asset_picker_window.cpp
+    storage_browser_primitives.cpp
     resource.rc
     WhiteoutDexExtractor.def
 
@@ -64,6 +73,10 @@ target_compile_definitions(WhiteoutDexRenderer PRIVATE
 
 target_link_libraries(WhiteoutDexRenderer PRIVATE
     WhiteoutFlakesLib   # built by add_subdirectory(WhiteoutFlakes) in the parent
+    # StorageExplorer + ThumbnailPool — the embeddable CASC browser the asset
+    # picker hosts. PUBLIC-exports tools/model_explorer and tools/common, so
+    # storage_explorer.h and imgui_theme.h both resolve through it.
+    WhiteoutFlakesExplorerLib
     MaxSDK
     cubeb               # also from the WhiteoutFlakes subdir
     core.lib
@@ -88,6 +101,14 @@ if(MSVC)
     target_compile_options(WhiteoutDexRenderer PRIVATE
         /W3 /EHsc
         /wd4100 /wd4127 /wd4244 /wd4267
+        # C4535: MaxScript's value_locals.h defines ScopedMaxScriptSEHandler,
+        # whose inline ctor calls _set_se_translator — which MSVC only honours
+        # under /EHa. Pulled in by the GC-local macros in
+        # storage_browser_primitives.cpp. We never instantiate that handler (the
+        # scripter engine sets its own translator around our _cf calls), so this
+        # is the SDK header warning about itself; switching the whole .dlx to
+        # /EHa to silence it would change its exception semantics for real code.
+        /wd4535
         /permissive
         /Zc:strictStrings-
     )

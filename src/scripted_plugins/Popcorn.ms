@@ -182,8 +182,24 @@ parameters main rollout:params2
 	(
 		label l1 "- Popcorn FX Path -" pos:[29,7] align:#center
 		edittext popcornPath pos:[8,25] height:20 width:142
-		button btnBrowse "Browse Popcorn FX File" pos:[12,53] height:24 width:138
-		button btnInfo "Popcorn FX Explanation" pos:[12,82] height:24 width:138
+		button btnBrowseArchive "Browse Game Archives" pos:[12,53] height:24 width:138 tooltip:"Pick a .pkb / .pkfx straight out of the CASC or MPQ archives"
+		button btnBrowse "Browse Popcorn FX File" pos:[12,82] height:24 width:138
+		button btnInfo "Popcorn FX Explanation" pos:[12,111] height:24 width:138
+
+		-- Archive-relative pick. This is the form MDX stores and the renderer's
+		-- content provider resolves ("effects\...\foo.pkb"); the disk path the
+		-- file dialog below produces only works while that file stays put.
+		on btnBrowseArchive pressed do
+		(
+			local picked = undefined
+			try (
+				picked = ::WhiteoutDexModelBrowser.pickEffect initial:popcornPath.text \
+					caption:"Select a Popcorn FX Effect"
+			) catch (
+				messageBox "The WhiteoutDex asset browser is not available." title:"WhiteoutDex" beep:false
+			)
+			if picked != undefined and picked != "" do popcornPath.text = picked
+		)
 
 		on btnBrowse pressed do
 		(
@@ -200,6 +216,7 @@ parameters main rollout:params2
 			(
 				params1.title = ::WdxL.t "popcorn_popcorn_fx_file_title"
 				l1.text = ::WdxL.t "popcorn__popcorn_fx_path_lbl"
+				btnBrowseArchive.text = ::WdxL.t "popcorn_browse_game_archives_btn"
 				btnBrowse.text = ::WdxL.t "popcorn_browse_popcorn_fx_file_btn"
 				btnInfo.text = ::WdxL.t "popcorn_popcorn_fx_explanation_btn"
 			)

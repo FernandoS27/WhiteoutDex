@@ -76,7 +76,7 @@ BEGIN
 END
 
 /* Model Options rollout */
-IDD_P1_ROLLOUT_MODEL DIALOG 0, 0, 110, 96
+IDD_P1_ROLLOUT_MODEL DIALOG 0, 0, 110, 113
 STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
 FONT 8, "MS Sans Serif"
 BEGIN
@@ -88,11 +88,12 @@ BEGIN
     CONTROL         "", IDC_P1_CUSTOMEDIT_PATH, "CustEdit",
                     WS_TABSTOP, 7, 44, 95, 11
 
-    PUSHBUTTON      "Import Model File", IDC_P1_BUTTON_BROWSE, 7, 60, 95, 14
+    PUSHBUTTON      "Browse Game Archives", IDC_P1_BUTTON_BROWSE_CASC, 7, 60, 95, 14
+    PUSHBUTTON      "Import Model File", IDC_P1_BUTTON_BROWSE, 7, 77, 95, 14
 
-    LTEXT           "Particle Scale:", -1, 7, 82, 50, 8
-    CONTROL         "", IDC_P1_EDIT_SCALE, "CustEdit", WS_TABSTOP, 60, 81, 34, 10
-    CONTROL         "", IDC_P1_SPIN_SCALE, "SpinnerControl", 0, 95, 81, 7, 10
+    LTEXT           "Particle Scale:", -1, 7, 99, 50, 8
+    CONTROL         "", IDC_P1_EDIT_SCALE, "CustEdit", WS_TABSTOP, 60, 98, 34, 10
+    CONTROL         "", IDC_P1_SPIN_SCALE, "SpinnerControl", 0, 95, 98, 7, 10
 END
 
 /* String table */

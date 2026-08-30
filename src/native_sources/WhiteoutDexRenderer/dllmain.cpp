@@ -209,6 +209,43 @@ static void WhiteoutFlakesCleanup() {
     mprintf(_M("WhiteoutDex: === STOPPED ===\n"));
 }
 
+// ============================================================================
+// Hooks for the asset picker (asset_picker_window.cpp), which lives in its own
+// TU but needs two things only this one owns: the preview window, and the
+// module handle.
+// ============================================================================
+#include "asset_picker_window.h"
+
+namespace whiteout::flakes {
+
+WdxPreviewPause::WdxPreviewPause() {
+    if (!g_running || !g_renderWindow || !g_renderWindow->IsOpen())
+        return;
+    // Disable before parking: once the render thread stops drawing, a window
+    // that still accepts clicks is a window that looks hung.
+    if (HWND h = g_renderWindow->GetParentHWND()) {
+        ::EnableWindow(h, FALSE);
+        hwnd_ = h;
+    }
+    g_renderWindow->SuspendForModal();
+    paused_ = true;
+}
+
+WdxPreviewPause::~WdxPreviewPause() {
+    if (hwnd_)
+        ::EnableWindow(static_cast<HWND>(hwnd_), TRUE);
+    // Re-check the window: the user can close the preview while the picker is
+    // up, and the poll timer will have run WhiteoutFlakesCleanup by now.
+    if (paused_ && g_renderWindow)
+        g_renderWindow->Resume();
+}
+
+HINSTANCE WdxPluginInstance() {
+    return g_hInstance;
+}
+
+} // namespace whiteout::flakes
+
 BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_hInstance = hInst;

@@ -355,6 +355,107 @@ void Wc3Particles1DlgProc::BrowseForModelFile(HWND hWnd)
     }
 }
 
+void Wc3Particles1DlgProc::ApplyModelPath(HWND hWnd, const MCHAR* relPath)
+{
+    if (!relPath)
+        return;
+
+    // The exporter writes prefix + file verbatim (wc3_particle1_extractor.cpp),
+    // so a picked path splits at its last separator: everything through it is
+    // the prefix, the rest is the file name.
+    std::wstring full(relPath);
+    const size_t sep = full.find_last_of(L"\\/");
+    const std::wstring prefix = (sep == std::wstring::npos) ? std::wstring()
+                                                            : full.substr(0, sep + 1);
+    const std::wstring name = (sep == std::wstring::npos) ? full : full.substr(sep + 1);
+
+    po->m_modelPrefix = prefix.c_str();
+    po->m_modelPath   = name.c_str();
+
+    ICustEdit* cePrefix = GetICustEdit(GetDlgItem(hWnd, IDC_P1_EDIT_PATH_PREFIX));
+    if (cePrefix) {
+        cePrefix->SetText(const_cast<MCHAR*>(prefix.c_str()));
+        ReleaseICustEdit(cePrefix);
+    }
+    ICustEdit* ceName = GetICustEdit(GetDlgItem(hWnd, IDC_P1_CUSTOMEDIT_PATH));
+    if (ceName) {
+        ceName->SetText(const_cast<MCHAR*>(name.c_str()));
+        ReleaseICustEdit(ceName);
+    }
+}
+
+void Wc3Particles1DlgProc::BrowseModelFromArchives(HWND hWnd)
+{
+    // The browser lives in MaxScript (WhiteoutDexModelBrowser.ms) because it
+    // drives the storage-browser primitives registered by WhiteoutDexRenderer
+    // .dlx; this .dlo links neither, so we go through the scripter. The script
+    // answers with a one-character tag so "not installed" and "user cancelled"
+    // stay distinguishable — both come back as no path otherwise.
+    //
+    //   "N"        the browser script isn't loaded
+    //   "C"        cancelled
+    //   "P<path>"  picked; <path> is the archive-relative path MDX stores
+    std::wstring initial;
+    if (po->m_modelPrefix.length() > 0)
+        initial += po->m_modelPrefix.data();
+    if (po->m_modelPath.length() > 0)
+        initial += po->m_modelPath.data();
+
+    // MaxScript string literals take backslash escapes, and asset paths are all
+    // backslash — without this "units\nightelf\..." reaches the parser as
+    // "units<newline>ightelf".
+    std::wstring initialEsc;
+    initialEsc.reserve(initial.size() * 2);
+    for (wchar_t c : initial) {
+        if (c == L'\\' || c == L'"')
+            initialEsc.push_back(L'\\');
+        initialEsc.push_back(c);
+    }
+
+    // Both locals declared up front, at the head of the outer block — the shape
+    // MaxScript wants for an executed expression (same as the event extractor's
+    // script in MDLXExporter).
+    const std::wstring script =
+        L"(local r = \"N\"; local p = undefined;"
+        L" if ::WhiteoutDexModelBrowser != undefined do ("
+        L"   p = ::WhiteoutDexModelBrowser.pickModel initial:\"" + initialEsc +
+        L"\" caption:\"Select a Particle Model\";"
+        L"   r = if p == undefined then \"C\" else (\"P\" + p)"
+        L" );"
+        L" r)";
+
+    FPValue result;
+    result.type = TYPE_VOID;
+    BOOL ok = FALSE;
+    try {
+        ok = ExecuteMAXScriptScript(
+            const_cast<wchar_t*>(script.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE,   // quietErrors: a failure here is reported below, not by a listener pop-up
+            &result);
+    } catch (...) {
+        ok = FALSE;
+    }
+
+    if (!ok || result.type != TYPE_STRING || !result.s || !result.s[0] ||
+        result.s[0] == _M('N')) {
+        MessageBox(hWnd,
+                   _T("The WhiteoutDex asset browser is not available.\n\n")
+                   _T("It ships as WhiteoutDexModelBrowser.ms and needs ")
+                   _T("WhiteoutDexRenderer.dlx loaded. Use \"Import Model File\" ")
+                   _T("to pick a file off disk instead."),
+                   _T("WhiteoutDex"), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    if (result.s[0] != _M('P'))
+        return; // cancelled
+
+    ApplyModelPath(hWnd, result.s + 1);
+}
+
 INT_PTR Wc3Particles1DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
                                        UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -409,6 +510,8 @@ INT_PTR Wc3Particles1DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
         if (hiWord == BN_CLICKED || hiWord == 0) {
             if (LOWORD(wParam) == IDC_P1_BUTTON_BROWSE)
                 BrowseForModelFile(hWnd);
+            else if (LOWORD(wParam) == IDC_P1_BUTTON_BROWSE_CASC)
+                BrowseModelFromArchives(hWnd);
             return TRUE;
         }
         if (hiWord == CBN_SELCHANGE) {

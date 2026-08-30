@@ -68,6 +68,7 @@
         <ComponentEntry ModuleName="./post_startup_scripts/VisibilityKeyer.ms" />
         <ComponentEntry ModuleName="./post_startup_scripts/Wc3AttachPointCallback.ms" />
         <ComponentEntry ModuleName="./post_startup_scripts/Wc3RefEventCallback.ms" />
+        <ComponentEntry ModuleName="./post_startup_scripts/WhiteoutDexModelBrowser.ms" />
         <ComponentEntry ModuleName="./post_startup_scripts/WhiteoutDexAutoUpdater.ms" />
         <ComponentEntry ModuleName="./post_startup_scripts/WhiteoutDexSidebar.ms" />
     </Components>

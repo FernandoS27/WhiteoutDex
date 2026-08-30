@@ -31,6 +31,8 @@
 
 #include <windows.h>
 
+struct ImGuiContext;
+
 namespace whiteout::flakes::renderer {
 class RenderService;
 }
@@ -78,6 +80,18 @@ public:
 
     void SetTitle(const wchar_t* title);
 
+    // ---- Modal handshake with the asset picker ----
+    //
+    // Dear ImGui's *current* context is one process-global pointer, so two
+    // windows can each own a context (they do) but only one may be in use at a
+    // time. Rather than making that pointer thread-local, the picker parks this
+    // window for its lifetime: SuspendForModal() blocks until the render thread
+    // has finished the frame it was on and stopped touching ImGui, and Resume()
+    // lets it go again. The preview freezes while the picker is up, which is
+    // what a modal dialog means anyway.
+    void SuspendForModal();
+    void Resume();
+
     RenderService& Service() {
         return service_;
     }
@@ -113,7 +127,16 @@ private:
     HICON icon_ = nullptr;
 
     bool imguiInitialised_ = false;
+    // This window's own ImGui context. Never assume it is the current one:
+    // ImGui::CreateContext restores whatever was current before it, so a
+    // second window created after this one leaves ITS context selected.
+    ImGuiContext* imguiCtx_ = nullptr;
     std::unique_ptr<MaxPluginUI> ui_;
+
+    // Set by the Max thread, observed by the render thread; `suspendedAck_`
+    // goes true once the render thread is parked and has stopped using ImGui.
+    std::atomic<bool> suspend_{false};
+    std::atomic<bool> suspendedAck_{false};
 
     bool lmbDown_ = false, rmbDown_ = false, mmbDown_ = false;
     POINT lastMouse_ = {0, 0};

@@ -52,7 +52,7 @@ category:"Warcraft III Plugins"
 		label mlbl2 "- Model File -" pos:[40,50] align:#center
 		edittext mdxFile pos:[8,68] height:20 width:142
 		button btnImportMDX "Import MDX Model" pos:[12,96] height:24 width:138
-		button btnBrowseMPQ "Browse MPQ / CASC" pos:[12,124] height:24 width:138 tooltip:"Browse models from MPQ/CASC archives"
+		button btnBrowseMPQ "Browse Game Archives" pos:[12,124] height:24 width:138 tooltip:"Pick an .mdx / .mdl straight out of the CASC or MPQ archives"
 
 		fn updateModelPath =
 		(
@@ -108,41 +108,49 @@ category:"Warcraft III Plugins"
 			mdxFile.enabled = true
 		)
 
+		-- Browse the game's own archives. What comes back is the CASC-relative
+		-- path ("units\nightelf\druid\druid.mdx") - the form MDX stores and the
+		-- exporter round-trips - so it splits straight into prefix + file. The
+		-- texture browser used to be wired here, which was the wrong tool: it
+		-- lists .blp/.dds, not models.
 		on btnBrowseMPQ pressed do
 		(
-			try
+			local picked = undefined
+			try (
+				picked = ::WhiteoutDexModelBrowser.pickModel initial:this.externalModelPath \
+					caption:"Select an Attachment Model"
+			) catch (
+				messageBox "The WhiteoutDex asset browser is not available." title:"WhiteoutDex" beep:false
+			)
+			if picked != undefined and picked != "" do
 			(
-				-- Use WhiteoutDex archive browser if available
-				local result = undefined
-				try
+				local lastSlash = 0
+				for i = 1 to picked.count do
+					if picked[i] == "\\" or picked[i] == "/" do lastSlash = i
+				if lastSlash > 0 then
 				(
-					::WhiteoutDexTexBrowserTarget = #(this, "attachment_model")
-					::WhiteoutDexTexBrowserInitCategory = 0
-					::WhiteoutDexTexBrowser.show()
-				) catch ( messageBox "Archive Browser not available." )
-			) catch ()
+					mdxPrefix.text = substring picked 1 lastSlash
+					mdxFile.text = substring picked (lastSlash + 1) -1
+				)
+				else
+				(
+					mdxPrefix.text = ""
+					mdxFile.text = picked
+				)
+				updateModelPath()
+			)
 		)
 
 		on modelMapParams open do
 		(
 			splitModelPath()
 
-			-- Enable/disable browse button
+			-- Enable/disable browse button. Only the renderer .dlx matters here:
+			-- the browser dialog picks its own source and can be pointed at an
+			-- install by hand, so gating on a configured MPQ/CASC path would
+			-- disable the one control that tells the user to configure one.
 			local browserAvailable = false
-			try
-			(
-				if ::WhiteoutDexMPQ != undefined and ::WhiteoutDexMPQ.getDirectory() != "" and ::WhiteoutDexMPQ.validateDirectory() then
-					browserAvailable = true
-				if not browserAvailable then
-				(
-					local cascIni = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
-					local cascDir = getINISetting cascIni "CASC" "W3Path"
-					-- WhiteoutLib opens CASC by directory; no .build.info
-					-- marker is needed for the native backend to work.
-					if cascDir != "" and doesFileExist cascDir then
-						browserAvailable = true
-				)
-			) catch()
+			try ( browserAvailable = ::WhiteoutDexModelBrowser.isAvailable() ) catch ( browserAvailable = false )
 			btnBrowseMPQ.enabled = browserAvailable
 		)
 	)

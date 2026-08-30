@@ -22,6 +22,7 @@
 #define IDC_P1_BUTTON_EXPORT        2021  ///< Export particle config button.
 #define IDC_P1_CHECK_LOAD_DYNAMIC   2022  ///< Load animated keys checkbox.
 #define IDC_P1_BUTTON_BROWSE        2023  ///< File-browse button for the model path.
+#define IDC_P1_BUTTON_BROWSE_CASC   2024  ///< Archive-browse button (CASC/MPQ) for the model path.
 /// @}
 
 /// @name Edit/Spinner control IDs
