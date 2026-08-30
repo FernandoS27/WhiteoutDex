@@ -1,42 +1,3 @@
--------------------------------------------------------------------------------
--- Animation-visibility picker (shared between Wc3Popcorn instances).
--- Sits at file scope so multiple plugin instances reuse one dialog. The
--- caller stuffs the candidate names into `lb.items`, parks a callback
--- function in `wdxPopcornPickCallback`, and createDialog's this rollout.
--- On Add, the callback receives the picked names as a #string array;
--- on Cancel, the callback is dropped.
--------------------------------------------------------------------------------
-global wdxPopcornPickCallback = undefined
-global wdxPopcornPickItems    = #()
-
-rollout wdxPopcornPickRO "Add Animation Exception" width:260 height:340
-(
-	listbox lb "Pick animation(s):" height:14 width:240 multiSelection:true pos:[10,8]
-	button  btnOK     "Add"    pos:[40, 290] width:80 height:24
-	button  btnCancel "Cancel" pos:[140,290] width:80 height:24
-
-	on wdxPopcornPickRO open do
-	(
-		lb.items = ::wdxPopcornPickItems
-	)
-	on btnOK pressed do
-	(
-		local picked = #()
-		try (
-			for i in lb.selection do append picked lb.items[i]
-		) catch ()
-		local cb = ::wdxPopcornPickCallback
-		::wdxPopcornPickCallback = undefined
-		destroyDialog wdxPopcornPickRO
-		if cb != undefined do cb picked
-	)
-	on btnCancel pressed do
-	(
-		::wdxPopcornPickCallback = undefined
-		destroyDialog wdxPopcornPickRO
-	)
-)
-
 plugin simpleManipulator Wdx_Wc3Popcorn
 name:"Wc3 Popcorn"
 classID:#(0x7A1B2C09, 0x3D4E5F09)
@@ -248,14 +209,16 @@ parameters main rollout:params2
 	rollout params2 "Animation Visibility Guide"
 	(
 		-- ── UI ──────────────────────────────────────────────
-		label    lblDefault   "Default Visibility:"      pos:[12,8]   align:#left width:124
-		checkbox flagAlways   "Always On"                pos:[110,8]  tooltip:"When checked, Always=On. Exceptions below take the opposite state."
+		label        lblDefault   "Default Visibility:"  pos:[12,8]   align:#left width:124
+		checkbox     flagAlways   "Always On"             pos:[110,8]  tooltip:"When checked, Always=On. Exceptions below take the opposite state."
 
-		label    lblExc       "Exceptions (animations whose state differs from default):" \
-		                                                 pos:[12,32]  align:#left width:230
-		listbox  exceptionsLB ""                         pos:[12,52]  width:190 height:9
-		button   btnAddExc    "+"                        pos:[12,200] width:32  height:24 tooltip:"Add a scene animation as an exception"
-		button   btnDelExc    "-"                        pos:[50,200] width:32  height:24 tooltip:"Remove the selected exception"
+		label        lblExc       "Exceptions:"           pos:[12,32]  align:#left width:120
+		listbox      exceptionsLB ""                      pos:[12,48]  width:190 height:7
+		button       btnDelExc    "Remove selected"       pos:[12,160] width:190 height:22 tooltip:"Remove the highlighted exception"
+
+		label        lblPick      "Add scene animation:"  pos:[12,194] align:#left width:200
+		dropDownList ddAvailable  ""                      pos:[12,210] width:190
+		button       btnAddExc    "Add as exception"      pos:[12,238] width:190 height:22 tooltip:"Add the dropdown's animation as an exception"
 
 		-- ── State (mirror of rawFlags, kept in sync) ────────
 		local localExceptions = #()
@@ -318,14 +281,18 @@ parameters main rollout:params2
 		fn refreshListbox = exceptionsLB.items = localExceptions
 
 		-- Pull the current scene's animation/sequence names from the
-		-- WdxSequenceManager. Falls back to an empty list if the
-		-- manager isn't available (no scene loaded, etc.).
+		-- WdxSequenceManager. FORCE a LoadSequences() so the dropdown is
+		-- correct even when the user hasn't opened the Sequence Manager
+		-- UI in this session — `sequences` stays empty until that first
+		-- scan otherwise, and LoadSequences reads the rootNode CA that
+		-- the importer populates so this is safe to call ad hoc.
 		fn getSceneAnimNames =
 		(
 			local names = #()
 			try (
 				if ::WdxSequenceManager != undefined do
 				(
+					try (::WdxSequenceManager.sequences = ::WdxSequenceManager.LoadSequences()) catch ()
 					for seq in ::WdxSequenceManager.sequences do
 					(
 						local nm = try (seq.name) catch ("")
@@ -336,18 +303,11 @@ parameters main rollout:params2
 			names
 		)
 
-		-- Callback invoked by the file-scope picker rollout once the
-		-- user clicks Add. Captures `localExceptions` etc. via closure.
-		fn onAdditionPicked picked =
+		fn refreshAvailable =
 		(
-			if picked != undefined and picked.count > 0 do
-			(
-				for nm in picked do
-					if (findItem localExceptions nm) == 0 do
-						append localExceptions nm
-				refreshListbox()
-				rawFlags = encodeGuide()
-			)
+			local all = getSceneAnimNames()
+			local available = for nm in all where (findItem localExceptions nm) == 0 collect nm
+			ddAvailable.items = available
 		)
 
 		-- ── Events ──────────────────────────────────────────
@@ -360,16 +320,28 @@ parameters main rollout:params2
 
 		on btnAddExc pressed do
 		(
-			local all = getSceneAnimNames()
-			local available = for nm in all where (findItem localExceptions nm) == 0 collect nm
-			if available.count == 0 then
-				messageBox "No additional scene animations available."
-			else
+			-- Inline dropdown + Add. Earlier revisions opened a separate
+			-- picker dialog and passed an fn closure as a global callback,
+			-- but MaxScript fn references lose their rollout-local scope
+			-- when invoked from a foreign rollout, so localExceptions /
+			-- refreshListbox / encodeGuide silently no-op'd from the
+			-- callback. Keeping the handler inline avoids the cross-
+			-- rollout fn-reference problem entirely.
+			if ddAvailable.items.count > 0 then
 			(
-				::wdxPopcornPickItems    = available
-				::wdxPopcornPickCallback = onAdditionPicked
-				createDialog ::wdxPopcornPickRO 260 340
+				local idx = ddAvailable.selection
+				if idx > 0 and idx <= ddAvailable.items.count then
+				(
+					local nm = ddAvailable.items[idx]
+					if findItem localExceptions nm == 0 do
+						append localExceptions nm
+					refreshListbox()
+					refreshAvailable()
+					rawFlags = encodeGuide()
+				)
 			)
+			else
+				messageBox "No additional scene animations available."
 		)
 
 		on btnDelExc pressed do
@@ -379,6 +351,7 @@ parameters main rollout:params2
 			(
 				deleteItem localExceptions sel
 				refreshListbox()
+				refreshAvailable()
 				rawFlags = encodeGuide()
 			)
 		)
@@ -396,6 +369,7 @@ parameters main rollout:params2
 			flagAlways.checked = decoded[1]
 			suppressEvents = false
 			refreshListbox()
+			refreshAvailable()
 			if ::WdxL != undefined then
 			(
 				try (params2.title       = ::WdxL.t "popcorn_anim_guide_title")  catch ()
@@ -404,6 +378,7 @@ parameters main rollout:params2
 				try (lblExc.text         = ::WdxL.t "popcorn_exceptions_lbl")    catch ()
 				try (btnAddExc.tooltip   = ::WdxL.t "popcorn_add_exception_tip") catch ()
 				try (btnDelExc.tooltip   = ::WdxL.t "popcorn_remove_exception_tip") catch ()
+				try (lblPick.text        = ::WdxL.t "popcorn_pick_animation_lbl") catch ()
 			)
 		)
 	)

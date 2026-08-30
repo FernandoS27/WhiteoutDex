@@ -146,7 +146,50 @@ macroScript WhiteoutDex_Renderer
 (
 	on execute do
 	(
-		try (WhiteoutFlakesStart()) catch (messageBox "Renderer could not be started.")
+		try
+		(
+			WhiteoutFlakesStart()
+			-- Hand the renderer the active sequence ranges so its popcorn
+			-- animVisibilityGuide gate has a current-sequence name to
+			-- match against. We force a LoadSequences() so it works even
+			-- when the Sequence Manager UI hasn't been opened yet.
+			try
+			(
+				if ::WdxSequenceManager == undefined then
+					format "WDX Renderer: WdxSequenceManager is undefined — no sequences pushed\n"
+				else
+				(
+					try (::WdxSequenceManager.sequences = ::WdxSequenceManager.LoadSequences()) catch
+						(format "WDX Renderer: LoadSequences threw: %\n" (getCurrentException()))
+					local seqs = ::WdxSequenceManager.sequences
+					format "WDX Renderer: WdxSequenceManager has % sequences\n" seqs.count
+					local namesArr  = #()
+					local startsArr = #()
+					local endsArr   = #()
+					for s in seqs do
+					(
+						try
+						(
+							append namesArr  (s.name as string)
+							append startsArr (s.startTime as integer)
+							append endsArr   (s.endTime   as integer)
+						)
+						catch
+						(
+							format "WDX Renderer:   skipped seq (decode failed): %\n" (getCurrentException())
+						)
+					)
+					format "WDX Renderer: pushing % sequences via WhiteoutFlakesPushSequences\n" namesArr.count
+					if namesArr.count > 0 do
+						WhiteoutFlakesPushSequences namesArr startsArr endsArr
+				)
+			)
+			catch
+			(
+				format "WDX Renderer: sequence push failed: %\n" (getCurrentException())
+			)
+		)
+		catch (messageBox "Renderer could not be started.")
 	)
 )
 

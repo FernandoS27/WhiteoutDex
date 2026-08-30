@@ -32,10 +32,13 @@
 
 // clang-format off
 #include <max.h>
+#include <notify.h>
 #include <maxversion.h>
 #include <maxscript/maxscript.h>
 #include <maxscript/util/listener.h>
+#include <maxscript/foundation/arrays.h>
 #include <maxscript/foundation/numbers.h>
+#include <maxscript/foundation/strings.h>
 // MUST be the LAST maxscript header in the file. Other maxscript headers
 // transitively pull in define_implementations.h which redefines
 // def_visible_primitive to a no-op, so this include must land last to
@@ -98,13 +101,25 @@ static WhiteoutFlakesTimeCallback* g_timeCallback = nullptr;
 
 // ============================================================================
 // Material polling timer — detects property changes even without timeline scrub
+// Also serves as the main-thread tripwire for "render window was closed via
+// the X button": the render thread exited but everything else is still alive.
 // ============================================================================
 static UINT_PTR g_materialTimerId = 0;
+static void WhiteoutFlakesCleanup(); // forward declaration
 
 static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
-    if (!g_running || !g_renderer || !g_adapter || !g_actor)
+    if (!g_running)
         return;
-    if (!g_renderWindow || !g_renderWindow->IsOpen())
+    // User closed the renderer window (X button → WM_DESTROY on the render
+    // thread). The thread has exited, but the renderer/adapter/actor/scene
+    // are still allocated on the Max side. Tear them down here, on Max's
+    // main thread, so the next Start launches fresh and File > Reset
+    // doesn't get to walk dangling pointers.
+    if (g_renderWindow && !g_renderWindow->IsOpen()) {
+        WhiteoutFlakesCleanup();
+        return;
+    }
+    if (!g_renderer || !g_adapter || !g_actor || !g_renderWindow)
         return;
 
     // Hot-reload check.
@@ -123,6 +138,34 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
         if (ip)
             EvalFromMax(MaxTimeToMs(ip->GetTime()));
     }
+}
+
+// ============================================================================
+// Max scene-event notifications — tear the renderer down before Max discards
+// the underlying scene out from under us.
+// ============================================================================
+static bool g_notificationsRegistered = false;
+
+static void OnMaxSceneEvent(void* /*param*/, NotifyInfo* /*info*/) {
+    // System Reset, File > New (also routes through Reset), File > Open,
+    // File > Merge, and shutdown all invalidate the INode pointers we hold.
+    // Stop the renderer cleanly so the next refresh isn't reading freed
+    // scene data — that's the typical Max crash signature.
+    if (g_running)
+        WhiteoutFlakesCleanup();
+}
+
+static void EnsureSceneNotificationsRegistered() {
+    if (g_notificationsRegistered)
+        return;
+    g_notificationsRegistered = true;
+    // Idempotent — Max ignores duplicate registrations for the same
+    // (callback, param, code) triple. Registering lazily on first Start
+    // keeps the plug-in inert until the user actually wants the preview.
+    RegisterNotification(OnMaxSceneEvent, nullptr, NOTIFY_SYSTEM_PRE_RESET);
+    RegisterNotification(OnMaxSceneEvent, nullptr, NOTIFY_FILE_PRE_OPEN);
+    RegisterNotification(OnMaxSceneEvent, nullptr, NOTIFY_FILE_PRE_MERGE);
+    RegisterNotification(OnMaxSceneEvent, nullptr, NOTIFY_SYSTEM_SHUTDOWN);
 }
 
 // ============================================================================
@@ -254,8 +297,12 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
     auto start = std::chrono::high_resolution_clock::now();
     (void)arg_list;
 
-    if (g_running)
+    // Defense in depth: handle the "window was closed but cleanup hadn't
+    // run yet" case too (the poll timer normally catches this within 500 ms).
+    if (g_running || (g_renderWindow && !g_renderWindow->IsOpen()))
         WhiteoutFlakesCleanup();
+
+    EnsureSceneNotificationsRegistered();
 
     // Host owns SceneManager + RenderService + RenderWindow.
     g_scene = new whiteout::flakes::renderer::SceneManager();
@@ -507,6 +554,70 @@ Value* WhiteoutFlakesStop_cf(Value** /*arg_list*/, i32 count) {
     check_arg_count(WhiteoutFlakesStop, 0, count);
     WhiteoutFlakesCleanup();
     return &ok;
+}
+
+// ============================================================================
+// WhiteoutFlakesPushSequences(names, startTicks, endTicks)
+// Hand the adapter the per-sequence ranges from WdxSequenceManager so its
+// Evaluate can resolve "what sequence is the timeline on" — Max owns the
+// timeline, the renderer doesn't, so without this the popcorn animVisibility
+// guide can't fire and every emitter spawns regardless of sequence.
+// ============================================================================
+
+def_visible_primitive(WhiteoutFlakesPushSequences, "WhiteoutFlakesPushSequences");
+Value* WhiteoutFlakesPushSequences_cf(Value** arg_list, i32 count) {
+    check_arg_count(WhiteoutFlakesPushSequences, 3, count);
+    if (!g_adapter) {
+        mprintf(_M("WhiteoutDex: PushSequences: g_adapter is null — start the renderer first\n"));
+        return &false_value;
+    }
+
+    Array* names  = (Array*)arg_list[0];
+    Array* starts = (Array*)arg_list[1];
+    Array* ends   = (Array*)arg_list[2];
+    if (!names || !starts || !ends) {
+        mprintf(_M("WhiteoutDex: PushSequences: null array arg\n"));
+        return &false_value;
+    }
+
+    const i32 n = names->size;
+    if (starts->size != n || ends->size != n) {
+        mprintf(_M("WhiteoutDex: PushSequences: array length mismatch (names=%d, starts=%d, "
+                   "ends=%d)\n"), n, starts->size, ends->size);
+        return &false_value;
+    }
+
+    std::vector<whiteout::flakes::SequenceRange> ranges;
+    ranges.reserve(static_cast<usize>(n));
+    for (i32 i = 0; i < n; ++i) {
+        whiteout::flakes::SequenceRange r;
+        // MaxScript strings come back as wide; convert to UTF-8 narrow
+        // since the guide-matcher works on std::string.
+        try {
+            const wchar_t* w = names->data[i]->to_string();
+            if (w) {
+                const int u8len =
+                    ::WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+                if (u8len > 1) {
+                    r.name.assign(static_cast<usize>(u8len - 1), '\0');
+                    ::WideCharToMultiByte(CP_UTF8, 0, w, -1, r.name.data(), u8len, nullptr,
+                                          nullptr);
+                }
+            }
+        } catch (...) {
+            // to_string can throw on non-string values; treat as empty.
+        }
+        const TimeValue sTv = (TimeValue)starts->data[i]->to_int();
+        const TimeValue eTv = (TimeValue)ends->data[i]->to_int();
+        r.startMs = MaxTimeToMs(sTv);
+        r.endMs   = MaxTimeToMs(eTv);
+        mprintf(_M("WhiteoutDex:   seq[%d] '%hs' = [%d..%d ms]  (ticks %d..%d)\n"), i,
+                r.name.c_str(), r.startMs, r.endMs, (i32)sTv, (i32)eTv);
+        ranges.push_back(std::move(r));
+    }
+    g_adapter->SetSequenceRanges(std::move(ranges));
+    mprintf(_M("WhiteoutDex: pushed %d sequence ranges\n"), n);
+    return Integer::intern(n);
 }
 
 // ============================================================================

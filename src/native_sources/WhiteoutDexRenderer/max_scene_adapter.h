@@ -122,6 +122,17 @@ struct PE1EmitterInfo {
     std::string modelPath;
 };
 
+// Max-side mirror of WdxSequenceManager's per-sequence range. Pushed in
+// from MaxScript after WhiteoutFlakesStart so the adapter can answer
+// "what sequence is the timeline currently on" — Max owns the timeline,
+// the renderer doesn't, so without this the popcorn animVisibilityGuide
+// has no current-animation name to gate on.
+struct SequenceRange {
+    std::string name;
+    i32 startMs = 0;
+    i32 endMs   = 0;
+};
+
 struct PopcornEmitterInfo {
     i32 emitterId = 0;
     INode* node = nullptr;
@@ -189,6 +200,13 @@ public:
     std::vector<renderer::model::PE1EmitterConfig> GetPE1Configs() override;
     std::vector<renderer::model::CornEmitterInit> GetCornEmitterInits() override;
 
+    // Push the WdxSequenceManager's per-sequence ranges so Evaluate can
+    // gate popcorn animVisibilityGuide-driven emitters on Max's timeline.
+    // Safe to call multiple times; the latest list wins.
+    void SetSequenceRanges(std::vector<SequenceRange> ranges) {
+        sequenceRanges_ = std::move(ranges);
+    }
+
     // ---- IAnimationSource ----
     renderer::model::FrameState Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTimeMs,
                                          const Matrix44f& worldTransform,
@@ -211,7 +229,13 @@ private:
     // Collection phases
     void CollectGeometry();
     void CollectMaterials();
-    i32 LoadTexture(const std::wstring& filePath, i32 replaceableId, u32 wrapFlags = 0x3);
+    // `skipMaxBitmapManager` short-circuits the Max bitmap-manager attempt
+    // and goes straight to the direct-decode disk path. Used for normal
+    // maps because Max's bitmap manager produces flat-grey rather than
+    // raw RGB for DXT5n / BC5-style normal maps, which the HD shader
+    // then samples as a wrong normal and the lighting goes haywire.
+    i32 LoadTexture(const std::wstring& filePath, i32 replaceableId, u32 wrapFlags = 0x3,
+                    bool skipMaxBitmapManager = false);
     i32 LoadTextureFromContentProvider(const std::string& archivePath, i32 replaceableId,
                                        u32 wrapFlags = 0x3);
     // SD TEAMCOLOR / TEAMGLOW slots are reserved through LoadTexture(L"", 1|2)
@@ -290,6 +314,7 @@ private:
     std::vector<ParticleEmitterInfo> particles_;
     std::vector<PE1EmitterInfo> pe1Emitters_;
     std::vector<PopcornEmitterInfo> popcornEmitters_;
+    std::vector<SequenceRange> sequenceRanges_;
     std::vector<AttachmentInfo> attachments_;
     std::vector<RibbonEmitterInfo> ribbons_;
     std::vector<CollisionShapeInfo> collisions_;

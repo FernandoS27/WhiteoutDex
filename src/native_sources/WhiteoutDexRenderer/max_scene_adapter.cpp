@@ -12,11 +12,13 @@
 #include "whiteout/flakes/util/texture_image_usage.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <cwchar>
 #include <fstream>
 #include <numbers>
+#include <sstream>
 
 // clang-format off
 #include <Windows.h>
@@ -46,6 +48,110 @@ inline Vector3f MaxPointToDefault(const Point3& p) {
 }
 inline Vector3f MaxDirToDefault(const Point3& n) {
     return CoordinateSystem::ToDefaultDir(CoordSpace::Max, Vector3f{n.x, n.y, n.z});
+}
+
+inline bool CaseInsensitiveEqual(std::string_view a, std::string_view b) {
+    if (a.size() != b.size())
+        return false;
+    for (usize i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<u8>(a[i])) != std::tolower(static_cast<u8>(b[i])))
+            return false;
+    }
+    return true;
+}
+
+inline bool CaseInsensitiveContains(std::string_view hay, std::string_view needle) {
+    if (needle.empty() || needle.size() > hay.size())
+        return needle.empty();
+    for (usize i = 0; i + needle.size() <= hay.size(); ++i) {
+        bool ok = true;
+        for (usize j = 0; j < needle.size(); ++j) {
+            if (std::tolower(static_cast<u8>(hay[i + j])) !=
+                std::tolower(static_cast<u8>(needle[j]))) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok)
+            return true;
+    }
+    return false;
+}
+
+// Mirror of corn_effects_emitter::ParseAnimVisibilityGuide +
+// SetCurrentAnimationName: decide whether a Popcorn emitter is "on" for a
+// given current-sequence name. We replicate the logic in the adapter
+// because the renderer's evaluation reads `mi.animation.ActiveSequenceIndex()`,
+// and for the Max plugin the adapter's GetSequences() returns empty (Max
+// owns the timeline). Without this gate every popcorn emitter renders on
+// every sequence regardless of its guide.
+inline bool EvaluateGuideForSequence(const std::string& guide,
+                                     const std::string& currentName) {
+    if (guide.empty())
+        return true;
+
+    bool defaultEnabled = true;
+    std::vector<std::string> enabledNames;
+    std::vector<std::string> disabledNames;
+    bool sawAlways = false;
+    bool sawEnable = false;
+
+    auto trim = [](std::string& s) {
+        usize a = 0;
+        while (a < s.size() && std::isspace(static_cast<u8>(s[a])))
+            ++a;
+        usize b = s.size();
+        while (b > a && std::isspace(static_cast<u8>(s[b - 1])))
+            --b;
+        s = s.substr(a, b - a);
+    };
+
+    std::stringstream ss(guide);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        trim(token);
+        if (token.empty())
+            continue;
+        std::string name = token;
+        bool enabled = true;
+        const auto eq = token.find('=');
+        if (eq != std::string::npos) {
+            name = token.substr(0, eq);
+            std::string val = token.substr(eq + 1);
+            trim(name);
+            trim(val);
+            enabled = CaseInsensitiveEqual(val, "on");
+        }
+        if (CaseInsensitiveEqual(name, "always")) {
+            defaultEnabled = enabled;
+            sawAlways = true;
+        } else if (enabled) {
+            enabledNames.push_back(std::move(name));
+            sawEnable = true;
+        } else {
+            disabledNames.push_back(std::move(name));
+        }
+    }
+
+    // No explicit `always` but at least one enable token → engine treats
+    // listed names as the only ones enabled (implicit default-OFF).
+    if (!sawAlways && sawEnable)
+        defaultEnabled = false;
+
+    // Empty current-name (e.g. no sequences pushed) leaves the default —
+    // never flips into a name-based override.
+    if (currentName.empty())
+        return defaultEnabled;
+
+    bool result = defaultEnabled;
+    const auto& search = defaultEnabled ? disabledNames : enabledNames;
+    for (const auto& s : search) {
+        if (CaseInsensitiveContains(currentName, s)) {
+            result = !defaultEnabled;
+            break;
+        }
+    }
+    return result;
 }
 
 // Depth-first traversal of the scene's root children, invoking `fn(node)` on
@@ -607,7 +713,7 @@ static std::optional<MaxBitmapRGBA> LoadMaxBitmapRGBA(
 }
 
 i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId,
-                                 u32 wrapFlags) {
+                                 u32 wrapFlags, bool skipMaxBitmapManager) {
     if (replaceableId != 0) {
         // Replaceable slot: adapter only declares the id. The renderer-
         // side ReplaceableTextureManager::RegisterModelSlot path bakes
@@ -642,19 +748,26 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
                                wrapFlags);
     }
 
-    // Primary path: delegate to 3ds Max's bitmap manager.
-    long long sumR = 0, sumG = 0, sumB = 0, sumA = 0;
-    if (auto bmp = LoadMaxBitmapRGBA(filePath, L"Texture:", &sumR, &sumG, &sumB, &sumA)) {
-        const i32 total = bmp->width * bmp->height;
-        i32 id = RegisterTexture(filePath, 0, std::move(bmp->rgba), bmp->width, bmp->height,
-                                 /*displayPath*/ L"", sharedKey, wrapFlags);
-        mprintf(_M("  Texture %d: %dx%d avgRGBA=[%d,%d,%d,%d] '%s'\n"), id, bmp->width, bmp->height,
-                (i32)(sumR / total), (i32)(sumG / total), (i32)(sumB / total), (i32)(sumA / total),
-                filePath.c_str());
-        return id;
+    // Primary path: delegate to 3ds Max's bitmap manager — unless the caller
+    // asked to skip it (normal maps). Max's bitmap manager loses the raw
+    // R/G channels on BC5 / DXT5n normal maps and hands us a flat-grey
+    // RGBA8, which the HD shader then samples as a wrong tangent-space
+    // normal. Direct-decode preserves the encoded channels.
+    if (!skipMaxBitmapManager) {
+        long long sumR = 0, sumG = 0, sumB = 0, sumA = 0;
+        if (auto bmp = LoadMaxBitmapRGBA(filePath, L"Texture:", &sumR, &sumG, &sumB, &sumA)) {
+            const i32 total = bmp->width * bmp->height;
+            i32 id = RegisterTexture(filePath, 0, std::move(bmp->rgba), bmp->width, bmp->height,
+                                     /*displayPath*/ L"", sharedKey, wrapFlags);
+            mprintf(_M("  Texture %d: %dx%d avgRGBA=[%d,%d,%d,%d] '%s'\n"), id, bmp->width,
+                    bmp->height, (i32)(sumR / total), (i32)(sumG / total), (i32)(sumB / total),
+                    (i32)(sumA / total), filePath.c_str());
+            return id;
+        }
+        mprintf(_M("  Texture: trying direct decode for '%s'\n"), filePath.c_str());
+    } else {
+        mprintf(_M("  Texture: [normal map — direct decode only] '%s'\n"), filePath.c_str());
     }
-
-    mprintf(_M("  Texture: trying direct decode for '%s'\n"), filePath.c_str());
 
     // Fallback 1: direct decode with our own parsers.
     {
@@ -822,7 +935,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     // HD subtexture slots. Missing paths stay at -1; the renderer treats
     // negative ids as "slot absent". Wrap flags are lifted from the source
     // texmap (Wc3Bitmap's wrapU/wrapV or plain BitmapTex's StdUVGen).
-    auto loadSlot = [&](const wchar_t* paramName) -> i32 {
+    auto loadSlot = [&](const wchar_t* paramName, bool skipMaxBitmap = false) -> i32 {
         Texmap* slotTex = nullptr;
         if (!PB2Texmap(mtl, paramName, slotTex) || !slotTex)
             return -1;
@@ -830,9 +943,12 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
         const MCHAR* fn = bmt ? bmt->GetMapName() : nullptr;
         if (!fn || !fn[0])
             return -1;
-        return LoadTexture(std::wstring(fn), 0, ReadWrapFlagsFromTexmap(slotTex));
+        return LoadTexture(std::wstring(fn), 0, ReadWrapFlagsFromTexmap(slotTex), skipMaxBitmap);
     };
-    layer.normalMapId = loadSlot(L"normalMap");
+    // Normal maps go straight to direct-decode: Max's bitmap manager
+    // collapses BC5 / DXT5n normals into a flat-grey RGBA8 and the HD
+    // shader ends up sampling a constant normal across the surface.
+    layer.normalMapId = loadSlot(L"normalMap", /*skipMaxBitmap=*/true);
     layer.ormMapId = loadSlot(L"ormMap");
     layer.emissiveMapId = loadSlot(L"emissiveMap");
 
@@ -2054,6 +2170,18 @@ FrameState MaxSceneAdapter::Evaluate(i32 /*sequenceIdx*/, i32 timeMs, i32 /*glob
     // from the same PB2 fields used at registration so animated channels
     // (Wc3Particles2-style scrubbing) propagate through.
     if (!popcornEmitters_.empty()) {
+        // Find which WdxSequenceManager sequence (if any) contains the
+        // current Max time, then gate each emitter's visibility against
+        // its animVisibilityGuide using that name. Inclusive-end match
+        // mirrors how the renderer's frame ticker treats sequence ranges.
+        std::string currentSequenceName;
+        for (const auto& r : sequenceRanges_) {
+            if (timeMs >= r.startMs && timeMs <= r.endMs) {
+                currentSequenceName = r.name;
+                break;
+            }
+        }
+
         const Matrix44f kCornFxSpawnFrameRotation =
             Matrix44f::rotation_z(1.5707963267948966f);
         for (auto& pi : popcornEmitters_) {
@@ -2101,6 +2229,12 @@ FrameState MaxSceneAdapter::Evaluate(i32 /*sequenceIdx*/, i32 timeMs, i32 /*glob
             col.w = PB2FloatOr(obj, L"alpha", t, 1.0f);
             cs.color = col;
             cs.visibility = pi.node->GetVisibility(t);
+            // Apply the popcorn animVisibilityGuide gate. With visibility
+            // forced to 0 the renderer's ApplyCornFrameStates sets the
+            // emitter OwningAgentVisible=false, which stops new spawns
+            // (existing live particles fade out naturally).
+            if (!EvaluateGuideForSequence(pi.animVisibilityGuide, currentSequenceName))
+                cs.visibility = 0.0f;
 
             state.cornStates.push_back(cs);
         }
