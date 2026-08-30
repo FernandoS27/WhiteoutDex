@@ -33,6 +33,9 @@
 //   WdxBrowserSearch <maxResults>    → #(display paths) matching the filter
 //   WdxBrowserMatchCount()           → how many files the filter left standing
 //
+//   WdxExtractAsset <root> <path> <dest>
+//                                    → copy one file out onto disk; "" on success
+//
 // The picker itself is WdxPickAsset at the bottom of this file: it runs
 // WhiteoutFlakes' StorageExplorer — the same grid/tree browser with live model
 // thumbnails the standalone Model Explorer shows — and returns what was chosen.
@@ -43,7 +46,17 @@
 #include "asset_picker_window.h"
 #include "io/storage_browser.h"
 
+#if WHITEOUT_HAS_CASC
+// WdxExtractAsset reads bytes, which the browser cannot do — it walks a
+// manifest and hands back names. Going through the registry rather than
+// opening a storage of its own is what lets the handle it caches be the same
+// one the picker gets on its next open.
+#include "io/storage/casc_registry.h"
+#endif
+
+#include <algorithm>
 #include <cwctype>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -179,6 +192,119 @@ void CollectMatches(const std::string& path, int limit, std::vector<std::string>
     }
 }
 
+// ── Extraction ──────────────────────────────────────────────────────────────
+
+#if WHITEOUT_HAS_CASC
+
+using whiteout::flakes::io::AcquireSharedCasc;
+using whiteout::flakes::io::CascOpenKey;
+using whiteout::flakes::io::SharedCasc;
+
+// The install the last extraction used. Registry entries are weak and the
+// picker drops its handle as its window closes, so without this every import
+// would reopen the storage the picker had open a moment earlier. Holding one
+// handle makes the second import free — and the picker's next open too, since
+// it asks the same registry. Released by WdxBrowserClose with the browser tree.
+std::shared_ptr<const SharedCasc> g_extractCasc;
+std::string g_extractRoot;
+
+const SharedCasc* AcquireForExtract(const std::string& root, std::string& error) {
+    if (g_extractCasc && EqualsNoCase(g_extractRoot, root))
+        return g_extractCasc.get();
+
+    CascOpenKey key;
+    key.root = root;
+    auto shared = AcquireSharedCasc(key, error);
+    if (!shared)
+        return nullptr;
+
+    g_extractCasc = std::move(shared);
+    g_extractRoot = root;
+    return g_extractCasc.get();
+}
+
+// mkdir -p for the directory holding `file`. CreateDirectoryW only makes the
+// leaf, and the extraction mirrors the archive's folders into a temp tree that
+// is several levels deep and does not exist yet.
+bool EnsureParentDirs(const std::wstring& file) {
+    const auto lastSep = file.find_last_of(L"\\/");
+    if (lastSep == std::wstring::npos)
+        return true;
+
+    // Start past the root ("C:\" or "\\server\share\") so we never try to
+    // create a drive or a UNC share.
+    std::wstring::size_type at = 0;
+    if (file.size() >= 2 && file[1] == L':')
+        at = 2;
+    while (at < lastSep && (file[at] == L'\\' || file[at] == L'/'))
+        ++at;
+
+    // Errors on the way up are ignored and only the result is checked: the
+    // early components are a drive or a UNC share, which cannot be created and
+    // report it in several different ways. What matters is whether the leaf
+    // directory is there at the end.
+    for (; at <= lastSep; ++at) {
+        if (at != lastSep && file[at] != L'\\' && file[at] != L'/')
+            continue;
+        const std::wstring dir = file.substr(0, at);
+        if (!dir.empty())
+            ::CreateDirectoryW(dir.c_str(), nullptr);
+    }
+
+    const DWORD attrs = ::GetFileAttributesW(file.substr(0, lastSep).c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+bool WriteWholeFile(const std::wstring& path, const std::vector<whiteout::u8>& data) {
+    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+
+    bool okWrite = true;
+    size_t written = 0;
+    while (written < data.size()) {
+        const DWORD chunk =
+            static_cast<DWORD>((std::min)(data.size() - written, static_cast<size_t>(1u << 20)));
+        DWORD got = 0;
+        if (!::WriteFile(h, data.data() + written, chunk, &got, nullptr) || got == 0) {
+            okWrite = false;
+            break;
+        }
+        written += got;
+    }
+    ::CloseHandle(h);
+    if (!okWrite)
+        ::DeleteFileW(path.c_str());
+    return okWrite;
+}
+
+// Read `archivePath` out of `casc`, accepting either spelling the rest of this
+// file deals in: the original archive path the browser hands back (mod chain
+// and all) or the stripped relative path a resource stores. The chain order
+// mirrors CascSource's — HD overrides win — so a bare path resolves to the
+// same file the renderer would draw.
+bool ReadArchiveFile(const SharedCasc& casc, const std::string& archivePath,
+                     std::vector<whiteout::u8>& out) {
+    if (auto data = casc.Storage().readFile(archivePath)) {
+        out = std::move(*data);
+        return true;
+    }
+    if (archivePath.find(':') != std::string::npos)
+        return false; // already fully qualified; a miss is a miss
+
+    static const char* kPrefixes[] = {"war3.w3mod:_hd.w3mod:", "war3.w3mod:"};
+    for (const char* prefix : kPrefixes) {
+        if (auto data = casc.Storage().readFile(prefix + archivePath)) {
+            out = std::move(*data);
+            return true;
+        }
+    }
+    return false;
+}
+
+#endif // WHITEOUT_HAS_CASC
+
 } // namespace
 
 // ============================================================================
@@ -233,6 +359,10 @@ Value* WdxBrowserClose_cf(Value** /*arg_list*/, int count) {
     check_arg_count(WdxBrowserClose, 0, count);
     g_browser = StorageBrowser{};
     g_openRoot.clear();
+#if WHITEOUT_HAS_CASC
+    g_extractCasc.reset();
+    g_extractRoot.clear();
+#endif
     return &ok;
 }
 
@@ -455,4 +585,70 @@ Value* WdxPickAsset_cf(Value** arg_list, int count) {
         vl.result->append(vl.entry);
     }
     return_value(vl.result);
+}
+
+// ============================================================================
+// WdxExtractAsset <cascRoot> <archivePath> <destFile>
+//
+// Copy one file out of the archive onto disk. Returns "" on success and the
+// reason otherwise, the same shape as WdxBrowserOpen.
+//
+// This exists because importing is a file-path business: MDLXImporter.dle is
+// handed a name by Max's importer machinery and reads it with the CRT, and the
+// picker hands back an archive path, which is not a file. So Import from CASC
+// extracts to a temp tree that mirrors the archive's folders and imports that.
+// Textures are not extracted alongside — the importer resolves those through
+// CASC itself, off the W3Path in the settings INI.
+//
+// `archivePath` may be either spelling: the original ("war3.w3mod:_hd.w3mod:
+// units\...\druid.mdx") or the stripped relative path a resource stores. The
+// original is exact; a bare path is resolved HD-first, the way the renderer
+// would.
+// ============================================================================
+def_visible_primitive(WdxExtractAsset, "WdxExtractAsset");
+Value* WdxExtractAsset_cf(Value** arg_list, int count) {
+    check_arg_count(WdxExtractAsset, 3, count);
+
+#if !WHITEOUT_HAS_CASC
+    return MakeString("This build of WhiteoutDex has no CASC support.");
+#else
+    const std::string root = ArgToUtf8(arg_list[0]);
+    const std::string archivePath = ArgToUtf8(arg_list[1]);
+    const std::wstring dest = ToWide(ArgToUtf8(arg_list[2]));
+
+    if (root.empty())
+        return MakeString("No Warcraft III installation given. Set the CASC path in "
+                          "WhiteoutDex Settings first.");
+    if (archivePath.empty())
+        return MakeString("No archive path given.");
+    if (dest.empty())
+        return MakeString("No destination file given.");
+
+    std::string error;
+    const SharedCasc* casc = AcquireForExtract(root, error);
+    if (!casc) {
+        if (error.empty())
+            error = "Could not open the Warcraft III installation at '" + root + "'.";
+        mprintf(_M("WhiteoutDex Extract: %hs\n"), error.c_str());
+        return MakeString(error);
+    }
+
+    std::vector<whiteout::u8> data;
+    if (!ReadArchiveFile(*casc, archivePath, data)) {
+        error = "'" + archivePath + "' is not in this installation, or its content is "
+                                    "encrypted with a key this build does not have.";
+        mprintf(_M("WhiteoutDex Extract: %hs\n"), error.c_str());
+        return MakeString(error);
+    }
+
+    if (!EnsureParentDirs(dest))
+        return MakeString("Could not create the folder for the extracted file.");
+    if (!WriteWholeFile(dest, data))
+        return MakeString("Could not write the extracted file. Check that the temp folder "
+                          "is writable and has room.");
+
+    mprintf(_M("WhiteoutDex Extract: %hs (%d bytes)\n"), archivePath.c_str(),
+            static_cast<int>(data.size()));
+    return MakeString("");
+#endif
 }

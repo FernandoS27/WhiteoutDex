@@ -25,6 +25,15 @@
    cancels. `initial` is a path in the same namespace: the picker opens on its
    folder.
 
+       ::WhiteoutDexModelBrowser.pickEx mode:#model
+       ::WhiteoutDexModelBrowser.extractToTemp <relPath> <archivePath>
+
+   pickEx returns #(relPath, archivePath) instead - the original archive entry
+   as well, which is what identifies the exact file rather than the HD-or-SD
+   pair. extractToTemp copies one entry onto disk and returns the local name,
+   for the one caller that cannot take a path: Import from CASC, since Max
+   hands importers a file name.
+
    Lives in post_startup_scripts because it calls into the .dlx: pre-startup
    scripts are evaluated before Max loads plug-ins, so the primitive would not
    exist yet at parse time.
@@ -61,14 +70,19 @@ struct WhiteoutDexModelBrowserStruct
 	-- True when the picker can run at all.
 	public fn isAvailable = wdxMBPrimitivesAvailable(),
 
-	/* Show the picker and return the archive-relative path the user chose, or
-	   undefined on cancel.
+	/* Show the picker and return BOTH spellings of what the user chose:
+
+	       #(<relative path>, <archive path>)
+
+	   The relative path is what a resource stores; the archive path is the
+	   original CASC entry, mod chain and all ("war3.w3mod:_hd.w3mod:units\..."),
+	   which is what a reader needs to get at the exact file - the relative form
+	   is ambiguous between the HD and SD copies of a model. `undefined` on
+	   cancel.
 
 	     mode:    #model (.mdx/.mdl), #effect (.pkb/.pkfx) or #any
-	     initial: a path in the same namespace to open on
-	     caption: accepted for source compatibility; the native window titles
-	              itself from `mode`. */
-	public fn pick mode:#any initial:"" caption:"" =
+	     initial: a path in the same namespace to open on */
+	public fn pickEx mode:#any initial:"" =
 	(
 		if not wdxMBPrimitivesAvailable() then
 		(
@@ -108,7 +122,17 @@ struct WhiteoutDexModelBrowserStruct
 			return undefined
 		)
 
-		if r[1] then r[2] else undefined
+		if r[1] then #(r[2], r[3]) else undefined
+	),
+
+	/* The common case: just the relative path, or undefined on cancel.
+
+	     caption: accepted for source compatibility; the native window titles
+	              itself from `mode`. */
+	public fn pick mode:#any initial:"" caption:"" =
+	(
+		local p = this.pickEx mode:mode initial:initial
+		if p == undefined then undefined else p[1]
 	),
 
 	public fn pickModel initial:"" caption:"" =
@@ -116,6 +140,42 @@ struct WhiteoutDexModelBrowserStruct
 
 	public fn pickEffect initial:"" caption:"" =
 		this.pick mode:#effect initial:initial caption:caption,
+
+	/* Copy one archive entry onto disk and return the local file name, or
+	   undefined (having said why) when it could not be read.
+
+	   For hosts that need a FILE rather than a path: Max's importer machinery
+	   hands a plug-in a name and the plug-in opens it with the CRT, so nothing
+	   in the import path can be given an archive entry directly. The extraction
+	   mirrors the archive's folders under the temp directory, so two models with
+	   the same leaf name do not collide and a re-import overwrites its own copy
+	   rather than accumulating. Only the one file is extracted - textures are
+	   resolved out of CASC by whoever reads it.
+
+	     relPath     the stored form, used to place the file under temp
+	     archivePath the original entry to read; pass relPath again if that is
+	                 all you have and HD-first resolution is acceptable */
+	public fn extractToTemp relPath archivePath =
+	(
+		if not wdxMBPrimitivesAvailable() then return undefined
+		if relPath == undefined or relPath == "" then return undefined
+
+		local root = wdxMBCascRoot()
+		if root == "" then return undefined
+
+		local src = if archivePath == undefined or archivePath == "" then relPath else archivePath
+		local dest = (getDir #temp) + "\\WhiteoutDexCASC\\" + relPath
+
+		local err = "The WhiteoutDex extractor is not available."
+		try ( err = WdxExtractAsset root src dest ) catch ( err = "Extraction failed." )
+
+		if err != "" then
+		(
+			messageBox err title:"WhiteoutDex" beep:false
+			return undefined
+		)
+		dest
+	),
 
 	-- Release the headless browser's archive handle and walked tree (the
 	-- WdxBrowser* listing API, not the picker - that opens and closes its own).

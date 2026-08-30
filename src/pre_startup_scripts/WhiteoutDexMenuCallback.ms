@@ -50,6 +50,7 @@ struct WhiteoutDexMenuStruct
         local m = mainMenuBar.CreateSubMenu "BDBFDF2A-73A5-44B9-B98C-967D9C54835B" "WhiteoutDex"
         
         m.CreateAction "DD0CF245-EA3B-4CCA-ADC6-01FBDAF0F936" 647394 "WhiteoutDex_Importer`WhiteoutDex Toolkit"
+        m.CreateAction "2ED521B2-6A98-45A9-A0C3-3D5D4B88EE7D" 647394 "WhiteoutDex_ImportCASC`WhiteoutDex Toolkit"
         m.CreateAction "0F62518F-5358-4D12-ABDB-3350D42094EF" 647394 "WhiteoutDex_Exporter`WhiteoutDex Toolkit"
         m.CreateSeparator "18F3B751-A532-4E6D-8AE1-7CA182A0E553"
         m.CreateAction "CE15B5A9-EBE3-49F3-9CB7-8385D3CBB515" 647394 "WhiteoutDex_SequenceManager`WhiteoutDex Toolkit"

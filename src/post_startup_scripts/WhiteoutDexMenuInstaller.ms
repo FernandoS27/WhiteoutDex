@@ -65,6 +65,7 @@ fn InstallWhiteoutDexMenu =
 	try
 	(
 		addAction whiteoutDexMain "WhiteoutDex_Importer"
+		addAction whiteoutDexMain "WhiteoutDex_ImportCASC"
 		addAction whiteoutDexMain "WhiteoutDex_Exporter"
 		addSep whiteoutDexMain
 		addAction whiteoutDexMain "WhiteoutDex_SequenceManager"
