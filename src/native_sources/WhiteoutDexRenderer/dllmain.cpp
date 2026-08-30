@@ -357,7 +357,16 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
             std::wstring cascIni = std::wstring(pcDir.data()) + L"\\WhiteoutDex_Settings.ini";
             if (GetFileAttributesW(cascIni.c_str()) != INVALID_FILE_ATTRIBUTES) {
                 wchar_t w3buf[MAX_PATH] = {};
-                GetPrivateProfileStringW(L"CASC", L"W3Path", L"", w3buf, MAX_PATH, cascIni.c_str());
+                // Disambiguate Win32 GetPrivateProfileStringW from the
+                // MaxSDK::Util overload the 2026 SDK added (Util/IniUtil.h) by
+                // taking a function pointer to the exact Win32 signature —
+                // the same trick the exporter and importer already use for
+                // this conflict.
+                static auto Win32_GetPrivateProfileStringW =
+                    static_cast<DWORD(WINAPI*)(LPCWSTR, LPCWSTR, LPCWSTR, LPWSTR, DWORD, LPCWSTR)>(
+                        &::GetPrivateProfileStringW);
+                Win32_GetPrivateProfileStringW(L"CASC", L"W3Path", L"", w3buf, MAX_PATH,
+                                               cascIni.c_str());
                 if (w3buf[0]) {
                     // SetInstallPath takes UTF-8 narrow; MDX install paths
                     // are ASCII-safe in practice (Windows refuses to install
@@ -538,8 +547,11 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
 
     // Diagnostic readout from the actor's render-side counts.
     mprintf(_M("\nWhiteoutDex: === STARTED in %d ms ===\n"), ms);
+    // Materials moved behind the product ISurfaceTable; render.surfaces is
+    // resized to Materials().size() on every upload, so it is the same count
+    // without reaching through a Wc3SurfaceTable cast for a diagnostic.
     mprintf(_M("  %d geosets, %d materials\n"), (i32)g_actor->render.gpuGeosets.size(),
-            (i32)g_actor->render.gpuMaterials.size());
+            (i32)g_actor->render.surfaces.size());
     mprintf(_M("  %d collisions\n"), (i32)g_actor->render.collisionShapes.size());
 
     return Integer::intern(ms);

@@ -94,24 +94,27 @@
         (
             -- .NET 8: use HttpClient
             local httpClient = dotNetObject "System.Net.Http.HttpClient"
+            local _ex = undefined
+            local result = undefined
             try (
                 httpClient.DefaultRequestHeaders.Add "User-Agent" "WhiteoutDex-Updater"
                 httpClient.DefaultRequestHeaders.Add "Accept" "application/vnd.github.v3+json"
                 local task = httpClient.GetStringAsync url
                 task.Wait()
-                local result = task.Result
+                result = task.Result
                 httpClient.Dispose()
-                result
             ) catch (
-                local _ex = getCurrentException()
+                _ex = getCurrentException()
                 try (httpClient.Dispose()) catch ()
-                -- Max 2016's MaxScript compiler rejects bare `throw` even
-                -- inside catch — pass the captured exception explicitly so
-                -- the script still compiles on every version. (On Max <
-                -- 2026 this branch is unreachable anyway: _useHttpClient
-                -- is gated to build ≥ 28000.)
-                throw _ex
             )
+            -- Rethrow outside the catch. No form of `throw` compiles on every
+            -- Max inside one: 2027 rejects `throw <value>` there ("only throws
+            -- without arguments are permitted in catch expressions") and 2016
+            -- rejects the bare `throw` that would satisfy it. Carrying the
+            -- exception out in a local sidesteps the restriction entirely,
+            -- since it only applies inside the catch.
+            if _ex != undefined do throw _ex
+            result
         )
         else
         (
@@ -131,6 +134,7 @@
         (
             -- .NET 8: use HttpClient
             local httpClient = dotNetObject "System.Net.Http.HttpClient"
+            local _ex = undefined
             try (
                 httpClient.DefaultRequestHeaders.Add "User-Agent" "WhiteoutDex-Updater"
                 local task = httpClient.GetByteArrayAsync url
@@ -139,15 +143,11 @@
                 (dotNetClass "System.IO.File").WriteAllBytes destPath bytes
                 httpClient.Dispose()
             ) catch (
-                local _ex = getCurrentException()
+                _ex = getCurrentException()
                 try (httpClient.Dispose()) catch ()
-                -- Max 2016's MaxScript compiler rejects bare `throw` even
-                -- inside catch — pass the captured exception explicitly so
-                -- the script still compiles on every version. (On Max <
-                -- 2026 this branch is unreachable anyway: _useHttpClient
-                -- is gated to build ≥ 28000.)
-                throw _ex
             )
+            -- Rethrown out here rather than in the catch; see _ndxDownloadString.
+            if _ex != undefined do throw _ex
         )
         else
         (

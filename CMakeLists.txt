@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
+include(WdxMaxSdk)
+
 # ============================================================================
 # WhiteoutDex — root build entry point
 #
@@ -38,18 +41,40 @@ project(WhiteoutDex LANGUAGES NONE)
 include(ExternalProject)
 
 # ----------------------------------------------------------------------------
-# Detect installed Max SDKs (matches Build.bat's probe). Caller can override
-# with -DWDX_MAX_VERSIONS="2025;2026" to limit the set.
+# Detect installed Max SDKs. Caller can override with
+# -DWDX_MAX_VERSIONS="2025;2026" to limit the set, and each year's resolved
+# maxsdk is forwarded to its sub-build so the search happens exactly once.
 # ----------------------------------------------------------------------------
+set(WDX_MAX_YEARS 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 2027
+    CACHE STRING "Max release years this build knows how to target")
+
 set(_wdx_detected "")
-foreach(v 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025 2026 2027)
-    if(EXISTS "C:/Program Files/Autodesk/3ds Max ${v} SDK/maxsdk/include/max.h")
+set(_wdx_sdkless "")
+foreach(v IN LISTS WDX_MAX_YEARS)
+    wdx_find_max_sdk(${v} _sdk)
+    if(_sdk)
         list(APPEND _wdx_detected "${v}")
+        set(WDX_MAX_SDK_${v} "${_sdk}")
+    else()
+        # The product without its SDK: worth calling out by name, because it
+        # looks identical to "unsupported year" from the detected list alone.
+        wdx_max_install_dir(${v} _installed)
+        if(_installed)
+            list(APPEND _wdx_sdkless "${v}")
+        endif()
     endif()
 endforeach()
 
 set(WDX_MAX_VERSIONS "${_wdx_detected}" CACHE STRING
     "Semicolon-separated Max versions to build (default: every installed SDK)")
+
+if(_wdx_sdkless)
+    message(STATUS
+        "WhiteoutDex: 3ds Max ${_wdx_sdkless} installed, but no matching SDK — "
+        "skipping. Install the SDK (Autodesk ships it separately from the "
+        "product), or point at an unpacked copy with "
+        "-DMAXSDK_PATH_<year>=<path-to-maxsdk>.")
+endif()
 
 if(NOT WDX_MAX_VERSIONS)
     message(FATAL_ERROR
@@ -136,6 +161,10 @@ foreach(v IN LISTS WDX_MAX_VERSIONS)
         # whiteout_lib compile per Max year.
         CONFIGURE_COMMAND "${CMAKE_COMMAND}" ${_sub_gen_args}
                           -DMAX_VERSION=${v}
+                          # Hand down the SDK we already located, so a sub-build
+                          # can't disagree with the year list about where (or
+                          # whether) that year's SDK is.
+                          "-DMAXSDK_PATH=${WDX_MAX_SDK_${v}}"
                           ${_wdx_static_runtime_args}
                           "<SOURCE_DIR>"
         BUILD_COMMAND     "${CMAKE_COMMAND}" --build <BINARY_DIR> --config Release
@@ -161,7 +190,7 @@ endforeach()
 #
 # Driven by MSBuild on the existing .vcxproj files because C++/CLI doesn't fit
 # CMake's native generator. The native .lib comes from the common_libs sub-build;
-# fw48 covers Max 2016-2025, net8 covers Max 2026-2027.
+# fw48 covers Max 2016-2025, net8 covers Max 2026, net10 covers Max 2027+.
 # ============================================================================
 set(WDX_BUILD_MANAGED_WRAPPERS ON CACHE BOOL
     "Build the C++/CLI WhiteoutDexTextureBrowser.dll managed wrappers")
@@ -206,15 +235,26 @@ if(WDX_BUILD_MANAGED_WRAPPERS)
         set(_wrapper_out "${CMAKE_SOURCE_DIR}/src/native_sources/WhiteoutDexTextureBrowser/output")
         set(_common_native "${CMAKE_BINARY_DIR}/common")
 
-        # Does this build target any Max ≤ 2025? (fw48 covers those.)
-        # Does this build target any Max ≥ 2026? (net8 covers those.)
+        # Which lane each Max year needs. A C++/CLI assembly only loads into
+        # the runtime it was compiled against, so this is dictated by the CLR
+        # each Max hosts — read off its own 3dsmax_interop.runtimeconfig.json —
+        # not by which SDK we happen to have:
+        #   2016-2025 → .NET Framework 4.8
+        #   2026      → .NET 8   (net8.0)
+        #   2027+     → .NET 10  (net10.0)
+        # Adding a year means adding its lane here; there is no "newest wins",
+        # because a net10.0 assembly will not load in Max 2026's .NET 8 host
+        # any more than a net8.0 one is what Max 2027 asks for.
         set(_need_fw48 FALSE)
         set(_need_net8 FALSE)
+        set(_need_net10 FALSE)
         foreach(v IN LISTS WDX_MAX_VERSIONS)
             if(v LESS 2026)
                 set(_need_fw48 TRUE)
-            else()
+            elseif(v LESS 2027)
                 set(_need_net8 TRUE)
+            else()
+                set(_need_net10 TRUE)
             endif()
         endforeach()
 
@@ -238,58 +278,147 @@ if(WDX_BUILD_MANAGED_WRAPPERS)
             list(APPEND _managed_targets managed_fw48)
         endif()
 
-        # ---- .NET 8.0 (Max 2026-2027) ----
-        # Probe for the .NET 8 SDK; the .vcxproj references Microsoft.NET.Sdk which
-        # MSBuild can only resolve when MSBuildSDKsPath points at a .NET 8 SDK's
-        # Sdks/ dir. Skip the target entirely when nothing's installed.
-        set(_dotnet8_sdks "")
-        file(GLOB _dotnet8_candidates "$ENV{ProgramFiles}/dotnet/sdk/8.*")
-        foreach(_cand IN LISTS _dotnet8_candidates)
-            if(IS_DIRECTORY "${_cand}/Sdks")
-                set(_dotnet8_sdks "${_cand}/Sdks")
+        # ---- .NET lanes (Max 2026 = net8.0, Max 2027+ = net10.0) ----
+        # These .vcxproj files are SDK-style: <CLRSupport>NetCore</CLRSupport>
+        # makes Microsoft.CppCommon.targets import Microsoft.NET.Sdk, and
+        # MSBuild.exe can only resolve that through the .NET SDK resolver that
+        # Visual Studio's ".NET SDK" individual component installs at
+        #   <VS>/MSBuild/Current/Bin/SdkResolvers/Microsoft.DotNet.MSBuildSdkResolver/
+        #
+        # There is no substitute for it. The SDK ships its own resolver
+        # (dotnet/sdk/<ver>/Microsoft.DotNet.SdkResolver.dll) but that one is a
+        # .NET assembly — handing it to MSBuild.exe through
+        # MSBUILDADDITIONALSDKRESOLVERSFOLDER gets "MSB4244 … an attempt was
+        # made to load a program with an incorrect format". Only VS ships the
+        # .NET Framework build.
+        #
+        # Setting MSBuildSDKsPath by hand — which is what this used to do —
+        # looks like it works, because evaluation finds the targets. It then
+        # dies once the SDK's own tasks run: ProcessFrameworkReferences throws
+        # FileNotFoundException on Microsoft.Deployment.DotNet.Releases, and
+        # the workload locator SDKs don't resolve either. Verified identical
+        # for net8.0 and net10.0, under VS 2022's MSBuild and VS 18's, with
+        # SDK 10.0.300 and 10.0.400, and for a bare C# net10.0 classlib — so
+        # it is not this project, the TFM, the SDK band or the toolset. With
+        # the resolver present the override is not merely unnecessary but
+        # harmful, since it pre-empts the resolver; so it is gone.
+        #
+        # Search DOTNET_ROOT and whatever `dotnet` is on PATH as well as
+        # %ProgramFiles%\dotnet — a machine can perfectly well keep it
+        # elsewhere.
+        get_filename_component(_msbuild_bin "${MSBUILD_EXE}" DIRECTORY)
+        set(_dotnet_sdk_resolver
+            "${_msbuild_bin}/SdkResolvers/Microsoft.DotNet.MSBuildSdkResolver")
+
+        set(_dotnet_roots "")
+        if(DEFINED ENV{DOTNET_ROOT})
+            file(TO_CMAKE_PATH "$ENV{DOTNET_ROOT}" _dotnet_root)
+            list(APPEND _dotnet_roots "${_dotnet_root}")
+        endif()
+        if(DEFINED ENV{ProgramFiles})
+            file(TO_CMAKE_PATH "$ENV{ProgramFiles}" _pf)
+            list(APPEND _dotnet_roots "${_pf}/dotnet")
+        endif()
+        find_program(DOTNET_EXE dotnet DOC "dotnet CLI (used to locate a .NET SDK)")
+        if(DOTNET_EXE)
+            get_filename_component(_dotnet_root "${DOTNET_EXE}" DIRECTORY)
+            list(APPEND _dotnet_roots "${_dotnet_root}")
+        endif()
+        list(REMOVE_DUPLICATES _dotnet_roots)
+
+        # Newest installed SDK of exactly band @p band. Band-exact, not "that
+        # band or newer": a .vcxproj can't restore from NuGet, so the targeting
+        # and apphost packs have to be on disk already, and an SDK only ships
+        # its own band's. Building the net8.0 wrapper with the 10.0.400 SDK
+        # gets as far as "NETSDK1145: The Apphost pack is not installed and
+        # NuGet package restore is not supported … Pack Package Version:
+        # 8.0.30".
+        function(_wdx_find_dotnet_sdk band out_var)
+            set(_best "")
+            foreach(_root IN LISTS _dotnet_roots)
+                file(GLOB _cands "${_root}/sdk/${band}.*")
+                foreach(_cand IN LISTS _cands)
+                    get_filename_component(_ver "${_cand}" NAME)
+                    if(IS_DIRECTORY "${_cand}/Sdks" AND "${_ver}" VERSION_GREATER "${_best}")
+                        set(_best "${_ver}")
+                    endif()
+                endforeach()
+            endforeach()
+            set(${out_var} "${_best}" PARENT_SCOPE)
+        endfunction()
+
+        # A macro, not a function: the "can't build this lane" paths clear
+        # _need_<lane> so the staging loop below skips that lane's copy, and
+        # that has to land in this scope.
+        macro(_wdx_add_dotnet_lane lane band proj)
+            if(_need_${lane})
+                _wdx_find_dotnet_sdk(${band} _lane_sdk)
+                if(NOT EXISTS "${_dotnet_sdk_resolver}")
+                    message(WARNING
+                        "Visual Studio is missing its \".NET SDK\" component, so "
+                        "MSBuild has no .NET SDK resolver at "
+                        "${_dotnet_sdk_resolver} and cannot build the "
+                        "net${band}.0 managed wrapper. Max versions on that "
+                        "runtime will be deployed without "
+                        "WhiteoutDexTextureBrowser.dll — everything else still "
+                        "builds. To enable: Visual Studio Installer → Modify → "
+                        "Individual components → \".NET SDK\".")
+                    set(_need_${lane} FALSE)
+                elseif(NOT _lane_sdk)
+                    message(WARNING
+                        "No .NET ${band} SDK found under ${_dotnet_roots} "
+                        "(sdk/${band}.*). Max versions on the net${band}.0 "
+                        "runtime will be deployed without "
+                        "WhiteoutDexTextureBrowser.dll — everything else still "
+                        "builds. Install the .NET ${band} SDK to enable; a "
+                        "newer SDK does not substitute, because it ships only "
+                        "its own band's targeting and apphost packs and a "
+                        ".vcxproj cannot restore them from NuGet.")
+                    set(_need_${lane} FALSE)
+                else()
+                    message(STATUS "Managed wrappers: net${band}.0 via .NET SDK ${_lane_sdk}")
+                    ExternalProject_Add(managed_${lane}
+                        SOURCE_DIR        "${_wrapper_dir}"
+                        BUILD_IN_SOURCE   TRUE
+                        CONFIGURE_COMMAND ""
+                        BUILD_COMMAND     "${MSBUILD_EXE}" ${proj}
+                                          /p:Configuration=Release /p:Platform=x64
+                                          /p:PlatformToolset=${_platform_toolset}
+                                          /p:NativeBuildDir=${_common_native}
+                                          /v:minimal
+                        INSTALL_COMMAND   ""
+                        DEPENDS           common_libs
+                        BUILD_ALWAYS      TRUE
+                    )
+                    list(APPEND _managed_targets managed_${lane})
+                endif()
             endif()
-        endforeach()
+        endmacro()
 
-        if(_need_net8 AND NOT _dotnet8_sdks)
-            message(WARNING ".NET 8 SDK not found under "
-                            "$ENV{ProgramFiles}/dotnet/sdk/. Max ≥ 2026 will be "
-                            "deployed without WhiteoutDexTextureBrowser.dll. "
-                            "Install the .NET 8 SDK to enable.")
-            set(_need_net8 FALSE)
-        endif()
-
-        if(_need_net8)
-            message(STATUS "Managed wrappers: .NET 8 SDKs = ${_dotnet8_sdks}")
-            ExternalProject_Add(managed_net8
-                SOURCE_DIR        "${_wrapper_dir}"
-                BUILD_IN_SOURCE   TRUE
-                CONFIGURE_COMMAND ""
-                BUILD_COMMAND     "${CMAKE_COMMAND}" -E env "MSBuildSDKsPath=${_dotnet8_sdks}"
-                                  "${MSBUILD_EXE}" WhiteoutDexTextureBrowser_net8.vcxproj
-                                  /p:Configuration=Release /p:Platform=x64
-                                  /p:PlatformToolset=${_platform_toolset}
-                                  /p:NativeBuildDir=${_common_native}
-                                  /v:minimal
-                INSTALL_COMMAND   ""
-                DEPENDS           common_libs
-                BUILD_ALWAYS      TRUE
-            )
-            list(APPEND _managed_targets managed_net8)
-        endif()
+        _wdx_add_dotnet_lane(net8   8 WhiteoutDexTextureBrowser_net8.vcxproj)
+        _wdx_add_dotnet_lane(net10 10 WhiteoutDexTextureBrowser_net10.vcxproj)
 
         # ---- Stage the managed DLLs alongside the per-version native plugins.
-        # fw48 → Max 2016-2025, net8 → Max 2026-2027.
-        set(_managed_fw48_dll "${_wrapper_out}/Max2016-2025/WhiteoutDexTextureBrowser.dll")
-        set(_managed_net8_dll "${_wrapper_out}/Max2026-2027/WhiteoutDexTextureBrowser.dll")
+        # Each lane writes its own output/Max* dir; the copy is per Max year
+        # because that's the layout WhiteoutDexTextureBrowserHelper.ms probes
+        # first.
+        set(_managed_fw48_dll  "${_wrapper_out}/Max2016-2025/WhiteoutDexTextureBrowser.dll")
+        set(_managed_net8_dll  "${_wrapper_out}/Max2026/WhiteoutDexTextureBrowser.dll")
+        set(_managed_net10_dll "${_wrapper_out}/Max2027/WhiteoutDexTextureBrowser.dll")
 
         set(_stage_cmds "")
         foreach(v IN LISTS WDX_MAX_VERSIONS)
-            if(v LESS 2026 AND _need_fw48)
+            if(v LESS 2026)
+                set(_lane fw48)
+            elseif(v LESS 2027)
+                set(_lane net8)
+            else()
+                set(_lane net10)
+            endif()
+            if(_need_${_lane})
                 list(APPEND _stage_cmds COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                     "${_managed_fw48_dll}" "${WDX_STAGE_DIR}/Max${v}/WhiteoutDexTextureBrowser.dll")
-            elseif(NOT (v LESS 2026) AND _need_net8)
-                list(APPEND _stage_cmds COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                     "${_managed_net8_dll}" "${WDX_STAGE_DIR}/Max${v}/WhiteoutDexTextureBrowser.dll")
+                     "${_managed_${_lane}_dll}"
+                     "${WDX_STAGE_DIR}/Max${v}/WhiteoutDexTextureBrowser.dll")
             endif()
         endforeach()
 

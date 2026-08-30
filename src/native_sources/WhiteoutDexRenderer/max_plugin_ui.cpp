@@ -43,8 +43,14 @@ namespace {
 // plugin doesn't track the loop-non-looping policy (Max drives the
 // timeline), so we always pass `true` — settings_ini's writer just stores
 // whatever it's given.
+//
+// `forceHd` and `languageCode` are the two other viewer-side prefs the writer
+// takes. Neither has a Max-side UI: the plugin picks HD/SD per material from
+// the scene, and its chrome is English-only. They are stored in the ini that
+// sits beside 3dsmax.exe, which no other tool reads, so writing the neutral
+// defaults here does not disturb the standalone viewer's own settings file.
 void SaveIni(RenderWindow& win) {
-    SaveSettingsIni(win.Service(), true);
+    SaveSettingsIni(win.Service(), true, /*forceHd=*/false, /*languageCode=*/std::string{});
 }
 
 // IFileDialog folder picker. Returns an empty string if the user cancels or

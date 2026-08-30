@@ -384,10 +384,36 @@ namespace KeyReducer
     (
         if maxVer >= 2026 then
         (
-            -- 3ds Max 2026+: .NET Core 8, use CSharpCompilationHelper (Roslyn)
-            format "[KeyReducer] Using CSharpCompilationHelper (.NET Core 8)...\n"
+            -- 3ds Max 2026+: .NET Core, use CSharpCompilationHelper (Roslyn)
+            format "[KeyReducer] Using CSharpCompilationHelper (.NET Core)...\n"
             local netCompHelper = dotNetClass "CSharpUtilities.CSharpCompilationHelper"
-            netCompHelper.compile csSource #()
+            -- Compile() references every assembly Max has already loaded, and
+            -- nothing else. That isn't enough for AnalyzeAndReduceBatch's
+            -- Parallel.For on Max 2027: .NET 10 moved Parallel out into its own
+            -- assembly, which Max never loads, so Roslyn stops with
+            --   CS1069: The type name 'Parallel' could not be found in the
+            --   namespace 'System.Threading.Tasks'. This type has been forwarded
+            --   to assembly 'System.Threading.Tasks.Parallel' ...
+            -- Pass that assembly by path — Compile() feeds additionalAssemblies
+            -- to MetadataReference.CreateFromFile — taken from the runtime Max
+            -- is actually hosting rather than a hardcoded version. If it isn't
+            -- there (a runtime that still keeps Parallel in the core assembly),
+            -- reference nothing extra and let the default set do the job.
+            -- One step per line: MaxScript won't parse a property access off a
+            -- method call, so `(dotNetObject "System.Object").GetType().Assembly`
+            -- is a syntax error ("at ., expected <factor>") rather than a chain.
+            local extraRefs = #()
+            try (
+                local objInst = dotNetObject "System.Object"
+                local coreType = objInst.GetType()
+                local coreAsm = coreType.Assembly
+                local asmPath = coreAsm.Location
+                local pathCls = dotNetClass "System.IO.Path"
+                local runtimeDir = pathCls.GetDirectoryName asmPath
+                local parallelDll = runtimeDir + "\\System.Threading.Tasks.Parallel.dll"
+                if doesFileExist parallelDll then extraRefs = #(parallelDll)
+            ) catch ()
+            netCompHelper.compile csSource extraRefs
             _wdxKeyReducer = dotNetObject "KeyReducer.Reducer"
             format "[KeyReducer] Compiled and loaded successfully (CSharpCompilationHelper).\n"
         )

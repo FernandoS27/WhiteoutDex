@@ -31,6 +31,11 @@ add_library(WhiteoutDexRenderer SHARED
     # theme (also pulls in the embedded Roboto font header).
     "${_imgui_backends}/imgui_impl_win32.cpp"
     "${_basic_viewer_dir}/settings_ini.cpp"
+    # settings_io.cpp split out of settings_ini.cpp upstream: it owns
+    # ExecutableDir / SettingsIniPath / AssetDir and the per-game IO path
+    # overrides, which settings_ini.cpp, dllmain.cpp and max_plugin_ui.cpp
+    # all call into.
+    "${_basic_viewer_dir}/settings_io.cpp"
     "${_tools_common_dir}/cubeb_sound_emitter.cpp"
     "${_tools_common_dir}/imgui_theme.cpp"
 )

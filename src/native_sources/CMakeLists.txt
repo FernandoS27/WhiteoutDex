@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(WhiteoutDexPlugins LANGUAGES C CXX RC)
 
+# Included by path rather than inherited from the root: this directory is also
+# the SOURCE_DIR of every per-version ExternalProject, which configures it as a
+# top level with no CMAKE_MODULE_PATH of its own.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/../../cmake")
+include(WdxMaxSdk)
+
 # ===========================================================================
 # Options
 #   -DMAX_VERSION=<year>         (required unless BUILD_COMMON_ONLY)
@@ -24,14 +30,28 @@ if(NOT DEFINED MAX_VERSION)
         "Example: cmake -DMAX_VERSION=2025 ..")
 endif()
 
-if(NOT DEFINED MAXSDK_PATH)
-    set(MAXSDK_PATH "C:/Program Files/Autodesk/3ds Max ${MAX_VERSION} SDK/maxsdk")
+if(NOT MAXSDK_PATH)
+    wdx_find_max_sdk(${MAX_VERSION} MAXSDK_PATH)
 endif()
 
 if(NOT EXISTS "${MAXSDK_PATH}/include/max.h")
+    # Name the product install when there is one: "SDK not found" alongside a
+    # perfectly good 3ds Max reads as a broken build system rather than a
+    # missing optional download.
+    wdx_max_install_dir(${MAX_VERSION} _wdx_max_install)
+    if(_wdx_max_install)
+        set(_wdx_sdk_hint
+            "3ds Max ${MAX_VERSION} is installed at ${_wdx_max_install}, but its "
+            "SDK is a separate Autodesk download and isn't on this machine.\n")
+    else()
+        set(_wdx_sdk_hint "3ds Max ${MAX_VERSION} SDK not found.\n")
+    endif()
     message(FATAL_ERROR
-        "3ds Max ${MAX_VERSION} SDK not found at: ${MAXSDK_PATH}\n"
-        "Override with -DMAXSDK_PATH=<path-to-maxsdk>")
+        "${_wdx_sdk_hint}"
+        "Searched: ${WDX_MAX_SDK_ROOTS};$ENV{ProgramFiles}/Autodesk;"
+        "C:/Program Files/Autodesk (each for '3ds Max ${MAX_VERSION} SDK/maxsdk').\n"
+        "Override with -DMAXSDK_PATH=<path-to-maxsdk>, or add a search root "
+        "with -DWDX_MAX_SDK_ROOTS=<dir>.")
 endif()
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -80,6 +100,16 @@ if(PREBUILT_COMMON_DIR)
             INTERFACE_INCLUDE_DIRECTORIES "${WHITEOUT_DIR}/include"
             INTERFACE_LINK_LIBRARIES whiteout_lib
             INTERFACE_COMPILE_DEFINITIONS "WHITEOUT_HAS_CASC=1"
+        )
+    endif()
+
+    if(EXISTS "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_database.lib")
+        add_library(whiteout_database STATIC IMPORTED GLOBAL)
+        set_target_properties(whiteout_database PROPERTIES
+            IMPORTED_LOCATION "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_database.lib"
+            INTERFACE_INCLUDE_DIRECTORIES "${WHITEOUT_DIR}/include"
+            INTERFACE_LINK_LIBRARIES whiteout_lib
+            INTERFACE_COMPILE_DEFINITIONS "WHITEOUT_HAS_DATABASE=1"
         )
     endif()
 
@@ -152,10 +182,15 @@ if(PREBUILT_COMMON_DIR)
     endif()
 
 else()
-    set(WHITEOUT_ENABLE_CASC    ON  CACHE BOOL "" FORCE)
-    set(WHITEOUT_ENABLE_MPQ     ON  CACHE BOOL "" FORCE)
-    set(WHITEOUT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(WHITEOUT_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    set(WHITEOUT_ENABLE_CASC     ON  CACHE BOOL "" FORCE)
+    set(WHITEOUT_ENABLE_MPQ      ON  CACHE BOOL "" FORCE)
+    # WhiteoutFlakes forces WHITEOUT_ENABLE_DATABASE=ON for its own WDX_ENABLE_M2
+    # path, but it does that *after* we've already added WhiteoutLib here, so the
+    # FORCE lands too late to create the whiteout_database target. Turn it on at
+    # the point WhiteoutLib is actually configured.
+    set(WHITEOUT_ENABLE_DATABASE ON  CACHE BOOL "" FORCE)
+    set(WHITEOUT_BUILD_EXAMPLES  OFF CACHE BOOL "" FORCE)
+    set(WHITEOUT_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
     add_subdirectory("${WHITEOUT_DIR}" "${CMAKE_BINARY_DIR}/WhiteoutLib" EXCLUDE_FROM_ALL)
 
     # zlib (for MPQ decompression in WhiteoutDexTextureBrowser)
