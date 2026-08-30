@@ -24,9 +24,12 @@
 #endif
 #include <whiteout/storages/mpq/storage.h>
 
+#include <whiteout/utils/blizzard_game_finder.h>
+
 #include <filesystem>
 #include <fstream>
 #include <unordered_set>
+#include <utility>
 
 #include <msclr/marshal_cppstd.h>
 #include <vcclr.h>
@@ -827,6 +830,98 @@ array<ThumbnailEntry^>^ WhiteoutDexTextureBrowser::GenerateThumbnailsDisk(
         retryFailedWithStandardDecode(out, paths, rawDataVec, thumbSize);
 
     return out;
+}
+
+// ============================================================================
+//  Warcraft III install discovery
+//
+//  BlizzardGameFinder tells us *where* the installs are, but its enum can't
+//  be trusted to say *which* flavour lives there: a Reforged install still
+//  registers itself under the plain "Warcraft III" name in several of the
+//  scanned sources, and a Classic downgrade keeps the Reforged registration
+//  it was installed over.  So the enum only selects the WC3 candidates and
+//  the directory layout decides the flavour.
+// ============================================================================
+
+namespace {
+
+namespace wfs = std::filesystem;
+
+// A Classic install (or a Reforged folder downgraded back to 1.26/1.31)
+// ships War3LegacyInstaller next to the MPQs.  Match on the stem so the
+// extension the launcher happens to use doesn't matter.
+bool hasLegacyInstaller(const wfs::path& root) {
+    std::error_code ec;
+    for (const auto& e : wfs::directory_iterator(root, ec)) {
+        if (ec) break;
+        std::string stem = e.path().stem().string();
+        std::transform(stem.begin(), stem.end(), stem.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (stem.rfind("war3legacyinstaller", 0) == 0) return true;
+    }
+    return false;
+}
+
+// Reforged = CASC storage under `Data` and no legacy installer alongside it.
+bool isReforgedInstall(const wfs::path& root) {
+    std::error_code ec;
+    if (!wfs::is_directory(root / "Data", ec)) return false;
+    return !hasLegacyInstaller(root);
+}
+
+// The finder normalizes to forward slashes; MaxScript stores and displays
+// Windows paths, so hand back backslashes.
+std::string toWindowsSeparators(std::string p) {
+    for (auto& c : p)
+        if (c == '/') c = '\\';
+    return p;
+}
+
+// One classified sweep of every Warcraft III install the finder knows about.
+// Each entry pairs the flavour ("Reforged" / "Classic") with the install root.
+// Discovery order is the finder's, so the first hit is the best guess.
+std::vector<std::pair<std::string, std::string>> scanWarcraftInstalls() {
+    std::vector<std::pair<std::string, std::string>> out;
+    try {
+        for (const auto& g : whiteout::utils::findBlizzardGames()) {
+            if (g.game != whiteout::utils::BlizzardGame::WarcraftIII &&
+                g.game != whiteout::utils::BlizzardGame::WarcraftIIIReforged)
+                continue;
+            std::error_code ec;
+            wfs::path const root(g.path);
+            if (!wfs::is_directory(root, ec)) continue;
+            out.emplace_back(isReforgedInstall(root) ? "Reforged" : "Classic",
+                             toWindowsSeparators(g.path));
+        }
+    } catch (const std::exception&) {
+        // An unreadable directory shouldn't sink the whole scan — the caller
+        // gets whatever was classified before the failure.
+    }
+    return out;
+}
+
+// First install of the requested flavour, empty when there is none.
+std::string firstInstallOfKind(const std::string& kind) {
+    for (const auto& entry : scanWarcraftInstalls())
+        if (entry.first == kind) return entry.second;
+    return {};
+}
+
+} // namespace
+
+array<System::String^>^ WhiteoutDexTextureBrowser::FindWarcraftInstalls() {
+    std::vector<std::string> entries;
+    for (const auto& entry : scanWarcraftInstalls())
+        entries.push_back(entry.first + "|" + entry.second);
+    return toManagedArray(entries);
+}
+
+System::String^ WhiteoutDexTextureBrowser::FindWarcraftReforgedPath() {
+    return toManaged(firstInstallOfKind("Reforged"));
+}
+
+System::String^ WhiteoutDexTextureBrowser::FindWarcraftClassicPath() {
+    return toManaged(firstInstallOfKind("Classic"));
 }
 
 // ============================================================================

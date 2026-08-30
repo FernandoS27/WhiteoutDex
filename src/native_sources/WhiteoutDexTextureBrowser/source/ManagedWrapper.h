@@ -130,6 +130,17 @@ namespace WhiteoutDex {
             array<System::String^>^ filePaths,
             int thumbSize);
 
+        // ── Warcraft III install discovery ───────────────────────────────────
+        //  Wraps WhiteoutLib's BlizzardGameFinder and classifies every
+        //  Warcraft III hit by what is actually on disk: an install with a
+        //  `Data` directory and no War3LegacyInstaller is Reforged, anything
+        //  else is Classic.  Entries are "Reforged|<path>" / "Classic|<path>".
+        static array<System::String^>^ FindWarcraftInstalls();
+
+        //  Best single hit per flavour; empty string when nothing matched.
+        static System::String^ FindWarcraftReforgedPath();
+        static System::String^ FindWarcraftClassicPath();
+
         // ── Thread configuration ─────────────────────────────────────────────
         static void SetThreadCount(int threads);
         static int  GetThreadCount();

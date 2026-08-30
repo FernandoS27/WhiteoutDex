@@ -69,6 +69,72 @@ global WhiteoutDexTextureBrowserDLL = undefined
 
 
 /* ============================================================================
+   SECTION 1b: WARCRAFT III GAME FINDER
+   Thin MaxScript facade over WhiteoutLib's BlizzardGameFinder (exposed by the
+   native DLL). Used to fill in empty MPQ/CASC settings automatically so a
+   fresh install works without the user hunting for their game folder.
+
+   Flavour comes from what is on disk, not from the registry name: an install
+   with a `Data` folder and no War3LegacyInstaller is Reforged, anything else
+   is Classic. That classification happens native-side.
+   ============================================================================ */
+
+struct WhiteoutDexGameFinderStruct
+(
+    private ndx = ::WhiteoutDexTextureBrowserDLL,
+
+    -- Every Warcraft III install found, as an array of #(kind, path) pairs
+    -- where kind is "Reforged" or "Classic". Empty array when the DLL is
+    -- missing or nothing is installed.
+    public fn findAll =
+    (
+        if this.ndx == undefined then return #()
+        local out = #()
+        try
+        (
+            local raw = this.ndx.FindWarcraftInstalls()
+            if raw != undefined then
+            (
+                for e in raw do
+                (
+                    local sep = findString e "|"
+                    if sep != undefined and sep > 1 then
+                        append out #((substring e 1 (sep - 1)), (substring e (sep + 1) -1))
+                )
+            )
+        )
+        catch
+        (
+            format "WhiteoutDex GameFinder: lookup failed: %\n" (getCurrentException())
+        )
+        out
+    ),
+
+    -- Best Reforged install root, or "" when none was found.
+    public fn findReforged =
+    (
+        if this.ndx == undefined then return ""
+        local p = ""
+        try ( p = this.ndx.FindWarcraftReforgedPath() ) catch ( p = "" )
+        if p == undefined then p = ""
+        p
+    ),
+
+    -- Best Classic (MPQ) install root, or "" when none was found.
+    public fn findClassic =
+    (
+        if this.ndx == undefined then return ""
+        local p = ""
+        try ( p = this.ndx.FindWarcraftClassicPath() ) catch ( p = "" )
+        if p == undefined then p = ""
+        p
+    )
+)
+
+global WhiteoutDexGameFinder = WhiteoutDexGameFinderStruct()
+
+
+/* ============================================================================
    SECTION 2: MPQ HELPER
    Same API as the old WhiteoutDexMPQHelperStruct — drop-in replacement.
    ============================================================================ */
@@ -95,7 +161,23 @@ struct WhiteoutDexMPQHelperStruct
     (
         local val = getINISetting this.iniFile "MPQ" "Directory"
         if val != "" then this.mpqDirectory = val
+        else this.autoDetect()
         format "WhiteoutDex MPQ: Directory = '%'\n" this.mpqDirectory
+    ),
+    
+    -- Nothing configured yet: ask WhiteoutLib's game finder where Warcraft III
+    -- Classic lives and persist the hit, so a fresh install needs no setup.
+    -- Returns the directory in use.
+    public fn autoDetect force:false =
+    (
+        if this.mpqDirectory != "" and not force then return this.mpqDirectory
+        local found = ::WhiteoutDexGameFinder.findClassic()
+        if found != "" and (doesFileExist found) then
+        (
+            this.saveSettings found
+            format "WhiteoutDex MPQ: Auto-detected Warcraft III at '%'\n" found
+        )
+        this.mpqDirectory
     ),
     
     public fn saveSettings dir =
@@ -439,7 +521,24 @@ struct WhiteoutDexCASCHelperStruct
     (
         local val = getINISetting this.iniFile "CASC" "W3Path"
         if val != "" then this.w3path = val
+        else this.autoDetect()
         format "WhiteoutDex CASC: W3Path = '%'\n" this.w3path
+    ),
+    
+    -- Nothing configured yet: ask WhiteoutLib's game finder where Warcraft III
+    -- Reforged lives and persist the hit, so a fresh install needs no setup.
+    -- Returns the path in use.
+    public fn autoDetect force:false =
+    (
+        if this.w3path != "" and not force then return this.w3path
+        local found = ::WhiteoutDexGameFinder.findReforged()
+        if found != "" and (doesFileExist found) then
+        (
+            this.w3path = found
+            this.saveSettings()
+            format "WhiteoutDex CASC: Auto-detected Warcraft III Reforged at '%'\n" found
+        )
+        this.w3path
     ),
     
     public fn saveSettings =

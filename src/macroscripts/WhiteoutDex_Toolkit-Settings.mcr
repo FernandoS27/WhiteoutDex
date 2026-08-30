@@ -19,14 +19,16 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 		label mpqLabel "Game Data Directory:" pos:[20,102] width:130 height:16
 		edittext mpqPathEdt "" pos:[20,120] width:260 height:20 readOnly:true
 		button mpqBrowseBtn "..." pos:[284,120] width:38 height:20 tooltip:"Browse for Warcraft III game data folder containing MPQ files"
-		label mpqStatusLbl "" pos:[20,146] width:200 height:14
+		label mpqStatusLbl "" pos:[20,146] width:140 height:14
+		button mpqDetectBtn "Detect" pos:[166,144] width:76 height:18 tooltip:"Auto-detect the Warcraft III installation"
 		button mpqClearBtn "Clear" pos:[248,144] width:72 height:18 tooltip:"Clear the MPQ directory"
 		
 		groupBox cascGrp "CASC Archives (Reforged v1200)" pos:[8,178] width:324 height:94
 		label cascLabel "Warcraft III Reforged:" pos:[20,198] width:140 height:16
 		edittext cascPathEdt "" pos:[20,216] width:260 height:20 readOnly:true
 		button cascBrowseBtn "..." pos:[284,216] width:38 height:20 tooltip:"Browse for Warcraft III Reforged installation folder"
-		label cascStatusLbl "" pos:[20,242] width:200 height:14
+		label cascStatusLbl "" pos:[20,242] width:140 height:14
+		button cascDetectBtn "Detect" pos:[166,240] width:76 height:18 tooltip:"Auto-detect the Warcraft III installation"
 		button cascClearBtn "Clear" pos:[248,240] width:72 height:18 tooltip:"Clear the CASC directory"
 		
 		groupBox sidebarGrp "Sidebar" pos:[8,278] width:324 height:78
@@ -99,6 +101,21 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			mpqStatusLbl.text = ""
 		)
 		
+		-- Re-run WhiteoutLib's game finder on demand. `force:true` overrides a
+		-- path that is already set, so this doubles as a "re-scan after I moved
+		-- or reinstalled the game" button.
+		on mpqDetectBtn pressed do
+		(
+			local found = ::WhiteoutDexMPQ.autoDetect force:true
+			mpqPathEdt.text = found
+			if found == "" then
+				mpqStatusLbl.text = ::WdxL.t "set_detect_none_found"
+			else if ::WhiteoutDexMPQ.validateDirectory() then
+				mpqStatusLbl.text = ::WdxL.t "set_mpq_status_found"
+			else
+				mpqStatusLbl.text = ::WdxL.t "set_mpq_status_not_found"
+		)
+		
 		on cascBrowseBtn pressed do
 		(
 			local dir = getSavePath caption:(::WdxL.t "set_casc_browse_caption")
@@ -122,7 +139,22 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			cascPathEdt.text = ""
 			local iniPath = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
 			setINISetting iniPath "CASC" "W3Path" ""
+			::WhiteoutDexCASC.w3path = ""
 			cascStatusLbl.text = ""
+		)
+		
+		-- Same as the MPQ side: force a fresh scan and persist whatever
+		-- WhiteoutLib's game finder turns up.
+		on cascDetectBtn pressed do
+		(
+			local found = ::WhiteoutDexCASC.autoDetect force:true
+			cascPathEdt.text = found
+			if found == "" then
+				cascStatusLbl.text = ::WdxL.t "set_detect_none_found"
+			else if doesFileExist found then
+				cascStatusLbl.text = ::WdxL.t "set_casc_status_found"
+			else
+				cascStatusLbl.text = ::WdxL.t "set_casc_status_not_found"
 		)
 		
 		-- Sidebar: toggle show/hide immediately
@@ -191,6 +223,10 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			noteLabel.text = ""
 			if ::WhiteoutDexMPQ != undefined then
 			(
+				-- Empty settings get filled from WhiteoutLib's game finder.
+				-- Startup already tried this; retrying here covers the case
+				-- where the game was installed after 3ds Max was launched.
+				::WhiteoutDexMPQ.autoDetect()
 				mpqPathEdt.text = ::WhiteoutDexMPQ.getDirectory()
 				if ::WhiteoutDexMPQ.getDirectory() != "" then
 				(
@@ -207,9 +243,12 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				mpqLabel.text = ::WdxL.t "set_mpq_directory_lbl"
 				mpqBrowseBtn.tooltip = ::WdxL.t "set_mpq_browse_tip"
 				mpqClearBtn.text = ::WdxL.t "set_mpq_clear_btn"
+				mpqDetectBtn.text = ::WdxL.t "set_detect_btn"
+				mpqDetectBtn.tooltip = ::WdxL.t "set_detect_tip"
 			)
 			-- CASC path. WhiteoutLib doesn't require .build.info — check
 			-- only that the configured directory still exists.
+			if ::WhiteoutDexCASC != undefined then ::WhiteoutDexCASC.autoDetect()
 			local cascIni = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
 			local cascDir = getINISetting cascIni "CASC" "W3Path"
 			if cascDir != "" then
@@ -225,6 +264,8 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				cascLabel.text = ::WdxL.t "set_casc_directory_lbl"
 				cascBrowseBtn.tooltip = ::WdxL.t "set_casc_browse_tip"
 				cascClearBtn.text = ::WdxL.t "set_casc_clear_btn"
+				cascDetectBtn.text = ::WdxL.t "set_detect_btn"
+				cascDetectBtn.tooltip = ::WdxL.t "set_detect_tip"
 			)
 			-- Sidebar localization
 			if ::WdxL != undefined then
