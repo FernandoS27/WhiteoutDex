@@ -32,15 +32,21 @@ parameters main rollout:params2
 
 	parameters main rollout:params3
 	(
+		-- alpha / emissionRate / lifeSpan / speed carry MDX KPPA / KPPE /
+		-- KPPL / KPPS. All four must stay animatable: the importer assigns
+		-- bezier_float controllers to them and the renderer samples every
+		-- one at the current time.
 		alpha			type:#float		ui:alpha			default:1.0
 		emissionRate	type:#float		ui:emissionRate		default:0.0
-		lifeSpan		type:#float		ui:lifeSpan			default:0.0			animatable:false
+		lifeSpan		type:#float		ui:lifeSpan			default:0.0
 		speed			type:#float		ui:speed			default:0.0
 	)
 
 	parameters main rollout:params4
 	(
-		baseColor		type:#color		ui:baseColor		default:[255,255,255]	animatable:false
+		-- baseColor carries KPPC and is animated the same way. YS_baseColor
+		-- is only the rollout's hidden mirror, so it stays static.
+		baseColor		type:#color		ui:baseColor		default:[255,255,255]
 		YS_baseColor	type:#color		ui:YS_baseColor		default:[255,255,255]	animatable:false
 		colorMultiplier	type:#float		ui:colorMultiplier	default:1.0				animatable:false
 	)

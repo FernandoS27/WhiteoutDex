@@ -306,6 +306,9 @@ struct ParticleEmitter {
     int32_t lengthTrackIndex = -1;
     int32_t lifespanVariationTrackIndex = -1;
     int32_t colorTrackIndex = -1;
+    // CornEmitter (variant == 3) only: KPPA. The static base value lives in
+    // segmentAlpha[0], matching how segmentColors[0] carries the base color.
+    int32_t alphaTrackIndex = -1;
 };
 
 struct RibbonEmitter {

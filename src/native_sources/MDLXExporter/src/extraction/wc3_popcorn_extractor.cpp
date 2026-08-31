@@ -1,9 +1,101 @@
 // MDLXExporter — Wc3Popcorn (CornEmitter) extractor implementation
 #include "wc3_popcorn_extractor.h"
 #include "../mdx_class_ids.h"
+#include "visibility_track_helper.h"
 #include <scene/paramblock_reader.h>
+#include <animation/global_sequence_helper.h>
+#include <control.h>
 
 namespace mdx_extract {
+
+namespace {
+
+// ── Animation track extraction ──
+//
+// Wc3Popcorn is a simpleManipulator scripted plugin, so its params must be
+// reached through getParamControllerDirect (the GetControllerByID path) —
+// the same route wc3_light_extractor uses, and the mirror image of the
+// importer's animateFloatNamedScript / animateColorNamedScript, which write
+// these controllers by MaxScript property name.
+//
+// MDX chunk mapping (see the CORN writer in WhiteoutLib):
+//   emissionRate → KPPE   speed → KPPS   lifeSpan → KPPL
+//   alpha        → KPPA   baseColor → KPPC
+// KPPV is the node's own visibility controller, handled separately.
+
+int32_t extractCornFloatTrack(ReferenceTarget* ref, const wchar_t* paramName,
+                              ir::IRModel& model)
+{
+    Control* ctrl = core::anim::getParamControllerDirect(ref, paramName);
+    if (!ctrl) return -1;
+    const int numKeys = ctrl->NumKeys();
+    if (numKeys <= 0) return -1;
+
+    ir::Track<float> track;
+    // Linear, matching the light extractor: tangent recovery off a scripted
+    // plugin's controller is error-prone, and every CORN track Blizzard ships
+    // is interpolationType 0 or 1 anyway.
+    track.interpolation = ir::InterpolationType::Linear;
+
+    for (int i = 0; i < numKeys; ++i) {
+        TimeValue t = ctrl->GetKeyTime(i);
+        float v = 0.0f;
+        Interval iv = FOREVER;
+        ctrl->GetValue(t, &v, iv);
+        ir::Keyframe<float> key;
+        key.time = t;
+        key.value = v;
+        track.keys.push_back(key);
+    }
+
+    const int afterORT = ctrl->GetORT(ORT_AFTER);
+    if ((afterORT == ORT_CYCLE || afterORT == ORT_LOOP) && !track.keys.empty()) {
+        int32_t gsIdx = core::anim::registerGlobalSequence(model, track.keys.back().time);
+        if (gsIdx >= 0) track.globalSequenceIndex = gsIdx;
+    }
+
+    int32_t idx = static_cast<int32_t>(model.floatTracks.size());
+    model.floatTracks.push_back(std::move(track));
+    return idx;
+}
+
+int32_t extractCornColorTrack(ReferenceTarget* ref, const wchar_t* paramName,
+                              ir::IRModel& model)
+{
+    Control* ctrl = core::anim::getParamControllerDirect(ref, paramName);
+    if (!ctrl) return -1;
+    const int numKeys = ctrl->NumKeys();
+    if (numKeys <= 0) return -1;
+
+    ir::Track<Color> track;
+    track.interpolation = ir::InterpolationType::Linear;
+
+    for (int i = 0; i < numKeys; ++i) {
+        TimeValue t = ctrl->GetKeyTime(i);
+        Point3 val(1.0f, 1.0f, 1.0f);
+        Interval iv = FOREVER;
+        ctrl->GetValue(t, &val, iv);
+        ir::Keyframe<Color> key;
+        key.time = t;
+        // No BGR swap. Unlike LITE, the CORN colour path is straight RGB on
+        // both sides — the disassembler's mapColorTrack and the static
+        // corn.color field below both pass x,y,z through untouched.
+        key.value = Color(val.x, val.y, val.z);
+        track.keys.push_back(key);
+    }
+
+    const int afterORT = ctrl->GetORT(ORT_AFTER);
+    if ((afterORT == ORT_CYCLE || afterORT == ORT_LOOP) && !track.keys.empty()) {
+        int32_t gsIdx = core::anim::registerGlobalSequence(model, track.keys.back().time);
+        if (gsIdx >= 0) track.globalSequenceIndex = gsIdx;
+    }
+
+    int32_t idx = static_cast<int32_t>(model.colorTracks.size());
+    model.colorTracks.push_back(std::move(track));
+    return idx;
+}
+
+} // anonymous namespace
 
 // Popcorn data is stored in ir::ParticleEmitter with variant=3.
 // The model builder converts variant=3 to mdx::CornEmitter.
@@ -77,6 +169,18 @@ void extractPopcorn(const std::vector<core::SceneNode>& nodes,
         float alpha = 1.0f;
         PBR::readFloatByName(ref, L"alpha", t, alpha);
         pe.segmentAlpha[0] = alpha;
+
+        // Animation tracks. The static values above are the t=0 samples of
+        // these same params; the builder writes both, exactly as Blizzard's
+        // own CORN chunks carry a base value next to each track.
+        pe.emissionRateTrackIndex = extractCornFloatTrack(ref, L"emissionRate", model);
+        pe.speedTrackIndex        = extractCornFloatTrack(ref, L"speed", model);
+        pe.lifespanTrackIndex     = extractCornFloatTrack(ref, L"lifeSpan", model);
+        pe.alphaTrackIndex        = extractCornFloatTrack(ref, L"alpha", model);
+        pe.colorTrackIndex        = extractCornColorTrack(ref, L"baseColor", model);
+        // KPPV — the importer materialises it as the node's own visibility
+        // track, so this is where it has to come back from.
+        pe.visibilityTrackIndex   = extractVisibilityTrack(sn.maxNode, model);
 
         model.particleEmitters.push_back(std::move(pe));
     }

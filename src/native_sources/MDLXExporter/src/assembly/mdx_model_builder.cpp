@@ -743,6 +743,18 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             corn.color = Vector3f(irPe.segmentColors[0].r, irPe.segmentColors[0].g,
                                   irPe.segmentColors[0].b);
             corn.alpha = irPe.segmentAlpha[0];
+
+            // KPPL / KPPE / KPPS / KPPC / KPPA / KPPV. Field names on
+            // CornEmitter match their chunks — `lifeSpanTracks` really is
+            // KPPL and `alphaTracks` really is KPPA (an earlier WhiteoutLib
+            // revision had those two crossed, so map by chunk, not by name).
+            corn.lifeSpanTracks     = getFloatTrack(ir, irPe.lifespanTrackIndex);
+            corn.emissionRateTracks = getFloatTrack(ir, irPe.emissionRateTrackIndex);
+            corn.speedTracks        = getFloatTrack(ir, irPe.speedTrackIndex);
+            corn.colorTracks        = getColorTrack(ir, irPe.colorTrackIndex);
+            corn.alphaTracks        = getFloatTrack(ir, irPe.alphaTrackIndex);
+            corn.visibilityTracks   = getFloatTrack(ir, irPe.visibilityTrackIndex);
+
             model.cornEmitters.push_back(std::move(corn));
         }
     }

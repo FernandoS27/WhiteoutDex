@@ -1120,6 +1120,10 @@ void MdxModelDisassembler::mapCornEmitters(const wdx::Model& mdx, ir::IRModel& i
         irPE.replaceableId = static_cast<int32_t>(corn.replaceableId);
         irPE.modelPath = corn.path;
         irPE.animVisibilityGuide = corn.animVisibilityGuide;
+        // Base color / alpha ride in segmentColors[0] / segmentAlpha[0] for
+        // variant 3 — the same slots wc3_popcorn_extractor reads back out.
+        irPE.segmentColors[0] = Color(corn.color.x, corn.color.y, corn.color.z);
+        irPE.segmentAlpha[0] = corn.alpha;
         // Carry the Popcorn-relevant Node flag bits straight through. The
         // builder reads them as `flagUnshaded` (0x8000), `flagUnfogged`
         // (0x20000) and `flagScaling` (0x40000) on the Wc3Popcorn helper.
@@ -1142,6 +1146,12 @@ void MdxModelDisassembler::mapCornEmitters(const wdx::Model& mdx, ir::IRModel& i
         if (corn.colorTracks.isUsed)
             irPE.colorTrackIndex = storeColorTrack(ir,
                 mapColorTrack(corn.colorTracks));
+        // KPPA. WhiteoutLib used to land this chunk in `lifeSpanTracks`; the
+        // parser now routes it to its own field, so read it by name and keep
+        // it off the lifespan slot (KPPL) it used to collide with.
+        if (corn.alphaTracks.isUsed)
+            irPE.alphaTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(corn.alphaTracks));
 
         ir.particleEmitters.push_back(std::move(irPE));
     }

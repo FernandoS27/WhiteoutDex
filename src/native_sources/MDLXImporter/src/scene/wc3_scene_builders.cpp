@@ -1232,7 +1232,15 @@ void Wc3PopcornBuilder::buildPopcorn(
             pbSetFloat(ref, L"LifeSpan", irPE.lifespan);
             pbSetFloat(ref, L"EmissionRate", irPE.emissionRate);
             pbSetFloat(ref, L"Speed", irPE.speed);
-            pbSetFloat(ref, L"alpha", 1.0f);
+            // Base color / alpha — CORN carries both as static fields next to
+            // their KPPC / KPPA tracks. The disassembler parks them in
+            // segmentColors[0] / segmentAlpha[0]; alpha used to be hardcoded
+            // to 1.0 here, which silently discarded the file's value.
+            pbSetFloat(ref, L"alpha", irPE.segmentAlpha[0]);
+            pbSetColor(ref, L"baseColor", irPE.segmentColors[0]);
+            // YS_baseColor is the plugin's hidden mirror of baseColor — the
+            // rollout keeps the two in lockstep, so seed it the same way.
+            pbSetColor(ref, L"YS_baseColor", irPE.segmentColors[0]);
             // Replaceable texture and team color are not used by Popcorn
             // emitters at runtime — intentionally not written here.
             // Render flags: NodeFlag bits 0x8000 Unshaded / 0x20000
@@ -1310,40 +1318,72 @@ std::vector<Wc3CameraBuilder::CameraNodePair> Wc3CameraBuilder::buildCameras(
     std::vector<INode*> allCamNodes;
 
     for (const auto& irCam : irModel.cameras) {
-        // Create camera + target via MaxScript — SDK's LOOKAT_CAM_CLASS_ID + SetTarget
-        // doesn't wire the LookAt controller properly; MaxScript Targetcamera does.
+        // Camera + target are built straight through the SDK. An earlier
+        // revision drove MaxScript (`Targetcamera ... target:(Targetobject ...)`,
+        // the NeoDex idiom) and then fished the nodes back out of the scene
+        // with GetINodeByName — that lookup returned null during import and
+        // every camera was silently dropped. CreateCameraObject +
+        // CreateTargetObject + BindToTarget is the documented SDK sequence
+        // (maxsdk/howto/import_export/asciiimp) and hands us the INode*
+        // directly, so there is nothing left to look up.
         std::wstring wname = toWstr(irCam.name);
+        if (wname.empty()) wname = L"Camera";
 
-        wchar_t script[2048];
-        swprintf_s(script, 2048,
-            L"(\n"
-            L"local tgt = Targetobject transform:(matrix3 [1,0,0] [0,1,0] [0,0,1] [%g,%g,%g])\n"
-            L"tgt.name = \"%s_Target\"\n"
-            L"local cam = Targetcamera fov:(radToDeg %g) nearclip:%g farclip:%g pos:[%g,%g,%g] target:tgt\n"
-            L"cam.name = \"%s\"\n"
-            L"true\n"
-            L")",
-            irCam.targetPosition.x, irCam.targetPosition.y, irCam.targetPosition.z,
-            wname.c_str(),
-            irCam.fov, irCam.nearClip, irCam.farClip,
-            irCam.position.x, irCam.position.y, irCam.position.z,
-            wname.c_str());
-
-        ExecuteMAXScriptScript(script,
-#if MAX_PRODUCT_YEAR_NUMBER >= 2022
-            MAXScript::ScriptSource::NonEmbedded,
-#endif
-            TRUE, nullptr);
-
-        // Look up created nodes by name
-        std::wstring tgtName = wname + L"_Target";
-        INode* camNode = gi->GetINodeByName(wname.c_str());
-        INode* targetNode = gi->GetINodeByName(tgtName.c_str());
-
-        if (!camNode) {
-            reporter.warning(L"Failed to create camera '" + wname + L"'");
+        GenCamera* camObj = gi->CreateCameraObject(TARGETED_CAMERA);
+        if (!camObj) {
+            reporter.warning(L"Failed to create camera object '" + wname + L"'");
+            PopLog("[Camera] CreateCameraObject failed");
             result.push_back({});
             continue;
+        }
+
+        INode* camNode = gi->CreateObjectNode(camObj);
+        if (!camNode) {
+            reporter.warning(L"Failed to create camera node '" + wname + L"'");
+            PopLog("[Camera] CreateObjectNode failed");
+            camObj->DeleteThis();
+            result.push_back({});
+            continue;
+        }
+        camNode->SetName(wname.c_str());
+
+        // Target object + LookAt controller. BindToTarget is what actually
+        // wires the controller — INode::SetTarget only stores the pointer.
+        INode* targetNode = nullptr;
+        if (Object* targObj = gi->CreateTargetObject()) {
+            targetNode = gi->CreateObjectNode(targObj);
+            if (targetNode) {
+                gi->BindToTarget(camNode, targetNode);
+                targetNode->SetName((wname + L"_Target").c_str());
+                Matrix3 targetTM;
+                targetTM.IdentityMatrix();
+                targetTM.SetTrans(irCam.targetPosition);
+                targetNode->SetNodeTM(0, targetTM);
+            } else {
+                targObj->DeleteThis();
+            }
+        }
+
+        Matrix3 camTM;
+        camTM.IdentityMatrix();
+        camTM.SetTrans(irCam.position);
+        camNode->SetNodeTM(0, camTM);
+
+        // GenCamera works in radians, the same unit ir::Camera carries and
+        // the same unit CameraExtractor::extract reads back on export.
+        // Clip distances are stored but manual clipping stays off, matching
+        // what the MaxScript `nearclip:`/`farclip:` creation params did.
+        camObj->SetFOV(0, irCam.fov);
+        camObj->SetClipDist(0, CAM_HITHER_CLIP, irCam.nearClip);
+        camObj->SetClipDist(0, CAM_YON_CLIP, irCam.farClip);
+        camObj->Enable(TRUE);
+
+        {
+            std::ostringstream ss;
+            ss << "[Camera] created '" << irCam.name << "' fov=" << irCam.fov
+               << " near=" << irCam.nearClip << " far=" << irCam.farClip
+               << " target=" << (targetNode ? "yes" : "no");
+            PopLog(ss.str());
         }
 
         result.push_back({ camNode, targetNode });

@@ -3212,11 +3212,15 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                     if (!track.empty()) {
                         Control* rollCtrl = createFloatController(track);
                         if (rollCtrl) {
-                            // Camera sub-anim layout: [0]=Node, [1]=Material, [2]=CameraObject
-                            // CameraObject sub-anims: [0]=FOV, [1]=Roll Angle
-                            Animatable* camSubAnim = pair.cameraNode->SubAnim(2); // Camera object
-                            if (camSubAnim) {
-                                Animatable* rollSubAnim = camSubAnim->SubAnim(1); // Roll angle
+                            // Roll lives on the LookAt TM controller, not on
+                            // the camera object (a Targetcamera has no
+                            // `.rotation` at all). Verified sub-anim layout:
+                            //   node      → [0]visibility [1]spaceWarps
+                            //               [2]transform  [3]object [4]material
+                            //   lookat TM → [0]position [1]roll_angle [2]scale
+                            Animatable* tmSubAnim = pair.cameraNode->SubAnim(2); // transform (lookat)
+                            if (tmSubAnim) {
+                                Animatable* rollSubAnim = tmSubAnim->SubAnim(1); // roll_angle
                                 if (rollSubAnim) {
                                     rollSubAnim->AssignController(rollCtrl, 0);
                                     ILOG << "  cam[" << ci << "] KCRL keys=" << track.keys.size() << "\n";
@@ -4052,6 +4056,36 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 animateFloatPB(pb, P2_PB_INITVEL,    pe.emissionRateTrackIndex, irModel);
                 animateFloatPB(pb, P2_PB_WIDTH,      pe.widthTrackIndex, irModel);
                 animateFloatPB(pb, P2_PB_HEIGHT,     pe.lengthTrackIndex, irModel);
+            }
+
+            // Corn / Popcorn FX (variant 3): KPPE, KPPS, KPPL, KPPA, KPPC.
+            //
+            // Wc3Popcorn is a scripted simpleManipulator, so paramblock
+            // controller assignment is as unreliable as it is for Wc3Light —
+            // use the same MaxScript *NamedScript route. Param names must
+            // match Popcorn.ms (and max_scene_adapter, which samples all five
+            // at time t, so the renderer picks the animation up for free).
+            //
+            // KPPV is deliberately absent: the visibility pass above already
+            // materialises it as the node's own visibility track.
+            for (const auto& pe : irModel.particleEmitters) {
+                if (pe.variant != 3) continue;
+                if (pe.nodeIndex < 0 || pe.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
+                    continue;
+                INode* cornNode = nodeMap[pe.nodeIndex];
+                if (!cornNode) continue;
+                ILOG << "  Corn node[" << pe.nodeIndex << "] '"
+                     << narrow(cornNode->GetName()) << "' (via MaxScript)"
+                     << " KPPE=" << pe.emissionRateTrackIndex
+                     << " KPPS=" << pe.speedTrackIndex
+                     << " KPPL=" << pe.lifespanTrackIndex
+                     << " KPPA=" << pe.alphaTrackIndex
+                     << " KPPC=" << pe.colorTrackIndex << "\n";
+                animateFloatNamedScript(cornNode, L"emissionRate", pe.emissionRateTrackIndex, irModel);
+                animateFloatNamedScript(cornNode, L"speed",        pe.speedTrackIndex, irModel);
+                animateFloatNamedScript(cornNode, L"lifeSpan",     pe.lifespanTrackIndex, irModel);
+                animateFloatNamedScript(cornNode, L"alpha",        pe.alphaTrackIndex, irModel);
+                animateColorNamedScript(cornNode, L"baseColor",    pe.colorTrackIndex, irModel);
             }
 
             // Ribbons: heightAbove, heightBelow, alpha, color, textureSlot
