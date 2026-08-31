@@ -12,7 +12,6 @@
 /// @{
 HINSTANCE hInstance = nullptr;
 static MCHAR s_stringBuf[256];
-constexpr UINT_PTR kCascPollTimerID = 42;
 
 static Wc3Particles2ClassDesc        snowDesc;
 static EmitterCreateCallback    emitterCallback;
@@ -626,6 +625,125 @@ void Wc3Particles2DlgProc::BrowseForMdlFile(HWND hWnd)
     }
 }
 
+void Wc3Particles2DlgProc::ApplyTexturePath(HWND hWnd, const MCHAR* relPath)
+{
+    if (!relPath)
+        return;
+
+    // The exporter concatenates prefix + file verbatim
+    // (wc3_particle2_extractor.cpp), so a picked path splits at its last
+    // separator: everything through it is the prefix, the rest is the file.
+    // Forward slashes are folded first — MDL sometimes quotes them, and the
+    // prefix has to come back out of here spelled the way MDX stores it.
+    std::wstring full(relPath);
+    std::replace(full.begin(), full.end(), L'/', L'\\');
+    const size_t sep = full.find_last_of(L'\\');
+    const std::wstring prefix = (sep == std::wstring::npos) ? std::wstring()
+                                                            : full.substr(0, sep + 1);
+    const std::wstring name = (sep == std::wstring::npos) ? full : full.substr(sep + 1);
+
+    po->m_texturePrefix = prefix.c_str();
+    po->m_particlePath  = name.c_str();
+
+    ICustEdit* cePrefix = GetICustEdit(GetDlgItem(hWnd, IDC_EDIT_PATH_PREFIX));
+    if (cePrefix) {
+        cePrefix->SetText(const_cast<MCHAR*>(prefix.c_str()));
+        ReleaseICustEdit(cePrefix);
+    }
+    ICustEdit* ceName = GetICustEdit(GetDlgItem(hWnd, IDC_CUSTOMEDIT_PATH));
+    if (ceName) {
+        ceName->SetText(const_cast<MCHAR*>(name.c_str()));
+        ReleaseICustEdit(ceName);
+    }
+}
+
+void Wc3Particles2DlgProc::BrowseTextureFromArchives(HWND hWnd)
+{
+    // Same route as Wc3Particles1's model browse: the picker lives in
+    // MaxScript because it drives the storage-browser primitives registered by
+    // WhiteoutDexRenderer.dlx, and this .dlo links neither.
+    //
+    // An earlier revision drove the Texture Browser's modeless .NET form —
+    // it parked a receiver in ::WhiteoutDexTexBrowserTarget, hung a
+    // "TextureApply" handler off ::WhiteoutDexTexBrowser.form and polled a
+    // global back out of a WM_TIMER. The Texture Browser is a modal picker
+    // now (WhiteoutDexTextureBrowserHelper.ms): no `form`, no TextureApply,
+    // so the poll never saw anything and the file field stayed empty. Ask the
+    // picker directly instead and take its answer synchronously.
+    //
+    // The script answers with a one-character tag so "not installed" and
+    // "user cancelled" stay distinguishable — both come back as no path
+    // otherwise.
+    //
+    //   "N"        the browser script isn't loaded
+    //   "C"        cancelled
+    //   "P<path>"  picked; <path> is the archive-relative path MDX stores
+    std::wstring initial;
+    if (po->m_texturePrefix.length() > 0)
+        initial += po->m_texturePrefix.data();
+    if (po->m_particlePath.length() > 0)
+        initial += po->m_particlePath.data();
+    // The file field can hold an absolute disk path — "Import Particle
+    // Texture" puts one there, and so does an import whose texture was
+    // resolved on disk. That is not something the archive picker can open on,
+    // so drop it and let the picker resume where it left off.
+    if (initial.find(L':') != std::wstring::npos)
+        initial.clear();
+
+    // MaxScript string literals take backslash escapes, and asset paths are
+    // all backslash — without this "ReplaceableTextures\nightelf..." reaches
+    // the parser as "ReplaceableTextures<newline>ightelf...".
+    std::wstring initialEsc;
+    initialEsc.reserve(initial.size() * 2);
+    for (wchar_t c : initial) {
+        if (c == L'\\' || c == L'"')
+            initialEsc.push_back(L'\\');
+        initialEsc.push_back(c);
+    }
+
+    // Both locals declared up front, at the head of the outer block — the
+    // shape MaxScript wants for an executed expression.
+    const std::wstring script =
+        L"(local r = \"N\"; local p = undefined;"
+        L" if ::WhiteoutDexModelBrowser != undefined do ("
+        L"   p = ::WhiteoutDexModelBrowser.pickTexture initial:\"" + initialEsc +
+        L"\" caption:\"Select a Particle Texture\";"
+        L"   r = if p == undefined then \"C\" else (\"P\" + p)"
+        L" );"
+        L" r)";
+
+    FPValue result;
+    result.type = TYPE_VOID;
+    BOOL ok = FALSE;
+    try {
+        ok = ExecuteMAXScriptScript(
+            const_cast<wchar_t*>(script.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE,   // quietErrors: a failure here is reported below, not by a listener pop-up
+            &result);
+    } catch (...) {
+        ok = FALSE;
+    }
+
+    if (!ok || result.type != TYPE_STRING || !result.s || !result.s[0] ||
+        result.s[0] == _M('N')) {
+        MessageBox(hWnd,
+                   _T("The WhiteoutDex asset browser is not available.\n\n")
+                   _T("It ships as WhiteoutDexModelBrowser.ms and needs ")
+                   _T("WhiteoutDexRenderer.dlx loaded. Use \"Import Particle ")
+                   _T("Texture\" to pick a file off disk instead."),
+                   _T("WhiteoutDex"), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    if (result.s[0] != _M('P'))
+        return; // cancelled
+
+    ApplyTexturePath(hWnd, result.s + 1);
+}
+
 static const TexCategoryEntry s_texCategories[] = {
     { L"No Replaceable", 0 },
     { L"TeamColor",      1 },
@@ -795,23 +913,8 @@ INT_PTR Wc3Particles2DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
         if (hiWord == BN_CLICKED || hiWord == 0) {
             if (LOWORD(wParam) == IDC_BUTTON_BROWSE || LOWORD(wParam) == IDC_BUTTON_IMPORT_TEX)
                 BrowseForMdlFile(hWnd);
-            else if (LOWORD(wParam) == IDC_BUTTON_BROWSE_CASC) {
-                SetTimer(hWnd, kCascPollTimerID, 500, NULL);
-                ExecuteMAXScriptScript(
-                    _M("global __wc3p2_texResult = undefined\n"
-                       "fn __wc3p2CB s e = (::__wc3p2_texResult = e.ArchivePath)\n"
-                       "struct __Wc3p2R (texture=\"\", path=\"\")\n"
-                       "global __wc3p2_recv = __Wc3p2R()\n"
-                       "::WhiteoutDexTexBrowserTarget = #(::__wc3p2_recv, \"particle_texture\")\n"
-                       "::WhiteoutDexTexBrowserInitCategory = 4\n"
-                       "::WhiteoutDexTexBrowser.show()\n"
-                       "if ::WhiteoutDexTexBrowser.form != undefined do "
-                       "dotNet.addEventHandler ::WhiteoutDexTexBrowser.form \"TextureApply\" __wc3p2CB\n"),
-#if MAX_PRODUCT_YEAR_NUMBER >= 2022
-                    MAXScript::ScriptSource::NonEmbedded,
-#endif
-                    FALSE);
-            }
+            else if (LOWORD(wParam) == IDC_BUTTON_BROWSE_CASC)
+                BrowseTextureFromArchives(hWnd);
             return TRUE;
         }
         if (hiWord == CBN_SELCHANGE) {
@@ -884,65 +987,6 @@ INT_PTR Wc3Particles2DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
         break;
     }
 
-    case WM_TIMER:
-    {
-        if (wParam == kCascPollTimerID) {
-            // Poll archive path from our custom TextureApply handler
-            FPValue result;
-            BOOL ok = ExecuteMAXScriptScript(
-                _M("if ::__wc3p2_texResult != undefined do ("
-                   "local r = ::__wc3p2_texResult;"
-                   "::__wc3p2_texResult = undefined;"
-                   "r)"),
-#if MAX_PRODUCT_YEAR_NUMBER >= 2022
-                MAXScript::ScriptSource::NonEmbedded,
-#endif
-                TRUE, &result);
-            if (ok && result.type == TYPE_STRING && result.s != nullptr && result.s[0] != 0) {
-                // result.s = archive path, e.g. "Textures/Fireball.blp"
-                // Extract just the filename for m_particlePath
-                std::wstring ws(result.s);
-                // Normalize forward slashes to backslashes
-                for (auto& ch : ws)
-                    if (ch == L'/') ch = L'\\';
-                // Find last backslash to split dir/filename
-                auto lastSlash = ws.rfind(L'\\');
-                MSTR filename = (lastSlash != std::wstring::npos)
-                    ? MSTR(ws.c_str() + lastSlash + 1)
-                    : MSTR(ws.c_str());
-                MSTR dirPart;
-                if (lastSlash != std::wstring::npos) {
-                    dirPart = MSTR(ws.substr(0, lastSlash + 1).c_str());
-                }
-
-                po->m_particlePath = filename;
-                ICustEdit* ce = GetICustEdit(GetDlgItem(hWnd, IDC_CUSTOMEDIT_PATH));
-                if (ce) {
-                    ce->SetText(filename.data());
-                    ReleaseICustEdit(ce);
-                }
-
-                // Update prefix from _ntbAssignToSlot (AutoPrefixPath)
-                // or from the directory part of the archive path
-                if (dirPart.length() > 0) {
-                    po->m_texturePrefix = dirPart;
-                    ICustEdit* ceP = GetICustEdit(GetDlgItem(hWnd, IDC_EDIT_PATH_PREFIX));
-                    if (ceP) {
-                        ceP->SetText(dirPart.data());
-                        ReleaseICustEdit(ceP);
-                    }
-                }
-
-                // Timer keeps running for subsequent selections;
-                // cleaned up in WM_DESTROY when rollup closes.
-            }
-        }
-        return TRUE;
-    }
-
-    case WM_DESTROY:
-        KillTimer(hWnd, kCascPollTimerID);
-        break;
     }
     return FALSE;
 }
