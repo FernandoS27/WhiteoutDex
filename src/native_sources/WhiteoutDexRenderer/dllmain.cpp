@@ -524,6 +524,15 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
     // its own evaluation pass and let EvalFromMax push the cursor instead.
     g_actor->role = whiteout::flakes::renderer::model::ActorRole::External;
 
+    {
+        using whiteout::flakes::ProductId;
+        if (g_scene->Product() != ProductId::Wc3) {
+            g_scene->SetProduct(ProductId::Wc3);
+            g_renderer->Settings().MarkRenderModeDirty();
+        }
+        g_renderer->EnsureWc3GameData();
+    }
+
     // Pick HD vs SD by walking the adapter's freshly extracted materials.
     // `Actor::PreferredRenderMode()` would be the natural choice, but the
     // ModelLoader::AddModel path (used by SpawnUnitFromSource) never

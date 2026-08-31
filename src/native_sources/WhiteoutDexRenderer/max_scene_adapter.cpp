@@ -1987,7 +1987,10 @@ std::vector<CornEmitterInit> MaxSceneAdapter::GetCornEmitterInits() {
         CornEmitterInit init;
         init.emitterId = pi.emitterId;
         init.pkbPath = pi.pkbPath;
-        init.animVisibilityGuide = pi.animVisibilityGuide;
+        // Deliberately NOT forwarding pi.animVisibilityGuide. The guide is
+        // evaluated adapter-side in Evaluate() (EvaluateGuideForSequence
+        // against sequenceRanges_) and shipped as CornFrameState::visibility,
+        init.animVisibilityGuide.clear();
         init.replaceableId = pi.replaceableId;
         mprintf(_M("  [Popcorn emitterId=%d] pkb='%hs' guide='%hs' replId=%d\n"),
                 pi.emitterId, pi.pkbPath.c_str(),
