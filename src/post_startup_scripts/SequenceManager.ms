@@ -1430,17 +1430,17 @@ struct WdxSequenceManager
 
 							-- Plugin-Params: alle bekannten animatable Properties durchprobieren.
 							-- Klassen-unabhaengig: try/catch macht unbekannte Props harmlos.
-							-- Deckt sowohl alte (BlizzParticle1, Wdx_Light) als auch neue Plugin-Varianten
+							-- Deckt sowohl alte (Wc3Particles1, Wdx_Wc3Light) als auch neue Plugin-Varianten
 							-- (Wc3Particles1Emitter, Wc3Particles2Emitter, RibbonObj) ab.
 							try
 							(
 								local bo = obj.baseObject
 								local pluginParams = #(
-									-- Light (Wdx_Light / Wdx_Wc3Light)
+									-- Light (Wdx_Wc3Light / Wdx_Wc3Light)
 									"DecayStart", "DecayEnd", "AmbColor", "AmbValue", "ShadowColor", "ShadowValue",
 									-- AttachPoint (Wdx_Wc3AttachPoint)
 									"A_Visibility",
-									-- BlizzParticle1 (legacy)
+									-- Wc3Particles1 (legacy)
 									"radius", "PartEmit",
 									-- Wc3Particles1Emitter (C++ verifiziert)
 									"Speed", "EmissionRate", "Gravity", "Latitude", "Longitude",
@@ -1448,7 +1448,7 @@ struct WdxSequenceManager
 									-- speed, variation, width, length, Parts_Sec, Cone_Angle, gravity
 									-- (Speed und Gravity sind bereits oben gelistet)
 									"Variation", "Parts_Sec", "Cone_Angle", "width", "length",
-									-- BlizzParticle2 legacy size/scale-Tracks (falls vorhanden)
+									-- Wc3Particles2 legacy size/scale-Tracks (falls vorhanden)
 									"startscale", "middlescale", "endscale", "taillength",
 									-- BlizRibbon legacy
 									"slots", "Above", "Below", "vertexcolor", "alpha",
@@ -1479,7 +1479,7 @@ struct WdxSequenceManager
 							try
 							(
 								local boCls = (classOf obj.baseObject) as string
-								if boCls == "Wdx_Wc3Event" or boCls == "Wdx_Event" or boCls == "Wc3_Event" do
+								if boCls == "Wdx_Wc3Event" or boCls == "Wdx_Wc3Event" or boCls == "Wc3_Event" do
 								(
 									try
 									(

@@ -1143,9 +1143,9 @@ struct WdxAnimTools
             local cn = (classOf obj) as string
             if cn == "BoneGeometry" or cn == "Biped_Object" do return false
             if cn == "CATParent" or cn == "CATBone" or cn == "HubObject" or cn == "IKTarget" do return false
-            if cn == "BlizzParticle1" or cn == "BlizzParticle2" or cn == "BlizRibbon" do return false
+            if cn == "Wc3Particles1" or cn == "Wc3Particles2" or cn == "BlizRibbon" do return false
             if cn == "Wdx_CollisionSphere" or cn == "Wdx_CollisionBox" or cn == "Wc3CollisionCylinder" do return false
-            if cn == "Wdx_Light" or cn == "Wdx_Popcorn" do return false
+            if cn == "Wdx_Wc3Light" or cn == "Wdx_Wc3Popcorn" do return false
             true
         )
         fn measureMeshHeight =
@@ -1177,16 +1177,16 @@ struct WdxAnimTools
             for obj in objects do
             (
                 local cn = (classOf obj) as string
-                if cn == "BlizzParticle2" do
+                if cn == "Wc3Particles2" do
                 ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.speed *= factor)catch(); try(obj.gravity *= factor)catch(); try(obj.startscale *= factor)catch(); try(obj.middlescale *= factor)catch(); try(obj.endscale *= factor)catch(); try(obj.taillength *= factor)catch(); count += 1 )
-                if cn == "BlizzParticle1" do
+                if cn == "Wc3Particles1" do
                 ( try(obj.radius *= factor)catch(); try(obj.Gravity *= factor)catch(); count += 1 )
                 if cn == "BlizRibbon" do
                 ( try(obj.Above *= factor)catch(); try(obj.Below *= factor)catch(); try(obj.gravity *= factor)catch(); count += 1 )
                 if cn == "Wdx_CollisionSphere" do ( try(obj.radius *= factor)catch(); count += 1 )
                 if cn == "Wdx_CollisionBox" do ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.height *= factor)catch(); count += 1 )
-                if cn == "Wdx_Light" do ( try(obj.DS_Spn *= factor)catch(); try(obj.DE_Spn *= factor)catch(); count += 1 )
-                if cn == "Wdx_Popcorn" do ( try(obj.speed *= factor)catch(); count += 1 )
+                if cn == "Wdx_Wc3Light" do ( try(obj.DS_Spn *= factor)catch(); try(obj.DE_Spn *= factor)catch(); count += 1 )
+                if cn == "Wdx_Wc3Popcorn" do ( try(obj.speed *= factor)catch(); count += 1 )
             )
             count
         )

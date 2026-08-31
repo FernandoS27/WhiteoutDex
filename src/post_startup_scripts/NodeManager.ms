@@ -7,13 +7,13 @@ struct WdxNodeManager
 	(
 		-- Detection functions
 		fn isGeometry o = classof o == Editable_Mesh
-		fn isAttachmentPoint o = ((classof o) as string == "Wdx_AttachPoint")
+		fn isAttachmentPoint o = ((classof o) as string == "Wdx_Wc3AttachPoint")
 		fn isCollisionShape o = ((classof o) as string == "Wdx_CollisionBox") or ((classof o) as string == "Wdx_CollisionSphere")
-		fn isEventObject o = ((classof o) as string == "Wdx_Event")
-		fn isParticle1 o = ((classof o) as string == "BlizzParticle1")
-		fn isParticle2 o = ((classof o) as string == "BlizzParticle2")
+		fn isEventObject o = ((classof o) as string == "Wdx_Wc3Event")
+		fn isParticle1 o = ((classof o) as string == "Wc3Particles1")
+		fn isParticle2 o = ((classof o) as string == "Wc3Particles2")
 		fn isRibbon o = ((classof o) as string == "BlizRibbon")
-		fn isPopcorn o = ((classof o) as string == "Wdx_Popcorn")
+		fn isPopcorn o = ((classof o) as string == "Wdx_Wc3Popcorn")
 		fn isFaceFX o = ((classof o) as string == "Wdx_FaceFX")
 		fn isBipedBone o = classof o == Biped_Object
 		fn isCATBone o =
@@ -35,7 +35,7 @@ struct WdxNodeManager
 				and not (isRibbon o) \
 				and not (isPopcorn o) \
 				and not (isFaceFX o) \
-				and not (((classof o) as string) == "Wdx_Light") \
+				and not (((classof o) as string) == "Wdx_Wc3Light") \
 			then return true
 			false
 		)
@@ -98,7 +98,7 @@ struct WdxNodeManager
 			if eventsCheck.checked then
 				join result (for o in objects where isEventObject o collect o)
 			if lightsCheck.checked then
-				join result (for o in objects where ((classof o) as string == "Wdx_Light") collect o)
+				join result (for o in objects where ((classof o) as string == "Wdx_Wc3Light") collect o)
 			if camerasCheck.checked then
 				join result (for o in objects where isCamera o collect o)
 			if particle1Check.checked then

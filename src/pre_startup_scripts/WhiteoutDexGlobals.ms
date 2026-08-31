@@ -624,7 +624,7 @@ struct WhiteoutDexRendererStruct
 	(
 		local result = #()
 		for h in helpers do
-			if (not h.isHidden) and (classof h) == BlizzParticle2 then
+			if (not h.isHidden) and (classof h) == Wc3Particles2 then
 				append result h
 		result
 	),

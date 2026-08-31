@@ -1,5 +1,5 @@
 
-plugin simpleManipulator Wdx_Wc3FaceFX
+plugin simpleManipulator Wdx_FaceFX
 name:"Wc3 FaceFX"
 classID:#(0x7A1B2C08, 0x3D4E5F08)
 category:"Warcraft III Plugins"
