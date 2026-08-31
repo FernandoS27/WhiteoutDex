@@ -19,10 +19,20 @@
 #include "io/storage_browser.h" // io::BrowseType
 
 #include <string>
+#include <vector>
 
 #include <windows.h>
 
 namespace whiteout::flakes {
+
+/// One install to offer by name in the picker's File menu. Mirrors
+/// tools::NamedRoot, and is repeated here so this header - the one the
+/// MaxScript primitives include - does not have to pull in the whole
+/// StorageExplorer (and with it RenderService, the thumbnail pool and gfx).
+struct AssetPickerRoot {
+    std::string label; ///< "Warcraft III Reforged"
+    std::string root;  ///< the install directory
+};
 
 struct AssetPickResult {
     bool accepted = false;
@@ -40,11 +50,25 @@ struct AssetPickResult {
 /// Show the picker and block until the user chooses or closes it.
 ///
 /// @param title       window caption
-/// @param types       which file types to list (io::BrowseType::Models, Effects, …)
-/// @param cascRoot    Warcraft III install root to open
+/// @param types       which file types to list (io::BrowseType::Models,
+///                    Effects, Textures, …)
+/// @param cascRoot    Warcraft III install root — either generation, CASC or a
+///                    directory of MPQs
 /// @param initialRel  a relative path to reveal on open; "" starts at the root
+/// @param initialFilter  text to seed the panel's search box with, in
+///                    io::MatchesFilter syntax. What a caller that knows more
+///                    than the type mask does with it: a material's normal-map
+///                    slot opens on `_normal` rather than on every texture the
+///                    game ships. "" leaves the box empty.
+/// @param roots       installs to list by name at the top of the File menu, so
+///                    a machine with both generations of Warcraft III can be
+///                    switched between in one click. `cascRoot` is still what
+///                    opens; these are the alternatives. Empty leaves the menu
+///                    with just the folder picker.
 AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
-                               const std::string& cascRoot, const std::string& initialRel);
+                               const std::string& cascRoot, const std::string& initialRel,
+                               const std::string& initialFilter = {},
+                               const std::vector<AssetPickerRoot>& roots = {});
 
 /// Parks the preview render window for as long as it is alive, and disables it
 /// so the user cannot drive a window that has stopped drawing.

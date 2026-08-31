@@ -125,7 +125,9 @@ std::filesystem::path PluginDirectory() {
 } // namespace
 
 AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
-                               const std::string& cascRoot, const std::string& initialRel) {
+                               const std::string& cascRoot, const std::string& initialRel,
+                               const std::string& initialFilter,
+                               const std::vector<AssetPickerRoot>& roots) {
     AssetPickResult out;
 
     // Park the preview for the duration, if it is up: two ImGui contexts may
@@ -139,6 +141,15 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
                     "Settings first.";
         return out;
     }
+
+    // What the empty-selection hint calls the thing being picked. Derived from
+    // the type mask rather than the caption so it stays right when a caller
+    // passes a title of its own.
+    const char* noun = "model";
+    if (types == io::BrowseType::Effects)
+        noun = "particle effect";
+    else if (types == io::BrowseType::Textures)
+        noun = "texture";
 
     Interface* ip = GetCOREInterface();
     HWND owner = ip ? GetAncestor(ip->GetMAXHWnd(), GA_ROOT) : nullptr;
@@ -257,11 +268,27 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
 
     // ---- The explorer panel ------------------------------------------------
     auto explorer = std::make_unique<tools::StorageExplorer>(*svc);
-    // Lock the game/type row: the caller asked for models or for effects, and
-    // a picker that lets you switch to another game mid-pick would hand back a
-    // path the resource cannot store. The search box, zoom and Grid/Tree
+    // Lock the game/type row: the caller asked for models, effects or textures,
+    // and a picker that lets you switch to another game mid-pick would hand
+    // back a path the resource cannot store. The search box, zoom and Grid/Tree
     // switch are part of the browser itself and stay.
     explorer->SetFilterUIVisible(false);
+    // Before the open, because this narrows the WALK and not just the listing.
+    // It matters most for textures: a Warcraft III install holds an order of
+    // magnitude more of them than models, and a picker that walked all of both
+    // would pay for the half it is about to hide.
+    explorer->SetOpenTypes(types);
+    // The installs the host resolved out of its own settings. The panel's game
+    // combo is hidden here (SetFilterUIVisible above), and would not have found
+    // the second Warcraft III anyway - it asks the game finder for one path per
+    // product, and a machine with Reforged AND a classic downgrade has two.
+    if (!roots.empty()) {
+        std::vector<tools::NamedRoot> named;
+        named.reserve(roots.size());
+        for (const AssetPickerRoot& r : roots)
+            named.push_back(tools::NamedRoot{r.label, r.root});
+        explorer->SetNamedRoots(std::move(named));
+    }
 
     std::string activated; // set by a double-click
     explorer->SetOnActivate([&](const tools::ActivatedFile& f) {
@@ -269,19 +296,24 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
         st.done = true;
     });
 
-    if (!explorer->OpenCasc(cascRoot)) {
+    // OpenStorage, not OpenCasc: a Reforged install is CASC and a 1.2x one is a
+    // directory of MPQs, and the settings INI holds whichever the user has.
+    if (!explorer->OpenStorage(cascRoot)) {
         const std::string err = explorer->LastError();
         explorer.reset();
         svc->Pipeline().Shutdown();
         shutdownImGui();
         teardownWindow();
-        out.error = err.empty() ? ("Could not open the CASC storage at '" + cascRoot + "'.") : err;
+        out.error =
+            err.empty() ? ("Could not open the Warcraft III storage at '" + cascRoot + "'.") : err;
         return out;
     }
     // Only now: SetEnabledTypes clamps against what the open storage actually
     // holds, so before the open it would clamp to nothing. StorageBrowser::Open
     // enables the game's full set, which is what we narrow here.
     explorer->SetBrowseTypes(types);
+    if (!initialFilter.empty())
+        explorer->SetSearchText(initialFilter);
     if (!initialRel.empty())
         explorer->NavigateTo(ParentFolder(initialRel));
 
@@ -362,7 +394,7 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
             ImGui::TextUnformatted("Selected:");
             ImGui::SameLine();
             if (rel.empty())
-                ImGui::TextDisabled("(nothing — click a model, or double-click to pick it)");
+                ImGui::TextDisabled("(nothing — click a %s, or double-click to pick it)", noun);
             else
                 ImGui::TextUnformatted(rel.c_str());
 

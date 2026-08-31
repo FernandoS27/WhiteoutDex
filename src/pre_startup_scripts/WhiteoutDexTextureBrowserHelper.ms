@@ -917,33 +917,66 @@ else
 
 
 /* ============================================================================
-   SECTION 5: TEXTURE BROWSER (Native Form)
-   Uses TextureBrowserForm from WhiteoutDexTextureBrowser.dll (C++/CLI WinForms).
-   Material operations stay in MaxScript (can't create Max materials from C++).
-   
-   Usage:  ::WhiteoutDexTexBrowser.show()
+   SECTION 5: TEXTURE BROWSER
+
+   The browser itself is the native asset picker - the same grid/tree window
+   the Model Browser opens (WdxPickAsset in WhiteoutDexRenderer.dlx), asked for
+   textures instead of models. Every cell is the decoded image, the tree view's
+   preview pane reports the file's dimensions and source format, and the search
+   box, zoom and Grid/Tree switch all behave exactly as they do when picking a
+   model, because they ARE the same controls.
+
+   What is left here is the half a picker cannot do: turning the chosen archive
+   entry into a Max material. The picker hands back a path inside the game
+   archives; a BitmapTexture needs a file, so we extract to temp and point at
+   that.
+
+   Usage:  ::WhiteoutDexTexBrowser.show()          -- honours the slot target
+           ::WhiteoutDexTexBrowser.pick slot:"normal"
+
+   Set ::WhiteoutDexTexBrowserTarget = #(<material>, "<slot>") first and show()
+   assigns to that slot; leave it undefined and show() builds a Warcraft3
+   material out of the pick instead.
    ============================================================================ */
 
--- Global event handlers (MaxScript requires these in global scope for dotNet)
-
--- Slot targeting: set by Wc3Material ⚙ buttons before opening browser
--- Format: #(materialRef, "slotName") or undefined for default behavior
+-- Slot targeting: set by the Wc3Material browse buttons before opening.
+-- Format: #(materialRef, "slotName") or undefined for default behaviour.
 -- slotName: "diffuse", "normal", "orm", "emissive", "reflection",
 --           "environment" (alias for reflection, used by Wc3Material),
---           "team_color"  (no filter; targets teamColorMap on Wc3Material)
+--           "team_color"  (no naming convention; targets teamColorMap),
+--           "bitmap"      (a Wc3Bitmap texmap rather than a material),
+--           "particle_texture" (legacy particle plugins: a string, not a map)
 global WhiteoutDexTexBrowserTarget = undefined
-global WhiteoutDexTexBrowserInitCategory = 0  -- 0=All, 1=Units, 2=Buildings, 3=Doodads, 4=Abilities, 5=Environment, 6=Icons
 
--- Maps an internal slotName to a SlotFilter value the C++ form understands.
--- The form recognizes only: "" / "diffuse" / "normal" / "orm" / "emissive" / "reflection".
--- Unknown values produce an empty result list, so we translate aliases here.
-fn _ntbMapSlotToFilter slotName =
+-- Copy the chosen texture's archive folder into the material's path-prefix
+-- field. Replaces the old browser form's "Copy path" checkbox: the modal
+-- picker has no chrome of its own to hang one on, and the prefix is what the
+-- exporter needs to write the texture's in-game path, so on is the right
+-- default. Scripts that want the old off behaviour set this to false.
+global WhiteoutDexTexBrowserAutoPrefix = true
+
+-- Folder the last pick came from, so the next one opens where the user left
+-- off rather than at the root every time.
+global WhiteoutDexTexBrowserLastPick = ""
+
+/* Search text to open the picker with for a given slot.
+
+   The naming convention Reforged textures follow is the only thing that tells
+   a normal map from a diffuse one, and it is the same convention
+   _ntbValidateSlot checks on the way back out. Seeding the search box with it
+   means the browse opens on the plausible files without HIDING the rest - the
+   user can clear the box, which they could not do with the old form's fixed
+   slot filter. */
+fn _ntbSlotSearchSeed slotName =
 (
     case slotName of
     (
-        "environment": "reflection"  -- Wc3Material's environmentMap == reflection filter
-        "team_color":  ""            -- TeamGlow doesn't follow _suffix convention
-        default:       slotName
+        "normal":      "_normal"
+        "orm":         "_orm"
+        "emissive":    "_emissive"
+        "reflection":  "_environment,_env"
+        "environment": "_environment,_env"
+        default:       ""      -- diffuse, team_color, bitmap: no convention
     )
 )
 
@@ -976,10 +1009,11 @@ fn _ntbAssignToSlot mat slotName filePath archivePath:"" =
         local bmpTex = BitmapTexture filename:filePath
         local fName = filenameFromPath filePath
 
-        -- Compute prefix path if AutoPrefixPath enabled in the browser form
+        -- Prefix path: the chosen texture's archive folder, when the
+        -- WhiteoutDexTexBrowserAutoPrefix global says to copy it
         local dirPath = ""
         try (
-            if ::WhiteoutDexTexBrowser != undefined and ::WhiteoutDexTexBrowser.form != undefined and ::WhiteoutDexTexBrowser.form.AutoPrefixPath then
+            if ::WhiteoutDexTexBrowserAutoPrefix != false then
             (
                 local srcPath = if archivePath != undefined and archivePath != "" then archivePath else filePath
                 if srcPath.count > 4 and srcPath[1] == "[" then
@@ -1012,10 +1046,10 @@ fn _ntbAssignToSlot mat slotName filePath archivePath:"" =
     local bmpTex = BitmapTexture filename:filePath
     local fName = filenameFromPath filePath
     
-    -- Auto Prefix Path: extract directory from archive path if checkbox is checked
+    -- Auto prefix path: the archive folder the texture came from
     try
     (
-        if ::WhiteoutDexTexBrowser != undefined and ::WhiteoutDexTexBrowser.form != undefined and ::WhiteoutDexTexBrowser.form.AutoPrefixPath then
+        if ::WhiteoutDexTexBrowserAutoPrefix != false then
         (
             local srcPath = if archivePath != undefined and archivePath != "" then archivePath else filePath
             -- Strip CASC tags like [HD], [SD] from start of path
@@ -1135,223 +1169,173 @@ fn _ntbAssignToSlot mat slotName filePath archivePath:"" =
     format "WhiteoutDex TexBrowser: Assigned '%' to % slot\n" fName slotName
 )
 
-fn _ntbOnApply s e = (
-    try (
-        local filePath = e.ExtractedPath
-        if filePath != undefined and filePath != "" and doesFileExist filePath then
-        (
-            -- Check if a material slot target was set (from ⚙ button)
-            if ::WhiteoutDexTexBrowserTarget != undefined and ::WhiteoutDexTexBrowserTarget.count == 2 then
-            (
-                local targetMat = ::WhiteoutDexTexBrowserTarget[1]
-                local targetSlot = ::WhiteoutDexTexBrowserTarget[2]
-                
-                -- Validate filename against slot naming convention
-                if _ntbValidateSlot filePath targetSlot then
-                (
-                    _ntbAssignToSlot targetMat targetSlot filePath archivePath:e.ArchivePath
-                )
-                else
-                (
-                    -- Wrong texture type: ask user
-                    local fName = filenameFromPath filePath
-                    local slotLabel = case targetSlot of
-                    (
-                        "normal":      "Normal Map (_Normal)"
-                        "orm":         "ORM Map (_ORM)"
-                        "emissive":    "Emissive Map (_Emissive)"
-                        "reflection":  "Environment Map (_EnvironmentMap)"
-                        "environment": "Environment Map (_EnvironmentMap)"
-                        "team_color":  "Team Color Map"
-                        default: targetSlot
-                    )
-                    local msg = fName + " does not look like a " + slotLabel + " texture.\nAssign anyway?"
-                    if (queryBox msg title:"WhiteoutDex Texture Browser" beep:false) then
-                        _ntbAssignToSlot targetMat targetSlot filePath archivePath:e.ArchivePath
-                )
-                -- Keep target active so user can assign multiple textures
-                -- Target is cleared when browser is closed
-            )
-            else
-            (
-                -- No slot target: original behavior (create new material)
-                local bmpTex = BitmapTexture filename:filePath
-                local mat = Warcraft3()
-                mat.name = getFilenameFile filePath
-                mat.texture = bmpTex
-                mat.showInViewport = true
-
-                if selection.count > 0 then
-                (
-                    for obj in selection do obj.material = mat
-                    format "WhiteoutDex TexBrowser: Applied '%' to % objects\n" (filenameFromPath filePath) selection.count
-                )
-                else
-                (
-                    -- No selection: put to active material editor slot
-                    local slot = medit.GetActiveMtlSlot()
-                    meditMaterials[slot] = mat
-                    medit.PutMtlToMtlEditor mat slot
-                    format "WhiteoutDex TexBrowser: Applied '%' to material slot %\n" (filenameFromPath filePath) slot
-                )
-            )
-        )
-    ) catch ( format "WhiteoutDex TexBrowser: Apply error: %\n" (getCurrentException()) )
+/* Ask the user which slot label a mismatched file was meant for. The
+   convention check is advice, not a rule - plenty of hand-made textures do not
+   follow it - so a miss asks rather than refuses. */
+fn _ntbSlotLabel slotName =
+(
+    case slotName of
+    (
+        "normal":      "Normal Map (_Normal)"
+        "orm":         "ORM Map (_ORM)"
+        "emissive":    "Emissive Map (_Emissive)"
+        "reflection":  "Environment Map (_EnvironmentMap)"
+        "environment": "Environment Map (_EnvironmentMap)"
+        "team_color":  "Team Color Map"
+        default:       slotName
+    )
 )
 
-fn _ntbOnMtlSlot s e = (
-    try (
-        local filePath = e.ExtractedPath
-        if filePath != undefined and filePath != "" and doesFileExist filePath then
-        (
-            -- Check if a material slot target was set (from ⚙ button)
-            if ::WhiteoutDexTexBrowserTarget != undefined and ::WhiteoutDexTexBrowserTarget.count == 2 then
-            (
-                local targetMat = ::WhiteoutDexTexBrowserTarget[1]
-                local targetSlot = ::WhiteoutDexTexBrowserTarget[2]
-                
-                if _ntbValidateSlot filePath targetSlot then
-                (
-                    _ntbAssignToSlot targetMat targetSlot filePath archivePath:e.ArchivePath
-                )
-                else
-                (
-                    local fName = filenameFromPath filePath
-                    local slotLabel = case targetSlot of
-                    (
-                        "normal":      "Normal Map (_Normal)"
-                        "orm":         "ORM Map (_ORM)"
-                        "emissive":    "Emissive Map (_Emissive)"
-                        "reflection":  "Environment Map (_EnvironmentMap)"
-                        "environment": "Environment Map (_EnvironmentMap)"
-                        "team_color":  "Team Color Map"
-                        default: targetSlot
-                    )
-                    local msg = fName + " does not look like a " + slotLabel + " texture.\nAssign anyway?"
-                    if (queryBox msg title:"WhiteoutDex Texture Browser" beep:false) then
-                        _ntbAssignToSlot targetMat targetSlot filePath archivePath:e.ArchivePath
-                )
-            )
-            else
-            (
-                -- No slot target: original behavior
-                local bmpTex = BitmapTexture filename:filePath
-                local slot = medit.GetActiveMtlSlot()
-                local mat = Warcraft3()
-                mat.name = getFilenameFile filePath
-                mat.texture = bmpTex
-                mat.showInViewport = true
-                meditMaterials[slot] = mat
-                medit.PutMtlToMtlEditor mat slot
-                format "WhiteoutDex TexBrowser: Applied '%' to material slot %\n" (filenameFromPath filePath) slot
-            )
-        )
-    ) catch ( format "WhiteoutDex TexBrowser: MtlSlot error: %\n" (getCurrentException()) )
+-- Assign to a slot, asking first when the file's name does not look like one
+-- that belongs there. Returns true when something was assigned.
+fn _ntbAssignChecked mat slotName filePath archivePath:"" =
+(
+    if not (_ntbValidateSlot filePath slotName) then
+    (
+        local msg = (filenameFromPath filePath) + " does not look like a " +
+                    (_ntbSlotLabel slotName) + " texture." + "\n" + "Assign anyway?"
+        if not (queryBox msg title:"WhiteoutDex Texture Browser" beep:false) then
+            return false
+    )
+    _ntbAssignToSlot mat slotName filePath archivePath:archivePath
+    true
 )
 
-fn _ntbOnSelected s e = ()  -- Selection only (no extract); assignment handled by Apply/MtlSlot events
+-- Point a Wc3Bitmap texmap at the extracted file, for a caller that set a
+-- #(<texmap>, "bitmap") target. Wc3Bitmap's own browse button does not come
+-- through here - it calls pick() so it can refresh its file-name label with
+-- the answer, which nothing reached from a global target could do.
+fn _ntbAssignToBitmap bmp filePath =
+(
+    try
+    (
+        bmp.delegate.filename = filePath
+        format "WhiteoutDex TexBrowser: Set bitmap to '%'\n" (filenameFromPath filePath)
+        true
+    )
+    catch
+    (
+        format "WhiteoutDex TexBrowser: could not set the bitmap: %\n" (getCurrentException())
+        false
+    )
+)
 
--- 3ds Max keyboard fix: disable accelerators when texture browser is active
--- Without this, Max steals keyboard input after the first keystroke
-fn _ntbOnActivated s e = ( enableAccelerators = false )
-fn _ntbOnDeactivate s e = ( enableAccelerators = true )
-fn _ntbOnFormClosed s e = (
-    enableAccelerators = true
-    ::WhiteoutDexTexBrowserTarget = undefined
-    try (::WhiteoutDexTexBrowser.form = undefined) catch()
+-- No slot target: build a Warcraft3 material out of the pick and put it
+-- somewhere useful - on the selection if there is one, else in the active
+-- material editor slot. What the old browser's "Apply" button did.
+fn _ntbApplyAsMaterial filePath =
+(
+    local mat = Warcraft3()
+    mat.name = getFilenameFile filePath
+    mat.texture = BitmapTexture filename:filePath
+    mat.showInViewport = true
+
+    if selection.count > 0 then
+    (
+        for obj in selection do obj.material = mat
+        format "WhiteoutDex TexBrowser: Applied '%' to % objects\n" (filenameFromPath filePath) selection.count
+    )
+    else
+    (
+        local slot = medit.GetActiveMtlSlot()
+        meditMaterials[slot] = mat
+        medit.PutMtlToMtlEditor mat slot
+        format "WhiteoutDex TexBrowser: Applied '%' to material slot %\n" (filenameFromPath filePath) slot
+    )
 )
 
 struct WhiteoutDexTexBrowserStruct
 (
-    public form = undefined,
-    
+    -- True when the native picker can run at all. The old form needed
+    -- WhiteoutDexTextureBrowser.dll; this needs WhiteoutDexRenderer.dlx.
+    public fn isAvailable =
+    (
+        ::WhiteoutDexModelBrowser != undefined and ::WhiteoutDexModelBrowser.isAvailable()
+    ),
+
+    /* Open the picker and return what was chosen, as
+
+           #(<local file>, <relative path>, <archive path>)
+
+       or `undefined` on cancel. The local file is an extraction under the temp
+       directory: a BitmapTexture cannot be given an archive entry, and the
+       relative path is what the exporter writes back out.
+
+         slot:    seeds the search box with that slot's naming convention
+         initial: a relative path to open on; "" resumes where the last pick
+                  left off */
+    public fn pick slot:"" initial:"" =
+    (
+        if not this.isAvailable() then
+        (
+            messageBox ("The WhiteoutDex Texture Browser is not available." + "\n\n" +
+                        "WhiteoutDexRenderer.dlx did not load. Reinstall WhiteoutDex " +
+                        "or check the Listener for plug-in load errors.") \
+                       title:"WhiteoutDex" beep:false
+            return undefined
+        )
+
+        local start = if initial == undefined or initial == "" then ::WhiteoutDexTexBrowserLastPick else initial
+        if start == undefined then start = ""
+
+        local picked = ::WhiteoutDexModelBrowser.pickEx mode:#texture initial:start \
+                                                        filter:(_ntbSlotSearchSeed slot)
+        if picked == undefined then return undefined
+
+        local relPath = picked[1]
+        local archivePath = picked[2]
+        ::WhiteoutDexTexBrowserLastPick = relPath
+
+        local localFile = ::WhiteoutDexModelBrowser.extractToTemp relPath archivePath
+        if localFile == undefined or not (doesFileExist localFile) then return undefined
+
+        #(localFile, relPath, archivePath)
+    ),
+
+    /* Pick a texture and do the obvious thing with it.
+
+       With ::WhiteoutDexTexBrowserTarget set to #(<material>, "<slot>") - which
+       is what the browse buttons on Wc3Material and Wc3Bitmap do - the pick is
+       assigned to that slot. Without one, it becomes a new Warcraft3 material
+       on the selection.
+
+       The target is cleared afterwards: the picker is modal, so one show() is
+       one assignment, and a target left standing would silently capture the
+       next unrelated open. */
     public fn show =
     (
-        -- If browser is already open, just update the slot filter and bring to front
-        if this.form != undefined then
+        local target = ::WhiteoutDexTexBrowserTarget
+        local slotName = if target != undefined and target.count == 2 then target[2] else ""
+
+        local got = this.pick slot:slotName
+        if got == undefined then
         (
-            try
-            (
-                local f = this.form
-                if not f.IsDisposed then
-                (
-                    -- Update slot filter on existing form
-                    if ::WhiteoutDexTexBrowserTarget != undefined and ::WhiteoutDexTexBrowserTarget.count == 2 then
-                        f.SlotFilter = _ntbMapSlotToFilter ::WhiteoutDexTexBrowserTarget[2]
-                    else
-                        f.SlotFilter = ""
-                    f.BringToFront()
-                    f.Focus()
-                    format "WhiteoutDex TexBrowser: Updated slot filter to '%'\n" f.SlotFilter
-                    return()
-                )
-            ) catch()
-            -- Form was disposed, clear reference and recreate below
-            this.form = undefined
+            ::WhiteoutDexTexBrowserTarget = undefined
+            return undefined
         )
-        
-        if ::WhiteoutDexTextureBrowserDLL == undefined then ( messageBox "WhiteoutDexTextureBrowser.dll not loaded!" ; return() )
-        
-        -- Auto-init archives if needed
-        local hasMPQ = (::WhiteoutDexMPQ != undefined and ::WhiteoutDexMPQ.isInitialized)
-        local hasCASC = (::WhiteoutDexCASC != undefined and ::WhiteoutDexCASC.isInitialized)
-        
-        if not hasMPQ and ::WhiteoutDexMPQ != undefined then
-            try ( ::WhiteoutDexMPQ.scanAndOpenMPQs() ; hasMPQ = ::WhiteoutDexMPQ.isInitialized ) catch()
-        
-        if not hasCASC and ::WhiteoutDexCASC != undefined then
+
+        local localFile = got[1]
+        local relPath = got[2]
+
+        if target != undefined and target.count == 2 then
         (
-            try (
-                local cascIni = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
-                local w3dir = getINISetting cascIni "CASC" "W3Path"
-                if w3dir != "" then ( ::WhiteoutDexCASC.init w3dir:w3dir ; hasCASC = ::WhiteoutDexCASC.isInitialized )
-            ) catch()
+            if slotName == "bitmap" then
+                _ntbAssignToBitmap target[1] localFile
+            else
+                _ntbAssignChecked target[1] slotName localFile archivePath:relPath
         )
-        
-        if not hasMPQ and not hasCASC then
-        (
-            messageBox "No archives loaded. Set paths in WhiteoutDex Settings first."
-            return()
-        )
-        
-        -- Create native form from DLL
-        this.form = dotNetObject "WhiteoutDex.TextureBrowserForm"
-        local f = this.form
-        dotNet.setLifetimeControl f #dotNet
-        
-        -- Connect events (C++ fires these, MaxScript handles material creation)
-        dotNet.addEventHandler f "TextureApply" _ntbOnApply
-        dotNet.addEventHandler f "TextureMtlSlot" _ntbOnMtlSlot
-        dotNet.addEventHandler f "TextureSelected" _ntbOnSelected
-        
-        -- Fix keyboard: disable Max accelerators when form is active
-        dotNet.addEventHandler f "Activated" _ntbOnActivated
-        dotNet.addEventHandler f "Deactivate" _ntbOnDeactivate
-        dotNet.addEventHandler f "FormClosed" _ntbOnFormClosed
-        
-        -- Set slot filter if targeting a specific texture slot
-        if ::WhiteoutDexTexBrowserTarget != undefined and ::WhiteoutDexTexBrowserTarget.count == 2 then
-            f.SlotFilter = _ntbMapSlotToFilter ::WhiteoutDexTexBrowserTarget[2]
         else
-            f.SlotFilter = ""
-        
-        -- Set initial category if requested
-        if ::WhiteoutDexTexBrowserInitCategory != undefined and ::WhiteoutDexTexBrowserInitCategory > 0 then
-            f.InitialCategory = ::WhiteoutDexTexBrowserInitCategory
-        ::WhiteoutDexTexBrowserInitCategory = 0
-        
-        f.Show()
-        format "WhiteoutDex Texture Browser opened.\n"
+            _ntbApplyAsMaterial localFile
+
+        ::WhiteoutDexTexBrowserTarget = undefined
+        ok
     ),
-    
+
+    -- Kept because callers wrote it against the old modeless form. A modal
+    -- picker has already closed by the time anything can call this; all that
+    -- is left to do is drop the target it would otherwise have captured.
     public fn close =
     (
-        if this.form != undefined then
-        (
-            enableAccelerators = true  -- restore on close
-            try ( local f = this.form ; f.Close() ) catch()
-        )
-        this.form = undefined
         ::WhiteoutDexTexBrowserTarget = undefined
     )
 )

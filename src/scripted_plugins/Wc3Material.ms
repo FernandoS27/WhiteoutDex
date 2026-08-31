@@ -457,9 +457,11 @@ extends:Standard replaceUI:true version:12
 		-- guaranteed to resolve to the plugin owner across all MaxScript versions.
 		fn openTexBrowser mat slotName =
 		(
-			if ::WhiteoutDexTexBrowser == undefined or ::WhiteoutDexTextureBrowserDLL == undefined then
+			-- The browser is the native asset picker now, so what has to be
+			-- installed is WhiteoutDexRenderer.dlx, not the old WinForms DLL.
+			if ::WhiteoutDexTexBrowser == undefined or not (::WhiteoutDexTexBrowser.isAvailable()) then
 			(
-				messageBox "WhiteoutDex Texture Browser is not available.\n\nMake sure WhiteoutDexTextureBrowser.dll is installed and that you have set the MPQ / CASC paths in WhiteoutDex Settings." \
+				messageBox "WhiteoutDex Texture Browser is not available.\n\nMake sure WhiteoutDexRenderer.dlx is installed and that you have set the Warcraft III path in WhiteoutDex Settings." \
 					title:"WhiteoutDex" beep:false
 				return undefined
 			)

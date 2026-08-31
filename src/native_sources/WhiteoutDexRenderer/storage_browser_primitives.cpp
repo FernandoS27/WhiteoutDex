@@ -1,12 +1,13 @@
 // ============================================================================
-// WhiteoutDex — MaxScript bindings for WhiteoutFlakes' CASC storage browser.
+// WhiteoutDex — MaxScript bindings for WhiteoutFlakes' storage browser.
 //
-// The engine already knows how to walk a CASC install, an MPQ archive or a
-// loose folder and present only the model/effect files as a folder tree
-// (io::StorageBrowser). MaxScript had no way to reach it, so every place that
-// wants a game asset path — the Popcorn emitter's .pkfx, an attachment point's
-// .mdx — fell back to getOpenFileName and produced a local disk path, which is
-// not what MDX stores. These primitives hand MaxScript the same tree, and the
+// The engine already knows how to walk a CASC install, a set of MPQ archives
+// or a loose folder and present only the browsable files — models, particle
+// effects, textures — as a folder tree (io::StorageBrowser). MaxScript had no
+// way to reach it, so every place that wants a game asset path — the Popcorn
+// emitter's .pkfx, a material's .blp, an attachment point's .mdx — fell back to
+// getOpenFileName and produced a local disk path, which is not what MDX
+// stores. These primitives hand MaxScript the same tree, and the
 // paths they hand back are the CASC-relative display form
 // ("units\nightelf\druid\druid.mdx") — exactly what the exporter writes and
 // what the renderer's content provider resolves back through CASC at draw time.
@@ -17,14 +18,17 @@
 //
 // MaxScript API (WhiteoutDexModelBrowser.ms builds the dialog on top of it):
 //   WdxBrowserOpen <root> <kind>     → "" on success, else the error message
-//                                      kind: -1 auto, 0 CASC, 1 MPQ, 2 folder
+//                                      kind: -1 auto, 0 CASC, 1 one MPQ,
+//                                      2 folder, 3 a directory of MPQs
 //   WdxBrowserClose()                → releases the tree and the CASC handle
 //   WdxBrowserIsOpen()               → true/false
 //   WdxBrowserRoot()                 → the root it was opened with
-//   WdxBrowserKind()                 → 0 Casc / 1 Mpq / 2 Folder, -1 closed
+//   WdxBrowserKind()                 → 0 Casc / 1 Mpq / 2 Folder / 3 MpqSet,
+//                                      -1 closed
 //   WdxBrowserProduct()              → "Warcraft III" / "World of Warcraft" / …
 //   WdxBrowserAvailableTypes()       → bitmask the open storage actually holds
-//   WdxBrowserSetTypes <mask>        → 1 Models | 2 Effects | 4 M2 | 8 M3 | 16 Actor
+//   WdxBrowserSetTypes <mask>        → 1 Models | 2 Effects | 4 M2 | 8 M3 |
+//                                      16 Actor | 32 Textures
 //   WdxBrowserSetFilter <pattern>    → free-text filter, "" clears
 //   WdxBrowserFolders <displayPath>  → #(names) of subfolders
 //   WdxBrowserFiles <displayPath>    → #(names) of files directly inside it
@@ -37,8 +41,11 @@
 //                                    → copy one file out onto disk; "" on success
 //
 // The picker itself is WdxPickAsset at the bottom of this file: it runs
-// WhiteoutFlakes' StorageExplorer — the same grid/tree browser with live model
-// thumbnails the standalone Model Explorer shows — and returns what was chosen.
+// WhiteoutFlakes' StorageExplorer — the same grid/tree browser the standalone
+// Model Explorer shows, with a live thumbnail per cell (a rendered scene for a
+// model or effect, the decoded image for a texture) — and returns what was
+// chosen. It is what both the Model Browser and the Texture Browser open;
+// they differ only in the type mask they ask for.
 // The WdxBrowser* family above is the headless half, for a host that wants the
 // listing without a window.
 // ============================================================================
@@ -53,6 +60,14 @@
 // one the picker gets on its next open.
 #include "io/storage/casc_registry.h"
 #endif
+
+#if WHITEOUT_HAS_MPQ
+// The other generation. A pre-Reforged Warcraft III install has no CASC at
+// all, so an extraction from one goes straight to the archives.
+#include <whiteout/storages/mpq/storage.h>
+#endif
+
+#include <filesystem>
 
 #include <algorithm>
 #include <cwctype>
@@ -77,6 +92,7 @@ namespace {
 
 using whiteout::flakes::ProductId;
 using whiteout::flakes::io::BrowseType;
+using whiteout::flakes::io::ClassifyStorage;
 using whiteout::flakes::io::StorageBrowser;
 using whiteout::flakes::io::StorageKind;
 
@@ -128,6 +144,31 @@ int ArgToInt(Value* v, int fallback) {
     } catch (...) {
         return fallback;
     }
+}
+
+// An array of #(<label>, <path>) pairs -> the picker's File menu list. Anything
+// that is not a two-element array of strings is skipped rather than raising:
+// this argument is an offer of convenience, and a rollout that gets it wrong
+// should still get its picker.
+std::vector<whiteout::flakes::AssetPickerRoot> ArgToRoots(Value* v) {
+    std::vector<whiteout::flakes::AssetPickerRoot> out;
+    if (!v || v == &undefined || !is_array(v))
+        return out;
+    Array* outer = static_cast<Array*>(v);
+    for (int i = 0; i < outer->size; ++i) {
+        Value* row = (*outer)[i];
+        if (!row || !is_array(row))
+            continue;
+        Array* pair = static_cast<Array*>(row);
+        if (pair->size < 2)
+            continue;
+        whiteout::flakes::AssetPickerRoot entry;
+        entry.label = ArgToUtf8((*pair)[0]);
+        entry.root = ArgToUtf8((*pair)[1]);
+        if (!entry.label.empty() && !entry.root.empty())
+            out.push_back(std::move(entry));
+    }
+    return out;
 }
 
 Value* MakeString(const std::string& s) {
@@ -194,35 +235,6 @@ void CollectMatches(const std::string& path, int limit, std::vector<std::string>
 
 // ── Extraction ──────────────────────────────────────────────────────────────
 
-#if WHITEOUT_HAS_CASC
-
-using whiteout::flakes::io::AcquireSharedCasc;
-using whiteout::flakes::io::CascOpenKey;
-using whiteout::flakes::io::SharedCasc;
-
-// The install the last extraction used. Registry entries are weak and the
-// picker drops its handle as its window closes, so without this every import
-// would reopen the storage the picker had open a moment earlier. Holding one
-// handle makes the second import free — and the picker's next open too, since
-// it asks the same registry. Released by WdxBrowserClose with the browser tree.
-std::shared_ptr<const SharedCasc> g_extractCasc;
-std::string g_extractRoot;
-
-const SharedCasc* AcquireForExtract(const std::string& root, std::string& error) {
-    if (g_extractCasc && EqualsNoCase(g_extractRoot, root))
-        return g_extractCasc.get();
-
-    CascOpenKey key;
-    key.root = root;
-    auto shared = AcquireSharedCasc(key, error);
-    if (!shared)
-        return nullptr;
-
-    g_extractCasc = std::move(shared);
-    g_extractRoot = root;
-    return g_extractCasc.get();
-}
-
 // mkdir -p for the directory holding `file`. CreateDirectoryW only makes the
 // leaf, and the extraction mirrors the archive's folders into a temp tree that
 // is several levels deep and does not exist yet.
@@ -279,6 +291,36 @@ bool WriteWholeFile(const std::wstring& path, const std::vector<whiteout::u8>& d
     return okWrite;
 }
 
+
+#if WHITEOUT_HAS_CASC
+
+using whiteout::flakes::io::AcquireSharedCasc;
+using whiteout::flakes::io::CascOpenKey;
+using whiteout::flakes::io::SharedCasc;
+
+// The install the last extraction used. Registry entries are weak and the
+// picker drops its handle as its window closes, so without this every import
+// would reopen the storage the picker had open a moment earlier. Holding one
+// handle makes the second import free — and the picker's next open too, since
+// it asks the same registry. Released by WdxBrowserClose with the browser tree.
+std::shared_ptr<const SharedCasc> g_extractCasc;
+std::string g_extractRoot;
+
+const SharedCasc* AcquireForExtract(const std::string& root, std::string& error) {
+    if (g_extractCasc && EqualsNoCase(g_extractRoot, root))
+        return g_extractCasc.get();
+
+    CascOpenKey key;
+    key.root = root;
+    auto shared = AcquireSharedCasc(key, error);
+    if (!shared)
+        return nullptr;
+
+    g_extractCasc = std::move(shared);
+    g_extractRoot = root;
+    return g_extractCasc.get();
+}
+
 // Read `archivePath` out of `casc`, accepting either spelling the rest of this
 // file deals in: the original archive path the browser hands back (mod chain
 // and all) or the stripped relative path a resource stores. The chain order
@@ -305,14 +347,86 @@ bool ReadArchiveFile(const SharedCasc& casc, const std::string& archivePath,
 
 #endif // WHITEOUT_HAS_CASC
 
+#if WHITEOUT_HAS_MPQ
+
+// Read one entry out of a pre-Reforged install's archive set.
+//
+// Search order is the reverse of the load order the browser inserted them in:
+// War3Patch.mpq shipped to replace what War3.mpq holds, so the patch's copy of
+// a path is the one the game reads and the one a browse of the merged tree was
+// showing. Unknown archives are searched last — they were also inserted last,
+// so an override in one still wins over the retail four.
+//
+// Nothing is cached: an extraction happens once per texture the user picks,
+// and holding four archive handles open for the rest of the Max session to
+// save a few milliseconds is the wrong trade.
+bool ReadFromMpqSet(const std::string& root, const std::string& path,
+                    std::vector<whiteout::u8>& out) {
+    static const char* kSearchOrder[] = {"war3patch.mpq", "war3xlocal.mpq", "war3local.mpq",
+                                         "war3x.mpq",     "war3.mpq",       "deprecated.mpq"};
+
+    std::error_code ec;
+    const std::filesystem::path base(root);
+    if (!std::filesystem::is_directory(base, ec))
+        return false;
+
+    std::vector<std::filesystem::path> known(std::size(kSearchOrder));
+    std::vector<std::filesystem::path> extra;
+    for (const auto& entry : std::filesystem::directory_iterator(
+             base, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        if (!entry.is_regular_file(ec))
+            continue;
+        std::string name = entry.path().filename().string();
+        for (char& c : name)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (name.size() < 5 || name.compare(name.size() - 4, 4, ".mpq") != 0)
+            continue;
+        const auto it = std::find_if(std::begin(kSearchOrder), std::end(kSearchOrder),
+                                     [&](const char* k) { return name == k; });
+        if (it != std::end(kSearchOrder))
+            known[static_cast<std::size_t>(it - std::begin(kSearchOrder))] = entry.path();
+        else
+            extra.push_back(entry.path());
+    }
+    std::sort(extra.rbegin(), extra.rend());
+
+    auto tryOne = [&](const std::filesystem::path& p) {
+        if (p.empty())
+            return false;
+        // The one-argument overload: passing a literal null would be ambiguous
+        // between the WorkerPool and the error-string overloads.
+        auto s = whiteout::storages::mpq::Storage::open(p.string());
+        if (!s)
+            return false;
+        if (auto data = s->readFile(path)) {
+            out = std::move(*data);
+            return true;
+        }
+        return false;
+    };
+    for (const auto& p : known)
+        if (tryOne(p))
+            return true;
+    for (const auto& p : extra)
+        if (tryOne(p))
+            return true;
+    return false;
+}
+
+#endif // WHITEOUT_HAS_MPQ
+
 } // namespace
 
 // ============================================================================
 // WdxBrowserOpen <root> <kind>
 //
-// kind: -1 auto-detect, 0 Casc, 1 Mpq, 2 Folder. Returns "" on success and the
-// failure message otherwise, so a rollout can put the reason straight into a
-// label instead of inferring it from a bool.
+// kind: -1 auto-detect, 0 Casc, 1 Mpq (one archive file), 2 Folder, 3 MpqSet
+// (every .mpq in a directory, merged - what a pre-Reforged Warcraft III install
+// is). Returns "" on success and the failure message otherwise, so a rollout
+// can put the reason straight into a label instead of inferring it from a bool.
+//
+// -1 is the one to pass when "the Warcraft III install" could be either
+// generation: it tells CASC and MPQ-set installs apart by what is on disk.
 // ============================================================================
 def_visible_primitive(WdxBrowserOpen, "WdxBrowserOpen");
 Value* WdxBrowserOpen_cf(Value** arg_list, int count) {
@@ -324,8 +438,9 @@ Value* WdxBrowserOpen_cf(Value** arg_list, int count) {
                           "WhiteoutDex Settings first.");
 
     const int kindArg = ArgToInt(arg_list[1], -1);
-    if (kindArg > 2)
-        return MakeString("Unknown storage kind (expected -1 auto, 0 CASC, 1 MPQ, 2 folder).");
+    if (kindArg > 3)
+        return MakeString("Unknown storage kind (expected -1 auto, 0 CASC, 1 MPQ, "
+                          "2 folder, 3 MPQ set).");
 
     // Already walked this exact storage — hand back the live tree rather than
     // re-reading a manifest that has not changed under us.
@@ -541,11 +656,31 @@ Value* WdxBrowserMatchCount_cf(Value** /*arg_list*/, int count) {
 }
 
 // ============================================================================
-// WdxPickAsset <cascRoot> <typeMask> <initialRelPath>
+// WdxPickAsset <cascRoot> <typeMask> <initialRelPath> [<initialFilter>] [<roots>]
 //
-// The picker proper: opens WhiteoutFlakes' StorageExplorer — the CASC browser
-// with live model thumbnails, as a grid of icons or a tree beside one large
-// preview — modally, and returns what the user chose.
+// The picker proper: opens WhiteoutFlakes' StorageExplorer — the browser with
+// live thumbnails, as a grid of icons or a tree beside one large preview —
+// modally, and returns what the user chose.
+//
+// `typeMask` is what the picker browses FOR, and it narrows the manifest walk
+// as well as the listing: 1 Models, 2 Effects, 32 Textures. A texture pick
+// shows the decoded image in every cell rather than a rendered scene, and its
+// preview pane adds the file's dimensions and source format.
+//
+// `cascRoot` may be either generation of install — a Reforged CASC directory
+// or a 1.2x one holding War3.mpq and friends; the picker works out which.
+//
+// `initialFilter` is optional and seeds the panel's search box (substrings,
+// `*`/`?` globs, comma-separated alternatives, `-` to exclude). It is how a
+// caller that knows more than the type mask narrows the opening view — a
+// material's normal-map button passes "_normal".
+//
+// `roots` is optional and lists the installs to offer BY NAME in the picker's
+// File menu, as #( #(<label>, <path>), ... ) - the caller's own resolution of
+// where the game is, which the picker cannot repeat: the two Warcraft III
+// generations are configured in two different INIs and the game finder reports
+// one path per product. `cascRoot` is still what opens; these are what the user
+// can switch to without typing a path.
 //
 // Answers an array so a rollout can tell the outcomes apart without parsing a
 // sentinel out of a string:
@@ -559,17 +694,26 @@ Value* WdxBrowserMatchCount_cf(Value** /*arg_list*/, int count) {
 // ============================================================================
 def_visible_primitive(WdxPickAsset, "WdxPickAsset");
 Value* WdxPickAsset_cf(Value** arg_list, int count) {
-    check_arg_count(WdxPickAsset, 3, count);
+    // The filter and the root list are optional, so every existing 3-argument
+    // call keeps working.
+    if (count < 3 || count > 5)
+        check_arg_count(WdxPickAsset, 3, count);
 
     const std::string root = ArgToUtf8(arg_list[0]);
     const int mask = ArgToInt(arg_list[1], static_cast<int>(BrowseType::Models));
     const std::string initial = ArgToUtf8(arg_list[2]);
+    const std::string filter = count >= 4 ? ArgToUtf8(arg_list[3]) : std::string{};
+    const std::vector<whiteout::flakes::AssetPickerRoot> roots =
+        count >= 5 ? ArgToRoots(arg_list[4]) : std::vector<whiteout::flakes::AssetPickerRoot>{};
 
-    const std::wstring title = (mask == static_cast<int>(BrowseType::Effects))
-                                   ? L"Select a Particle Effect"
-                                   : L"Select a Model";
-    const whiteout::flakes::AssetPickResult picked = whiteout::flakes::RunAssetPicker(
-        title, static_cast<BrowseType>(static_cast<unsigned>(mask)), root, initial);
+    std::wstring title = L"Select a Model";
+    if (mask == static_cast<int>(BrowseType::Effects))
+        title = L"Select a Particle Effect";
+    else if (mask == static_cast<int>(BrowseType::Textures))
+        title = L"Select a Texture";
+    const whiteout::flakes::AssetPickResult picked =
+        whiteout::flakes::RunAssetPicker(title, static_cast<BrowseType>(static_cast<unsigned>(mask)),
+                                         root, initial, filter, roots);
 
     two_typed_value_locals(Array* result, Value* entry);
     vl.result = new Array(0);
@@ -609,8 +753,8 @@ def_visible_primitive(WdxExtractAsset, "WdxExtractAsset");
 Value* WdxExtractAsset_cf(Value** arg_list, int count) {
     check_arg_count(WdxExtractAsset, 3, count);
 
-#if !WHITEOUT_HAS_CASC
-    return MakeString("This build of WhiteoutDex has no CASC support.");
+#if !WHITEOUT_HAS_CASC && !WHITEOUT_HAS_MPQ
+    return MakeString("This build of WhiteoutDex has no archive support.");
 #else
     const std::string root = ArgToUtf8(arg_list[0]);
     const std::string archivePath = ArgToUtf8(arg_list[1]);
@@ -624,19 +768,42 @@ Value* WdxExtractAsset_cf(Value** arg_list, int count) {
     if (dest.empty())
         return MakeString("No destination file given.");
 
-    std::string error;
-    const SharedCasc* casc = AcquireForExtract(root, error);
-    if (!casc) {
-        if (error.empty())
-            error = "Could not open the Warcraft III installation at '" + root + "'.";
-        mprintf(_M("WhiteoutDex Extract: %hs\n"), error.c_str());
-        return MakeString(error);
-    }
+    // Ask the storage the install actually is first. io::ClassifyStorage is the
+    // same rule the picker opened `root` with, so the two agree by
+    // construction — which matters for a Battle.net-managed classic install,
+    // where opening the CASC its .build.info advertises SUCCEEDS and then has
+    // no file to give. Both are still tried: the other one answering is how a
+    // misconfigured path stays usable, and the failure that reaches the user is
+    // then about the file rather than the storage.
+    [[maybe_unused]] const bool archivesFirst = ClassifyStorage(root) == StorageKind::MpqSet;
 
     std::vector<whiteout::u8> data;
-    if (!ReadArchiveFile(*casc, archivePath, data)) {
-        error = "'" + archivePath + "' is not in this installation, or its content is "
-                                    "encrypted with a key this build does not have.";
+    bool read = false;
+    std::string cascError;
+
+#if WHITEOUT_HAS_MPQ
+    if (archivesFirst)
+        read = ReadFromMpqSet(root, archivePath, data);
+#endif
+#if WHITEOUT_HAS_CASC
+    if (!read) {
+        if (const SharedCasc* casc = AcquireForExtract(root, cascError))
+            read = ReadArchiveFile(*casc, archivePath, data);
+    }
+#endif
+#if WHITEOUT_HAS_MPQ
+    if (!read && !archivesFirst)
+        read = ReadFromMpqSet(root, archivePath, data);
+#endif
+
+    if (!read) {
+        std::string error = "'" + archivePath + "' is not in this installation, or its content "
+                                                "is encrypted with a key this build does not "
+                                                "have.";
+        // Only when nothing could be opened at all: with a storage open, the
+        // miss is about the file and the open error is noise.
+        if (!cascError.empty())
+            mprintf(_M("WhiteoutDex Extract: CASC open - %hs\n"), cascError.c_str());
         mprintf(_M("WhiteoutDex Extract: %hs\n"), error.c_str());
         return MakeString(error);
     }

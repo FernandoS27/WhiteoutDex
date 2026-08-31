@@ -2233,11 +2233,23 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             }
             col.w = PB2FloatOr(obj, L"alpha", t, 1.0f);
             cs.color = col;
-            cs.visibility = pi.node->GetVisibility(t);
-            // Apply the popcorn animVisibilityGuide gate. With visibility
-            // forced to 0 the renderer's ApplyCornFrameStates sets the
-            // emitter OwningAgentVisible=false, which stops new spawns
-            // (existing live particles fade out naturally).
+            // NOT node->GetVisibility(t): a corn emitter's own visibility
+            // track is dead data. The engine parses KPPV and never reads it
+            // (MdxModelAdapter says the same and sets cs.visibility purely
+            // from gateByBoneAncestors, unlike the ribbon / light / PE1 / PE2
+            // states right above, which all multiply their visibilityTracks
+            // in). Honouring the Max node's track here made the preview hide
+            // an emitter the engine would have kept spawning — and the MDLX
+            // importer materialises KPPV as exactly such a track, so a
+            // round-tripped Reforged model walks straight into it.
+            //
+            // The animVisibilityGuide is the only thing that may gate a corn
+            // emitter, and on this path it is evaluated adapter-side (see
+            // GetCornEmitterInits for why the renderer's own guide gate is
+            // inert here). Visibility 0 makes ApplyCornFrameStates set
+            // OwningAgentVisible=false, which is the same `active` edge the
+            // engine's SystemDead bit takes.
+            cs.visibility = 1.0f;
             if (!EvaluateGuideForSequence(pi.animVisibilityGuide, currentSequenceName))
                 cs.visibility = 0.0f;
 

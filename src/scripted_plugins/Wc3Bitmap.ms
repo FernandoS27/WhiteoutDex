@@ -104,24 +104,31 @@ extends:Bitmaptexture replaceUI:true version:10
 			try ( chkWrapU.checked = delegate.coords.U_Tile ) catch()
 			try ( chkWrapV.checked = delegate.coords.V_Tile ) catch()
 			try ( chkSphereEnv.checked = (delegate.coords.mappingType == 1) ) catch()
-			-- Enable/disable MPQ/CASC browse button. WhiteoutLib opens CASC
-			-- by directory and doesn't require a .build.info marker.
+			-- The browse button opens the native texture picker, so what has
+			-- to be there is WhiteoutDexRenderer.dlx plus a configured install.
 			local browserOK = false
 			try (
-				if ::NeoDexMPQ != undefined and ::NeoDexMPQ.getDirectory() != "" do browserOK = true
-				if not browserOK do (
-					local cascIni = getDir #plugcfg + "\\NeoDex_Settings.ini"
-					local cascDir = getINISetting cascIni "CASC" "W3Path"
-					if cascDir != "" and doesFileExist cascDir do browserOK = true
-				)
+				browserOK = (::WhiteoutDexTexBrowser != undefined and
+				             ::WhiteoutDexTexBrowser.isAvailable())
 			) catch()
 			btnBrowseMPQ.enabled = browserOK
 		)
 		
 		on btnBrowseMPQ pressed do
 		(
-			try (::NeoDexTexBrowserTarget = #(this, "bitmap"); ::NeoDexTexBrowser.show())
-			catch (messageBox "Texture Browser not available.\nCheck MPQ/CASC settings." title:"Wc3Bitmap")
+			-- pick, not show: show() routes through the slot-target global,
+			-- which exists for the material buttons. Here the answer comes
+			-- straight back, so the file name label can be refreshed with it.
+			try
+			(
+				local got = ::WhiteoutDexTexBrowser.pick slot:"bitmap"
+				if got != undefined do
+				(
+					delegate.filename = got[1]
+					updateBitmapDisplay()
+				)
+			)
+			catch (messageBox ("Texture Browser not available.\n" + (getCurrentException()) ) title:"Wc3Bitmap")
 		)
 		
 		on btnPickBitmap pressed do

@@ -3,7 +3,7 @@
   WhiteoutDexTextureBrowser — C++/CLI Managed Wrapper
   Target: .NET Framework 4.8 (3ds Max 2022, 2023, 2024, 2025)
   
-  Compiles ManagedWrapper.cpp + TextureBrowserForm.cpp with /clr
+  Compiles ManagedWrapper.cpp with /clr
   and links against the native static lib (WhiteoutDexTextureBrowser_native.lib)
   from the CMake build.
   
@@ -122,11 +122,9 @@
   <!-- Source Files -->
   <ItemGroup>
     <ClCompile Include="$(SourceDir)\ManagedWrapper.cpp" />
-    <ClCompile Include="$(SourceDir)\TextureBrowserForm.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="$(SourceDir)\ManagedWrapper.h" />
-    <ClInclude Include="$(SourceDir)\TextureBrowserForm.h" />
     <ClInclude Include="$(SourceDir)\ImageDecode.h" />
     <ClInclude Include="$(SourceDir)\ThumbnailEngine.h" />
   </ItemGroup>
