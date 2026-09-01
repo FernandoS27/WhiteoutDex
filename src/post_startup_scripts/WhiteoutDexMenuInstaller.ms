@@ -50,11 +50,28 @@ fn InstallWhiteoutDexMenu =
 	local num = whiteoutDexMain.numItems()
 	if num != 0 then cleanMenu whiteoutDexMain
 
-	-- Helper: safely add an action item
-	fn addAction menu name =
+	-- Helper: safely add an action item.
+	-- The label a menu action shows is the macroscript's buttonText, which is
+	-- fixed at registration time and therefore always English. setUseCustomTitle
+	-- overrides it per menu item, which is the only hook the legacy menuMan API
+	-- gives us for a translated menu; the action keeps its English name in
+	-- Customize User Interface, matching how Max handles its own actions.
+	fn addAction menu name locKey:unsupplied =
 	(
 		local item = menuMan.createActionItem name "WhiteoutDex Toolkit"
-		if item != undefined then menu.addItem item -1
+		if item != undefined then
+		(
+			if locKey != unsupplied and ::WdxL != undefined do
+			(
+				try
+				(
+					item.setTitle (::WdxL.t locKey)
+					item.setUseCustomTitle true
+				)
+				catch ()
+			)
+			menu.addItem item -1
+		)
 	)
 	fn addSep menu =
 	(
@@ -64,30 +81,30 @@ fn InstallWhiteoutDexMenu =
 		
 	try
 	(
-		addAction whiteoutDexMain "WhiteoutDex_Importer"
-		addAction whiteoutDexMain "WhiteoutDex_ImportCASC"
-		addAction whiteoutDexMain "WhiteoutDex_Exporter"
+		addAction whiteoutDexMain "WhiteoutDex_Importer"          locKey:"menu_importer"
+		addAction whiteoutDexMain "WhiteoutDex_ImportCASC"        locKey:"menu_import_casc"
+		addAction whiteoutDexMain "WhiteoutDex_Exporter"          locKey:"menu_exporter"
 		addSep whiteoutDexMain
-		addAction whiteoutDexMain "WhiteoutDex_SequenceManager"
-		addAction whiteoutDexMain "WhiteoutDex_VisibilityKeyer"
-		addAction whiteoutDexMain "WhiteoutDex_NodeManager"
+		addAction whiteoutDexMain "WhiteoutDex_SequenceManager"   locKey:"menu_sequence_manager"
+		addAction whiteoutDexMain "WhiteoutDex_VisibilityKeyer"   locKey:"menu_visibility_keyer"
+		addAction whiteoutDexMain "WhiteoutDex_NodeManager"       locKey:"menu_node_manager"
 		addSep whiteoutDexMain
-		addAction whiteoutDexMain "WhiteoutDex_AnimGeneral"
-		addAction whiteoutDexMain "WhiteoutDex_AnimControllers"
-		addAction whiteoutDexMain "WhiteoutDex_AnimSkin"
-		addAction whiteoutDexMain "WhiteoutDex_AnimScaler"
+		addAction whiteoutDexMain "WhiteoutDex_AnimGeneral"       locKey:"menu_anim_general"
+		addAction whiteoutDexMain "WhiteoutDex_AnimControllers"   locKey:"menu_anim_controllers"
+		addAction whiteoutDexMain "WhiteoutDex_AnimSkin"          locKey:"menu_anim_skin"
+		addAction whiteoutDexMain "WhiteoutDex_AnimScaler"        locKey:"menu_anim_scaler"
 		addSep whiteoutDexMain
-		addAction whiteoutDexMain "WhiteoutDex_SkinChanger"
-		addAction whiteoutDexMain "WhiteoutDex_GridDummy"
-		addAction whiteoutDexMain "WhiteoutDex_ObjectTools"
-		addAction whiteoutDexMain "WhiteoutDex_ObjectSettings"
-		addAction whiteoutDexMain "WhiteoutDex_KeyframeOptimizer"
-		addAction whiteoutDexMain "WhiteoutDex_CellShadeCreator"
+		addAction whiteoutDexMain "WhiteoutDex_SkinChanger"       locKey:"menu_skin_changer"
+		addAction whiteoutDexMain "WhiteoutDex_GridDummy"         locKey:"menu_grid_dummy"
+		addAction whiteoutDexMain "WhiteoutDex_ObjectTools"       locKey:"menu_object_tools"
+		addAction whiteoutDexMain "WhiteoutDex_ObjectSettings"    locKey:"menu_object_settings"
+		addAction whiteoutDexMain "WhiteoutDex_KeyframeOptimizer" locKey:"menu_keyframe_optimizer"
+		addAction whiteoutDexMain "WhiteoutDex_CellShadeCreator"  locKey:"menu_cell_shade"
 		addSep whiteoutDexMain
-		addAction whiteoutDexMain "WhiteoutDex_Renderer"
-		addAction whiteoutDexMain "WhiteoutDex_Settings"
+		addAction whiteoutDexMain "WhiteoutDex_Renderer"          locKey:"menu_renderer"
+		addAction whiteoutDexMain "WhiteoutDex_Settings"          locKey:"menu_settings"
 		addSep whiteoutDexMain
-		addAction whiteoutDexMain "WhiteoutDex_About"
+		addAction whiteoutDexMain "WhiteoutDex_About"             locKey:"menu_about"
 		
 		menuMan.updateMenuBar()
 	)

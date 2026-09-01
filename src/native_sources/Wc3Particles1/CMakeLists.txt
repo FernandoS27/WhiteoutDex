@@ -17,7 +17,11 @@ set_target_properties(Wc3Particles1 PROPERTIES
     OUTPUT_NAME           "Wc3Particles1"
 )
 
-target_include_directories(Wc3Particles1 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(Wc3Particles1 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    # wdx_localization.h - the shared bridge to the MaxScript catalog, so
+    # the rollouts relabel themselves in the language the toolkit is set to.
+    "${CMAKE_CURRENT_SOURCE_DIR}/../common")
 
 target_compile_options(Wc3Particles1 PRIVATE /W3 /Zi /EHsc /utf-8)
 

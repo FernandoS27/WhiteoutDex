@@ -1227,12 +1227,12 @@ fn _ntbSlotLabel slotName =
 (
     case slotName of
     (
-        "normal":      "Normal Map (_Normal)"
-        "orm":         "ORM Map (_ORM)"
-        "emissive":    "Emissive Map (_Emissive)"
-        "reflection":  "Environment Map (_EnvironmentMap)"
-        "environment": "Environment Map (_EnvironmentMap)"
-        "team_color":  "Team Color Map"
+        "normal":      ((::WdxL.t "tex_slot_normal") + " (_Normal)")
+        "orm":         ((::WdxL.t "tex_slot_orm") + " (_ORM)")
+        "emissive":    ((::WdxL.t "tex_slot_emissive") + " (_Emissive)")
+        "reflection":  ((::WdxL.t "tex_slot_environment") + " (_EnvironmentMap)")
+        "environment": ((::WdxL.t "tex_slot_environment") + " (_EnvironmentMap)")
+        "team_color":  (::WdxL.t "tex_slot_team_color")
         default:       slotName
     )
 )
@@ -1243,8 +1243,11 @@ fn _ntbAssignChecked mat slotName filePath archivePath:"" =
 (
     if not (_ntbValidateSlot filePath slotName) then
     (
-        local msg = (filenameFromPath filePath) + " does not look like a " +
-                    (_ntbSlotLabel slotName) + " texture." + "\n" + "Assign anyway?"
+        -- Two placeholders, so the sentence can be reordered: %1 is the
+        -- file name, %2 the slot label. German and Japanese both need the
+        -- slot before the verb.
+        local msg = (substituteString (substituteString (::WdxL.t "tex_slot_mismatch_msg") \
+                        "%1" (filenameFromPath filePath)) "%2" (_ntbSlotLabel slotName))
         if not (queryBox msg title:"WhiteoutDex Texture Browser" beep:false) then
             return false
     )
@@ -1319,10 +1322,7 @@ struct WhiteoutDexTexBrowserStruct
     (
         if not this.isAvailable() then
         (
-            messageBox ("The WhiteoutDex Texture Browser is not available." + "\n\n" +
-                        "WhiteoutDexRenderer.dlx did not load. Reinstall WhiteoutDex " +
-                        "or check the Listener for plug-in load errors.") \
-                       title:"WhiteoutDex" beep:false
+            messageBox (::WdxL.t "tex_browser_unavailable_msg") title:"WhiteoutDex" beep:false
             return undefined
         )
 

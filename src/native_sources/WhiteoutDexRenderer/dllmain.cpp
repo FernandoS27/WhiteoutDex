@@ -23,6 +23,7 @@
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "settings_ini.h"
+#include "wdx_ui_language.h" // Flakes i18n catalogs, driven by WhiteoutDex's setting
 #include "whiteout/flakes/gfx_types.h"   // GfxApi
 #include "whiteout/flakes/types.h"
 
@@ -426,6 +427,12 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
             }
         }
     }
+
+    // UI language. Done here rather than at DllMain time because plugcfgDir is
+    // only known once GetCOREInterface() is usable, and re-reading it on every
+    // start is what lets a language change in the Settings dialog take effect
+    // the next time the renderer is opened — no 3ds Max restart.
+    wdx::ui::InitLanguage(g_hInstance, plugcfgDir);
 
     g_renderWindow = new whiteout::flakes::RenderWindow(*g_renderer);
     // Open() defaults to D3D12 — Settings().SetDefaultBackend() above only

@@ -174,49 +174,44 @@ internalCategory:"WhiteoutDex Toolkit"
 			html += "  <img class='app-logo' src='" + logoSrc + "' />\n"
 		html += "  <h1>WHITEOUTDEX</h1>\n"
 		html += "  <div class='accent-line'></div>\n"
-		html += "  <p style='font-size:16px; color:#6ec6ff; margin-bottom:10px;'>Version " + ndxVer + "</p>\n"
-		html += "  <p>A comprehensive Warcraft III modeling toolkit<br>"
-		html += "for Autodesk 3ds Max.<br><br>"
-		html += "Import and export MDX/MDL for both Classic and Reforged:<br>"
-		html += "materials and textures, skinned and rigid geometry,<br>"
-		html += "animation sequences, particle and ribbon emitters,<br>"
-		html += "Popcorn effects, attachments, lights, event objects,<br>"
-		html += "collision shapes and cameras.<br><br>"
-		html += "Browse game assets straight out of MPQ and CASC,<br>"
-		html += "and preview your work in the built-in renderer.</p>\n"
+		html += "  <p style='font-size:16px; color:#6ec6ff; margin-bottom:10px;'>" + (::WdxL.t "about_version_lbl") + " " + ndxVer + "</p>\n"
+		html += "  <p>" + (::WdxL.t "about_blurb_html") + "</p>\n"
 		html += "</div>\n"
 
 		-- DOWNLOADS (Hive + GitHub combined)
 		html += "<div class='card'>\n"
-		html += "  <div class='card-title'>Get Latest Version &amp; Source Code</div>\n"
+		html += "  <div class='card-title'>" + (::WdxL.t "about_downloads_card") + "</div>\n"
 		if hivewsSrc != "" then
 			html += "  <img class='card-icon' src='" + hivewsSrc + "' /><br>\n"
-		html += "  <a class='btn btn-hive' href='action:hive'>Download from Hive Workshop</a>\n"
+		html += "  <a class='btn btn-hive' href='action:hive'>" + (::WdxL.t "about_hive_btn") + "</a>\n"
 		html += "  <hr class='donate-section-divider'>\n"
 		if githubSrc != "" then
 			html += "  <img class='card-icon' src='" + githubSrc + "' /><br>\n"
-		html += "  <a class='btn btn-github' href='action:github'>View on GitHub</a>\n"
+		html += "  <a class='btn btn-github' href='action:github'>" + (::WdxL.t "about_github_btn") + "</a>\n"
 		html += "</div>\n"
 
 		-- VIDEO CHANNEL
 		html += "<div class='card'>\n"
-		html += "  <div class='card-title'>Learn More about WhiteoutDex</div>\n"
+		html += "  <div class='card-title'>" + (::WdxL.t "about_learn_card") + "</div>\n"
 		if youtubeSrc != "" then
 			html += "  <img class='card-icon' src='" + youtubeSrc + "' /><br>\n"
-		html += "  <a class='btn btn-youtube' href='action:youtube'>Visit YouTube Channel</a>\n"
+		html += "  <a class='btn btn-youtube' href='action:youtube'>" + (::WdxL.t "about_youtube_btn") + "</a>\n"
 		html += "</div>\n"
 
 		-- DISCORD
 		html += "<div class='card'>\n"
 		if discordSrc != "" then
 			html += "  <img class='card-icon' src='" + discordSrc + "' /><br>\n"
-		html += "  <div class='card-title'>Join the Community</div>\n"
-		html += "  <a class='btn btn-discord' href='action:discord'>Join Discord Server</a>\n"
+		html += "  <div class='card-title'>" + (::WdxL.t "about_community_card") + "</div>\n"
+		html += "  <a class='btn btn-discord' href='action:discord'>" + (::WdxL.t "about_discord_btn") + "</a>\n"
 		html += "</div>\n"
 
-		-- LICENSE — kept verbatim in step with LICENSE.md at the repo root.
+		-- LICENSE — kept verbatim in step with LICENSE.md at the repo root, and
+		-- deliberately NOT translated: a licence is only binding in the text it
+		-- was granted in, so every language shows the same English BSD grant.
+		-- The card's heading goes through the catalog; its body does not.
 		html += "<div class='card license-card accent-blue'>\n"
-		html += "  <div class='card-title'>License</div>\n"
+		html += "  <div class='card-title'>" + (::WdxL.t "about_license_card") + "</div>\n"
 		html += "  <div class='license-text'>"
 		html += "BSD 3-Clause License\n\n"
 		html += "Copyright (c) 2026, WhiteoutDex Contributors\n\n"
@@ -230,21 +225,18 @@ internalCategory:"WhiteoutDex Toolkit"
 
 		-- DISCLAIMER
 		html += "<div class='card license-card accent-teal'>\n"
-		html += "  <div class='card-title'>Disclaimer</div>\n"
+		html += "  <div class='card-title'>" + (::WdxL.t "about_disclaimer_card") + "</div>\n"
 		html += "  <div class='license-text'>"
-		html += "WhiteoutDex Toolkit is a community-developed, fan-made modding tool for Warcraft III. It is not affiliated with, endorsed by, or in any way officially connected to Blizzard Entertainment, Inc. or any of its subsidiaries or affiliates.\n\n"
-		html += "Warcraft, Warcraft III, Blizzard, and Blizzard Entertainment are trademarks or registered trademarks of Blizzard Entertainment, Inc.\n\n"
-		html += "Autodesk and 3ds Max are trademarks or registered trademarks of Autodesk, Inc.\n\n"
-		html += "All other trademarks are the property of their respective owners."
+		html += ::WdxL.t "about_disclaimer_body"
 		html += "</div>\n"
 		html += "</div>\n"
 
 		-- CREDITS
 		html += "<div class='card credits-card accent-purple'>\n"
-		html += "  <div class='card-title'>Credits</div>\n"
+		html += "  <div class='card-title'>" + (::WdxL.t "about_credits_card") + "</div>\n"
 
 		html += "  <div class='credits-section'>\n"
-		html += "    <div class='credits-label'>Lead Developers</div>\n"
+		html += "    <div class='credits-label'>" + (::WdxL.t "about_lead_devs_lbl") + "</div>\n"
 		html += "    <div class='credits-names'>\n"
 		html += "      <span class='lead'>Fernando Sahmkow</span> <span style='color:#6b7480;'>(BlinkBoy)</span><br>\n"
 		html += "      <span class='lead'>DennisH</span>\n"
@@ -254,22 +246,22 @@ internalCategory:"WhiteoutDex Toolkit"
 		html += "  <hr class='credits-divider'>\n"
 
 		html += "  <div class='credits-section'>\n"
-		html += "    <div class='credits-label'>Contributors</div>\n"
+		html += "    <div class='credits-label'>" + (::WdxL.t "about_contributors_lbl") + "</div>\n"
 		html += "    <div class='credits-names'>\n"
-		html += "      BlinkBoy (Fernando Sahmkow) <span style='color:#6b7480;'>(original author)</span><br>\n"
-		html += "      Republicola <span style='color:#6b7480;'>(original dexporter)</span><br>\n"
-		html += "      Igni <span style='color:#6b7480;'>(Bipped Support and fixes)</span><br>\n"
-		html += "      BenSen <span style='color:#6b7480;'>(new features and fixes)</span><br>\n"
-		html += "      LxX'Studio <span style='color:#6b7480;'>(Plugins and fixes)</span><br>\n"
-		html += "      HuoHuoXiaoMao <span style='color:#6b7480;'>(Plugins and fixes)</span><br>\n"
-		html += "      &#x6653;&#x6708;&#x771F; XYZmoon <span style='color:#6b7480;'>(Icons)</span>\n"
+		html += "      BlinkBoy (Fernando Sahmkow) <span style='color:#6b7480;'>(" + (::WdxL.t "about_role_original_author") + ")</span><br>\n"
+		html += "      Republicola <span style='color:#6b7480;'>(" + (::WdxL.t "about_role_original_dexporter") + ")</span><br>\n"
+		html += "      Igni <span style='color:#6b7480;'>(" + (::WdxL.t "about_role_biped_support") + ")</span><br>\n"
+		html += "      BenSen <span style='color:#6b7480;'>(" + (::WdxL.t "about_role_features_fixes") + ")</span><br>\n"
+		html += "      LxX'Studio <span style='color:#6b7480;'>(" + (::WdxL.t "about_role_plugins_fixes") + ")</span><br>\n"
+		html += "      HuoHuoXiaoMao <span style='color:#6b7480;'>(" + (::WdxL.t "about_role_plugins_fixes") + ")</span><br>\n"
+		html += "      &#x6653;&#x6708;&#x771F; XYZmoon <span style='color:#6b7480;'>(" + (::WdxL.t "about_role_icons") + ")</span>\n"
 		html += "    </div>\n"
 		html += "  </div>\n"
 
 		html += "  <hr class='credits-divider'>\n"
 
 		html += "  <div class='credits-section'>\n"
-		html += "    <div class='credits-label'>Beta Testers</div>\n"
+		html += "    <div class='credits-label'>" + (::WdxL.t "about_testers_lbl") + "</div>\n"
 		html += "    <div class='credits-names'>\n"
 		html += "      Adiktuz<br>\n"
 		html += "      BallisticTerrain<br>\n"
@@ -288,21 +280,19 @@ internalCategory:"WhiteoutDex Toolkit"
 		-- Short list only; the full notices ship as THIRD_PARTY.md next to
 		-- PackageContents.xml in the install root.
 		html += "<div class='card credits-card accent-teal'>\n"
-		html += "  <div class='card-title'>Third-Party Software</div>\n"
+		html += "  <div class='card-title'>" + (::WdxL.t "about_thirdparty_card") + "</div>\n"
 
 		html += "  <div class='credits-section'>\n"
-		html += "    <div class='credits-label'>Included Libraries</div>\n"
+		html += "    <div class='credits-label'>" + (::WdxL.t "about_libraries_lbl") + "</div>\n"
 		html += "    <div class='credits-names'>\n"
 		html += "      <span class='lead'>Dear ImGui</span> <span style='color:#6b7480;'>&#x2014; Omar Cornut (MIT)</span><br>\n"
-		html += "      <span style='color:#6b7480;'>Full notices for every bundled component are in<br>"
-		html += "THIRD_PARTY.md, next to PackageContents.xml in the<br>"
-		html += "WhiteoutDex install folder.</span>\n"
+		html += "      <span style='color:#6b7480;'>" + (::WdxL.t "about_thirdparty_note_html") + "</span>\n"
 		html += "    </div>\n"
 		html += "  </div>\n"
 
 		html += "</div>\n"
 
-		html += "<div class='footer'>Made with <span>&hearts;</span> by the WhiteoutDex Team</div>\n"
+		html += "<div class='footer'>" + (::WdxL.t "about_footer_html") + "</div>\n"
 		html += "</body>\n</html>"
 
 		return html
@@ -365,23 +355,23 @@ internalCategory:"WhiteoutDex Toolkit"
 
 		panel.Controls.Add (makeLabel "WHITEOUTDEX" 0 yPos 480 36 20.0 white)
 		yPos += 40
-		panel.Controls.Add (makeLabel ("Version " + ndxVer) 0 yPos 480 24 12.0 blue)
+		panel.Controls.Add (makeLabel ((::WdxL.t "about_version_lbl") + " " + ndxVer) 0 yPos 480 24 12.0 blue)
 		yPos += 30
-		panel.Controls.Add (makeLabel "A comprehensive Warcraft III modeling toolkit\nfor Autodesk 3ds Max." 0 yPos 480 48 10.0 grey)
+		panel.Controls.Add (makeLabel (::WdxL.t "about_blurb_short") 0 yPos 480 48 10.0 grey)
 		yPos += 60
 
-		panel.Controls.Add (makeLinkBtn "Download from Hive Workshop" 40 yPos 400 32 "https://www.hiveworkshop.com/threads/sneak-peak-at-whiteoutdex-a-fully-native-toolset-for-3ds-max-based-on-neodex.371721/" teal)
+		panel.Controls.Add (makeLinkBtn (::WdxL.t "about_hive_btn") 40 yPos 400 32 "https://www.hiveworkshop.com/threads/sneak-peak-at-whiteoutdex-a-fully-native-toolset-for-3ds-max-based-on-neodex.371721/" teal)
 		yPos += 40
-		panel.Controls.Add (makeLinkBtn "View on GitHub" 40 yPos 400 32 "https://github.com/FernandoS27/WhiteoutDex" purple)
+		panel.Controls.Add (makeLinkBtn (::WdxL.t "about_github_btn") 40 yPos 400 32 "https://github.com/FernandoS27/WhiteoutDex" purple)
 		yPos += 40
-		panel.Controls.Add (makeLinkBtn "YouTube Channel" 40 yPos 400 32 "https://www.youtube.com/@Wc3Tutorials" blue)
+		panel.Controls.Add (makeLinkBtn (::WdxL.t "about_youtube_btn") 40 yPos 400 32 "https://www.youtube.com/@Wc3Tutorials" blue)
 		yPos += 40
-		panel.Controls.Add (makeLinkBtn "Join Discord" 40 yPos 400 32 "https://discord.gg/N8W9Rew2u" purple)
+		panel.Controls.Add (makeLinkBtn (::WdxL.t "about_discord_btn") 40 yPos 400 32 "https://discord.gg/N8W9Rew2u" purple)
 		yPos += 50
 
 		panel.Controls.Add (makeLabel "BSD 3-Clause License — (c) 2026 WhiteoutDex Contributors" 0 yPos 480 20 8.0 (dc.FromArgb 107 116 128))
 		yPos += 24
-		panel.Controls.Add (makeLabel "Made with love by the WhiteoutDex Team" 0 yPos 480 20 9.0 (dc.FromArgb 107 116 128))
+		panel.Controls.Add (makeLabel (::WdxL.t "about_footer_plain") 0 yPos 480 20 9.0 (dc.FromArgb 107 116 128))
 
 		form.Controls.Add panel
 	)
@@ -398,7 +388,7 @@ internalCategory:"WhiteoutDex Toolkit"
 		local form = dotNetObject "System.Windows.Forms.Form"
 		-- Localization
 		local aboutTitle = "WhiteoutDex - About"
-		if ::WdxL != undefined then aboutTitle = ::WdxL.t "about_about_macbtn"
+		if ::WdxL != undefined then aboutTitle = ::WdxL.t "about_title"
 		form.Text = aboutTitle
 		form.Width = 500
 		-- The content scrolls, but the frame is fixed - so never open taller

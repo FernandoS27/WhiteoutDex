@@ -147,7 +147,12 @@ extends:Standard replaceUI:true version:13
 	
 	fn getMapName texMap =
 	(
-		if texMap == undefined do return "(None)"
+		if texMap == undefined do
+		(
+			local none = "(None)"
+			if ::WdxL != undefined do try ( none = ::WdxL.t "mat_none_map_btn" ) catch()
+			return none
+		)
 		local fname = ""
 		try ( fname = filenameFromPath texMap.fileName ) catch()
 		-- Wc3Bitmap: the filename lives on the delegate
@@ -336,6 +341,45 @@ extends:Standard replaceUI:true version:13
 			ddSortOrder.enabled = this.noDepthTest
 			chkNoDSet.enabled = not (this.filterMode == 1 or this.filterMode == 2)
 			updateShaderState()
+
+			-- Relabel from the catalog. Assigning `.items` resets the control
+			-- to entry 1, and these three dropdowns are `ui:`-bound to stored
+			-- integer parameters — so snapshot the PARAMETER (not the control)
+			-- first and write it back to both afterwards. Restoring from the
+			-- parameter is what keeps a translated relabel from silently
+			-- rewriting the material's filter mode to "None".
+			if ::WdxL != undefined then
+			(
+				local savFilter	= this.filterMode
+				local savSort	= this.sortOrder
+				local savRepl	= this.replaceableId
+
+				basicRollout.title		= ::WdxL.t "mat_basic_rollout_title"
+				ddShader.caption		= ::WdxL.t "mat_shader_ddl"
+				ddFilterMode.caption	= ::WdxL.t "mat_filter_mode_ddl"
+				ddSortOrder.caption		= ::WdxL.t "mat_sort_order_ddl"
+				ddReplaceable.caption	= ::WdxL.t "mat_replaceable_ddl"
+				spnPriority.caption		= ::WdxL.t "mat_priority_plane_spn"
+				chkTwoSided.text		= ::WdxL.t "mat_two_sided_chk"
+				chkUnshaded.text		= ::WdxL.t "mat_unshaded_chk_2"
+				chkUnfogged.text		= ::WdxL.t "mat_unfogged_chk_2"
+				chkConstColor.text		= ::WdxL.t "mat_constant_color_chk"
+				chkFullRes.text			= ::WdxL.t "mat_full_resolution_chk"
+				chkNoDTest.text			= ::WdxL.t "mat_no_depth_test_chk"
+				chkNoDSet.text			= ::WdxL.t "mat_no_depth_set_chk"
+				chkUnsel.text			= ::WdxL.t "mat_unselectable_chk_2"
+
+				ddFilterMode.items	= ::WdxL.tList "mat_filter_mode_items"
+				ddSortOrder.items	= ::WdxL.tList "mat_sort_order_items"
+				ddReplaceable.items	= ::WdxL.tList "mat_replaceable_items"
+
+				ddFilterMode.selection	= savFilter
+				ddSortOrder.selection	= savSort
+				ddReplaceable.selection	= savRepl
+				this.filterMode		= savFilter
+				this.sortOrder		= savSort
+				this.replaceableId	= savRepl
+			)
 		)
 	)
 	
@@ -356,6 +400,25 @@ extends:Standard replaceUI:true version:13
 			spinner		spnCoordId	"Coord ID ......................." range:[-1,8,-1] type:#integer fieldwidth:55 align:#right
 		)
 		label	lblUVHint	"UV Animation (TXAN) is on the Wc3Bitmap texture." align:#left
+
+		on layerAnimRollout open do
+		(
+			if ::WdxL != undefined then
+			(
+				-- Same `ui:`-bound dropdown caveat as basicRollout: keep the
+				-- stored controller index across the `.items` swap.
+				local savCtrl = this.opacityCtrl
+				layerAnimRollout.title	= ::WdxL.t "mat_layer_anim_rollout_title"
+				spnOpacity.caption		= ::WdxL.t "mat_opacity_spn"
+				ddOpacCtrl.caption		= ::WdxL.t "mat_controller_ddl"
+				chkFlipbook.text		= ::WdxL.t "mat_flipbook_chk"
+				spnCoordId.caption		= ::WdxL.t "mat_coord_id_spn"
+				lblUVHint.text			= ::WdxL.t "mat_uv_hint_lbl"
+				ddOpacCtrl.items		= ::WdxL.tList "mat_controller_items"
+				ddOpacCtrl.selection	= savCtrl
+				this.opacityCtrl		= savCtrl
+			)
+		)
 	)
 	
 	---------------------------------------------------------------------------
@@ -373,13 +436,12 @@ extends:Standard replaceUI:true version:13
 			-- installed is WhiteoutDexRenderer.dlx, not the old WinForms DLL.
 			if ::WhiteoutDexTexBrowser == undefined or not (::WhiteoutDexTexBrowser.isAvailable()) then
 			(
-				messageBox "WhiteoutDex Texture Browser is not available.\n\nMake sure WhiteoutDexRenderer.dlx is installed and that you have set the Warcraft III path in WhiteoutDex Settings." \
-					title:"WhiteoutDex" beep:false
+				messageBox (::WdxL.t "mat_texbrowser_unavailable_msg") title:"WhiteoutDex" beep:false
 				return undefined
 			)
 			::WhiteoutDexTexBrowserTarget = #(mat, slotName)
 			try (::WhiteoutDexTexBrowser.show()) catch
-				(messageBox ("Texture Browser could not be opened:\n" + (getCurrentException())) title:"WhiteoutDex" beep:false)
+				(messageBox ((::WdxL.t "mat_texbrowser_failed_msg") + "\n" + (getCurrentException())) title:"WhiteoutDex" beep:false)
 		)
 
 		label		lblDiff			"Diffuse ............................................................." align:#left height:16
@@ -429,6 +491,34 @@ extends:Standard replaceUI:true version:13
 			mbTeamColor.text	= getMapName this.teamColorMap
 			mbEnv.text			= getMapName this.environmentMap
 			updateShaderState()
+
+			-- The mapbutton captions are the assigned texture's name, so only
+			-- the empty-slot placeholder goes through the catalog — getMapName
+			-- returns it for an unassigned slot.
+			if ::WdxL != undefined then
+			(
+				texMapRollout.title		= ::WdxL.t "mat_texmap_rollout_title"
+				lblDiff.text			= ::WdxL.t "mat_diffuse_lbl"
+				lblNorm.text			= ::WdxL.t "mat_normal_lbl"
+				lblORM.text				= ::WdxL.t "mat_orm_lbl"
+				lblEmis.text			= ::WdxL.t "mat_emissive_lbl"
+				lblTeamCol.text			= ::WdxL.t "mat_team_color_lbl"
+				lblEnv.text				= ::WdxL.t "mat_environment_lbl"
+				local pfx = ::WdxL.t "mat_path_prefix_edt"
+				edtDiffPrefix.caption		= pfx
+				edtNormPrefix.caption		= pfx
+				edtORMPrefix.caption		= pfx
+				edtEmisPrefix.caption		= pfx
+				edtTeamColPrefix.caption	= pfx
+				edtEnvPrefix.caption		= pfx
+				local brw = ::WdxL.t "mat_browse_texture_tip"
+				btnBrwDiff.tooltip		= brw
+				btnBrwNorm.tooltip		= brw
+				btnBrwORM.tooltip		= brw
+				btnBrwEmis.tooltip		= brw
+				btnBrwTeamCol.tooltip	= brw
+				btnBrwEnv.tooltip		= brw
+			)
 		)
 	)
 	
@@ -447,7 +537,21 @@ extends:Standard replaceUI:true version:13
 		label		lblSep8		"" height:2
 		edittext	edtShaderPath	"Shader Path:" width:300 height:20 align:#center
 		
-		on reforgedRollout open do ( updateShaderState() )
+		on reforgedRollout open do
+		(
+			updateShaderState()
+			if ::WdxL != undefined then
+			(
+				reforgedRollout.title	= ::WdxL.t "mat_reforged_rollout_title"
+				spnEmGain.caption		= ::WdxL.t "mat_emissive_gain_spn"
+				spnFrR.caption			= ::WdxL.t "mat_fresnel_r_spn"
+				spnFrG.caption			= ::WdxL.t "mat_fresnel_g_spn"
+				spnFrB.caption			= ::WdxL.t "mat_fresnel_b_spn"
+				spnFrOpacity.caption	= ::WdxL.t "mat_fresnel_opacity_spn"
+				spnFrTeamCol.caption	= ::WdxL.t "mat_fresnel_team_color_spn"
+				edtShaderPath.caption	= ::WdxL.t "mat_shader_path_edt"
+			)
+		)
 	)
 	
 	---------------------------------------------------------------------------
@@ -458,6 +562,17 @@ extends:Standard replaceUI:true version:13
 		label	lblName		"Wc3 Material" align:#center
 		label	lblBuild	"Build 2.3.0" align:#center
 		label	lblInfo		"Material Plugin for 3ds Max" align:#center
+
+		on infoRollout open do
+		(
+			-- lblName and lblBuild are the plug-in identity and its version
+			-- string; only the descriptive line is translated.
+			if ::WdxL != undefined then
+			(
+				infoRollout.title	= ::WdxL.t "mat_info_rollout_title"
+				lblInfo.text		= ::WdxL.t "mat_info_desc_lbl"
+			)
+		)
 	)
 	
 	---------------------------------------------------------------------------

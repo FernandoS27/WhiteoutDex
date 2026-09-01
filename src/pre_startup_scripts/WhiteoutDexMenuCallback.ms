@@ -48,31 +48,46 @@ struct WhiteoutDexMenuStruct
         local menuMgr = callbacks.notificationParam()
         local mainMenuBar = menuMgr.mainMenuBar
         local m = mainMenuBar.CreateSubMenu "BDBFDF2A-73A5-44B9-B98C-967D9C54835B" "WhiteoutDex"
-        
-        m.CreateAction "DD0CF245-EA3B-4CCA-ADC6-01FBDAF0F936" 647394 "WhiteoutDex_Importer`WhiteoutDex Toolkit"
-        m.CreateAction "2ED521B2-6A98-45A9-A0C3-3D5D4B88EE7D" 647394 "WhiteoutDex_ImportCASC`WhiteoutDex Toolkit"
-        m.CreateAction "0F62518F-5358-4D12-ABDB-3350D42094EF" 647394 "WhiteoutDex_Exporter`WhiteoutDex Toolkit"
+
+        -- An action's default label is the macroscript's buttonText, fixed at
+        -- registration time and therefore English. The CUI action object
+        -- exposes a per-item Text override, which is where the translated
+        -- label goes; the action keeps its English name in Customize User
+        -- Interface, matching how Max labels its own actions. Wrapped in a
+        -- try because the property is not present on every 2025+ point
+        -- release — a menu in English beats a menu that failed to build.
+        fn addAction menu guid actionName locKey =
+        (
+            local a = menu.CreateAction guid 647394 (actionName + "`WhiteoutDex Toolkit")
+            if a != undefined and ::WdxL != undefined do
+                try ( a.Text = ::WdxL.t locKey ) catch ()
+            a
+        )
+
+        addAction m "DD0CF245-EA3B-4CCA-ADC6-01FBDAF0F936" "WhiteoutDex_Importer"          "menu_importer"
+        addAction m "2ED521B2-6A98-45A9-A0C3-3D5D4B88EE7D" "WhiteoutDex_ImportCASC"        "menu_import_casc"
+        addAction m "0F62518F-5358-4D12-ABDB-3350D42094EF" "WhiteoutDex_Exporter"          "menu_exporter"
         m.CreateSeparator "18F3B751-A532-4E6D-8AE1-7CA182A0E553"
-        m.CreateAction "CE15B5A9-EBE3-49F3-9CB7-8385D3CBB515" 647394 "WhiteoutDex_SequenceManager`WhiteoutDex Toolkit"
-        m.CreateAction "17FA40DC-8FCF-4D5F-B544-E804A4080950" 647394 "WhiteoutDex_VisibilityKeyer`WhiteoutDex Toolkit"
-        m.CreateAction "8116A922-9F6F-4063-81F6-FEBE0FAC7066" 647394 "WhiteoutDex_NodeManager`WhiteoutDex Toolkit"
+        addAction m "CE15B5A9-EBE3-49F3-9CB7-8385D3CBB515" "WhiteoutDex_SequenceManager"   "menu_sequence_manager"
+        addAction m "17FA40DC-8FCF-4D5F-B544-E804A4080950" "WhiteoutDex_VisibilityKeyer"   "menu_visibility_keyer"
+        addAction m "8116A922-9F6F-4063-81F6-FEBE0FAC7066" "WhiteoutDex_NodeManager"       "menu_node_manager"
         m.CreateSeparator "35EA6CBC-120F-42BB-90D4-109AB5AE0F6B"
-        m.CreateAction "CFC828A8-5E46-4946-8497-E86CBE3D5DAE" 647394 "WhiteoutDex_AnimGeneral`WhiteoutDex Toolkit"
-        m.CreateAction "F153E90B-87F4-407B-A0E1-48CE33C8F66E" 647394 "WhiteoutDex_AnimControllers`WhiteoutDex Toolkit"
-        m.CreateAction "E41C9C72-BFA7-4FD6-8AB8-CC96A3C6F3CA" 647394 "WhiteoutDex_AnimSkin`WhiteoutDex Toolkit"
-        m.CreateAction "C1B05DD5-1434-4B25-AD70-513D80EB84BC" 647394 "WhiteoutDex_AnimScaler`WhiteoutDex Toolkit"
+        addAction m "CFC828A8-5E46-4946-8497-E86CBE3D5DAE" "WhiteoutDex_AnimGeneral"       "menu_anim_general"
+        addAction m "F153E90B-87F4-407B-A0E1-48CE33C8F66E" "WhiteoutDex_AnimControllers"   "menu_anim_controllers"
+        addAction m "E41C9C72-BFA7-4FD6-8AB8-CC96A3C6F3CA" "WhiteoutDex_AnimSkin"          "menu_anim_skin"
+        addAction m "C1B05DD5-1434-4B25-AD70-513D80EB84BC" "WhiteoutDex_AnimScaler"        "menu_anim_scaler"
         m.CreateSeparator "16705361-29F9-4DE0-854D-BAA46C5B5681"
-        m.CreateAction "B59300EB-790A-4335-A11E-9C821DE7BFC7" 647394 "WhiteoutDex_SkinChanger`WhiteoutDex Toolkit"
-        m.CreateAction "64B61757-30BC-45F4-8365-12EEAB81C876" 647394 "WhiteoutDex_GridDummy`WhiteoutDex Toolkit"
-        m.CreateAction "EAB58810-F22E-4C1E-8EDB-526362EA648C" 647394 "WhiteoutDex_ObjectTools`WhiteoutDex Toolkit"
-        m.CreateAction "358E059E-5EFA-451B-92FB-969E46B8CB3C" 647394 "WhiteoutDex_ObjectSettings`WhiteoutDex Toolkit"
-        m.CreateAction "A72E1B34-5D89-4F01-B6C3-E8D7F2A19045" 647394 "WhiteoutDex_KeyframeOptimizer`WhiteoutDex Toolkit"
-        m.CreateAction "B83F2C45-6E9A-4012-C7D4-F9E803B2A156" 647394 "WhiteoutDex_CellShadeCreator`WhiteoutDex Toolkit"
+        addAction m "B59300EB-790A-4335-A11E-9C821DE7BFC7" "WhiteoutDex_SkinChanger"       "menu_skin_changer"
+        addAction m "64B61757-30BC-45F4-8365-12EEAB81C876" "WhiteoutDex_GridDummy"         "menu_grid_dummy"
+        addAction m "EAB58810-F22E-4C1E-8EDB-526362EA648C" "WhiteoutDex_ObjectTools"       "menu_object_tools"
+        addAction m "358E059E-5EFA-451B-92FB-969E46B8CB3C" "WhiteoutDex_ObjectSettings"    "menu_object_settings"
+        addAction m "A72E1B34-5D89-4F01-B6C3-E8D7F2A19045" "WhiteoutDex_KeyframeOptimizer" "menu_keyframe_optimizer"
+        addAction m "B83F2C45-6E9A-4012-C7D4-F9E803B2A156" "WhiteoutDex_CellShadeCreator"  "menu_cell_shade"
         m.CreateSeparator "D4944802-FCEE-4586-BBF2-E839D506F4CC"
-        m.CreateAction "EF9A6CC4-C7A8-4646-92D3-09DCF207D636" 647394 "WhiteoutDex_Renderer`WhiteoutDex Toolkit"
-        m.CreateAction "378079A3-999E-46F6-9D2F-F8015B5BDF1A" 647394 "WhiteoutDex_Settings`WhiteoutDex Toolkit"
+        addAction m "EF9A6CC4-C7A8-4646-92D3-09DCF207D636" "WhiteoutDex_Renderer"          "menu_renderer"
+        addAction m "378079A3-999E-46F6-9D2F-F8015B5BDF1A" "WhiteoutDex_Settings"          "menu_settings"
         m.CreateSeparator "879F02CE-A33B-49D0-9AA5-6BB7BB867336"
-        m.CreateAction "3E4B0A7D-3DFB-4390-87B8-FA2CE0C8571A" 647394 "WhiteoutDex_About`WhiteoutDex Toolkit"
+        addAction m "3E4B0A7D-3DFB-4390-87B8-FA2CE0C8571A" "WhiteoutDex_About"             "menu_about"
     ),
     
     -- ============================================================================
@@ -120,9 +135,23 @@ struct WhiteoutDexMenuStruct
         local num = whiteoutDexMain.numItems()
         if num != 0 then this.cleanMenu whiteoutDexMain
         
-        local managerItem  = menuMan.createActionItem "WhiteoutDex_Manager"  "WhiteoutDex Toolkit"
-        local settingsItem = menuMan.createActionItem "WhiteoutDex_Settings" "WhiteoutDex Toolkit"
-        local aboutItem    = menuMan.createActionItem "WhiteoutDex_About"    "WhiteoutDex Toolkit"
+        -- setUseCustomTitle overrides the macroscript's English buttonText;
+        -- see WhiteoutDexMenuInstaller.ms for why that is the only hook here.
+        fn localizeItem item locKey =
+        (
+            if item != undefined and ::WdxL != undefined do
+                try
+                (
+                    item.setTitle (::WdxL.t locKey)
+                    item.setUseCustomTitle true
+                )
+                catch ()
+            item
+        )
+
+        local managerItem  = localizeItem (menuMan.createActionItem "WhiteoutDex_Manager"  "WhiteoutDex Toolkit") "mgr_whiteoutdex_manager_macbtn"
+        local settingsItem = localizeItem (menuMan.createActionItem "WhiteoutDex_Settings" "WhiteoutDex Toolkit") "menu_settings"
+        local aboutItem    = localizeItem (menuMan.createActionItem "WhiteoutDex_About"    "WhiteoutDex Toolkit") "menu_about"
         local sep1 = menuMan.createSeparatorItem()
         
         try

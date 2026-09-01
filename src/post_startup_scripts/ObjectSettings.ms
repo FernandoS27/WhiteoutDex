@@ -150,6 +150,8 @@ struct WdxObjectSettings
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "obj_settings_title"
+				grpFlags.text = ::WdxL.t "obj_flags_grp"
+				grpMesh.text = ::WdxL.t "obj_mesh_grp"
 				dontInhTransChk.text = ::WdxL.t "obj_dont_inherit_translation_chk"
 				try (dontInhTransChk.tooltip = ::WdxL.t "obj_ignore_parent_translation_tip") catch ()
 				dontInhRotChk.text = ::WdxL.t "obj_dont_inherit_rotation_chk"

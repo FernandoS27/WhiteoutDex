@@ -701,6 +701,11 @@ struct WdxObjectManipulationTools
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "omt_object_manipulation_tools_title"
+				grpTools.text = ::WdxL.t "omt_tools_grp"
+				grpOptions.text = ::WdxL.t "omt_paste_options_grp"
+				grpPoly.text = ::WdxL.t "omt_poly_tools_grp"
+				grpPolyOpts.text = ::WdxL.t "omt_poly_options_grp"
+				grpPasteMode.text = ::WdxL.t "omt_poly_paste_mode_grp"
 				-- Object Tools
 				lblHierarchy.text = ::WdxL.t "omt_hierarchy_lbl"
 				lblPosition.text = ::WdxL.t "omt_position_lbl"

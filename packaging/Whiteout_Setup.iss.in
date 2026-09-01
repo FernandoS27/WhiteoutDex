@@ -68,14 +68,93 @@ UsePreviousAppDir=yes
 CloseApplications=no
 
 [Languages]
-; Languages bundled with a stock Inno Setup 6 install. ChineseSimplified is
-; not shipped by default; add it via the official Inno Setup language pack
-; (https://jrsoftware.org/files/istrans/) if you need it.
+; The six languages the toolkit itself ships (see
+; src/pre_startup_scripts/WhiteoutDexLocalization.ms) — the installer speaks the
+; same set, picked from the Windows UI language by LanguageDetectionMethod above.
+;
+; Five come from a stock Inno Setup 6 install. Simplified Chinese does not ship
+; with Inno Setup, so it is bundled here: ChineseSimplified.isl is layered ON TOP
+; of Default.isl (that is what the comma means — later files win), and it
+; translates the messages this particular installer actually shows. Anything a
+; streamlined installer never reaches — the components page, the Start Menu
+; page, the download and archive errors — falls through to the English in
+; Default.isl rather than being half-translated by us. Replacing it with the
+; full community translation from https://jrsoftware.org/files/istrans/ is a
+; drop-in swap: keep the file name and drop the ",compiler:Default.isl" prefix.
 Name: "english";   MessagesFile: "compiler:Default.isl"
 Name: "german";    MessagesFile: "compiler:Languages\German.isl"
 Name: "japanese";  MessagesFile: "compiler:Languages\Japanese.isl"
 Name: "russian";   MessagesFile: "compiler:Languages\Russian.isl"
 Name: "korean";    MessagesFile: "compiler:Languages\Korean.isl"
+Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl,@WDX_REPO_ROOT@\packaging\ChineseSimplified.isl"
+
+; ============================================================================
+; CUSTOM MESSAGES
+;
+; Everything the [Code] section below puts in a MsgBox. Pascal reads them with
+; CustomMessage('Name'), which resolves against the language the wizard is
+; running in — so these have to stay in step with [Languages] above: a name
+; missing for the active language is a run-time error, not a compile one.
+;
+; %n is a line break. Inno's own wizard text is not here; that comes from the
+; .isl files.
+; ============================================================================
+[CustomMessages]
+english.NoAutodesk=The Autodesk AppData folder was not found.%nIs 3ds Max installed?%n%nInstall anyway?
+german.NoAutodesk=Der Autodesk-AppData-Ordner wurde nicht gefunden.%nIst 3ds Max installiert?%n%nTrotzdem installieren?
+japanese.NoAutodesk=Autodesk の AppData フォルダーが見つかりませんでした。%n3ds Max はインストールされていますか?%n%nこのままインストールしますか?
+russian.NoAutodesk=Папка Autodesk AppData не найдена.%nУстановлен ли 3ds Max?%n%nВсё равно установить?
+korean.NoAutodesk=Autodesk AppData 폴더를 찾을 수 없습니다.%n3ds Max가 설치되어 있습니까?%n%n그래도 설치할까요?
+chinesesimplified.NoAutodesk=未找到 Autodesk AppData 文件夹。%n是否已安装 3ds Max？%n%n仍要继续安装吗？
+
+english.OldVersionFound=WhiteoutDex Toolkit v%1 is already installed.
+german.OldVersionFound=WhiteoutDex Toolkit v%1 ist bereits installiert.
+japanese.OldVersionFound=WhiteoutDex Toolkit v%1 は既にインストールされています。
+russian.OldVersionFound=WhiteoutDex Toolkit v%1 уже установлен.
+korean.OldVersionFound=WhiteoutDex Toolkit v%1이(가) 이미 설치되어 있습니다.
+chinesesimplified.OldVersionFound=已安装 WhiteoutDex Toolkit v%1。
+
+english.OldVersionUnknown=A previous version of WhiteoutDex Toolkit is installed.
+german.OldVersionUnknown=Eine frühere Version des WhiteoutDex Toolkit ist installiert.
+japanese.OldVersionUnknown=WhiteoutDex Toolkit の以前のバージョンがインストールされています。
+russian.OldVersionUnknown=Установлена предыдущая версия WhiteoutDex Toolkit.
+korean.OldVersionUnknown=이전 버전의 WhiteoutDex Toolkit이 설치되어 있습니다.
+chinesesimplified.OldVersionUnknown=已安装旧版本的 WhiteoutDex Toolkit。
+
+english.UpgradePrompt=The old version will be uninstalled automatically before updating.%nYour maps folder and settings will be preserved.%n%nContinue?
+german.UpgradePrompt=Die alte Version wird vor dem Update automatisch deinstalliert.%nIhr maps-Ordner und Ihre Einstellungen bleiben erhalten.%n%nFortfahren?
+japanese.UpgradePrompt=更新の前に、古いバージョンが自動的にアンインストールされます。%nmaps フォルダーと設定は保持されます。%n%n続行しますか?
+russian.UpgradePrompt=Перед обновлением старая версия будет удалена автоматически.%nПапка maps и настройки будут сохранены.%n%nПродолжить?
+korean.UpgradePrompt=업데이트 전에 이전 버전이 자동으로 제거됩니다.%nmaps 폴더와 설정은 유지됩니다.%n%n계속할까요?
+chinesesimplified.UpgradePrompt=更新前将自动卸载旧版本。%n你的 maps 文件夹和设置将被保留。%n%n是否继续？
+
+english.OldBatVersionFound=WhiteoutDex Toolkit v%1 was found (installed via batch file).
+german.OldBatVersionFound=WhiteoutDex Toolkit v%1 wurde gefunden (per Batchdatei installiert).
+japanese.OldBatVersionFound=WhiteoutDex Toolkit v%1 が見つかりました (バッチファイルでインストール済み)。
+russian.OldBatVersionFound=Обнаружен WhiteoutDex Toolkit v%1 (установлен через пакетный файл).
+korean.OldBatVersionFound=WhiteoutDex Toolkit v%1을(를) 찾았습니다(배치 파일로 설치됨).
+chinesesimplified.OldBatVersionFound=发现 WhiteoutDex Toolkit v%1（通过批处理文件安装）。
+
+english.OldBatVersionUnknown=A previous WhiteoutDex installation was found (installed via batch file).
+german.OldBatVersionUnknown=Eine frühere WhiteoutDex-Installation wurde gefunden (per Batchdatei installiert).
+japanese.OldBatVersionUnknown=以前の WhiteoutDex のインストールが見つかりました (バッチファイルでインストール済み)。
+russian.OldBatVersionUnknown=Обнаружена предыдущая установка WhiteoutDex (через пакетный файл).
+korean.OldBatVersionUnknown=이전 WhiteoutDex 설치를 찾았습니다(배치 파일로 설치됨).
+chinesesimplified.OldBatVersionUnknown=发现旧的 WhiteoutDex 安装（通过批处理文件安装）。
+
+english.ReplaceBatPrompt=The old installation will be cleaned up and replaced.%nYour maps folder and settings will be preserved.%n%nContinue?
+german.ReplaceBatPrompt=Die alte Installation wird bereinigt und ersetzt.%nIhr maps-Ordner und Ihre Einstellungen bleiben erhalten.%n%nFortfahren?
+japanese.ReplaceBatPrompt=古いインストールを整理して置き換えます。%nmaps フォルダーと設定は保持されます。%n%n続行しますか?
+russian.ReplaceBatPrompt=Старая установка будет очищена и заменена.%nПапка maps и настройки будут сохранены.%n%nПродолжить?
+korean.ReplaceBatPrompt=이전 설치를 정리하고 교체합니다.%nmaps 폴더와 설정은 유지됩니다.%n%n계속할까요?
+chinesesimplified.ReplaceBatPrompt=将清理并替换旧的安装。%n你的 maps 文件夹和设置将被保留。%n%n是否继续？
+
+english.DotNetMissing=Note: .NET 8.0 Desktop Runtime was not detected.%n%nWhiteoutDex Native features for Max 2026+ require it.%nDownload: https://dotnet.microsoft.com/download/dotnet/8.0%n%nThe installation will continue. You can install .NET 8.0 later.
+german.DotNetMissing=Hinweis: Die .NET 8.0 Desktop Runtime wurde nicht gefunden.%n%nDie nativen WhiteoutDex-Funktionen für Max 2026+ benötigen sie.%nDownload: https://dotnet.microsoft.com/download/dotnet/8.0%n%nDie Installation wird fortgesetzt. Sie können .NET 8.0 später installieren.
+japanese.DotNetMissing=注意: .NET 8.0 デスクトップ ランタイムが検出されませんでした。%n%nMax 2026 以降の WhiteoutDex ネイティブ機能にはこれが必要です。%nダウンロード: https://dotnet.microsoft.com/download/dotnet/8.0%n%nインストールは続行します。.NET 8.0 は後からインストールできます。
+russian.DotNetMissing=Примечание: среда .NET 8.0 Desktop Runtime не обнаружена.%n%nОна нужна для нативных возможностей WhiteoutDex в Max 2026+.%nЗагрузка: https://dotnet.microsoft.com/download/dotnet/8.0%n%nУстановка продолжится. .NET 8.0 можно установить позже.
+korean.DotNetMissing=참고: .NET 8.0 데스크톱 런타임이 감지되지 않았습니다.%n%nMax 2026 이상의 WhiteoutDex 네이티브 기능에 필요합니다.%n다운로드: https://dotnet.microsoft.com/download/dotnet/8.0%n%n설치는 계속됩니다. .NET 8.0은 나중에 설치할 수 있습니다.
+chinesesimplified.DotNetMissing=注意：未检测到 .NET 8.0 桌面运行时。%n%nMax 2026 及更高版本的 WhiteoutDex 原生功能需要它。%n下载：https://dotnet.microsoft.com/download/dotnet/8.0%n%n安装将继续进行。你可以稍后再安装 .NET 8.0。
 
 ; ============================================================================
 ; FILES
@@ -95,6 +174,15 @@ Source: "@WDX_REPO_ROOT@\WhiteoutDex_Settings.ini"; DestDir: "{app}"; Flags: onl
 
 ; === WhiteoutDex icons (UI assets) ===
 Source: "@WDX_REPO_ROOT@\whiteoutdex_icons\*"; DestDir: "{app}\whiteoutdex_icons"; \
+    Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+
+; === UI language catalogs ===
+; Merged from the WhiteoutFlakes catalogs plus resources/lang/wdx_*.ini by the
+; `lang_catalogs` CMake target. The renderer .dlx resolves this folder relative
+; to itself (see wdx_ui_language.h), so it has to stay at the install root.
+; The MaxScript UI does NOT read these — its catalog is compiled into
+; scripts\pre_startup_scripts\WhiteoutDexLocalization.ms.
+Source: "@WDX_STAGE_DIR@\lang\*"; DestDir: "{app}\lang"; \
     Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 
 ; === NATIVE PLUGINS — one block per Max version, generated by CMake from WDX_MAX_VERSIONS.
@@ -132,6 +220,7 @@ Root: HKLM; Subkey: "Software\WhiteoutDex"; ValueType: string; \
 ; ============================================================================
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\whiteoutdex_icons"
+Type: filesandordirs; Name: "{app}\lang"
 Type: filesandordirs; Name: "{app}\native plugins"
 Type: filesandordirs; Name: "{app}\scripts"
 Type: files;          Name: "{app}\PackageContents.xml"
@@ -297,6 +386,7 @@ begin
     DelTree(AppDir + '\scripts', True, True, True);
     DelTree(AppDir + '\native plugins', True, True, True);
     DelTree(AppDir + '\whiteoutdex_icons', True, True, True);
+    DelTree(AppDir + '\lang', True, True, True);
 
     DeleteFile(AppDir + '\PackageContents.xml');
     DeleteFile(AppDir + '\LICENSE.md');
@@ -325,11 +415,7 @@ begin
 
   if not IsAutodeskInstalled() then
   begin
-    if MsgBox(
-      'The Autodesk AppData folder was not found.' + #13#10 +
-      'Is 3ds Max installed?' + #13#10#13#10 +
-      'Install anyway?',
-      mbConfirmation, MB_YESNO) = IDNO then
+    if MsgBox(CustomMessage('NoAutodesk'), mbConfirmation, MB_YESNO) = IDNO then
     begin
       Result := False;
       Exit;
@@ -343,14 +429,11 @@ begin
   begin
     OldVersion := GetOldVersion(AppDir);
     if OldVersion <> '' then
-      Msg := 'WhiteoutDex Toolkit v' + OldVersion + ' is already installed.'
+      Msg := FmtMessage(CustomMessage('OldVersionFound'), [OldVersion])
     else
-      Msg := 'A previous version of WhiteoutDex Toolkit is installed.';
+      Msg := CustomMessage('OldVersionUnknown');
 
-    Msg := Msg + #13#10#13#10 +
-      'The old version will be uninstalled automatically before updating.' + #13#10 +
-      'Your maps folder and settings will be preserved.' + #13#10#13#10 +
-      'Continue?';
+    Msg := Msg + #13#10#13#10 + CustomMessage('UpgradePrompt');
 
     if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO then
     begin
@@ -364,14 +447,11 @@ begin
   begin
     OldVersion := GetOldVersion(AppDir);
     if OldVersion <> '' then
-      Msg := 'WhiteoutDex Toolkit v' + OldVersion + ' was found (installed via batch file).'
+      Msg := FmtMessage(CustomMessage('OldBatVersionFound'), [OldVersion])
     else
-      Msg := 'A previous WhiteoutDex installation was found (installed via batch file).';
+      Msg := CustomMessage('OldBatVersionUnknown');
 
-    Msg := Msg + #13#10#13#10 +
-      'The old installation will be cleaned up and replaced.' + #13#10 +
-      'Your maps folder and settings will be preserved.' + #13#10#13#10 +
-      'Continue?';
+    Msg := Msg + #13#10#13#10 + CustomMessage('ReplaceBatPrompt');
 
     if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO then
     begin
@@ -383,12 +463,7 @@ begin
   // Non-blocking .NET 8 advisory.
   if not IsDotNet8Installed() then
   begin
-    MsgBox(
-      'Note: .NET 8.0 Desktop Runtime was not detected.' + #13#10#13#10 +
-      'WhiteoutDex Native features for Max 2026+ require it.' + #13#10 +
-      'Download: https://dotnet.microsoft.com/download/dotnet/8.0' + #13#10#13#10 +
-      'The installation will continue. You can install .NET 8.0 later.',
-      mbInformation, MB_OK);
+    MsgBox(CustomMessage('DotNetMissing'), mbInformation, MB_OK);
   end;
 end;
 

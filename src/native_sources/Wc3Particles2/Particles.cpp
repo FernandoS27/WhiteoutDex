@@ -7,6 +7,8 @@
  */
 
 #include "Particles.h"
+#include "wdx_localization.h" // wdx::l10n — relabels the rollouts from the catalog
+#include <string>
 
 /// @name Module globals
 /// @{
@@ -756,7 +758,125 @@ void BuildTexCategoryList(std::vector<TexCategoryEntry>& list)
 }
 
 /// @brief Controller type names for the controller-type comboboxes.
-static const MCHAR* s_ctrlTypeNames[] = { _M("None"), _M("Linear"), _M("Bezier"), _M("Hermite") };
+// The four interpolation types, translated once per session. Static because the
+// combo is repopulated on every rollout open and the language cannot change
+// while Max is running. Shares the material plug-in's catalog entry: same four
+// choices, same words.
+static const MCHAR* CtrlTypeName(int i)
+{
+    static const MCHAR* kFallback[] = {_M("None"), _M("Linear"), _M("Bezier"), _M("Hermite")};
+    static std::wstring cached[4];
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        const std::wstring joined = wdx::l10n::Tr("mat_controller_items");
+        if (!joined.empty() && joined != L"mat_controller_items") {
+            size_t start = 0;
+            int n = 0;
+            for (; n < 4; ++n) {
+                const size_t bar = joined.find(L'|', start);
+                cached[n] = joined.substr(start, bar == std::wstring::npos ? bar : bar - start);
+                if (bar == std::wstring::npos) { ++n; break; }
+                start = bar + 1;
+            }
+            // A list that did not split into exactly four is discarded: a short
+            // one would leave a combo entry blank.
+            if (n != 4)
+                for (auto& c : cached) c.clear();
+        }
+    }
+    if (i < 0 || i >= 4) return _M("");
+    return cached[i].empty() ? kFallback[i] : cached[i].c_str();
+}
+// The "- Xxx -" banner labels keep their dashes; only the words come from the
+// catalog, so a translator cannot lose the decoration.
+static void SetBannerText(HWND hWnd, int id, const char* key)
+{
+    const std::wstring text = wdx::l10n::Tr(key);
+    if (text.empty()) return;
+    const std::wstring decorated = L"- " + text + L" -";
+    SetDlgItemTextW(hWnd, id, decorated.c_str());
+}
+// Rollout captions come out of Wc3Particles2.rc, which is compiled English.
+// This table replaces them at WM_INITDIALOG from the shared catalog in
+// src/pre_startup_scripts/WhiteoutDexLocalization.ms, so one language setting
+// drives the whole toolkit. A key the catalog lacks leaves its label alone.
+//
+// WDXP2_LBL_0 and WDXP2_LBL_1 are the "0" and "1" ends of the parametric time
+// scale — numerals, so they are deliberately absent.
+static constexpr wdx::l10n::DialogString kP2Strings[] = {
+    {WDXP2_LBL_COUNT,                 "bp2_count_lbl"},
+    {WDXP2_LBL_SPEED,                 "bp2_speed_lbl"},
+    {WDXP2_LBL_CONTROL,               "bp2_control_lbl"},
+    {WDXP2_LBL_VARIATION,             "bp2_variation_lbl"},
+    {WDXP2_LBL_CONTROL_2,             "bp2_control_lbl"},
+    {WDXP2_LBL_CONE_ANGLE,            "bp2_cone_angle_lbl"},
+    {WDXP2_LBL_CONTROL_3,             "bp2_control_lbl"},
+    {WDXP2_LBL_GRAVITY,               "bp2_gravity_lbl"},
+    {WDXP2_LBL_CONTROL_4,             "bp2_control_lbl"},
+    {WDXP2_LBL_LIFESPAN,              "bp2_lifespan_lbl"},
+    {WDXP2_LBL_EMISSION_RATE,         "bp2_emission_rate_lbl"},
+    {WDXP2_LBL_CONTROL_5,             "bp2_control_lbl"},
+    {WDXP2_LBL_WIDTH,                 "bp2_width_lbl"},
+    {WDXP2_LBL_CONTROL_6,             "bp2_control_lbl"},
+    {WDXP2_LBL_LENGTH,                "bp2_length_lbl"},
+    {WDXP2_LBL_CONTROL_7,             "bp2_control_lbl"},
+    {WDXP2_LBL_UNSHADED,              "bp2_unshaded_lbl"},
+    {WDXP2_LBL_UNFOGGED,              "bp2_unfogged_lbl"},
+    {WDXP2_LBL_SORT_Z_AXIS_GEOMETRY,  "bp2_sort_z_axis_lbl"},
+    {WDXP2_LBL_SEQUENCE,              "bp2_sequence_grp"},
+    {WDXP2_LBL_ROWS,                  "bp2_rows_lbl"},
+    {WDXP2_LBL_COLS,                  "bp2_cols_lbl"},
+    {WDXP2_LBL_TAIL_LENGTH,           "bp2_tail_length_lbl"},
+    {WDXP2_LBL_TIME_PARAMETRIC,       "bp2_time_parametric_grp"},
+    {WDXP2_LBL_START,                 "bp2_start_lbl"},
+    {WDXP2_LBL_MIDDLE,                "bp2_middle_lbl"},
+    {WDXP2_LBL_END,                   "bp2_end_lbl"},
+    {WDXP2_LBL_COLOR,                 "bp2_color_grp"},
+    {WDXP2_LBL_START_2,               "bp2_start_lbl"},
+    {WDXP2_LBL_MIDDLE_2,              "bp2_middle_lbl"},
+    {WDXP2_LBL_END_2,                 "bp2_end_lbl"},
+    {WDXP2_LBL_ALPHA,                 "bp2_alpha_grp"},
+    {WDXP2_LBL_START_3,               "bp2_start_lbl"},
+    {WDXP2_LBL_MIDDLE_3,              "bp2_middle_lbl"},
+    {WDXP2_LBL_END_3,                 "bp2_end_lbl"},
+    {WDXP2_LBL_SCALE,                 "bp2_scale_grp"},
+    {WDXP2_LBL_START_4,               "bp2_start_lbl"},
+    {WDXP2_LBL_MIDDLE_4,              "bp2_middle_lbl"},
+    {WDXP2_LBL_END_4,                 "bp2_end_lbl"},
+    {WDXP2_LBL_LIFESPAN_HEAD_UV_ANIM, "bp2_lifespan_head_uv_grp"},
+    {WDXP2_LBL_START_5,               "bp2_start_colon_lbl"},
+    {WDXP2_LBL_END_5,                 "bp2_end_colon_lbl"},
+    {WDXP2_LBL_REPEAT,                "bp2_repeat_lbl"},
+    {WDXP2_LBL_DECAY_HEAD_UV_ANIM,    "bp2_decay_head_uv_grp"},
+    {WDXP2_LBL_START_6,               "bp2_start_colon_lbl"},
+    {WDXP2_LBL_END_6,                 "bp2_end_colon_lbl"},
+    {WDXP2_LBL_REPEAT_2,              "bp2_repeat_lbl"},
+    {WDXP2_LBL_LIFESPAN_TAIL_UV_ANIM, "bp2_lifespan_tail_uv_grp"},
+    {WDXP2_LBL_START_7,               "bp2_start_colon_lbl"},
+    {WDXP2_LBL_END_7,                 "bp2_end_colon_lbl"},
+    {WDXP2_LBL_REPEAT_3,              "bp2_repeat_lbl"},
+    {WDXP2_LBL_DECAY_TAIL_UV_ANIM,    "bp2_decay_tail_uv_grp"},
+    {WDXP2_LBL_START_8,               "bp2_start_colon_lbl"},
+    {WDXP2_LBL_END_8,                 "bp2_end_colon_lbl"},
+    {WDXP2_LBL_REPEAT_4,              "bp2_repeat_lbl"},
+    {WDXP2_LBL_PRIORITY_PLANE,        "bp2_priority_plane_lbl"},
+    {IDC_CHECKBOX_SQUIRT,             "bp2_squirt_chk"},
+    {IDC_CHECKBOX_LINE_EMITTER,       "bp2_line_emitter_chk"},
+    {IDC_BUTTON_IMPORT_TEX,           "bp2_import_texture_btn"},
+    {IDC_BUTTON_BROWSE_CASC,          "bp2_browse_archives_btn"},
+    {IDC_RADIO_TYPE_HEAD,             "bp2_head_rdo"},
+    {IDC_RADIO_TYPE_TAIL,             "bp2_tail_rdo"},
+    {IDC_RADIO_TYPE_BOTH,             "bp2_both_rdo"},
+    {IDC_CHECKBOX_MODELSPACE,         "bp2_model_space_chk"},
+    {IDC_CHECKBOX_XYQUAD,             "bp2_xy_quads_chk"},
+};
+
+static constexpr wdx::l10n::DialogString kP2ConfigStrings[] = {
+    {IDC_BUTTON_IMPORT,      "popcorn_import_btn"},
+    {IDC_BUTTON_EXPORT,      "popcorn_export_btn"},
+    {IDC_CHECK_LOAD_DYNAMIC, "bp2_load_dynamic_chk"},
+};
 static const int    s_ctrlTypeCount = 4;
 
 /// @brief Detect which controller type is assigned to a PB2 parameter.
@@ -779,7 +899,7 @@ static void SetupCtrlCombo(HWND hWnd, int comboID, IParamBlock2* pb, ParamID pid
     if (!hCombo) return;
     SendMessage(hCombo, CB_RESETCONTENT, 0, 0);
     for (int i = 0; i < s_ctrlTypeCount; i++)
-        SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)s_ctrlTypeNames[i]);
+        SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)CtrlTypeName(i));
     SendMessage(hCombo, CB_SETCURSEL, DetectControllerType(pb, pid), 0);
 }
 
@@ -827,6 +947,12 @@ INT_PTR Wc3Particles2DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
     switch (msg) {
     case WM_INITDIALOG:
     {
+        wdx::l10n::LocalizeDialog(hWnd, kP2Strings);
+        SetBannerText(hWnd, WDXP2_LBL_TEXTURE_PATH_PREFIX, "bp2_texture_path_prefix_lbl");
+        SetBannerText(hWnd, WDXP2_LBL_PARTICLE_TEXTURE_FILE, "bp2_particle_texture_file_lbl");
+        SetBannerText(hWnd, WDXP2_LBL_TEXTURE_BLEND_MODE, "bp2_texture_blend_mode_lbl");
+        SetBannerText(hWnd, WDXP2_LBL_REPLACEABLE_TEXTURE, "bp2_replaceable_texture_lbl");
+
         IParamBlock2* pb = map->GetParamBlock();
         SetupMaxRate(hWnd, pb, t);
 
@@ -1377,6 +1503,7 @@ INT_PTR ConfigDlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
 {
     switch (msg) {
     case WM_INITDIALOG:
+        wdx::l10n::LocalizeDialog(hWnd, kP2ConfigStrings);
         CheckDlgButton(hWnd, IDC_CHECK_LOAD_DYNAMIC, loadDynamic ? BST_CHECKED : BST_UNCHECKED);
         return TRUE;
     case WM_COMMAND:

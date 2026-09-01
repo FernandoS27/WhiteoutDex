@@ -26,16 +26,16 @@ extends:dummy
                     selection[1].pos = obj.pos
                     selection[1].parent = obj
                     Temp_adsorption.text = obj.name
-                    btn_adsorption.text = "Parent: " + Temp_adsorption.text
+                    btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
                 )
             )catch()
         )
         on General open do 
         (
             if Temp_adsorption.text != "" then
-                btn_adsorption.text = "Parent: " + Temp_adsorption.text
+                btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
             else
-                btn_adsorption.text = "Select Object (Adsorb)"
+                btn_adsorption.text = ::WdxL.t "common_adsorb_btn"
             if ::WdxL != undefined then
                 General.title = ::WdxL.t "col_general_features_title"
         )
@@ -122,14 +122,14 @@ extends:dummy
                     selection[1].pos = obj.pos
                     selection[1].parent = obj
                     Temp_adsorption.text = obj.name
-                    btn_adsorption.text = "Parent: " + Temp_adsorption.text
+                    btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
                 )
 			)catch()
         )
         on General open do 
         (
             if Temp_adsorption.text != "" then
-                btn_adsorption.text = "Parent: " + Temp_adsorption.text
+                btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
             else
                 btn_adsorption.text = "Select Object (Adsorb)"
             if ::WdxL != undefined then

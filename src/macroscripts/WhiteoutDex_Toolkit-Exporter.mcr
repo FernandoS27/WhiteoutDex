@@ -34,10 +34,12 @@ macroScript WhiteoutDex_Exporter
 			seedName = (getFilenamePath maxFilePath) + (getFilenameFile maxFileName) + ".mdx"
 		
 		-- Open save dialog with MDX/MDL filter
+		-- Only the filter group names are translated; the extension masks
+		-- after each '|' are parsed by Max and stay verbatim.
 		local f = getSaveFileName \
-			caption:"Export Warcraft III Model" \
+			caption:(::WdxL.t "exp_save_model_cap") \
 			filename:seedName \
-			types:"Warcraft III Model (*.mdx)|*.mdx|Warcraft III Text Model (*.mdl)|*.mdl|" \
+			types:((::WdxL.t "imp_mdx_filter") + " (*.mdx)|*.mdx|" + (::WdxL.t "imp_mdl_filter") + " (*.mdl)|*.mdl|") \
 			historyCategory:"WhiteoutDexExport"
 		
 		if f != undefined do

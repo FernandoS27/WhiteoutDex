@@ -29,9 +29,11 @@ macroScript WhiteoutDex_Importer
 		)
 		
 		-- Open file dialog with MDX/MDL filter
+		-- Only the filter group names are translated; the extension masks
+		-- after each '|' are parsed by Max and stay verbatim.
 		local f = getOpenFileName \
-			caption:"Import Warcraft III Model" \
-			types:"Warcraft III Model (*.mdx)|*.mdx|Warcraft III Text Model (*.mdl)|*.mdl|All Files (*.*)|*.*|" \
+			caption:(::WdxL.t "imp_open_model_cap") \
+			types:((::WdxL.t "imp_mdx_filter") + " (*.mdx)|*.mdx|" + (::WdxL.t "imp_mdl_filter") + " (*.mdl)|*.mdl|" + (::WdxL.t "bmp_all_files_filter") + " (*.*)|*.*|") \
 			historyCategory:"WhiteoutDexImport"
 		
 		if f != undefined do

@@ -79,7 +79,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			(
 				local full = resolveEntry e
 				local missing = (full == "" or not (doesFileExist full))
-				append disp (if missing then (e + "      [missing]") else e)
+				append disp (if missing then (e + "      " + (::WdxL.t "set_order_missing_mark")) else e)
 			)
 			lstMpq.items = disp
 			if keepSel >= 1 and keepSel <= disp.count then lstMpq.selection = keepSel
@@ -144,7 +144,8 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 
 		on btnAddFile pressed do
 		(
-			local f = getOpenFileName caption:"Add MPQ Archive" types:"MPQ Archives (*.mpq)|*.mpq|All Files (*.*)|*.*"
+			local f = getOpenFileName caption:(::WdxL.t "set_order_add_archive_cap") \
+				types:((::WdxL.t "set_order_mpq_filter") + " (*.mpq)|*.mpq|" + (::WdxL.t "bmp_all_files_filter") + " (*.*)|*.*")
 			if f != undefined then
 			(
 				addPath f
@@ -154,7 +155,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 
 		on btnAddFolder pressed do
 		(
-			local d = getSavePath caption:"Add every .mpq in a folder"
+			local d = getSavePath caption:(::WdxL.t "set_order_add_folder_tip")
 			if d != undefined then
 			(
 				local added = 0
@@ -163,7 +164,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				for f in found do ( if addPath f then added += 1 )
 				refreshList keepSel:entries.count
 				if added == 0 then
-					messageBox "No new .mpq archives in that folder." title:"WhiteoutDex" beep:false
+					messageBox (::WdxL.t "set_order_no_new_msg") title:"WhiteoutDex" beep:false
 			)
 		)
 
@@ -201,13 +202,13 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 		on btnScan pressed do
 		(
 			if baseDir == "" then
-				messageBox "Set the Game Data Directory in Settings first." title:"WhiteoutDex" beep:false
+				messageBox (::WdxL.t "set_order_no_dir_msg") title:"WhiteoutDex" beep:false
 			else
 			(
 				entries = scanBaseDir()
 				refreshList keepSel:1
 				if entries.count == 0 then
-					messageBox "No .mpq archives in the Game Data Directory." title:"WhiteoutDex" beep:false
+					messageBox (::WdxL.t "set_order_none_found_msg") title:"WhiteoutDex" beep:false
 			)
 		)
 
@@ -248,13 +249,33 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			-- wdx::mpq::ArchiveDirectory - a Classic install keeps its
 			-- archives in the install root, so a user who filled in only one
 			-- of the two paths still gets a working list.
+			if ::WdxL != undefined then
+			(
+				mpqOrderRollout.title	= ::WdxL.t "set_order_title"
+				hintLbl.text			= ::WdxL.t "set_order_hint_lbl"
+				emptyLbl.text			= ::WdxL.t "set_order_empty_lbl"
+				btnUp.text				= ::WdxL.t "set_order_move_up_btn"
+				btnDown.text			= ::WdxL.t "set_order_move_down_btn"
+				btnRemove.text			= ::WdxL.t "set_order_remove_btn"
+				btnAddFile.text			= ::WdxL.t "set_order_add_archive_btn"
+				btnAddFile.tooltip		= ::WdxL.t "set_order_add_archive_tip"
+				btnAddFolder.text		= ::WdxL.t "set_order_add_folder_btn"
+				btnAddFolder.tooltip	= ::WdxL.t "set_order_add_folder_tip"
+				btnScan.text			= ::WdxL.t "set_order_scan_btn"
+				btnScan.tooltip			= ::WdxL.t "set_order_scan_tip"
+				btnDefaults.text		= ::WdxL.t "set_order_defaults_btn"
+				btnDefaults.tooltip		= ::WdxL.t "set_order_defaults_tip"
+				btnOk.text				= ::WdxL.t "common_ok_btn"
+				btnCancel.text			= ::WdxL.t "common_cancel_btn"
+			)
+
 			baseDir = ""
 			if ::WhiteoutDexMPQ != undefined then baseDir = ::WhiteoutDexMPQ.getDirectory()
 			if baseDir == "" then baseDir = getINISetting settingsIni "CASC" "W3Path"
 			if baseDir == "" then
-				baseLbl.text = "No Game Data Directory set - only full paths will resolve."
+				baseLbl.text = ::WdxL.t "set_order_no_base_lbl"
 			else
-				baseLbl.text = "Relative to: " + baseDir
+				baseLbl.text = (::WdxL.t "set_order_relative_to_lbl") + " " + baseDir
 
 			entries = #()
 			local raw = getINISetting settingsIni "MPQ" "List"
@@ -361,9 +382,9 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 					if (trimLeft (trimRight e)) != "" then n += 1
 			)
 			if n == 0 then
-				mpqOrderLbl.text = "Default order"
+				mpqOrderLbl.text = ::WdxL.t "set_order_default_lbl"
 			else
-				mpqOrderLbl.text = "Custom order (" + n as string + ")"
+				mpqOrderLbl.text = (::WdxL.t "set_order_custom_lbl") + " (" + n as string + ")"
 		)
 
 		on langDDL selected idx do
@@ -382,7 +403,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 
 		on mpqBrowseBtn pressed do
 		(
-			local dir = getSavePath caption:"Select Warcraft III Game Data Folder"
+			local dir = getSavePath caption:(::WdxL.t "set_mpq_browse_caption")
 			if dir != undefined then
 			(
 				mpqPathEdt.text = dir
@@ -520,7 +541,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			)
 			else
 			(
-				messageBox "Auto-Updater script not found." title:"WhiteoutDex" beep:false
+				messageBox (::WdxL.t "set_updater_missing_msg") title:"WhiteoutDex" beep:false
 			)
 		)
 
@@ -552,6 +573,14 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			refreshMpqOrderLabel()
 			if ::WdxL != undefined then
 			(
+				settingsRollout.title = ::WdxL.t "set_settings_title"
+				langLabel.text = ::WdxL.t "set_language_lbl"
+				closeBtn.text = ::WdxL.t "common_ok_btn"
+				-- The "(Classic v800)" / "(Reforged v1200)" suffixes are MDX
+				-- format versions, so they are appended here rather than
+				-- carried in the catalog where they could be mistranslated.
+				mpqGrp.text = (::WdxL.t "set_mpq_archives_grp") + " (Classic v800)"
+				cascGrp.text = (::WdxL.t "set_casc_archives_grp") + " (Reforged v1200)"
 				mpqLabel.text = ::WdxL.t "set_mpq_directory_lbl"
 				mpqBrowseBtn.tooltip = ::WdxL.t "set_mpq_browse_tip"
 				mpqClearBtn.text = ::WdxL.t "set_mpq_clear_btn"
@@ -559,6 +588,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				mpqDetectBtn.tooltip = ::WdxL.t "set_detect_tip"
 				mpqOrderBtn.text = ::WdxL.t "set_mpq_order_btn"
 				mpqOrderBtn.tooltip = ::WdxL.t "set_mpq_order_tip"
+				mpqClearBtn.tooltip = ::WdxL.t "set_mpq_clear_tip"
 			)
 			-- CASC path. WhiteoutLib doesn't require .build.info — check
 			-- only that the configured directory still exists.
@@ -580,12 +610,14 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				cascClearBtn.text = ::WdxL.t "set_casc_clear_btn"
 				cascDetectBtn.text = ::WdxL.t "set_detect_btn"
 				cascDetectBtn.tooltip = ::WdxL.t "set_detect_tip"
+				cascClearBtn.tooltip = ::WdxL.t "set_casc_clear_tip"
 			)
 			-- Sidebar localization
 			if ::WdxL != undefined then
 			(
 				sidebarGrp.text = ::WdxL.t "set_sidebar_grp"
 				chk_sidebarEnabled.text = ::WdxL.t "set_sidebar_show_chk"
+				chk_sidebarEnabled.tooltip = ::WdxL.t "set_sidebar_show_tip"
 				lblDockSide.text = ::WdxL.t "set_sidebar_dock_lbl"
 				ddl_dockSide.items = #(::WdxL.t "set_sidebar_dock_left", ::WdxL.t "set_sidebar_dock_right")
 			)
@@ -603,7 +635,9 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			(
 				updateGrp.text = ::WdxL.t "set_update_grp"
 				chk_autoUpdate.text = ::WdxL.t "set_update_auto_chk"
+				chk_autoUpdate.tooltip = ::WdxL.t "set_update_auto_tip"
 				btn_checkNow.text = ::WdxL.t "set_update_check_btn"
+				btn_checkNow.tooltip = ::WdxL.t "set_update_check_tip"
 			)
 		)
 	)

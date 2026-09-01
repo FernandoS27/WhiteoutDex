@@ -189,7 +189,7 @@ macroScript WhiteoutDex_Renderer
 				format "WDX Renderer: sequence push failed: %\n" (getCurrentException())
 			)
 		)
-		catch (messageBox "Renderer could not be started.")
+		catch (messageBox (::WdxL.t "tools_renderer_failed_msg"))
 	)
 )
 
@@ -211,7 +211,7 @@ macroScript WhiteoutDex_KeyframeOptimizer
 				fileIn scriptPath
 			)
 			::wdxOpenKfoDialog()
-		) catch (messageBox ("KFO error:\n" + (getCurrentException())))
+		) catch (messageBox ((::WdxL.t "tools_kfo_error_msg") + "\n" + (getCurrentException())))
 	)
 )
 
@@ -230,6 +230,6 @@ macroScript WhiteoutDex_CellShadeCreator
 				fileIn scriptPath
 			)
 			::wdxOpenCellShadeDialog()
-		) catch (messageBox ("Cell Shade error:\n" + (getCurrentException())))
+		) catch (messageBox ((::WdxL.t "tools_cellshade_error_msg") + "\n" + (getCurrentException())))
 	)
 )

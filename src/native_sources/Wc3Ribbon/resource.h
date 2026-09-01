@@ -86,6 +86,35 @@
 #define IDC_SPIN_TEXSLOT            1078
 /// @}
 
+
+/// @name Static-label IDs for translation
+/// These captions were declared with id -1, which SetDlgItemText cannot
+/// reach. They are numbered from 6000 — above every other control ID in
+/// this plug-in — so the rollout can be relabelled from the shared
+/// catalog at WM_INITDIALOG. See common/wdx_localization.h.
+/// @{
+#define WDXRB_LBL_RIBBON_COLOR                   6000
+#define WDXRB_LBL_CONTROLLER                     6001
+#define WDXRB_LBL_ABOVE_LENGTH                   6002
+#define WDXRB_LBL_CONTROLLER_2                   6003
+#define WDXRB_LBL_BELOW_LENGTH                   6004
+#define WDXRB_LBL_CONTROLLER_3                   6005
+#define WDXRB_LBL_ALPHA                          6006
+#define WDXRB_LBL_CONTROLLER_4                   6007
+#define WDXRB_LBL_EMISSION_RATE                  6008
+#define WDXRB_LBL_CONTROLLER_5                   6009
+#define WDXRB_LBL_LIFE_SPAN                      6010
+#define WDXRB_LBL_CONTROLLER_6                   6011
+#define WDXRB_LBL_GRAVITY                        6012
+#define WDXRB_LBL_CONTROLLER_7                   6013
+#define WDXRB_LBL_MATERIAL                       6014
+#define WDXRB_LBL_SEQUENCE_MODE                  6015
+#define WDXRB_LBL_ROWS                           6016
+#define WDXRB_LBL_COLS                           6017
+#define WDXRB_LBL_SEQUENCE_POSITION              6018
+#define WDXRB_LBL_CONTROLLER_8                   6019
+/// @}
+
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE    121

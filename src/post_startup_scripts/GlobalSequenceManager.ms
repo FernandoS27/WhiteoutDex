@@ -1715,6 +1715,15 @@ struct WdxGlobalSequenceManager
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "gseq_global_sequence_manager_title"
+				createGrp.text = ::WdxL.t "gseq_create_edit_grp"
+				-- durUnit is the frame-count unit and posChk/rotChk/sclChk are
+				-- the Position/Rotation/Scale channel initials; both are one
+				-- glyph wide by design, so they carry their own catalog entries
+				-- rather than reusing the long channel names.
+				durUnit.text = ::WdxL.t "gseq_frames_unit_lbl"
+				posChk.text = ::WdxL.t "gseq_channel_pos_chk"
+				rotChk.text = ::WdxL.t "gseq_channel_rot_chk"
+				sclChk.text = ::WdxL.t "gseq_channel_scl_chk"
 				endFrameLbl.text = ::WdxL.t "gseq_end_frame_lbl"
 				refreshBtn.text = ::WdxL.t "gseq_refresh_btn"
 				removeBtn.text = ::WdxL.t "gseq_remove_btn"

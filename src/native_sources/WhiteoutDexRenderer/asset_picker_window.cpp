@@ -9,6 +9,7 @@
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "resource.h" // IDI_WHITEOUTDEX_ICON
+#include "localization.h"
 #include "storage_explorer.h" // WhiteoutFlakesExplorerLib
 
 #include <chrono>
@@ -139,19 +140,18 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
     WdxPreviewPause previewPause;
 
     if (cascRoot.empty()) {
-        out.error = "No Warcraft III install configured. Set the CASC path in WhiteoutDex "
-                    "Settings first.";
+        out.error = i18n::tr("wdx.picker.no_install");
         return out;
     }
 
     // What the empty-selection hint calls the thing being picked. Derived from
     // the type mask rather than the caption so it stays right when a caller
     // passes a title of its own.
-    const char* noun = "model";
+    const char* noun = i18n::tr("wdx.picker.noun.model");
     if (types == io::BrowseType::Effects)
-        noun = "particle effect";
+        noun = i18n::tr("wdx.picker.noun.effect");
     else if (types == io::BrowseType::Textures)
-        noun = "texture";
+        noun = i18n::tr("wdx.picker.noun.texture");
 
     Interface* ip = GetCOREInterface();
     HWND owner = ip ? GetAncestor(ip->GetMAXHWnd(), GA_ROOT) : nullptr;
@@ -173,7 +173,7 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     wc.lpszClassName = kPickerClass;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        out.error = "Could not register the picker window class.";
+        out.error = i18n::tr("wdx.picker.class_failed");
         return out;
     }
 
@@ -183,7 +183,7 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
                                 CW_USEDEFAULT, adj.right - adj.left, adj.bottom - adj.top, owner,
                                 nullptr, hInst, &st);
     if (!hwnd) {
-        out.error = "Could not create the picker window.";
+        out.error = i18n::tr("wdx.picker.window_failed");
         return out;
     }
     // The class carries the icon, but only the registration that created it
@@ -259,8 +259,7 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
     if (!svc->Pipeline().InitDevice(gfx::GfxApi::D3D11)) {
         shutdownImGui();
         teardownWindow();
-        out.error = "Could not create the graphics device for the asset picker. See "
-                    "%TEMP%\\WhiteoutDex_render.log.";
+        out.error = i18n::tr("wdx.picker.device_failed");
         return out;
     }
 
@@ -274,7 +273,7 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
         svc->Pipeline().Shutdown();
         shutdownImGui();
         teardownWindow();
-        out.error = "Could not create the picker's swap chain.";
+        out.error = i18n::tr("wdx.picker.swapchain_failed");
         return out;
     }
     svc->Pipeline().SetPrimaryTarget(targetId);
@@ -325,8 +324,10 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
         svc->Pipeline().Shutdown();
         shutdownImGui();
         teardownWindow();
-        out.error =
-            err.empty() ? ("Could not open the Warcraft III storage at '" + cascRoot + "'.") : err;
+        // The storage layer's own message is more specific when it has one.
+        out.error = err.empty() ? (std::string(i18n::tr("wdx.picker.storage_failed")) + " '" +
+                                   cascRoot + "'.")
+                                : err;
         return out;
     }
     // Only now: SetEnabledTypes clamps against what the open storage actually
@@ -412,10 +413,10 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
         {
             const std::string rel = StripModChain(selected);
-            ImGui::TextUnformatted("Selected:");
+            ImGui::TextUnformatted(i18n::tr("wdx.picker.selected"));
             ImGui::SameLine();
             if (rel.empty())
-                ImGui::TextDisabled("(nothing — click a %s, or double-click to pick it)", noun);
+                ImGui::TextDisabled(i18n::tr("wdx.picker.nothing_hint"), noun);
             else
                 ImGui::TextUnformatted(rel.c_str());
 
@@ -424,13 +425,13 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
             ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 2.0f * btnW - style.ItemSpacing.x -
                                  style.WindowPadding.x);
             ImGui::BeginDisabled(rel.empty());
-            if (ImGui::Button("Select", ImVec2(btnW, 0))) {
+            if (ImGui::Button(i18n::tr("wdx.picker.select"), ImVec2(btnW, 0))) {
                 activated = selected;
                 st.done = true;
             }
             ImGui::EndDisabled();
             ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(btnW, 0)))
+            if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(btnW, 0)))
                 st.done = true;
         }
         ImGui::End();

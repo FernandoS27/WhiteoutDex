@@ -151,7 +151,7 @@ CAPTION "Scene Problems"
 FONT 8, "MS Sans Serif"
 BEGIN
     LTEXT           "Problems (double-click a row to select the node):",
-                    -1, 7, 5, 266, 8
+                    IDC_LBL_PROBLEM_PROMPT, 7, 5, 266, 8
 
     CONTROL         "", IDC_LV_PROBLEMS, "SysListView32",
                     LVS_REPORT | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,

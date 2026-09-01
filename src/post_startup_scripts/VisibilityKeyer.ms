@@ -322,6 +322,14 @@ struct WdxVisibilityKeyer
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "vis_visibility_keyer_title"
+				visConOnSelObjGrp.text = ::WdxL.t "vis_visibility_controller_on_selected_object_grp"
+				try (visConOnSelObjGrp.tooltip = ::WdxL.t "vis_manage_visibility_controllers_tip") catch ()
+				singleKeyGrp.text = ::WdxL.t "vis_single_key_grp"
+				try (singleKeyGrp.tooltip = ::WdxL.t "vis_set_visibility_keyframes_at_th_tip") catch ()
+				curTimeIntGrp.text = ::WdxL.t "vis_current_time_interval_grp"
+				try (curTimeIntGrp.tooltip = ::WdxL.t "vis_set_visibility_for_the_entire_tip") catch ()
+				selSeqGrp.text = ::WdxL.t "vis_selected_sequences_grp"
+				try (selSeqGrp.tooltip = ::WdxL.t "vis_set_visibility_based_on_select_tip") catch ()
 				visToggleBtn.text = ::WdxL.t "vis_visibility_on_btn"
 				try (visToggleBtn.tooltip = ::WdxL.t "vis_toggle_visibility_onoff_for_s_tip") catch ()
 				visConAddBtn.text = ::WdxL.t "vis_add_btn"

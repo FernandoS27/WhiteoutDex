@@ -209,11 +209,36 @@ extends:Bitmaptexture replaceUI:true version:11
 		(
 			local f = try ( delegate.filename ) catch( "" )
 			if f == undefined do f = ""
-			edtBitmapFile.text = if f != "" then (filenameFromPath f) else "(none)"
+			local none = "(none)"
+			if ::WdxL != undefined do try ( none = ::WdxL.t "bmp_no_bitmap_lbl" ) catch()
+			edtBitmapFile.text = if f != "" then (filenameFromPath f) else none
 		)
-		
+
 		on texParamsRollout open do
 		(
+			-- Localize before updateBitmapDisplay so the empty-slot placeholder
+			-- is already the translated one on first paint.
+			if ::WdxL != undefined then
+			(
+				-- ddReplaceableId is `ui:`-bound to replaceableId; assigning
+				-- `.items` snaps the control to entry 1, so restore from the
+				-- stored parameter rather than from the control.
+				local savRepl = this.replaceableId
+				texParamsRollout.title	= ::WdxL.t "bmp_tex_params_rollout_title"
+				lblBitmapFile.text		= ::WdxL.t "bmp_bitmap_lbl"
+				btnPickBitmap.text		= ::WdxL.t "bmp_pick_bitmap_btn"
+				btnPickBitmap.tooltip	= ::WdxL.t "bmp_pick_bitmap_tip"
+				btnBrowseMPQ.text		= ::WdxL.t "bmp_open_browser_btn"
+				btnBrowseMPQ.tooltip	= ::WdxL.t "bmp_open_browser_tip"
+				ddReplaceableId.caption	= ::WdxL.t "bmp_replaceable_ddl"
+				chkWrapU.text			= ::WdxL.t "bmp_wrap_u_chk"
+				chkWrapV.text			= ::WdxL.t "bmp_wrap_v_chk"
+				chkSphereEnv.text		= ::WdxL.t "bmp_sphere_env_chk"
+				ddReplaceableId.items	= ::WdxL.tList "bmp_replaceable_items"
+				ddReplaceableId.selection = savRepl
+				this.replaceableId		= savRepl
+			)
+
 			updateBitmapDisplay()
 			try ( chkWrapU.checked = delegate.coords.U_Tile ) catch()
 			try ( chkWrapV.checked = delegate.coords.V_Tile ) catch()
@@ -242,13 +267,15 @@ extends:Bitmaptexture replaceUI:true version:11
 					updateBitmapDisplay()
 				)
 			)
-			catch (messageBox ("Texture Browser not available.\n" + (getCurrentException()) ) title:"Wc3Bitmap")
+			catch (messageBox ((::WdxL.t "bmp_browser_unavailable_msg") + "\n" + (getCurrentException()) ) title:"Wc3Bitmap")
 		)
-		
+
 		on btnPickBitmap pressed do
 		(
-			local f = getOpenFileName caption:"Select Bitmap" \
-				types:"Image Files (*.tga,*.blp,*.dds,*.png,*.jpg,*.bmp,*.tif)|*.tga;*.blp;*.dds;*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff|All Files (*.*)|*.*|"
+			-- The type filter's group names are translated; the extension
+			-- masks after each '|' are parsed by Max and stay verbatim.
+			local f = getOpenFileName caption:(::WdxL.t "bmp_select_bitmap_cap") \
+				types:((::WdxL.t "bmp_image_files_filter") + " (*.tga,*.blp,*.dds,*.png,*.jpg,*.bmp,*.tif)|*.tga;*.blp;*.dds;*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff|" + (::WdxL.t "bmp_all_files_filter") + " (*.*)|*.*|")
 			if f != undefined do
 			(
 				delegate.filename = f
@@ -277,6 +304,22 @@ extends:Bitmaptexture replaceUI:true version:11
 			-- (legacy scenes / importer StdUVGen writes) so the spinners and
 			-- the exporter see it.
 			pullUVControllersFromCoords()
+
+			if ::WdxL != undefined then
+			(
+				local savCtrl = this.uvCtrlType
+				uvAnimRollout.title	= ::WdxL.t "bmp_uv_anim_rollout_title"
+				ddUVCtrl.caption	= ::WdxL.t "bmp_controller_type_ddl"
+				spnUOffset.caption	= ::WdxL.t "bmp_u_offset_spn"
+				spnVOffset.caption	= ::WdxL.t "bmp_v_offset_spn"
+				spnWOffset.caption	= ::WdxL.t "bmp_w_offset_spn"
+				spnWAngle.caption	= ::WdxL.t "bmp_w_angle_spn"
+				spnUTiling.caption	= ::WdxL.t "bmp_u_tiling_spn"
+				spnVTiling.caption	= ::WdxL.t "bmp_v_tiling_spn"
+				ddUVCtrl.items		= ::WdxL.tList "mat_controller_items"
+				ddUVCtrl.selection	= savCtrl
+				this.uvCtrlType		= savCtrl
+			)
 		)
 	)
 
@@ -293,6 +336,21 @@ extends:Bitmaptexture replaceUI:true version:11
 		button		btnEditPath		"+  Edit Paths" width:146 height:18 align:#right \
 			tooltip:"Edit prefix path presets in notepad"
 		
+		on prefixPathRollout open do
+		(
+			if ::WdxL != undefined then
+			(
+				-- The glyph prefixes ("▼ ", "+ ") are part of the button art,
+				-- so they are re-applied here rather than carried in the
+				-- catalog, where a translator could lose them.
+				prefixPathRollout.title	= ::WdxL.t "bmp_prefix_path_rollout_title"
+				btnSelPath.text			= "\x25BC  " + (::WdxL.t "bmp_select_path_btn")
+				btnSelPath.tooltip		= ::WdxL.t "bmp_select_path_tip"
+				btnEditPath.text		= "+  " + (::WdxL.t "bmp_edit_paths_btn")
+				btnEditPath.tooltip		= ::WdxL.t "bmp_edit_paths_tip"
+			)
+		)
+
 		on edtPrefixPath entered txt do
 		( edtPrefixPath.text = substituteString (substituteString txt "\r" "") "\n" "" )
 		
@@ -309,7 +367,7 @@ extends:Bitmaptexture replaceUI:true version:11
 				local pval = getINISetting iniPath "PathMenu" ("Path" + i as string)
 				code += "menuItem mi" + (i as string) + " " + q + pval + q + "\n"
 			)
-			code += "menuItem mi" + lastMenu + " " + q + "(Clear)" + q + "\n"
+			code += "menuItem mi" + lastMenu + " " + q + (::WdxL.t "bmp_clear_path_menu") + q + "\n"
 			for i = 1 to PathCount do
 			(
 				local tempstr = getINISetting iniPath "PathMenu" ("Path" + i as string)
@@ -335,6 +393,15 @@ extends:Bitmaptexture replaceUI:true version:11
 		label	lblName		"Wc3 Bitmap" align:#center
 		label	lblBuild	"Build 2.2.0" align:#center
 		label	lblInfo		"textureMap Plugin for 3ds Max" align:#center
+
+		on infoRollout open do
+		(
+			if ::WdxL != undefined then
+			(
+				infoRollout.title	= ::WdxL.t "mat_info_rollout_title"
+				lblInfo.text		= ::WdxL.t "bmp_info_desc_lbl"
+			)
+		)
 	)
 	
 	---------------------------------------------------------------------------

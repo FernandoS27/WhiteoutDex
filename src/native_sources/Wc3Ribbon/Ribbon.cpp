@@ -5,7 +5,9 @@
  */
 
 #include "Ribbon.h"
+#include "wdx_localization.h" // wdx::l10n — relabels the rollouts from the catalog
 #include <cassert>
+#include <string>
 
 // =========================================================================
 // Globals
@@ -195,7 +197,36 @@ static ParamBlockDesc2 ribbon_param_blk(
 // Controller-type combobox helpers
 // =========================================================================
 
-static const MCHAR* s_ctrlTypeNames[] = { _M("None"), _M("Linear"), _M("Bezier"), _M("Hermite") };
+// The four interpolation types, translated once per session. Static because
+// the combo is repopulated on every rollout open and the language cannot
+// change while Max is running a modal parameter map.
+static const MCHAR* CtrlTypeName(int i)
+{
+    static const MCHAR* kFallback[] = {_M("None"), _M("Linear"), _M("Bezier"), _M("Hermite")};
+    static std::wstring cached[4];
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        // Shares the material plug-in's entry: same four choices, same words.
+        const std::wstring joined = wdx::l10n::Tr("mat_controller_items");
+        if (!joined.empty() && joined != L"mat_controller_items") {
+            size_t start = 0;
+            int n = 0;
+            for (; n < 4; ++n) {
+                const size_t bar = joined.find(L'|', start);
+                cached[n] = joined.substr(start, bar == std::wstring::npos ? bar : bar - start);
+                if (bar == std::wstring::npos) { ++n; break; }
+                start = bar + 1;
+            }
+            // A list that did not split into exactly four is discarded: a
+            // short one would leave a combo entry blank.
+            if (n != 4)
+                for (auto& c : cached) c.clear();
+        }
+    }
+    if (i < 0 || i >= 4) return _M("");
+    return cached[i].empty() ? kFallback[i] : cached[i].c_str();
+}
 static const int    s_ctrlTypeCount = 4;
 
 static int DetectControllerType(IParamBlock2* pb, ParamID pid)
@@ -216,7 +247,7 @@ static void SetupCtrlCombo(HWND hWnd, int comboID, IParamBlock2* pb, ParamID pid
     if (!hCombo) return;
     SendMessage(hCombo, CB_RESETCONTENT, 0, 0);
     for (int i = 0; i < s_ctrlTypeCount; i++)
-        SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)s_ctrlTypeNames[i]);
+        SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)CtrlTypeName(i));
     SendMessage(hCombo, CB_SETCURSEL, DetectControllerType(pb, pid), 0);
 }
 
@@ -256,6 +287,51 @@ static const CtrlComboMapping s_ctrlMappings[] = {
 static const int s_ctrlMappingCount = sizeof(s_ctrlMappings) / sizeof(s_ctrlMappings[0]);
 
 // =========================================================================
+// =========================================================================
+// Localization
+//
+// The rollout captions come out of Wc3Ribbon.rc, which is compiled English.
+// These tables replace them at WM_INITDIALOG from the shared catalog in
+// src/pre_startup_scripts/WhiteoutDexLocalization.ms — the same one the
+// MaxScript UI reads, so one language setting drives the whole toolkit.
+// A key the catalog does not carry leaves its label alone.
+// =========================================================================
+
+// The two banner labels are drawn with em-dash art in the .rc; the decoration
+// is re-applied here so a translator only ever sees the words.
+static void SetBannerText(HWND hWnd, int id, const char* key, const MCHAR* fallback)
+{
+    const std::wstring text = wdx::l10n::Tr(key);
+    if (text.empty()) return;
+    const std::wstring decorated = L"\u2014\u2014\u2014 - " + text + L" - \u2014\u2014\u2014";
+    SetDlgItemTextW(hWnd, id, decorated.c_str());
+    (void)fallback;
+}
+
+static constexpr wdx::l10n::DialogString kPropsStrings[] = {
+    {WDXRB_LBL_CONTROLLER,     "ribbon_controller_lbl"},
+    {WDXRB_LBL_ABOVE_LENGTH,   "ribbon_above_length_lbl"},
+    {WDXRB_LBL_CONTROLLER_2,   "ribbon_controller_lbl"},
+    {WDXRB_LBL_BELOW_LENGTH,   "ribbon_below_length_lbl"},
+    {WDXRB_LBL_CONTROLLER_3,   "ribbon_controller_lbl"},
+    {WDXRB_LBL_ALPHA,          "ribbon_alpha_lbl"},
+    {WDXRB_LBL_CONTROLLER_4,   "ribbon_controller_lbl"},
+    {WDXRB_LBL_EMISSION_RATE,  "ribbon_emission_rate_lbl"},
+    {WDXRB_LBL_CONTROLLER_5,   "ribbon_controller_lbl"},
+    {WDXRB_LBL_LIFE_SPAN,      "ribbon_life_span_lbl"},
+    {WDXRB_LBL_CONTROLLER_6,   "ribbon_controller_lbl"},
+    {WDXRB_LBL_GRAVITY,        "ribbon_gravity_lbl"},
+    {WDXRB_LBL_CONTROLLER_7,   "ribbon_controller_lbl"},
+};
+
+static constexpr wdx::l10n::DialogString kMatStrings[] = {
+    {WDXRB_LBL_SEQUENCE_MODE,     "ribbon_sequence_mode_grp"},
+    {WDXRB_LBL_ROWS,              "ribbon_rows_lbl"},
+    {WDXRB_LBL_COLS,              "ribbon_cols_lbl"},
+    {WDXRB_LBL_SEQUENCE_POSITION, "ribbon_sequence_position_lbl"},
+    {WDXRB_LBL_CONTROLLER_8,      "ribbon_controller_lbl"},
+};
+
 // RibbonPropsDlgProc — controller-type comboboxes
 // =========================================================================
 
@@ -265,6 +341,9 @@ INT_PTR RibbonPropsDlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
     switch (msg) {
     case WM_INITDIALOG:
     {
+        wdx::l10n::LocalizeDialog(hWnd, kPropsStrings);
+        SetBannerText(hWnd, WDXRB_LBL_RIBBON_COLOR, "ribbon_ribbon_color_lbl", nullptr);
+
         IParamBlock2* pb = map->GetParamBlock();
         for (int m = 0; m < s_ctrlMappingCount; m++)
             SetupCtrlCombo(hWnd, s_ctrlMappings[m].comboID, pb, s_ctrlMappings[m].paramID);
@@ -275,7 +354,7 @@ INT_PTR RibbonPropsDlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
             if (hCombo) {
                 SendMessage(hCombo, CB_RESETCONTENT, 0, 0);
                 for (int i = 0; i < s_ctrlTypeCount; i++)
-                    SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)s_ctrlTypeNames[i]);
+                    SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)CtrlTypeName(i));
 
                 int tabIndex = pb->GetDesc()->IDtoIndex(pb_color);
                 Control* ctrl = pb->GetControllerByIndex(tabIndex);
@@ -342,6 +421,9 @@ INT_PTR RibbonMatDlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
     switch (msg) {
     case WM_INITDIALOG:
     {
+        wdx::l10n::LocalizeDialog(hWnd, kMatStrings);
+        SetBannerText(hWnd, WDXRB_LBL_MATERIAL, "ribbon_material_lbl", nullptr);
+
         IParamBlock2* pb = map->GetParamBlock();
         SetupCtrlCombo(hWnd, IDC_CTRL_TEXSLOT, pb, pb_tex_slot);
         return TRUE;

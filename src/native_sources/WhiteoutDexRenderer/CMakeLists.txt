@@ -45,6 +45,11 @@ add_library(WhiteoutDexRenderer SHARED
     # overrides, which settings_ini.cpp, dllmain.cpp and max_plugin_ui.cpp
     # all call into.
     "${_basic_viewer_dir}/settings_io.cpp"
+    # The viewer's i18n catalog reader. This .dlx hosts the same ImGui chrome
+    # the standalone viewer does, so it reads the same `lang/<code>.ini`
+    # catalogs the submodule ships (11 languages) rather than carrying its own
+    # copy of those strings. The installer drops them in `{app}\lang`.
+    "${_basic_viewer_dir}/localization.cpp"
     "${_tools_common_dir}/cubeb_sound_emitter.cpp"
     "${_tools_common_dir}/imgui_theme.cpp"
 )

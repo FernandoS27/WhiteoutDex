@@ -52,6 +52,7 @@
 
 #include "asset_picker_window.h"
 #include "io/storage_browser.h"
+#include "localization.h"
 
 #if WHITEOUT_HAS_CASC
 // WdxExtractAsset reads bytes, which the browser cannot do — it walks a
@@ -494,13 +495,11 @@ Value* WdxBrowserOpen_cf(Value** arg_list, int count) {
 
     const std::string root = ArgToUtf8(arg_list[0]);
     if (root.empty())
-        return MakeString("No archive path given. Set the Warcraft III path in "
-                          "WhiteoutDex Settings first.");
+        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.no_archive_path_settings"));
 
     const int kindArg = ArgToInt(arg_list[1], -1);
     if (kindArg > 3)
-        return MakeString("Unknown storage kind (expected -1 auto, 0 CASC, 1 MPQ, "
-                          "2 folder, 3 MPQ set).");
+        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.unknown_kind"));
 
     // Already walked this exact storage — hand back the live tree rather than
     // re-reading a manifest that has not changed under us.
@@ -774,11 +773,15 @@ Value* WdxPickAsset_cf(Value** arg_list, int count) {
     const std::vector<whiteout::flakes::AssetPickerRoot> roots =
         count >= 5 ? ArgToRoots(arg_list[4]) : std::vector<whiteout::flakes::AssetPickerRoot>{};
 
-    std::wstring title = L"Select a Model";
+    // The caption is a Win32 window title, so the UTF-8 catalog value has to
+    // be widened. Every catalog string is UTF-8, hence CP_UTF8 rather than
+    // the ACP a naive char-by-char widen would effectively assume.
+    const char* titleKey = "wdx.picker.title.model";
     if (mask == static_cast<int>(BrowseType::Effects))
-        title = L"Select a Particle Effect";
+        titleKey = "wdx.picker.title.effect";
     else if (mask == static_cast<int>(BrowseType::Textures))
-        title = L"Select a Texture";
+        titleKey = "wdx.picker.title.texture";
+    const std::wstring title = ToWide(whiteout::flakes::i18n::tr(titleKey));
     const whiteout::flakes::AssetPickResult picked =
         whiteout::flakes::RunAssetPicker(title, static_cast<BrowseType>(static_cast<unsigned>(mask)),
                                          root, initial, filter, roots, ConfiguredArchives());
@@ -822,19 +825,18 @@ Value* WdxExtractAsset_cf(Value** arg_list, int count) {
     check_arg_count(WdxExtractAsset, 3, count);
 
 #if !WHITEOUT_HAS_CASC && !WHITEOUT_HAS_MPQ
-    return MakeString("This build of WhiteoutDex has no archive support.");
+    return MakeString(whiteout::flakes::i18n::tr("wdx.browser.no_archive_support"));
 #else
     const std::string root = ArgToUtf8(arg_list[0]);
     const std::string archivePath = ArgToUtf8(arg_list[1]);
     const std::wstring dest = ToWide(ArgToUtf8(arg_list[2]));
 
     if (root.empty())
-        return MakeString("No Warcraft III installation given. Set the CASC path in "
-                          "WhiteoutDex Settings first.");
+        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.no_install_settings"));
     if (archivePath.empty())
-        return MakeString("No archive path given.");
+        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.no_archive_path"));
     if (dest.empty())
-        return MakeString("No destination file given.");
+        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.no_destination"));
 
     // Ask the storage the install actually is first. io::ClassifyStorage is the
     // same rule the picker opened `root` with, so the two agree by
@@ -878,10 +880,9 @@ Value* WdxExtractAsset_cf(Value** arg_list, int count) {
     }
 
     if (!EnsureParentDirs(dest))
-        return MakeString("Could not create the folder for the extracted file.");
+        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.mkdir_failed"));
     if (!WriteWholeFile(dest, data))
-        return MakeString("Could not write the extracted file. Check that the temp folder "
-                          "is writable and has room.");
+        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.write_failed"));
 
     mprintf(_M("WhiteoutDex Extract: %hs (%d bytes)\n"), archivePath.c_str(),
             static_cast<int>(data.size()));

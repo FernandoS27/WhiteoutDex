@@ -434,12 +434,73 @@ if(WDX_BUILD_MANAGED_WRAPPERS)
 endif()
 
 # ============================================================================
+# UI language catalogs (`lang_catalogs` target)
+#
+# The renderer window and the asset picker are WhiteoutFlakes' ImGui chrome
+# hosted inside 3ds Max, so they read the submodule's `resources/lang/<code>.ini`
+# catalogs — eleven languages, already translated upstream — through the same
+# i18n::tr() the standalone viewer uses. A handful of strings in that chrome are
+# WhiteoutDex's own and have no upstream counterpart; those live in
+# `resources/lang/wdx_<code>.ini` here.
+#
+# The shipped catalog is the two concatenated. The format is line-based
+# `key=value` and the loader does insert_or_assign in file order, so appending
+# is all the merge needs — and it keeps each project's translators editing only
+# their own file. A language WhiteoutDex has no overlay for (Flakes ships
+# eleven, WhiteoutDex translates six) gets the English overlay appended, which
+# is exactly the fallback tr() would apply anyway.
+#
+# MaxScript UI strings are NOT here — they live in
+# src/pre_startup_scripts/WhiteoutDexLocalization.ms.
+# ============================================================================
+set(WDX_FLAKES_LANG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/WhiteoutFlakes/resources/lang")
+set(WDX_LANG_OVERLAY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/resources/lang")
+set(WDX_LANG_STAGE_DIR "${WDX_STAGE_DIR}/lang")
+
+file(GLOB _flakes_lang_files "${WDX_FLAKES_LANG_DIR}/*.ini")
+set(_lang_outputs "")
+set(_lang_cmds COMMAND "${CMAKE_COMMAND}" -E make_directory "${WDX_LANG_STAGE_DIR}")
+foreach(_src IN LISTS _flakes_lang_files)
+    get_filename_component(_code "${_src}" NAME_WE)
+    set(_overlay "${WDX_LANG_OVERLAY_DIR}/wdx_${_code}.ini")
+    if(NOT EXISTS "${_overlay}")
+        set(_overlay "${WDX_LANG_OVERLAY_DIR}/wdx_en.ini")
+    endif()
+    set(_out "${WDX_LANG_STAGE_DIR}/${_code}.ini")
+    add_custom_command(
+        OUTPUT "${_out}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${WDX_LANG_STAGE_DIR}"
+        COMMAND "${CMAKE_COMMAND}"
+                "-DWDX_LANG_BASE=${_src}"
+                "-DWDX_LANG_OVERLAY=${_overlay}"
+                "-DWDX_LANG_OUT=${_out}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MergeLangCatalog.cmake"
+        DEPENDS "${_src}" "${_overlay}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MergeLangCatalog.cmake"
+        COMMENT "Merging language catalog ${_code}.ini"
+        VERBATIM
+    )
+    list(APPEND _lang_outputs "${_out}")
+endforeach()
+
+if(_lang_outputs)
+    add_custom_target(lang_catalogs ALL DEPENDS ${_lang_outputs})
+else()
+    # No submodule checkout: skip silently rather than failing the build. The
+    # Localizer resolves every key to the English literal it was written with,
+    # so the renderer UI still reads correctly, just untranslated.
+    add_custom_target(lang_catalogs)
+    message(STATUS "WhiteoutDex: no WhiteoutFlakes lang/ catalogs found — renderer UI will be English-only")
+endif()
+
+# ============================================================================
 # Deployment targets
 #
 # By the time these run, ${WDX_STAGE_DIR} is the canonical output: every Max
-# version has its own plugins/ subdir, Standalone/ is unified, scripts/ and
-# PackageContents.xml are at the root. The deploy targets just copy that tree
-# to different prefixes — Build.bat's `output/` and `%APPDATA%/...` phases.
+# version has its own plugins/ subdir, Standalone/ is unified, scripts/,
+# lang/ and PackageContents.xml are at the root. The deploy targets just copy
+# that tree to different prefixes — Build.bat's `output/` and `%APPDATA%/...`
+# phases.
 # ============================================================================
 
 # ---- output/ layout (suite) ----
@@ -448,7 +509,7 @@ add_custom_target(deploy_output
     COMMAND "${CMAKE_COMMAND}" -E copy_directory   "${WDX_STAGE_DIR}" "${CMAKE_BINARY_DIR}/output"
     COMMAND "${CMAKE_COMMAND}" -E remove_directory "${CMAKE_BINARY_DIR}/output/scripts"
     COMMAND "${CMAKE_COMMAND}" -E remove           "${CMAKE_BINARY_DIR}/output/PackageContents.xml"
-    DEPENDS ${_per_version_targets}
+    DEPENDS ${_per_version_targets} lang_catalogs
     COMMENT "Deploying suite layout to ${CMAKE_BINARY_DIR}/output"
     VERBATIM
 )
@@ -464,6 +525,9 @@ set(_appdata_cmds
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_appdata_root}/native plugins"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_appdata_root}/scripts"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory "${WDX_STAGE_DIR}/scripts" "${_appdata_root}/scripts"
+    # lang/ sits at the install root; wdx_ui_language.h resolves it from the
+    # .dlx by going two levels up (native plugins/Max<year>/ -> root).
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${WDX_LANG_STAGE_DIR}" "${_appdata_root}/lang"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${WDX_STAGE_DIR}/PackageContents.xml" "${_appdata_root}/PackageContents.xml"
 )
@@ -476,7 +540,7 @@ endforeach()
 
 add_custom_target(deploy_appdata
     ${_appdata_cmds}
-    DEPENDS ${_per_version_targets}
+    DEPENDS ${_per_version_targets} lang_catalogs
     COMMENT "Deploying to ${_appdata_root}"
     VERBATIM
 )
@@ -679,7 +743,7 @@ else()
     add_custom_target(installer
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${WDX_INSTALLER_OUTPUT_DIR}"
         COMMAND "${ISCC}" "${_iss_out}"
-        DEPENDS ${_per_version_targets} "${_iss_in}" "${_pkg_in}"
+        DEPENDS ${_per_version_targets} lang_catalogs "${_iss_in}" "${_pkg_in}"
         COMMENT "Building WhiteoutDex_Setup_v${WDX_VERSION}.exe via Inno Setup"
         VERBATIM
     )

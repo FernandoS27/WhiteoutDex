@@ -124,6 +124,10 @@ struct WdxGridAndDummyCreator
             if ::WdxL != undefined then
             (
                 mainRollout.title = ::WdxL.t "grid_grid_and_dummy_creator_title"
+                gridGrp.text = ::WdxL.t "grid_grid_grp"
+                try (gridGrp.tooltip = ::WdxL.t "grid_settings_for_grid_creation_tip") catch ()
+                pointsGrp.text = ::WdxL.t "grid_points_grp"
+                try (pointsGrp.tooltip = ::WdxL.t "grid_settings_for_pointdummy_creat_tip") catch ()
                 gridCPck.caption = ::WdxL.t "grid_color_cpk"
                 try (gridCPck.tooltip = ::WdxL.t "grid_set_the_color_of_the_created_g_tip") catch ()
                 gridSizeSpn.caption = ::WdxL.t "grid_size_spn"

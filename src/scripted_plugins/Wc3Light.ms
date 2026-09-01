@@ -3,9 +3,15 @@ name:"Wc3 Light"
 classID:#(0x7A1B2C04, 0x3D4E5F04)
 category:"Warcraft III Plugins"
 ( 
-	local MessageboxText2 = "Conversion Complete!"
-	local MessageboxText3 = "No animation data for current attribute!"
-	local parentBtnLabel = "Parent: "
+	-- Resolved lazily for the same reason as parentBtnLabel below: a `local`
+	-- initialiser runs when the plug-in is defined, before WdxL exists.
+	fn MessageboxText2 =
+		( if ::WdxL == undefined then "Conversion Complete!" else (::WdxL.t "light_conversion_complete_msg") )
+	fn MessageboxText3 =
+		( if ::WdxL == undefined then "No animation data for current attribute!" else (::WdxL.t "light_no_anim_data_msg") )
+	-- Resolved lazily rather than captured at plug-in-definition time: WdxL is
+	-- not guaranteed to exist yet when this file is parsed.
+	fn parentBtnLabel = ( if ::WdxL == undefined then "Parent: " else (::WdxL.t "common_parent_prefix") )
 	local TempSelction = "None"
 	parameters main rollout:General
     (
@@ -33,13 +39,19 @@ category:"Warcraft III Plugins"
 				selection[1].pos = obj.pos
 				selection[1].parent = obj
 				Temp_adsorption.text = obj.name
-				btn_adsorption.text = parentBtnLabel + obj.name
+				btn_adsorption.text = (parentBtnLabel()) + obj.name
 			)catch()
 		)
 		on General open do
 		(
 			if ::WdxL != undefined then
+			(
 				General.title = ::WdxL.t "light_general_functions_title"
+				-- Only reset the caption while nothing is adsorbed; once a
+				-- parent is picked the button shows that name instead.
+				if Temp_adsorption.text == "" do
+					btn_adsorption.text = ::WdxL.t "common_adsorb_btn"
+			)
 		)
 	)
 	rollout params1 "Basic Parameters"
@@ -128,7 +140,7 @@ category:"Warcraft III Plugins"
 		fn applyFloatInterp prop idx =
 		(
 			try (
-				if not prop.isAnimated then (messagebox MessageboxText3; return())
+				if not prop.isAnimated then (messagebox (MessageboxText3()); return())
 				case idx of
 				(
 					1: (if classof prop.controller != Bezier_float do prop.controller = Bezier_float()
@@ -138,7 +150,7 @@ category:"Warcraft III Plugins"
 						applyTangents prop.controller #smooth)
 					4: (prop.controller = TCB_float())
 				)
-				messagebox MessageboxText2
+				messagebox (MessageboxText2())
 			) catch()
 		)
 
@@ -146,7 +158,7 @@ category:"Warcraft III Plugins"
 		fn applyColorInterp prop idx =
 		(
 			try (
-				if not prop.isAnimated then (messagebox MessageboxText3; return())
+				if not prop.isAnimated then (messagebox (MessageboxText3()); return())
 				case idx of
 				(
 					1: (if classof prop.controller != bezier_color do prop.controller = bezier_color()
@@ -157,7 +169,7 @@ category:"Warcraft III Plugins"
 						applyTangents prop.controller #smooth)
 					4: (prop.controller = TCB_point3())
 				)
-				messagebox MessageboxText2
+				messagebox (MessageboxText2())
 			) catch()
 		)
 
@@ -224,6 +236,29 @@ category:"Warcraft III Plugins"
 				l11.text = ::WdxL.t "light_control_lbl_5"
 				l12.text = ::WdxL.t "light_strength_lbl_2"
 				l13.text = ::WdxL.t "light_control_lbl_6"
+				-- The six controller dropdowns share one interpolation-type
+				-- list; only the track they drive differs, which is what the
+				-- per-control tooltip names.
+				-- `ui:`-bound to the LightType parameter, so restore from the
+				-- parameter rather than the control: assigning `.items` snaps
+				-- the selection to entry 1.
+				local savType = this.LightType
+				LightType.items = ::WdxL.tList "light_type_items"
+				LightType.selection = savType
+				this.LightType = savType
+
+				local ctrlItems = ::WdxL.tList "mat_controller_items"
+				local dds = #(DS_DDL, DE_DDL, AmbColor_DDL, AmbVal_DDL, DifColor_DDL, DifVal_DDL)
+				local tips = #("light_interp_decay_start_tip", "light_interp_decay_end_tip",
+					"light_interp_shadow_color_tip", "light_interp_shadow_strength_tip",
+					"light_interp_ambient_color_tip", "light_interp_ambient_strength_tip")
+				for i = 1 to dds.count do
+				(
+					local sel = dds[i].selection
+					dds[i].items = ctrlItems
+					dds[i].selection = sel
+					try (dds[i].tooltip = ::WdxL.t tips[i]) catch ()
+				)
 			)
 		)
 		------------------------------------------------------------------------------------------------------------------------------------------------------------------------

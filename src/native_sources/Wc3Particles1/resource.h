@@ -75,3 +75,27 @@
 #define IDS_P1_ROLLOUT_TIMING       32122  ///< Timing rollout title.
 #define IDS_P1_ROLLOUT_MODEL        32123  ///< Model rollout title.
 /// @}
+
+/// @name Static-label IDs for translation
+/// These captions were declared with id -1, which SetDlgItemText cannot
+/// reach. They are numbered from 6000 — above every other control ID in
+/// this plug-in — so the rollout can be relabelled from the shared
+/// catalog at WM_INITDIALOG. See common/wdx_localization.h.
+/// @{
+#define WDXP1_LBL_COUNT                          6000
+#define WDXP1_LBL_SPEED                          6001
+#define WDXP1_LBL_CONTROL                        6002
+#define WDXP1_LBL_LATITUDE                       6003
+#define WDXP1_LBL_CONTROL_2                      6004
+#define WDXP1_LBL_LONGITUDE                      6005
+#define WDXP1_LBL_CONTROL_3                      6006
+#define WDXP1_LBL_GRAVITY                        6007
+#define WDXP1_LBL_CONTROL_4                      6008
+#define WDXP1_LBL_LIFESPAN                       6009
+#define WDXP1_LBL_EMISSION_RATE                  6010
+#define WDXP1_LBL_CONTROL_5                      6011
+#define WDXP1_LBL_MODEL_PATH_PREFIX              6012
+#define WDXP1_LBL_PARTICLE_MODEL_FILE            6013
+#define WDXP1_LBL_PARTICLE_SCALE                 6014
+/// @}
+

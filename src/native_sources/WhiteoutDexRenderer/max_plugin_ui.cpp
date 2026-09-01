@@ -11,6 +11,7 @@
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "renderer/shadow/shadow_service.h"
+#include "localization.h"
 #include "settings_ini.h"
 #include "whiteout/flakes/display.h"
 #include "whiteout/flakes/enums.h"
@@ -36,6 +37,9 @@
 #include <string>
 
 namespace whiteout::flakes {
+
+// `i18n::tr` below resolves to whiteout::flakes::i18n::tr from inside this
+// namespace, the same way it does in the standalone viewer's viewer_ui.cpp.
 
 namespace {
 
@@ -86,27 +90,38 @@ std::string PickFolderWin32(HWND parent) {
     return result;
 }
 
-constexpr std::array<const char*, 8> kDebugVisLabels = {
-    "Off",
-    "Albedo",
-    "World Normal",
-    "LOD Heatmap",
-    "Light Count",
-    "Shading Only (white albedo)",
-    "Shading Only (grey albedo)",
-    "Specular Only (black albedo)",
+// i18n keys for the enum pickers. These are the same catalog keys the
+// standalone viewer uses (tools/basic_viewer/viewer_ui.cpp), because this
+// is the same chrome: the `lang/<code>.ini` files the submodule ships
+// already carry all eleven translations, so nothing here needs an entry in
+// WhiteoutDexLocalization.ms. Backend names are product names and stay in
+// English, which is why they have labels rather than keys.
+constexpr std::array<const char*, 8> kDebugVisKeys = {
+    "debugvis.off",          "debugvis.albedo",       "debugvis.world_normal",
+    "debugvis.lod_heatmap",  "debugvis.light_count",  "debugvis.shading_white",
+    "debugvis.shading_grey", "debugvis.specular_only",
 };
 
-constexpr std::array<const char*, 5> kLodLabels = {
-    "Auto (screen size)", "Force LOD 0 (base)",   "Force LOD 1",
-    "Force LOD 2",        "Force LOD 3 (lowest)",
+constexpr std::array<const char*, 5> kLodKeys = {
+    "lod.auto", "lod.0", "lod.1", "lod.2", "lod.3",
 };
 
-constexpr std::array<const char*, 4> kIblLabels = {"Portrait", "Day/Night", "Dungeon", "Sunset"};
-constexpr std::array<const char*, 3> kLightingLabels = {"InGame", "Glue", "Dynamic"};
-constexpr std::array<const char*, 4> kShadowLabels = {"Off", "1 cascade", "2 cascades",
-                                                      "3 cascades"};
+constexpr std::array<const char*, 4> kIblKeys = {"ibl.portrait", "ibl.daynight",
+                                                 "ibl.dungeon", "ibl.sunset"};
+constexpr std::array<const char*, 3> kLightingKeys = {"lighting.ingame", "lighting.glue",
+                                                      "lighting.dynamic"};
+constexpr std::array<const char*, 4> kShadowKeys = {"shadow.off", "shadow.1", "shadow.2",
+                                                    "shadow.3"};
 constexpr std::array<const char*, 4> kBackendLabels = {"D3D11", "D3D12", "Vulkan", "WebGPU"};
+
+/// Resolve a key array into a `const char*[]` for ImGui::Combo. The
+/// pointers stay valid until the language changes, which cannot happen
+/// while a frame is being built.
+template <usize N>
+void TranslateAll(const std::array<const char*, N>& keys, const char* (&out)[N]) {
+    for (usize i = 0; i < N; ++i)
+        out[i] = i18n::tr(keys[i]);
+}
 
 i32 BackendToIdx(gfx::GfxApi b) {
     switch (b) {
@@ -158,14 +173,16 @@ void MaxPluginUI::BuildMenuBar() {
     bool dfChanged = false;
 
     if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("View")) {
-            dfChanged |= ImGui::MenuItem("Grid", nullptr, &df.showGrid);
-            dfChanged |= ImGui::MenuItem("Particles", nullptr, &df.showParticles);
-            dfChanged |= ImGui::MenuItem("Ribbons", nullptr, &df.showRibbons);
-            dfChanged |= ImGui::MenuItem("Event Objects", nullptr, &df.showEvents);
+        if (ImGui::BeginMenu(i18n::tr("menu.view"))) {
+            dfChanged |= ImGui::MenuItem(i18n::tr("menu.view.grid"), nullptr, &df.showGrid);
+            dfChanged |=
+                ImGui::MenuItem(i18n::tr("menu.view.particles"), nullptr, &df.showParticles);
+            dfChanged |=
+                ImGui::MenuItem(i18n::tr("menu.view.ribbons"), nullptr, &df.showRibbons);
+            dfChanged |= ImGui::MenuItem(i18n::tr("menu.view.events"), nullptr, &df.showEvents);
 
             ImGui::Separator();
-            if (ImGui::BeginMenu("Tileset")) {
+            if (ImGui::BeginMenu(i18n::tr("menu.view.tileset"))) {
                 const i32 n = static_cast<i32>(io::Tileset::Count);
                 const i32 cur = static_cast<i32>(io::GetCurrentTileset());
                 for (i32 i = 0; i < n; ++i) {
@@ -181,15 +198,16 @@ void MaxPluginUI::BuildMenuBar() {
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("Debug")) {
-            dfChanged |= ImGui::MenuItem("Collision Markers", nullptr, &df.showCollisions);
-            dfChanged |= ImGui::MenuItem("Light Markers", nullptr, &df.showLights);
+        if (ImGui::BeginMenu(i18n::tr("menu.debug"))) {
+            dfChanged |=
+                ImGui::MenuItem(i18n::tr("menu.debug.collisions"), nullptr, &df.showCollisions);
+            dfChanged |= ImGui::MenuItem(i18n::tr("menu.debug.lights"), nullptr, &df.showLights);
             ImGui::Separator();
 
-            if (ImGui::BeginMenu("Debug View")) {
+            if (ImGui::BeginMenu(i18n::tr("menu.debug.debugview"))) {
                 const i32 cur = svc.Settings().HdDebugMode();
-                for (i32 i = 0; i < static_cast<i32>(kDebugVisLabels.size()); ++i) {
-                    if (ImGui::MenuItem(kDebugVisLabels[i], nullptr, i == cur)) {
+                for (i32 i = 0; i < static_cast<i32>(kDebugVisKeys.size()); ++i) {
+                    if (ImGui::MenuItem(i18n::tr(kDebugVisKeys[i]), nullptr, i == cur)) {
                         svc.Settings().SetHdDebugMode(i);
                         SaveIni(win_);
                     }
@@ -197,11 +215,11 @@ void MaxPluginUI::BuildMenuBar() {
                 ImGui::EndMenu();
             }
 
-            if (ImGui::BeginMenu("LOD")) {
+            if (ImGui::BeginMenu(i18n::tr("menu.debug.lod"))) {
                 const i32 cur = svc.Settings().LodOverride();
                 const i32 curIdx = (cur < 0) ? 0 : (1 + std::clamp(cur, 0, 3));
-                for (i32 i = 0; i < static_cast<i32>(kLodLabels.size()); ++i) {
-                    if (ImGui::MenuItem(kLodLabels[i], nullptr, i == curIdx)) {
+                for (i32 i = 0; i < static_cast<i32>(kLodKeys.size()); ++i) {
+                    if (ImGui::MenuItem(i18n::tr(kLodKeys[i]), nullptr, i == curIdx)) {
                         svc.Settings().SetLodOverride(i == 0 ? -1 : (i - 1));
                         SaveIni(win_);
                     }
@@ -212,7 +230,7 @@ void MaxPluginUI::BuildMenuBar() {
             ImGui::EndMenu();
         }
 
-        if (ImGui::MenuItem("Settings"))
+        if (ImGui::MenuItem(i18n::tr("menu.settings")))
             settingsOpen_ = true;
 
         ImGui::EndMainMenuBar();
@@ -251,7 +269,7 @@ void MaxPluginUI::BuildToolbar() {
         i32 sel = focus ? focus->animation.ActiveSequenceIndex() : 0;
         sel = std::clamp(sel, 0, (i32)seqs.size() - 1);
         ImGui::SetNextItemWidth(220);
-        if (ImGui::BeginCombo("Animation", seqs[sel].c_str())) {
+        if (ImGui::BeginCombo(i18n::tr("toolbar.animation"), seqs[sel].c_str())) {
             for (i32 i = 0; i < static_cast<i32>(seqs.size()); ++i) {
                 const bool isSel = (i == sel);
                 if (ImGui::Selectable(seqs[i].c_str(), isSel)) {
@@ -280,11 +298,11 @@ void MaxPluginUI::BuildToolbar() {
     if (!presets.empty()) {
         const i32 active = win_.ActiveCameraPresetIdx();
         const char* preview = (active < 0 || active >= (i32)presets.size())
-                                  ? "Free Camera"
+                                  ? i18n::tr("toolbar.camera.free")
                                   : presets[active].name.c_str();
         ImGui::SetNextItemWidth(140);
-        if (ImGui::BeginCombo("Camera", preview)) {
-            if (ImGui::Selectable("Free Camera", active < 0))
+        if (ImGui::BeginCombo(i18n::tr("toolbar.camera"), preview)) {
+            if (ImGui::Selectable(i18n::tr("toolbar.camera.free"), active < 0))
                 win_.ActivateCameraPreset(-1);
             for (i32 i = 0; i < (i32)presets.size(); ++i) {
                 const bool isSel = (i == active);
@@ -307,7 +325,7 @@ void MaxPluginUI::BuildToolbar() {
             static_cast<f32>((tcRaw >> 16) & 0xFFu) / 255.0f,
         };
         ImGuiColorEditFlags flags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel;
-        ImGui::TextUnformatted("Team:");
+        ImGui::TextUnformatted(i18n::tr("toolbar.team"));
         ImGui::SameLine();
         if (ImGui::ColorEdit3("##team", col, flags) && focus) {
             focus->SetTeamColor(static_cast<u8>(col[0] * 255.0f), static_cast<u8>(col[1] * 255.0f),
@@ -320,8 +338,10 @@ void MaxPluginUI::BuildToolbar() {
     {
         i32 sel = static_cast<i32>(svc.Settings().GetLightingMode());
         ImGui::SetNextItemWidth(120);
-        if (ImGui::Combo("Lighting", &sel, kLightingLabels.data(),
-                         static_cast<i32>(kLightingLabels.size()))) {
+        const char* lightingItems[kLightingKeys.size()];
+        TranslateAll(kLightingKeys, lightingItems);
+        if (ImGui::Combo(i18n::tr("toolbar.lighting"), &sel, lightingItems,
+                         static_cast<i32>(kLightingKeys.size()))) {
             svc.Settings().SetLightingMode(static_cast<LightingMode>(sel));
             SaveIni(win_);
         }
@@ -334,7 +354,7 @@ void MaxPluginUI::BuildToolbar() {
 void MaxPluginUI::BuildSettingsWindow() {
     RenderService& svc = win_.Service();
     ImGui::SetNextWindowSize(ImVec2(440, 540), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Settings", &settingsOpen_)) {
+    if (!ImGui::Begin(i18n::tr("settings.title"), &settingsOpen_)) {
         ImGui::End();
         return;
     }
@@ -344,7 +364,7 @@ void MaxPluginUI::BuildSettingsWindow() {
         return;
     }
 
-    if (ImGui::BeginTabItem("General")) {
+    if (ImGui::BeginTabItem(i18n::tr("settings.tab.general"))) {
         // ---- Background colour ----
         {
             const u32 bg = svc.Settings().BackgroundColorRaw();
@@ -353,7 +373,7 @@ void MaxPluginUI::BuildSettingsWindow() {
                 static_cast<f32>((bg >> 8) & 0xFFu) / 255.0f,
                 static_cast<f32>((bg >> 16) & 0xFFu) / 255.0f,
             };
-            if (ImGui::ColorEdit3("Background", col)) {
+            if (ImGui::ColorEdit3(i18n::tr("settings.general.background"), col)) {
                 svc.Settings().SetBackgroundColor(static_cast<u8>(col[0] * 255.0f),
                                                   static_cast<u8>(col[1] * 255.0f),
                                                   static_cast<u8>(col[2] * 255.0f));
@@ -364,7 +384,8 @@ void MaxPluginUI::BuildSettingsWindow() {
         // ---- Exposure ----
         {
             f32 exposure = svc.Settings().GetTonemapExposure();
-            if (ImGui::SliderFloat("Exposure", &exposure, 0.0f, 3.0f, "%.2f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.general.exposure"), &exposure, 0.0f, 3.0f,
+                                   "%.2f")) {
                 svc.Settings().SetTonemapExposure(exposure);
                 SaveIni(win_);
             }
@@ -373,7 +394,8 @@ void MaxPluginUI::BuildSettingsWindow() {
         // ---- Sound volume ----
         {
             f32 vol = svc.Sound().GetVolume();
-            if (ImGui::SliderFloat("SND Volume", &vol, 0.0f, 1.0f, "%.2f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.general.snd_volume"), &vol, 0.0f, 1.0f,
+                                   "%.2f")) {
                 svc.Sound().SetVolume(vol);
                 SaveIni(win_);
             }
@@ -385,12 +407,13 @@ void MaxPluginUI::BuildSettingsWindow() {
         if (auto* dnc = svc.GetDncService()) {
             const f32 hpd = dnc->GetHoursPerDay();
             f32 tod = dnc->GetTimeOfDay();
-            if (ImGui::SliderFloat("Time of Day", &tod, 0.0f, hpd, "%.2f h")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.general.time_of_day"), &tod, 0.0f, hpd,
+                                   "%.2f h")) {
                 dnc->SetTimeOfDay(tod);
                 SaveIni(win_);
             }
             bool animating = dnc->GetTodScale() > 0.0f;
-            if (ImGui::Checkbox("Animate TOD", &animating)) {
+            if (ImGui::Checkbox(i18n::tr("settings.general.animate_tod"), &animating)) {
                 dnc->SetTodScale(animating ? 1.0f : 0.0f);
                 SaveIni(win_);
             }
@@ -401,7 +424,10 @@ void MaxPluginUI::BuildSettingsWindow() {
         // ---- IBL mode ----
         {
             i32 sel = static_cast<i32>(svc.Settings().GetIblMode());
-            if (ImGui::Combo("IBL", &sel, kIblLabels.data(), static_cast<i32>(kIblLabels.size()))) {
+            const char* iblItems[kIblKeys.size()];
+            TranslateAll(kIblKeys, iblItems);
+            if (ImGui::Combo(i18n::tr("settings.general.ibl"), &sel, iblItems,
+                             static_cast<i32>(kIblKeys.size()))) {
                 svc.Settings().SetIblMode(static_cast<IblMode>(sel));
                 SaveIni(win_);
             }
@@ -413,8 +439,10 @@ void MaxPluginUI::BuildSettingsWindow() {
             if (auto* shadow = svc.GetShadowService()) {
                 sel = shadow->IsEnabled() ? std::clamp(shadow->Params().cascadeCount, 0, 3) : 0;
             }
-            if (ImGui::Combo("Shadows", &sel, kShadowLabels.data(),
-                             static_cast<i32>(kShadowLabels.size()))) {
+            const char* shadowItems[kShadowKeys.size()];
+            TranslateAll(kShadowKeys, shadowItems);
+            if (ImGui::Combo(i18n::tr("settings.general.shadows"), &sel, shadowItems,
+                             static_cast<i32>(kShadowKeys.size()))) {
                 if (auto* shadow = svc.GetShadowService()) {
                     shadow::ShadowParams p = shadow->Params();
                     p.enabled = (sel > 0);
@@ -432,14 +460,14 @@ void MaxPluginUI::BuildSettingsWindow() {
             char buf[512];
             std::snprintf(buf, sizeof(buf), "%s",
                           dncPathBuf_.empty() ? dnc->UnitMdlPath().c_str() : dncPathBuf_.c_str());
-            if (ImGui::InputText("DNC Model", buf, sizeof(buf)))
+            if (ImGui::InputText(i18n::tr("settings.general.dnc_model"), buf, sizeof(buf)))
                 dncPathBuf_ = buf;
             if (ImGui::IsItemDeactivatedAfterEdit()) {
                 dnc->SetUnitMdl(dncPathBuf_);
                 SaveIni(win_);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Reset##dnc")) {
+            if (ImGui::Button(i18n::tr("settings.general.dnc_reset"))) {
                 dncPathBuf_ = dnc::DncService::kDefaultUnitMdl;
                 dnc->SetUnitMdl(dncPathBuf_);
                 SaveIni(win_);
@@ -447,12 +475,12 @@ void MaxPluginUI::BuildSettingsWindow() {
         }
 
         ImGui::Separator();
-        ImGui::TextDisabled("Startup settings (take effect on next launch)");
+        ImGui::TextDisabled("%s", i18n::tr("settings.general.startup_note"));
 
         // ---- Default backend ----
         {
             i32 sel = BackendToIdx(svc.Settings().DefaultBackend());
-            if (ImGui::Combo("Backend", &sel, kBackendLabels.data(),
+            if (ImGui::Combo(i18n::tr("settings.general.backend"), &sel, kBackendLabels.data(),
                              static_cast<i32>(kBackendLabels.size()))) {
                 svc.Settings().SetDefaultBackend(IdxToBackend(sel));
                 SaveIni(win_);
@@ -469,9 +497,10 @@ void MaxPluginUI::BuildSettingsWindow() {
                 lastBackendIdx = curBackendIdx;
             }
             const std::string& cur = svc.Settings().PreferredDevice();
-            const char* preview = cur.empty() ? "(Auto - highest VRAM)" : cur.c_str();
-            if (ImGui::BeginCombo("Device", preview)) {
-                if (ImGui::Selectable("(Auto - highest VRAM)", cur.empty())) {
+            const char* autoLabel = i18n::tr("settings.general.device_auto");
+            const char* preview = cur.empty() ? autoLabel : cur.c_str();
+            if (ImGui::BeginCombo(i18n::tr("settings.general.device"), preview)) {
+                if (ImGui::Selectable(autoLabel, cur.empty())) {
                     svc.Settings().SetPreferredDevice("");
                     SaveIni(win_);
                 }
@@ -491,7 +520,7 @@ void MaxPluginUI::BuildSettingsWindow() {
         // ---- Graphics debug ----
         {
             bool on = svc.Settings().GraphicsDebug();
-            if (ImGui::Checkbox("Graphics Debug (validation)", &on)) {
+            if (ImGui::Checkbox(i18n::tr("settings.general.graphics_debug"), &on)) {
                 svc.Settings().SetGraphicsDebug(on);
                 SaveIni(win_);
             }
@@ -506,7 +535,7 @@ void MaxPluginUI::BuildSettingsWindow() {
     // only touch SceneManager's provider — MaxSceneAdapter's local provider
     // is seeded at NdxStart from the same ini keys and picks new state up on
     // the next plugin run.
-    if (ImGui::BeginTabItem("IO")) {
+    if (ImGui::BeginTabItem(i18n::tr("settings.tab.io"))) {
         auto& provider = svc.Scene().GetContentProvider();
         if (!ioBufsInitialised_) {
             installPathBuf_ = provider.InstallPath();
@@ -515,9 +544,9 @@ void MaxPluginUI::BuildSettingsWindow() {
 
         const std::string& autoDetected = provider.Wc3Path();
         if (autoDetected.empty())
-            ImGui::TextDisabled("Warcraft III install not auto-detected.");
+            ImGui::TextDisabled("%s", i18n::tr("settings.io.not_detected"));
         else
-            ImGui::TextDisabled("Auto-detected: %s", autoDetected.c_str());
+            ImGui::TextDisabled(i18n::tr("settings.io.auto_detected"), autoDetected.c_str());
         ImGui::Spacing();
 
         auto saveIo = [&] {
@@ -543,7 +572,7 @@ void MaxPluginUI::BuildSettingsWindow() {
                 saveIo();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Browse...##install")) {
+            if (ImGui::Button(i18n::tr("settings.io.browse_install"))) {
                 std::string picked = PickFolderWin32(win_.GetRenderHWND());
                 if (!picked.empty()) {
                     installPathBuf_ = picked;
@@ -552,13 +581,13 @@ void MaxPluginUI::BuildSettingsWindow() {
                 }
             }
             ImGui::SameLine();
-            if (ImGui::Button("Reset##install")) {
+            if (ImGui::Button(i18n::tr("settings.io.reset_install"))) {
                 provider.SetInstallPath("");
                 installPathBuf_ = provider.InstallPath();
                 saveIo();
             }
             ImGui::SameLine();
-            ImGui::TextUnformatted("Install Path");
+            ImGui::TextUnformatted(i18n::tr("settings.io.install_path"));
         }
 
         ImGui::Spacing();
@@ -567,12 +596,12 @@ void MaxPluginUI::BuildSettingsWindow() {
         // ---- Ignore flags ----
         {
             bool ignoreCasc = provider.IgnoreCasc();
-            if (ImGui::Checkbox("Ignore CASC", &ignoreCasc)) {
+            if (ImGui::Checkbox(i18n::tr("settings.io.ignore_casc"), &ignoreCasc)) {
                 provider.SetIgnoreCasc(ignoreCasc);
                 saveIo();
             }
             bool ignoreMpq = provider.IgnoreMpq();
-            if (ImGui::Checkbox("Ignore MPQ", &ignoreMpq)) {
+            if (ImGui::Checkbox(i18n::tr("settings.io.ignore_mpq"), &ignoreMpq)) {
                 provider.SetIgnoreMpq(ignoreMpq);
                 saveIo();
             }
@@ -582,7 +611,7 @@ void MaxPluginUI::BuildSettingsWindow() {
         ImGui::Separator();
 
         // ---- MPQ load list ----
-        ImGui::TextUnformatted("MPQs (load order, first wins)");
+        ImGui::TextUnformatted(i18n::tr("settings.io.mpq_header"));
         ImGui::BeginDisabled(provider.IgnoreMpq());
 
         std::vector<std::string> mpqs = provider.MpqList();
@@ -627,7 +656,7 @@ void MaxPluginUI::BuildSettingsWindow() {
             ImGui::SameLine();
             const bool canAdd = !newMpqEntryBuf_.empty();
             ImGui::BeginDisabled(!canAdd);
-            if (ImGui::Button("Add MPQ")) {
+            if (ImGui::Button(i18n::tr("settings.io.add_mpq"))) {
                 mpqs.push_back(newMpqEntryBuf_);
                 newMpqEntryBuf_.clear();
                 mpqsDirty = true;
@@ -635,7 +664,7 @@ void MaxPluginUI::BuildSettingsWindow() {
             ImGui::EndDisabled();
         }
 
-        if (ImGui::SmallButton("Reset to defaults")) {
+        if (ImGui::SmallButton(i18n::tr("settings.io.reset_defaults"))) {
             mpqs = io::FileContentProvider::DefaultMpqList();
             mpqsDirty = true;
         }
@@ -649,8 +678,11 @@ void MaxPluginUI::BuildSettingsWindow() {
 
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::TextDisabled("CASC: %s", provider.HasCasc() ? "open" : "not loaded");
-        ImGui::TextDisabled("MPQ:  %s open", provider.HasMpq() ? "yes" : "no");
+        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"),
+                            i18n::tr(provider.HasCasc() ? "settings.io.open"
+                                                        : "settings.io.not_loaded"));
+        ImGui::TextDisabled(i18n::tr("settings.io.mpq_status"),
+                            i18n::tr(provider.HasMpq() ? "app.yes" : "app.no"));
 
         ImGui::EndTabItem();
     }

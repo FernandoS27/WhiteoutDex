@@ -36,13 +36,19 @@ category:"Warcraft III Plugins"
 				selection[1].pos     = obj.pos
 				selection[1].parent  = obj
 				Temp_adsorption.text = obj.name
-				btn_adsorption.text  = "Parent: " + Temp_adsorption.text
+				btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
 			)catch()
 		)
 		on General open do
 		(
 			if ::WdxL != undefined then
+			(
 				General.title = ::WdxL.t "attach_general_functions_title"
+				-- Only reset the caption while nothing is adsorbed; once a
+				-- parent is picked the button shows that name instead.
+				if Temp_adsorption.text == "" do
+					btn_adsorption.text = ::WdxL.t "common_adsorb_btn"
+			)
 		)
 	)
 	rollout modelMapParams "Model Map Parameters"
@@ -98,7 +104,11 @@ category:"Warcraft III Plugins"
 		on btnImportMDX pressed do
 		(
 			mdxFile.enabled = false
-			local f = getOpenFileName caption:"Select MDX Model" types:"MDX Files (*.mdx)|*.mdx|MDL Files (*.mdl)|*.mdl|All Files (*.*)|*.*|" historyCategory:"AttachPointModel"
+			-- Only the filter group names are translated; the extension masks
+			-- after each '|' are parsed by Max and stay verbatim.
+			local f = getOpenFileName caption:(::WdxL.t "attach_select_mdx_cap") \
+				types:((::WdxL.t "attach_mdx_filter") + " (*.mdx)|*.mdx|" + (::WdxL.t "attach_mdl_filter") + " (*.mdl)|*.mdl|" + (::WdxL.t "bmp_all_files_filter") + " (*.*)|*.*|") \
+				historyCategory:"AttachPointModel"
 			if f != undefined then
 			(
 				mdxFile.text = filenameFromPath f
@@ -118,9 +128,9 @@ category:"Warcraft III Plugins"
 			local picked = undefined
 			try (
 				picked = ::WhiteoutDexModelBrowser.pickModel initial:this.externalModelPath \
-					caption:"Select an Attachment Model"
+					caption:(::WdxL.t "attach_select_model_cap")
 			) catch (
-				messageBox "The WhiteoutDex asset browser is not available." title:"WhiteoutDex" beep:false
+				messageBox (::WdxL.t "common_asset_browser_unavailable_msg") title:"WhiteoutDex" beep:false
 			)
 			if picked != undefined and picked != "" do
 			(
@@ -152,6 +162,16 @@ category:"Warcraft III Plugins"
 			local browserAvailable = false
 			try ( browserAvailable = ::WhiteoutDexModelBrowser.isAvailable() ) catch ( browserAvailable = false )
 			btnBrowseMPQ.enabled = browserAvailable
+
+			if ::WdxL != undefined then
+			(
+				modelMapParams.title	= ::WdxL.t "attach_model_map_params_title"
+				mlbl1.text				= ::WdxL.t "attach_model_path_prefix_lbl"
+				mlbl2.text				= ::WdxL.t "attach_model_file_lbl"
+				btnImportMDX.text		= ::WdxL.t "attach_import_mdx_btn"
+				btnBrowseMPQ.text		= ::WdxL.t "attach_browse_archives_btn"
+				try (btnBrowseMPQ.tooltip = ::WdxL.t "attach_browse_archives_tip") catch ()
+			)
 		)
 	)
 	rollout params "Attachment Parameters"

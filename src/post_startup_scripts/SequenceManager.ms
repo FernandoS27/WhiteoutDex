@@ -945,7 +945,9 @@ struct WdxSequenceManager
                         nameLbl.text = ::WdxL.t "seq_name_lbl"
                         try (nameEdt.tooltip = ::WdxL.t "seq_enter_the_name_of_the_new_sequ_tip") catch ()
                         startFrameLbl.text = ::WdxL.t "seq_start_frame_lbl"
+                        try (startFrameSpn.tooltip = ::WdxL.t "seq_set_the_start_frame_of_the_seq_tip") catch ()
                         endFrameLbl.text = ::WdxL.t "seq_end_frame_lbl"
+                        try (endFrameSpn.tooltip = ::WdxL.t "seq_set_the_end_frame_of_the_seque_tip") catch ()
                         rarityChk.text = ::WdxL.t "seq_rarity_chk"
                         try (rarityChk.tooltip = ::WdxL.t "seq_enabledisable_rarity_of_the_a_tip") catch ()
                         movespeedChk.text = ::WdxL.t "seq_move_speed_chk"
@@ -2184,6 +2186,24 @@ struct WdxSequenceManager
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "seq_sequence_manager_title"
+				filterGrp.text = ::WdxL.t "seq_filter_list_grp"
+				try (filterGrp.tooltip = ::WdxL.t "seq_options_for_filtering_the_sequ_tip") catch ()
+				try (filterTxt.tooltip = ::WdxL.t "seq_enter_a_search_term_to_filter_tip") catch ()
+				try (sequencesLbox.tooltip = ::WdxL.t "seq_list_of_all_available_animatio_tip") catch ()
+				selectGrp.text = ::WdxL.t "seq_select_grp"
+				try (selectGrp.tooltip = ::WdxL.t "seq_options_for_selecting_sequence_tip") catch ()
+				sequenceGrp.text = ::WdxL.t "seq_sequence_grp"
+				try (sequenceGrp.tooltip = ::WdxL.t "seq_options_for_creating_and_manag_tip") catch ()
+				editSelectedGrp.text = ::WdxL.t "seq_edit_selected_grp"
+				try (editSelectedGrp.tooltip = ::WdxL.t "seq_edit_properties_of_selected_se_tip") catch ()
+				try (startFrameSpn.tooltip = ::WdxL.t "seq_set_the_start_frame_of_selecte_tip") catch ()
+				try (endFrameSpn.tooltip = ::WdxL.t "seq_set_the_end_frame_of_selected_tip") catch ()
+				try (raritySpn.tooltip = ::WdxL.t "seq_set_the_rarity_value_040_t_tip") catch ()
+				try (movespeedSpn.tooltip = ::WdxL.t "seq_set_the_movement_speed_value_tip") catch ()
+				nudgeKeysGrp.text = ::WdxL.t "seq_nudge_keys_grp"
+				try (nudgeKeysGrp.tooltip = ::WdxL.t "seq_fine_adjustment_of_keyframes_tip") catch ()
+				fileGrp.text = ::WdxL.t "seq_file_grp"
+				try (fileGrp.tooltip = ::WdxL.t "seq_file_management_for_sequences_tip") catch ()
 				filterClearBtn.text = ::WdxL.t "seq_clear_btn"
 				try (filterClearBtn.tooltip = ::WdxL.t "seq_clear_the_search_field_and_sho_tip") catch ()
 				selectAllBtn.text = ::WdxL.t "seq_all_btn"

@@ -96,7 +96,7 @@ fn wdxMBAssetRoots =
 		local legacy = false
 		try ( legacy = (getFiles (p + "\\War3LegacyInstaller.*")).count > 0 ) catch ( legacy = false )
 		local casc = (doesFileExist (p + "\\.build.info")) or (doesFileExist (p + "\\Data\\.build.info"))
-		if casc and not legacy then "Warcraft III Reforged" else "Warcraft III Classic"
+		if casc and not legacy then (::WdxL.t "mb_root_reforged") else (::WdxL.t "mb_root_classic")
 	)
 
 	-- One directory named twice - both INIs may point at it - is one entry.
@@ -165,10 +165,7 @@ struct WhiteoutDexModelBrowserStruct
 	(
 		if not wdxMBPrimitivesAvailable() then
 		(
-			messageBox ("The WhiteoutDex asset picker is not available.\n\n" +
-			            "WhiteoutDexRenderer.dlx did not load. Reinstall WhiteoutDex " +
-			            "or check the Listener for plug-in load errors.") \
-			           title:"WhiteoutDex" beep:false
+			messageBox (::WdxL.t "mb_picker_unavailable_msg") title:"WhiteoutDex" beep:false
 			return undefined
 		)
 
@@ -176,9 +173,7 @@ struct WhiteoutDexModelBrowserStruct
 		local root = if roots.count == 0 then "" else roots[1][2]
 		if root == "" then
 		(
-			messageBox ("No Warcraft III installation is configured.\n\n" +
-			            "Set the CASC path in WhiteoutDex Settings first.") \
-			           title:"WhiteoutDex" beep:false
+			messageBox (::WdxL.t "mb_no_install_msg") title:"WhiteoutDex" beep:false
 			return undefined
 		)
 
@@ -261,8 +256,8 @@ struct WhiteoutDexModelBrowserStruct
 		local src = if archivePath == undefined or archivePath == "" then relPath else archivePath
 		local dest = (getDir #temp) + "\\WhiteoutDexCASC\\" + relPath
 
-		local err = "The WhiteoutDex extractor is not available."
-		try ( err = WdxExtractAsset root src dest ) catch ( err = "Extraction failed." )
+		local err = ::WdxL.t "mb_extractor_unavailable_msg"
+		try ( err = WdxExtractAsset root src dest ) catch ( err = ::WdxL.t "mb_extraction_failed_msg" )
 
 		if err != "" then
 		(

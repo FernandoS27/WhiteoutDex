@@ -125,28 +125,30 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:560
     (
         -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
         try (WdxSetDialogIcon WhiteoutDexSidebarRollout) catch()
+        if ::WdxL != undefined do
+            try (WhiteoutDexSidebarRollout.title = ::WdxL.t "mgr_whiteoutdex_manager_macbtn") catch ()
         -- Separator lines
         lbl_sep1.BackColor = lbl_sep1.BackColor.FromArgb 80 80 80
         lbl_sep2.BackColor = lbl_sep2.BackColor.FromArgb 80 80 80
         -- Setup all buttons with icons
-        setupButton btn_import      "wdx_sb_import.png"      "IMP" "Import MDX/MDL"
-        setupButton btn_export      "wdx_sb_export.png"      "EXP" "Export MDX/MDL"
-        setupButton btn_seqmgr      "wdx_sb_sequence.png"    "SEQ" "Sequence Manager"
-        setupButton btn_viskey      "wdx_sb_visibility.png"  "VIS" "Visibility Keyer"
-        setupButton btn_animgeneral "wdx_sb_animgeneral.png" "GEN" "Anim: General Tools"
-        setupButton btn_animctrl    "wdx_sb_animctrl.png"    "CTR" "Anim: Controllers"
-        setupButton btn_animskin    "wdx_sb_animskin.png"    "SKI" "Anim: Skinning"
-        setupButton btn_animscaler  "wdx_sb_animscaler.png"  "SCL" "Anim: Model Scaler"
-        setupButton btn_skinchg     "wdx_sb_skinchanger.png" "SKN" "Skin Changer"
-        setupButton btn_griddummy   "wdx_sb_griddummy.png"   "GRD" "Grid & Dummy Creator"
-        setupButton btn_objtools    "wdx_sb_objtools.png"    "OBJ" "Object Tools"
-        setupButton btn_nodemgr     "wdx_sb_nodemanager.png" "NOD" "Node Manager"
-        setupButton btn_kfoptimizer "wdx_sb_kfoptimizer.png"  "KFO" "Keyframe Optimizer"
-        setupButton btn_cellshade   "wdx_sb_cellshade.png"    "CSH" "Cell Shade Creator"
-        setupButton btn_objsettings "wdx_sb_objsettings.png"  "SET" "Object Settings"
-        setupButton btn_renderer    "wdx_sb_renderer.png"     "RND" "Wc3 Renderer"
-        setupButton btn_settings    "wdx_sb_settings.png"     "CFG" "WhiteoutDex Settings"
-        setupButton btn_about       "wdx_sb_about.png"        "(?)" "About WhiteoutDex"
+        setupButton btn_import      "wdx_sb_import.png" "IMP" (::WdxL.t "menu_importer")
+        setupButton btn_export      "wdx_sb_export.png" "EXP" (::WdxL.t "menu_exporter")
+        setupButton btn_seqmgr      "wdx_sb_sequence.png" "SEQ" (::WdxL.t "menu_sequence_manager")
+        setupButton btn_viskey      "wdx_sb_visibility.png" "VIS" (::WdxL.t "menu_visibility_keyer")
+        setupButton btn_animgeneral "wdx_sb_animgeneral.png" "GEN" (::WdxL.t "menu_anim_general")
+        setupButton btn_animctrl    "wdx_sb_animctrl.png" "CTR" (::WdxL.t "menu_anim_controllers")
+        setupButton btn_animskin    "wdx_sb_animskin.png" "SKI" (::WdxL.t "menu_anim_skin")
+        setupButton btn_animscaler  "wdx_sb_animscaler.png" "SCL" (::WdxL.t "menu_anim_scaler")
+        setupButton btn_skinchg     "wdx_sb_skinchanger.png" "SKN" (::WdxL.t "menu_skin_changer")
+        setupButton btn_griddummy   "wdx_sb_griddummy.png" "GRD" (::WdxL.t "menu_grid_dummy")
+        setupButton btn_objtools    "wdx_sb_objtools.png" "OBJ" (::WdxL.t "menu_object_tools")
+        setupButton btn_nodemgr     "wdx_sb_nodemanager.png" "NOD" (::WdxL.t "menu_node_manager")
+        setupButton btn_kfoptimizer "wdx_sb_kfoptimizer.png" "KFO" (::WdxL.t "menu_keyframe_optimizer")
+        setupButton btn_cellshade   "wdx_sb_cellshade.png" "CSH" (::WdxL.t "menu_cell_shade")
+        setupButton btn_objsettings "wdx_sb_objsettings.png" "SET" (::WdxL.t "menu_object_settings")
+        setupButton btn_renderer    "wdx_sb_renderer.png" "RND" (::WdxL.t "menu_renderer")
+        setupButton btn_settings    "wdx_sb_settings.png" "CFG" (::WdxL.t "set_settings_title")
+        setupButton btn_about       "wdx_sb_about.png" "(?)" (::WdxL.t "about_title")
         
         -- Dock
         local dockState = getINISetting iniFile "Sidebar" "DockState"

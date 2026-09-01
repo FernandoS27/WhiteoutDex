@@ -198,3 +198,74 @@
 #define IDC_CTRL_HEIGHT             1046  ///< Height controller type combo.
 /// @}
 #define IDC_EDIT_PATH_PREFIX         1047  ///< Texture path prefix edit.
+
+/// @name Static-label IDs for translation
+/// These captions were declared with id -1, which SetDlgItemText cannot
+/// reach. They are numbered from 6000 — above every other control ID in
+/// this plug-in — so the rollout can be relabelled from the shared
+/// catalog at WM_INITDIALOG. See common/wdx_localization.h.
+/// @{
+#define WDXP2_LBL_COUNT                          6000
+#define WDXP2_LBL_SPEED                          6001
+#define WDXP2_LBL_CONTROL                        6002
+#define WDXP2_LBL_VARIATION                      6003
+#define WDXP2_LBL_CONTROL_2                      6004
+#define WDXP2_LBL_CONE_ANGLE                     6005
+#define WDXP2_LBL_CONTROL_3                      6006
+#define WDXP2_LBL_GRAVITY                        6007
+#define WDXP2_LBL_CONTROL_4                      6008
+#define WDXP2_LBL_LIFESPAN                       6009
+#define WDXP2_LBL_EMISSION_RATE                  6010
+#define WDXP2_LBL_CONTROL_5                      6011
+#define WDXP2_LBL_WIDTH                          6012
+#define WDXP2_LBL_CONTROL_6                      6013
+#define WDXP2_LBL_LENGTH                         6014
+#define WDXP2_LBL_CONTROL_7                      6015
+#define WDXP2_LBL_TEXTURE_PATH_PREFIX            6016
+#define WDXP2_LBL_PARTICLE_TEXTURE_FILE          6017
+#define WDXP2_LBL_TEXTURE_BLEND_MODE             6018
+#define WDXP2_LBL_UNSHADED                       6019
+#define WDXP2_LBL_UNFOGGED                       6020
+#define WDXP2_LBL_SORT_Z_AXIS_GEOMETRY           6021
+#define WDXP2_LBL_REPLACEABLE_TEXTURE            6022
+#define WDXP2_LBL_SEQUENCE                       6023
+#define WDXP2_LBL_ROWS                           6024
+#define WDXP2_LBL_COLS                           6025
+#define WDXP2_LBL_TAIL_LENGTH                    6026
+#define WDXP2_LBL_TIME_PARAMETRIC                6027
+#define WDXP2_LBL_START                          6028
+#define WDXP2_LBL_MIDDLE                         6029
+#define WDXP2_LBL_END                            6030
+#define WDXP2_LBL_0                              6031
+#define WDXP2_LBL_1                              6032
+#define WDXP2_LBL_COLOR                          6033
+#define WDXP2_LBL_START_2                        6034
+#define WDXP2_LBL_MIDDLE_2                       6035
+#define WDXP2_LBL_END_2                          6036
+#define WDXP2_LBL_ALPHA                          6037
+#define WDXP2_LBL_START_3                        6038
+#define WDXP2_LBL_MIDDLE_3                       6039
+#define WDXP2_LBL_END_3                          6040
+#define WDXP2_LBL_SCALE                          6041
+#define WDXP2_LBL_START_4                        6042
+#define WDXP2_LBL_MIDDLE_4                       6043
+#define WDXP2_LBL_END_4                          6044
+#define WDXP2_LBL_LIFESPAN_HEAD_UV_ANIM          6045
+#define WDXP2_LBL_START_5                        6046
+#define WDXP2_LBL_END_5                          6047
+#define WDXP2_LBL_REPEAT                         6048
+#define WDXP2_LBL_DECAY_HEAD_UV_ANIM             6049
+#define WDXP2_LBL_START_6                        6050
+#define WDXP2_LBL_END_6                          6051
+#define WDXP2_LBL_REPEAT_2                       6052
+#define WDXP2_LBL_LIFESPAN_TAIL_UV_ANIM          6053
+#define WDXP2_LBL_START_7                        6054
+#define WDXP2_LBL_END_7                          6055
+#define WDXP2_LBL_REPEAT_3                       6056
+#define WDXP2_LBL_DECAY_TAIL_UV_ANIM             6057
+#define WDXP2_LBL_START_8                        6058
+#define WDXP2_LBL_END_8                          6059
+#define WDXP2_LBL_REPEAT_4                       6060
+#define WDXP2_LBL_PRIORITY_PLANE                 6061
+/// @}
+

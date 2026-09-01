@@ -114,7 +114,7 @@ parameters main rollout:params2
 		-- booleans (which we no longer expose individually).
 		if (d19 != undefined) do (obj.rawFlags = d19)
 		----------------------------------------------------------------------------------------------------------------------
-		messagebox "Import Complete!"
+		messagebox (::WdxL.t "common_import_complete_msg")
 	)
 
 	-----------------------------------Export Popcorn configuration parameters-----------------------------------
@@ -139,7 +139,7 @@ parameters main rollout:params2
 		-- single source of truth for animation-state visibility.
 		setINISetting output_file "Popcorn" "Guide"				obj.rawFlags
 		----------------------------------------------------------------------------------------------------------------------
-		messagebox "Export Complete!"
+		messagebox (::WdxL.t "common_export_complete_msg")
 	)
 
 	------------------------------------- Rollout Definitions -------------------------------------
@@ -155,7 +155,7 @@ parameters main rollout:params2
 				selection[1].pos = obj.pos
 				selection[1].parent = obj
 				Temp_adsorption.text = obj.name
-				btn_adsorption.text = "Parent: " + Temp_adsorption.text
+				btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
 			)catch()
 		)
 		on General open do
@@ -163,6 +163,10 @@ parameters main rollout:params2
 			if ::WdxL != undefined then
 			(
 				General.title = ::WdxL.t "popcorn_general_functions_title"
+				-- Only reset the caption while nothing is adsorbed; once a
+				-- parent is picked the button shows that name instead.
+				if Temp_adsorption.text == "" do
+					btn_adsorption.text = ::WdxL.t "common_adsorb_btn"
 			)
 		)
 	)
@@ -200,9 +204,9 @@ parameters main rollout:params2
 			local picked = undefined
 			try (
 				picked = ::WhiteoutDexModelBrowser.pickEffect initial:popcornPath.text \
-					caption:"Select a Popcorn FX Effect"
+					caption:(::WdxL.t "popcorn_select_effect_cap")
 			) catch (
-				messageBox "The WhiteoutDex asset browser is not available." title:"WhiteoutDex" beep:false
+				messageBox (::WdxL.t "common_asset_browser_unavailable_msg") title:"WhiteoutDex" beep:false
 			)
 			if picked != undefined and picked != "" do popcornPath.text = picked
 		)
@@ -364,7 +368,7 @@ parameters main rollout:params2
 				)
 			)
 			else
-				messageBox "No additional scene animations available."
+				messageBox (::WdxL.t "popcorn_no_more_animations_msg")
 		)
 
 		on btnDelExc pressed do
