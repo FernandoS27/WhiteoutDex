@@ -680,6 +680,8 @@ struct WdxObjectManipulationTools
 		   ========================================= */
 		on mainRollout open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon mainRollout) catch()
 			self = WdxObjectManipulationTools
 			updatePolyInfo()
 			if g_ppt_vertPositions.count > 0 do

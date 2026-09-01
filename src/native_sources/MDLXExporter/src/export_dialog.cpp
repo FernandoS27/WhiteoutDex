@@ -10,6 +10,10 @@
 #include <string>
 #include <cstdio>
 
+// After max.h: that header has opinions about windows.h, which this one
+// includes.
+#include "wdx_window_icon.h" // wdx::ApplyWindowIcon
+
 // Provided by dllmain.cpp — we need this to launch the Problem Details dialog
 extern HINSTANCE GetDllInstance();
 
@@ -662,6 +666,8 @@ static INT_PTR CALLBACK ExportDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPA
     case WM_INITDIALOG: {
         ds = reinterpret_cast<DialogState*>(lParam);
         SetWindowLongPtr(hDlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
+
+        wdx::ApplyWindowIcon(hDlg, IDI_WHITEOUTDEX_ICON);
 
         // Set up spinners
         HWND hSpinPrec = GetDlgItem(hDlg, IDC_SPIN_EXTENTS_PREC);

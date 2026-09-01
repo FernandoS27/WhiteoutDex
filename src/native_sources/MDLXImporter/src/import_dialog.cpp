@@ -7,6 +7,10 @@
 #include <commctrl.h>
 #include <string>
 
+// After max.h: that header has opinions about windows.h, which this one
+// includes.
+#include "wdx_window_icon.h" // wdx::ApplyWindowIcon
+
 // ============================================================================
 // Dialog state passed via LPARAM → GWLP_USERDATA
 // ============================================================================
@@ -462,6 +466,8 @@ static INT_PTR CALLBACK ImportDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPA
     case WM_INITDIALOG: {
         ds = reinterpret_cast<DialogState*>(lParam);
         SetWindowLongPtr(hDlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
+
+        wdx::ApplyWindowIcon(hDlg, IDI_WHITEOUTDEX_ICON);
 
         // Populate controls from current options
         optionsToDialog(hDlg, *ds->opts, ds->isReforged);

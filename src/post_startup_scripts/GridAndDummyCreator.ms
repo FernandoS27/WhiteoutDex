@@ -112,6 +112,8 @@ struct WdxGridAndDummyCreator
        
         on mainRollout open do
         (
+            -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+            try (WdxSetDialogIcon mainRollout) catch()
             self = WdxGridAndDummyCreator
             gridCPck.color = self.gridColor
             gridSizeSpn.value = self.gridSize

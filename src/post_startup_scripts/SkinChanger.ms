@@ -135,6 +135,8 @@ struct WdxSkinChanger
         
         on mainRollout open do
         (
+            -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+            try (WdxSetDialogIcon mainRollout) catch()
             self = WdxSkinChanger -- Setzt 'self' auf die SkinChanger Struct-Definition
             format "SkinChanger: Rollout opened. 'self' now refers to SkinChanger struct definition.\n"
             -- Localization

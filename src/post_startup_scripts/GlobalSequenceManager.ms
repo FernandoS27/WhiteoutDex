@@ -1670,6 +1670,8 @@ struct WdxGlobalSequenceManager
 		-- ===== INIT =====
 		on mainRollout open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon mainRollout) catch()
 			self = WdxGlobalSequenceManager
 			
 			-- ListView Setup

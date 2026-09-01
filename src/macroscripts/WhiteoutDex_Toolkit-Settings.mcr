@@ -241,6 +241,8 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 
 		on mpqOrderRollout open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon mpqOrderRollout) catch()
 			-- Where a relative entry hangs off: the Settings dialog's own MPQ
 			-- directory, else the Reforged/CASC root. Same fallback as
 			-- wdx::mpq::ArchiveDirectory - a Classic install keeps its
@@ -526,6 +528,8 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 
 		on settingsRollout open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon settingsRollout) catch()
 			populateLanguages()
 			noteLabel.text = ""
 			if ::WhiteoutDexMPQ != undefined then

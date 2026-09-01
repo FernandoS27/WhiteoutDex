@@ -308,6 +308,8 @@ struct WdxVisibilityKeyer
 		-- Rollout Handlers
         on mainRollout open do
         (
+            -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+            try (WdxSetDialogIcon mainRollout) catch()
             self = ::WdxVisibilityKeyer
 			interpDropdown.items = self.visConInterTypes
 			interpDropdown.selection = self.visConInterSelection

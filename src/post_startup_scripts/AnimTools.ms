@@ -760,6 +760,8 @@ struct WdxAnimTools
 		-- Localization
 		on generalRoll open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon generalRoll) catch()
 			if ::WdxL != undefined then
 			(
 				generalRoll.title = ::WdxL.t "anim_general_tools_title"
@@ -891,6 +893,8 @@ struct WdxAnimTools
 		-- Localization
 		on skinRoll open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon skinRoll) catch()
 			if ::WdxL != undefined then
 			(
 				skinRoll.title = ::WdxL.t "anim_skinning_title"
@@ -1068,6 +1072,8 @@ struct WdxAnimTools
 		-- Localization
 		on controllersRoll open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon controllersRoll) catch()
 			if ::WdxL != undefined then
 			(
 				controllersRoll.title = ::WdxL.t "anim_controllers_title"
@@ -1373,6 +1379,8 @@ struct WdxAnimTools
 		-- Localization
 		on scalerRoll open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon scalerRoll) catch()
 			if ::WdxL != undefined then
 			(
 				scalerRoll.title = ::WdxL.t "anim_model_scaler_title"

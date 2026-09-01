@@ -283,7 +283,7 @@ bool RenderWindow::Create(i32 w, i32 h) {
                        &hMod);
     HINSTANCE hInst = hMod ? (HINSTANCE)hMod : GetModuleHandle(nullptr);
 
-    icon_ = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_WHITEOUT_ICON));
+    icon_ = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_WHITEOUTDEX_ICON));
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -305,6 +305,13 @@ bool RenderWindow::Create(i32 w, i32 h) {
                             CW_USEDEFAULT, adj.right - adj.left, adj.bottom - adj.top, nullptr,
                             nullptr, hInst, this);
     if (hwnd_) {
+        // The class only takes hIcon from the registration that created it, so
+        // a re-open after RegisterClassExW reports ERROR_CLASS_ALREADY_EXISTS
+        // would otherwise show the default icon.
+        if (icon_) {
+            SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon_));
+            SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon_));
+        }
         // Match the title bar + thin window border to the ImGui MenuBarBg so
         // the OS chrome blends with the menu strip below it. Silently ignored
         // on older Windows.

@@ -91,3 +91,6 @@
 #define IDC_BTN_FIX_SELECTED         2002
 #define IDC_BTN_FIX_ALL              2003
 #define IDC_BTN_RESCAN               2004
+
+// ── Window icon ──
+#define IDI_WHITEOUTDEX_ICON        200

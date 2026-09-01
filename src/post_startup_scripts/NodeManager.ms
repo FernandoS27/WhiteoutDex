@@ -228,6 +228,8 @@ struct WdxNodeManager
 		-- Localization
 		on mainRollout open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon mainRollout) catch()
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "node_node_manager_title"

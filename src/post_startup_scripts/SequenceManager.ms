@@ -904,6 +904,8 @@ struct WdxSequenceManager
                 
                 on newSequenceRollout open do
                 (
+                    -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+                    try (WdxSetDialogIcon newSequenceRollout) catch()
                     self = WdxSequenceManager
                     parent = mainRollout
                     
@@ -2158,6 +2160,8 @@ struct WdxSequenceManager
 
         on mainRollout open do
         (
+            -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+            try (WdxSetDialogIcon mainRollout) catch()
             self = WdxSequenceManager
 			self.sequences = self.LoadSequences()
 			self.loadIgnoredSequences()  -- Ignore-Liste laden

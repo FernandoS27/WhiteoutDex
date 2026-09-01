@@ -30,7 +30,7 @@ the generated copy under <build>/packaging/.
 
     <CompanyDetails
         Name="Sahmkow &amp; Schiefer"
-        Url="www.benjaminschiefer.de"
+        Url="https://github.com/FernandoS27/WhiteoutDex"
         Email="kontakt@benjaminschiefer.de" />
 
     <!-- ================================================================

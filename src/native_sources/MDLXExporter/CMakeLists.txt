@@ -14,7 +14,11 @@ file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.h")
 
 add_library(MDLXExporter SHARED ${SOURCES})
 
-target_include_directories(MDLXExporter PRIVATE src)
+target_include_directories(MDLXExporter PRIVATE
+    src
+    # wdx_window_icon.h - the toolkit icon on the export/scene-monitor dialogs
+    "${CMAKE_CURRENT_SOURCE_DIR}/../common"
+)
 
 target_link_libraries(MDLXExporter PRIVATE
     MaxCore

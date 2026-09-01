@@ -22,6 +22,10 @@
 #include <string>
 #include <unordered_set>
 
+// After max.h: that header has opinions about windows.h, which this one
+// includes.
+#include "wdx_window_icon.h" // wdx::ApplyWindowIcon
+
 namespace scene_monitor {
 
 namespace {
@@ -150,6 +154,7 @@ INT_PTR CALLBACK ProblemDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
     case WM_INITDIALOG: {
         ds = reinterpret_cast<DialogState*>(lParam);
         SetWindowLongPtr(hDlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
+        wdx::ApplyWindowIcon(hDlg, IDI_WHITEOUTDEX_ICON);
         setupListView(GetDlgItem(hDlg, IDC_LV_PROBLEMS));
         rescanAndRefresh(hDlg, ds);
         CenterWindow(hDlg, GetParent(hDlg));

@@ -123,6 +123,8 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:560
     -- ── Rollout Open: Setup icons + dock ──
     on WhiteoutDexSidebarRollout open do
     (
+        -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+        try (WdxSetDialogIcon WhiteoutDexSidebarRollout) catch()
         -- Separator lines
         lbl_sep1.BackColor = lbl_sep1.BackColor.FromArgb 80 80 80
         lbl_sep2.BackColor = lbl_sep2.BackColor.FromArgb 80 80 80

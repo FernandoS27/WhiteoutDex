@@ -8,6 +8,7 @@
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
+#include "resource.h" // IDI_WHITEOUTDEX_ICON
 #include "storage_explorer.h" // WhiteoutFlakesExplorerLib
 
 #include <chrono>
@@ -159,12 +160,16 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
     HINSTANCE hInst = WdxPluginInstance();
 
     // ---- Window ------------------------------------------------------------
+    HICON icon = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_WHITEOUTDEX_ICON));
+
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = PickerWndProc;
     wc.hInstance = hInst;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hIcon = icon;
+    wc.hIconSm = icon;
     wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     wc.lpszClassName = kPickerClass;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
@@ -180,6 +185,13 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
     if (!hwnd) {
         out.error = "Could not create the picker window.";
         return out;
+    }
+    // The class carries the icon, but only the registration that created it
+    // does - a second open finds the class already there. Set it per window so
+    // the title bar is right either way.
+    if (icon) {
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
     }
     {
         const BOOL useDark = TRUE;

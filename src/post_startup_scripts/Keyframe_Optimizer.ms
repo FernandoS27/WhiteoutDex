@@ -486,6 +486,8 @@ rollout wdxPanelParams "Optimization Parameters"
     on chkDebug changed state do ( _wdxKeyReducerDebug = state )
     on wdxPanelParams open do
     (
+        -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+        try (WdxSetDialogIcon wdxPanelParams) catch()
         if ::WdxL != undefined then
         (
             wdxPanelParams.title = ::WdxL.t "kfo_params_title"

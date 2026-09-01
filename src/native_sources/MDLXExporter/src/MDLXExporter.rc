@@ -164,3 +164,10 @@ BEGIN
     PUSHBUTTON      "Fix All",       IDC_BTN_FIX_ALL,      127, 178, 50, 14
     DEFPUSHBUTTON   "Close",         IDOK,                 223, 178, 50, 14
 END
+
+// ============================================================================
+// Window icon - the shared 16-64 px WhiteoutDex icon, put on the dialog from
+// WM_INITDIALOG (see common/wdx_window_icon.h). rc.exe anchors a relative name
+// at the first /I entry, which is this plug-in's own src/ directory.
+// ============================================================================
+IDI_WHITEOUTDEX_ICON ICON "../../../../whiteoutdex_icons/whiteoutdex.ico"

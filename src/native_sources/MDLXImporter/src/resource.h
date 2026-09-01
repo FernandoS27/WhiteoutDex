@@ -73,3 +73,6 @@
 #define IDC_GRP_PROGRESS            1100
 #define IDC_LBL_STATUS              1101
 #define IDC_PROGRESS_BAR            1102
+
+// ── Window icon ──
+#define IDI_WHITEOUTDEX_ICON        200

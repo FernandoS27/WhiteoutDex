@@ -454,6 +454,8 @@ rollout WdxCellShadeCreator "Wc3 Cell Shade Creator" width:192 height:360
     -- ============================================================
     on WdxCellShadeCreator open do
     (
+        -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+        try (WdxSetDialogIcon WdxCellShadeCreator) catch()
         local sw = 1
 
         -- Create button

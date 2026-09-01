@@ -145,6 +145,8 @@ struct WdxObjectSettings
 		-- Localization + initial value load
 		on mainRollout open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon mainRollout) catch()
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "obj_settings_title"
