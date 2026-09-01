@@ -20,9 +20,9 @@
  *     the Settings dialog writes — so one language choice drives the whole
  *     toolkit, MaxScript UI and renderer alike.
  *
- * WhiteoutDex offers six languages and Flakes eleven; the extra five simply
- * never come up here, and an unrecognised code falls back to English the same
- * way `WdxL.t` does.
+ * WhiteoutDex offers ten languages and Flakes eleven; the odd one out
+ * (Traditional Chinese) simply never comes up here, and an unrecognised code
+ * falls back to English the same way `WdxL.t` does.
  */
 
 #include "localization.h"

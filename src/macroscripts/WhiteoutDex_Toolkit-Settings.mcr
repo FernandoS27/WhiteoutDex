@@ -309,6 +309,11 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 		local sidebarIni = (::WhiteoutDexInstallRoot) + "\\WhiteoutDex_Settings.ini"
 		local settingsIni = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
 
+		-- Deliberately multilingual and deliberately NOT listing all ten: this
+		-- caption has to be readable by someone who cannot yet read the UI, and
+		-- the scripts that need spelling out are the ones an English reader
+		-- cannot guess back. "Langue"/"Idioma"/"Lingua" are close enough to
+		-- "Language" to be skipped, and adding them would overrun 324 px.
 		groupBox langGrp "Language / 语言 / Sprache / Язык / 言語 / 언어" pos:[8,4] width:324 height:72
 
 		label langLabel "Interface Language:" pos:[20,28] width:120 height:16
@@ -361,6 +366,10 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 					"ru": append names "Русский / Russian (ru)"
 					"ja": append names "日本語 / Japanese (ja)"
 					"ko": append names "한국어 / Korean (ko)"
+					"fr": append names "Français / French (fr)"
+					"es": append names "Español / Spanish (es)"
+					"it": append names "Italiano / Italian (it)"
+					"pt-br": append names "Português (Brasil) (pt-br)"
 					default: append names code
 				)
 				if code == ::WdxL.getLanguage() then currentIdx = i
@@ -396,7 +405,9 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				if newLang != ::WdxL.getLanguage() then
 				(
 					::WdxL.setLanguage newLang
-					noteLabel.text = "Please reopen dialogs to see changes."
+					-- Read after setLanguage, so the note arrives in the language
+					-- the user has just picked.
+					noteLabel.text = ::WdxL.t "set_language_reopen_note"
 				)
 			)
 		)

@@ -447,8 +447,9 @@ endif()
 # `key=value` and the loader does insert_or_assign in file order, so appending
 # is all the merge needs — and it keeps each project's translators editing only
 # their own file. A language WhiteoutDex has no overlay for (Flakes ships
-# eleven, WhiteoutDex translates six) gets the English overlay appended, which
-# is exactly the fallback tr() would apply anyway.
+# eleven, WhiteoutDex translates ten — everything but Traditional Chinese) gets
+# the English overlay appended, which is exactly the fallback tr() would apply
+# anyway.
 #
 # MaxScript UI strings are NOT here — they live in
 # src/pre_startup_scripts/WhiteoutDexLocalization.ms.

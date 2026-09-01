@@ -11,7 +11,7 @@
  * captions come out of the .rc file, which is compiled English. Their strings
  * live in the same catalog as the rest of the toolkit —
  * src/pre_startup_scripts/WhiteoutDexLocalization.ms — so rather than duplicate
- * six languages into per-language string tables, WM_INITDIALOG asks MaxScript
+ * every language into per-language string tables, WM_INITDIALOG asks MaxScript
  * for the translations and relabels the controls it just created.
  *
  * The renderer .dlx does NOT use this. Its chrome is WhiteoutFlakes' and reads
