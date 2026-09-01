@@ -354,6 +354,35 @@ openCascImpl(const std::wstring& explicitDir) {
 }
 #endif
 
+// Open the archives to search, in the order to search them.
+//
+// A configured load order wins outright over the directory scan. The scan
+// cannot express priority — fs::directory_iterator hands back whatever order
+// the filesystem feels like, so which copy of a patched texture won was
+// already luck — and it cannot reach an archive outside `mpqDir` at all.
+std::vector<whiteout::storages::mpq::Storage>
+openMpqList(const std::vector<std::wstring>& files) {
+    std::vector<whiteout::storages::mpq::Storage> out;
+    RLOG << "[MPQ] Opening " << files.size() << " archive(s) from the configured load order"
+         << std::endl;
+    for (const std::wstring& f : files) {
+        std::string error;
+        auto storage = whiteout::storages::mpq::Storage::open(
+            std::filesystem::path(f).string(), &error);
+        if (storage) {
+            RLOG << "[MPQ]   opened: '" << wlog(f) << "'" << std::endl;
+            out.push_back(std::move(*storage));
+        } else {
+            RLOG << "[MPQ]   open FAILED for '" << wlog(f) << "': "
+                 << (error.empty() ? std::string{"(no error message)"} : error) << std::endl;
+        }
+    }
+    RLOG << "[MPQ] Load order complete — " << out.size() << " of " << files.size()
+         << " opened" << std::endl;
+    RLOG.flush();
+    return out;
+}
+
 std::vector<whiteout::storages::mpq::Storage>
 openMpqImpl(const std::wstring& mpqDir) {
     std::vector<whiteout::storages::mpq::Storage> out;
@@ -450,14 +479,16 @@ bool writeBytesToDisk(const fs::path& outPath, const std::vector<std::uint8_t>& 
 
 TextureResolver::TextureResolver(const std::wstring& modelDir,
                                  const std::wstring& cascDir,
-                                 const std::wstring& mpqDir)
+                                 const std::wstring& mpqDir,
+                                 const std::vector<std::wstring>& mpqArchives)
     : impl_(std::make_unique<Impl>()) {
     impl_->modelDir = modelDir;
 
     RLOG << "[RES] TextureResolver ctor:"
          << " modelDir='" << wlog(modelDir) << "'"
          << " cascDir='" << wlog(cascDir) << "'"
-         << " mpqDir='" << wlog(mpqDir) << "'" << std::endl;
+         << " mpqDir='" << wlog(mpqDir) << "'"
+         << " listed=" << mpqArchives.size() << std::endl;
     RLOG.flush();
 
 #if defined(WHITEOUT_HAS_CASC)
@@ -465,7 +496,8 @@ TextureResolver::TextureResolver(const std::wstring& modelDir,
 #else
     (void)cascDir;
 #endif
-    impl_->mpqArchives = openMpqImpl(mpqDir);
+    impl_->mpqArchives =
+        mpqArchives.empty() ? openMpqImpl(mpqDir) : openMpqList(mpqArchives);
     RLOG.flush();
 }
 

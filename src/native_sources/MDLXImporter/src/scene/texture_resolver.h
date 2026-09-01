@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace mdx_scene {
 
@@ -30,9 +31,15 @@ public:
     /// triggers blizzard_game_finder auto-detection; empty `mpqDir`
     /// disables MPQ entirely. No on/off flags — both backends are always
     /// attempted when a path is available; failures land in the log.
+    ///
+    /// `mpqArchives` is the user's configured load order (absolute paths,
+    /// highest priority first). When non-empty it is opened INSTEAD of
+    /// scanning `mpqDir`: the order is the whole point, and a directory scan
+    /// has none. Empty falls back to the scan.
     TextureResolver(const std::wstring& modelDir,
                     const std::wstring& cascDir,
-                    const std::wstring& mpqDir);
+                    const std::wstring& mpqDir,
+                    const std::vector<std::wstring>& mpqArchives);
     ~TextureResolver();
 
     TextureResolver(const TextureResolver&) = delete;

@@ -32,6 +32,9 @@
 
 // clang-format off
 #include <max.h>
+// After max.h (which has already pulled in <windows.h>) and before the
+// maxscript block, whose macros this header must not be compiled under.
+#include "wdx_mpq_settings.h"
 #include <notify.h>
 #include <maxversion.h>
 #include <maxscript/maxscript.h>
@@ -387,11 +390,15 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
     // adapter has its own FileContentProvider instance used during scene
     // collection, and it needs the same root.
     std::string userInstallPath;
+    // Hoisted out of the block below because the MPQ load order lives in the
+    // same directory and is read further down, after this scope has closed.
+    std::wstring plugcfgDir;
     {
         Interface* ipForPath = GetCOREInterface();
         if (ipForPath) {
             MSTR pcDir = ipForPath->GetDir(APP_PLUGCFG_DIR);
-            std::wstring cascIni = std::wstring(pcDir.data()) + L"\\WhiteoutDex_Settings.ini";
+            plugcfgDir = std::wstring(pcDir.data());
+            std::wstring cascIni = plugcfgDir + L"\\WhiteoutDex_Settings.ini";
             if (GetFileAttributesW(cascIni.c_str()) != INVALID_FILE_ATTRIBUTES) {
                 wchar_t w3buf[MAX_PATH] = {};
                 // Disambiguate Win32 GetPrivateProfileStringW from the
@@ -468,12 +475,31 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
     // all three plug-ins. Letting LoadIoPathOverrides override at this point
     // is what made the renderer treat the .dlx directory as the WC3 install
     // for users who never created WhiteoutFlakes.ini (i.e. everyone).
-    auto applyIoOverrides = [](whiteout::flakes::io::FileContentProvider& provider) {
+    auto applyIoOverrides = [&plugcfgDir](whiteout::flakes::io::FileContentProvider& provider) {
         auto overrides = whiteout::flakes::LoadIoPathOverrides();
         provider.SetIgnoreCasc(overrides.ignoreCasc);
         provider.SetIgnoreMpq(overrides.ignoreMpq);
         if (overrides.mpqListSet)
             provider.SetMpqList(std::move(overrides.mpqList));
+
+        // The WhiteoutDex Settings dialog's own MPQ load order, applied last
+        // so it wins: it is the one a user of this plug-in can actually edit,
+        // while the WhiteoutFlakes ini above is a file almost none of them
+        // have. Empty means "never customised" — the provider then keeps
+        // whichever list it already had, which is the point of the
+        // distinction.
+        //
+        // Absolute paths, so StorageBuilder::Archives' `installPath / name`
+        // join lands on the archive wherever it actually is. That join is also
+        // why this needs an install path at all: with none set the builder
+        // opens nothing, but a provider with no install path has no Warcraft
+        // III to draw either.
+        auto listed = wdx::mpq::ResolvedArchivesUtf8(plugcfgDir);
+        if (!listed.empty()) {
+            mprintf(_M("WhiteoutDex: MPQ load order - %d archive(s), '%hs' first\n"),
+                    static_cast<int>(listed.size()), listed.front().c_str());
+            provider.SetMpqList(std::move(listed));
+        }
     };
     applyIoOverrides(g_scene->GetContentProvider());
 

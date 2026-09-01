@@ -2812,7 +2812,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     // and writes archive bytes into modelDir with the actual extension.
     std::optional<mdx_scene::TextureResolver> resolverOpt;
     if (opts.core.importTextures) {
-        resolverOpt.emplace(modelDir, opts.cascDirectory, opts.mpqDirectory);
+        resolverOpt.emplace(modelDir, opts.cascDirectory, opts.mpqDirectory,
+                            opts.mpqArchives);
     }
     mdx_scene::TextureResolver* resolver = resolverOpt ? &*resolverOpt : nullptr;
 

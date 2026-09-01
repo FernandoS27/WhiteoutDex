@@ -65,10 +65,18 @@ struct AssetPickResult {
 ///                    switched between in one click. `cascRoot` is still what
 ///                    opens; these are the alternatives. Empty leaves the menu
 ///                    with just the folder picker.
+/// @param archives    the host's MPQ load order - absolute paths, highest
+///                    priority first. What makes an archive outside the game
+///                    folder appear in the picker at all, and what keeps the
+///                    picker showing the same set the extractor behind it
+///                    reads. io::OpenWithArchives has the rule for how this
+///                    combines with `cascRoot`. Empty means the user never
+///                    configured one.
 AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
                                const std::string& cascRoot, const std::string& initialRel,
                                const std::string& initialFilter = {},
-                               const std::vector<AssetPickerRoot>& roots = {});
+                               const std::vector<AssetPickerRoot>& roots = {},
+                               const std::vector<std::string>& archives = {});
 
 /// Parks the preview render window for as long as it is alive, and disables it
 /// so the user cannot drive a window that has stopped drawing.

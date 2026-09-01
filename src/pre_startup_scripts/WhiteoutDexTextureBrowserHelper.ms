@@ -151,6 +151,7 @@ struct WhiteoutDexMPQHelperStruct
     private textureCache = undefined,
     private tempDir = ((getDir #temp) + "\\WhiteoutDex_MPQ\\"),
     private iniFile = (getDir #plugcfg + "\\WhiteoutDexMPQ.ini"),
+    private settingsIni = (getDir #plugcfg + "\\WhiteoutDex_Settings.ini"),
     private ndx = ::WhiteoutDexTextureBrowserDLL,
     
     -- ========================================================================
@@ -190,6 +191,43 @@ struct WhiteoutDexMPQHelperStruct
     (
         this.mpqDirectory
     ),
+
+    -- The MPQ load order the Settings dialog writes, resolved to absolute
+    -- paths and in priority order. #() means the user never edited it, and
+    -- callers then keep doing whatever they did before.
+    --
+    -- Mirrors wdx::mpq::ResolvedArchives in
+    -- src/native_sources/common/wdx_mpq_settings.h: same key, same '|'
+    -- separator, same "relative to the MPQ directory unless it is a full
+    -- path" rule. The two have to agree - a model that previews out of one
+    -- archive and imports out of another is not a bug report anyone can read.
+    public fn getLoadOrder =
+    (
+        local out = #()
+        local raw = getINISetting this.settingsIni "MPQ" "List"
+        if raw == undefined or raw == "" then return out
+
+        local base = this.mpqDirectory
+        if base == "" then base = getINISetting this.settingsIni "CASC" "W3Path"
+        if base != "" and base[base.count] != "\\" then base += "\\"
+
+        for e in (filterString raw "|") do
+        (
+            local t = trimLeft (trimRight e)
+            if t != "" then
+            (
+                local full = ""
+                -- A drive letter or a UNC root is absolute; anything else
+                -- hangs off the configured MPQ directory.
+                if t.count > 1 and (t[2] == ":" or (t[1] == "\\" and t[2] == "\\")) then
+                    full = t
+                else if base != "" then
+                    full = base + t
+                if full != "" and doesFileExist full then append out full
+            )
+        )
+        out
+    ),
     
     -- ========================================================================
     -- MPQ LIFECYCLE
@@ -205,7 +243,16 @@ struct WhiteoutDexMPQHelperStruct
             return false
         )
         
-        if this.mpqDirectory == "" or not (doesFileExist this.mpqDirectory) then
+        -- A configured load order REPLACES the scan further down rather
+        -- than being merged with it. The scan cannot express priority - it
+        -- hands back whatever order the filesystem feels like, so which copy
+        -- of a patched texture won was already luck - and it cannot reach an
+        -- archive outside the game folder at all.
+        local mpqFiles = this.getLoadOrder()
+
+        -- With full paths configured the game folder is not needed, which is
+        -- exactly the case where the archives are somewhere else.
+        if mpqFiles.count == 0 and (this.mpqDirectory == "" or not (doesFileExist this.mpqDirectory)) then
         (
             format "WhiteoutDex MPQ: No valid directory set.\n"
             return false
@@ -214,9 +261,12 @@ struct WhiteoutDexMPQHelperStruct
         this.textureCache = Dictionary #string
         makeDir this.tempDir all:true
         
+        if mpqFiles.count > 0 then
+            format "WhiteoutDex MPQ: using the configured load order (% archives)\n" mpqFiles.count
+        else
+        (
         -- Scan for MPQ files recursively
         local mpqExtensions = #("*.mpq", "*.w3mod", "*.w3x", "*.w3m", "*.mix")
-        local mpqFiles = #()
         
         for ext in mpqExtensions do
             join mpqFiles (getFiles (this.mpqDirectory + "\\" + ext))
@@ -234,6 +284,7 @@ struct WhiteoutDexMPQHelperStruct
                 for ext in mpqExtensions do
                     join mpqFiles (getFiles (d + ext))
             )
+        )
         )
         
         if mpqFiles.count == 0 then

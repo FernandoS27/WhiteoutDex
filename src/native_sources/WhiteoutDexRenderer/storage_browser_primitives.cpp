@@ -72,11 +72,15 @@
 #include <algorithm>
 #include <cwctype>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 // clang-format off
 #include <max.h>
+// After max.h (which has already pulled in <windows.h>) and before the
+// maxscript block, whose macros this header must not be compiled under.
+#include "wdx_mpq_settings.h"
 #include <maxscript/maxscript.h>
 #include <maxscript/util/listener.h>
 #include <maxscript/foundation/arrays.h>
@@ -134,6 +138,18 @@ std::string ArgToUtf8(Value* v) {
     } catch (...) {
         return {};
     }
+}
+
+// ── The user's MPQ load order ───────────────────────────────────────────────
+// Absolute paths to the archives the Settings dialog lists, in priority order.
+// Empty means the user never edited the order, which every caller below reads
+// as "keep doing what you did before".
+std::vector<std::string> ConfiguredArchives() {
+    Interface* ip = GetCOREInterface();
+    if (!ip)
+        return {};
+    MSTR plugcfg = ip->GetDir(APP_PLUGCFG_DIR);
+    return wdx::mpq::ResolvedArchivesUtf8(std::wstring(plugcfg.data()));
 }
 
 int ArgToInt(Value* v, int fallback) {
@@ -349,26 +365,49 @@ bool ReadArchiveFile(const SharedCasc& casc, const std::string& archivePath,
 
 #if WHITEOUT_HAS_MPQ
 
-// Read one entry out of a pre-Reforged install's archive set.
-//
-// Search order is the reverse of the load order the browser inserted them in:
-// War3Patch.mpq shipped to replace what War3.mpq holds, so the patch's copy of
-// a path is the one the game reads and the one a browse of the merged tree was
-// showing. Unknown archives are searched last — they were also inserted last,
-// so an override in one still wins over the retail four.
+// Walk `files` in order and hand back the first copy of `path` one of them
+// holds. Order is priority, which is the whole reason the caller built the
+// vector before calling.
 //
 // Nothing is cached: an extraction happens once per texture the user picks,
 // and holding four archive handles open for the rest of the Max session to
 // save a few milliseconds is the wrong trade.
-bool ReadFromMpqSet(const std::string& root, const std::string& path,
-                    std::vector<whiteout::u8>& out) {
+bool ReadFromArchives(const std::vector<std::filesystem::path>& files, const std::string& path,
+                      std::vector<whiteout::u8>& out) {
+    for (const std::filesystem::path& p : files) {
+        if (p.empty())
+            continue;
+        // The one-argument overload: passing a literal null would be ambiguous
+        // between the WorkerPool and the error-string overloads.
+        auto s = whiteout::storages::mpq::Storage::open(p.string());
+        if (!s)
+            continue;
+        if (auto data = s->readFile(path)) {
+            out = std::move(*data);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Every .mpq in `root`, in the order a reader should search them.
+//
+// The retail names first, patch before base: War3Patch.mpq shipped to replace
+// what War3.mpq holds, so the patch's copy of a path is the one the game reads
+// and the one a browse of the merged tree was showing. Anything else the
+// directory holds is searched last, sorted descending, so a mod's archive
+// still overrides the retail four.
+//
+// This is the fallback shape. When the user has an MPQ load order configured,
+// that list replaces this entirely — see ArchivesForRead.
+std::vector<std::filesystem::path> ScanMpqDirectory(const std::string& root) {
     static const char* kSearchOrder[] = {"war3patch.mpq", "war3xlocal.mpq", "war3local.mpq",
                                          "war3x.mpq",     "war3.mpq",       "deprecated.mpq"};
 
     std::error_code ec;
     const std::filesystem::path base(root);
     if (!std::filesystem::is_directory(base, ec))
-        return false;
+        return {};
 
     std::vector<std::filesystem::path> known(std::size(kSearchOrder));
     std::vector<std::filesystem::path> extra;
@@ -390,27 +429,48 @@ bool ReadFromMpqSet(const std::string& root, const std::string& path,
     }
     std::sort(extra.rbegin(), extra.rend());
 
-    auto tryOne = [&](const std::filesystem::path& p) {
-        if (p.empty())
-            return false;
-        // The one-argument overload: passing a literal null would be ambiguous
-        // between the WorkerPool and the error-string overloads.
-        auto s = whiteout::storages::mpq::Storage::open(p.string());
-        if (!s)
-            return false;
-        if (auto data = s->readFile(path)) {
-            out = std::move(*data);
-            return true;
-        }
-        return false;
-    };
-    for (const auto& p : known)
-        if (tryOne(p))
-            return true;
-    for (const auto& p : extra)
-        if (tryOne(p))
-            return true;
-    return false;
+    for (auto& p : extra)
+        known.push_back(std::move(p));
+    return known;
+}
+
+// The archives to search for something the user picked out of @p root, in the
+// order to search them.
+//
+// Deliberately the same case analysis io::OpenWithArchives does for the browse,
+// because the two have to agree: a picker that lists a file its extractor
+// cannot produce is worse than one that never listed it. So -
+//
+//   - a DIRECTORY OF MPQS is its archive set, and a configured load order
+//     REPLACES the directory scan. An archive the user took out of the order
+//     neither shows up nor extracts.
+//   - beside a CASC INSTALL the list is a mod's archives, additive. The caller
+//     reads CASC first, matching the order the content provider layers them in
+//     (game_rules.cpp ConfigureWc3: Casc, then Archives).
+//   - ONE ARCHIVE is exactly the archive named, list or no list. The caller
+//     asked to browse that file.
+//   - A LOOSE FOLDER has no archives by construction - ClassifyStorage only
+//     returns Folder for a directory with no .mpq in it.
+std::vector<std::filesystem::path> ArchivesForRead(const std::string& root, StorageKind kind) {
+    std::vector<std::filesystem::path> files;
+    if (kind == StorageKind::Folder)
+        return files;
+    if (kind == StorageKind::Mpq) {
+        files.emplace_back(ToWide(root));
+        return files;
+    }
+
+    for (const std::string& utf8 : ConfiguredArchives())
+        files.emplace_back(ToWide(utf8));
+    if (kind == StorageKind::MpqSet && files.empty())
+        files = ScanMpqDirectory(root);
+    return files;
+}
+
+// Read one entry out of the archives behind @p root.
+bool ReadFromMpqSet(const std::string& root, StorageKind kind, const std::string& path,
+                    std::vector<whiteout::u8>& out) {
+    return ReadFromArchives(ArchivesForRead(root, kind), path, out);
 }
 
 #endif // WHITEOUT_HAS_MPQ
@@ -448,10 +508,18 @@ Value* WdxBrowserOpen_cf(Value** arg_list, int count) {
         (kindArg < 0 || static_cast<StorageKind>(kindArg) == g_browser.Kind()))
         return MakeString("");
 
+    // The user's MPQ load order, when there is one. How it combines with
+    // whatever `root` turns out to be is io::OpenWithArchives' business — the
+    // same call the asset picker's own browser makes, so the headless listing
+    // and the picker never disagree about what is in the install.
+    const std::vector<std::string> custom = ConfiguredArchives();
+    const std::optional<StorageKind> kind =
+        (kindArg < 0) ? std::nullopt
+                      : std::optional<StorageKind>(static_cast<StorageKind>(kindArg));
+
     std::string error;
-    const bool opened = (kindArg < 0)
-                            ? g_browser.OpenAuto(root, &error)
-                            : g_browser.Open(root, static_cast<StorageKind>(kindArg), &error);
+    const bool opened =
+        whiteout::flakes::io::OpenWithArchives(g_browser, root, kind, custom, &error);
     if (!opened) {
         g_openRoot.clear();
         if (error.empty())
@@ -713,7 +781,7 @@ Value* WdxPickAsset_cf(Value** arg_list, int count) {
         title = L"Select a Texture";
     const whiteout::flakes::AssetPickResult picked =
         whiteout::flakes::RunAssetPicker(title, static_cast<BrowseType>(static_cast<unsigned>(mask)),
-                                         root, initial, filter, roots);
+                                         root, initial, filter, roots, ConfiguredArchives());
 
     two_typed_value_locals(Array* result, Value* entry);
     vl.result = new Array(0);
@@ -775,7 +843,8 @@ Value* WdxExtractAsset_cf(Value** arg_list, int count) {
     // no file to give. Both are still tried: the other one answering is how a
     // misconfigured path stays usable, and the failure that reaches the user is
     // then about the file rather than the storage.
-    [[maybe_unused]] const bool archivesFirst = ClassifyStorage(root) == StorageKind::MpqSet;
+    const StorageKind rootKind = ClassifyStorage(root);
+    [[maybe_unused]] const bool archivesFirst = rootKind == StorageKind::MpqSet;
 
     std::vector<whiteout::u8> data;
     bool read = false;
@@ -783,7 +852,7 @@ Value* WdxExtractAsset_cf(Value** arg_list, int count) {
 
 #if WHITEOUT_HAS_MPQ
     if (archivesFirst)
-        read = ReadFromMpqSet(root, archivePath, data);
+        read = ReadFromMpqSet(root, rootKind, archivePath, data);
 #endif
 #if WHITEOUT_HAS_CASC
     if (!read) {
@@ -793,7 +862,7 @@ Value* WdxExtractAsset_cf(Value** arg_list, int count) {
 #endif
 #if WHITEOUT_HAS_MPQ
     if (!read && !archivesFirst)
-        read = ReadFromMpqSet(root, archivePath, data);
+        read = ReadFromMpqSet(root, rootKind, archivePath, data);
 #endif
 
     if (!read) {

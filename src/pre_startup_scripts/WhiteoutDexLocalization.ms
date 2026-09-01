@@ -527,6 +527,8 @@ struct WhiteoutDexLocalizationStruct
 			#("set_mpq_clear_btn", "Clear"),
 			#("set_mpq_status_found", "MPQ files found"),
 			#("set_mpq_status_not_found", "No MPQ files found"),
+			#("set_mpq_order_btn", "Edit Load Order..."),
+			#("set_mpq_order_tip", "Choose which MPQ archives are searched and in what order, including your own"),
 			#("mpq_browser_title", "MPQ Model Browser"),
 			#("mpq_browser_search_lbl", "Search:"),
 			#("mpq_browser_search_tip", "Type to filter MDX files (e.g. Footman, Human, Orc)"),

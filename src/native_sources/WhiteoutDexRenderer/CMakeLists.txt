@@ -58,6 +58,8 @@ set_target_properties(WhiteoutDexRenderer PROPERTIES
 
 target_include_directories(WhiteoutDexRenderer PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
+    # wdx_mpq_settings.h - the shared MPQ load order, also read by the importer
+    "${CMAKE_CURRENT_SOURCE_DIR}/../common"
     "${_basic_viewer_dir}"
     "${_tools_common_dir}"
     "${WHITEOUTFLAKES_DIR}/externals/dr_libs"

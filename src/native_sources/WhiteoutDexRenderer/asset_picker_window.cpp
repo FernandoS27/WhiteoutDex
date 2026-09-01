@@ -127,7 +127,8 @@ std::filesystem::path PluginDirectory() {
 AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
                                const std::string& cascRoot, const std::string& initialRel,
                                const std::string& initialFilter,
-                               const std::vector<AssetPickerRoot>& roots) {
+                               const std::vector<AssetPickerRoot>& roots,
+                               const std::vector<std::string>& archives) {
     AssetPickResult out;
 
     // Park the preview for the duration, if it is up: two ImGui contexts may
@@ -289,6 +290,14 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
             named.push_back(tools::NamedRoot{r.label, r.root});
         explorer->SetNamedRoots(std::move(named));
     }
+
+    // The user's MPQ load order, before the open - it decides what the walk
+    // covers. Without it a mod's archive is invisible here even though the
+    // renderer and the importer both read it, and an archive the user took out
+    // of the order would still be offered by a picker whose extractor can no
+    // longer produce it.
+    if (!archives.empty())
+        explorer->SetArchiveOverride(archives);
 
     std::string activated; // set by a double-click
     explorer->SetOnActivate([&](const tools::ActivatedFile& f) {

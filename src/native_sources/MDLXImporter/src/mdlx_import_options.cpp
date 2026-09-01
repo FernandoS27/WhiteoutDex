@@ -3,6 +3,8 @@
 
 #include <max.h>
 #include <MaxDirectories.h>
+// After max.h (which has already pulled in <windows.h>).
+#include "wdx_mpq_settings.h"
 #include <string>
 
 namespace {
@@ -187,6 +189,19 @@ void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts) {
         opts.mpqDirectory = opts.cascDirectory;
     if (opts.cascDirectory.empty() && !opts.mpqDirectory.empty())
         opts.cascDirectory = opts.mpqDirectory;
+
+    // ────────────────────────────────────────────────────────────────────
+    // The MPQ load order, shared with the renderer and the asset browser.
+    //
+    //   WhiteoutDex_Settings.ini -> [MPQ] List
+    //
+    // Read last and deliberately NOT overridable from WhiteoutDexImporter.ini:
+    // an archive set that differs between the preview and the import is a bug
+    // report nobody can read, so there is exactly one list. Resolution of the
+    // relative entries in it happens against the same two directories settled
+    // just above — see wdx_mpq_settings.h.
+    // ────────────────────────────────────────────────────────────────────
+    opts.mpqArchives = wdx::mpq::ResolvedArchives(std::wstring(dir.data()));
 }
 
 void applyFastPreset(MdlxImportOptions& opts) {
