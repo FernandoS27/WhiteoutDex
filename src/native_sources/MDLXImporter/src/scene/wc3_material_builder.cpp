@@ -125,16 +125,58 @@ static std::string wlog_local(const std::wstring& ws) {
     return s;
 }
 
+/// Unwrap a Texmap to its underlying native BitmapTex. Returns tex itself
+/// when it's a BitmapTex; for a Wc3Bitmap wrapper, returns its BitmapTex
+/// delegate; otherwise nullptr.
+static BitmapTex* unwrapToBitmapTex(Texmap* tex) {
+    if (!tex) return nullptr;
+    if (tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+        return static_cast<BitmapTex*>(tex);
+    if (tex->ClassID() == mdx_ids::WC3_BITMAP) {
+        for (int i = 0; i < tex->NumRefs(); i++) {
+            ReferenceTarget* ref = tex->GetReference(i);
+            if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+                return static_cast<BitmapTex*>(ref);
+        }
+    }
+    return nullptr;
+}
+
 Texmap* createNativeBitmap(const ir::Texture& irTex, const std::wstring& modelDir,
-                           mdx_scene::TextureResolver* resolver, Interface* /*gi*/)
+                           mdx_scene::TextureResolver* resolver, Interface* gi)
 {
     MLOG << "[TEX] createNativeBitmap for '" << irTex.filePath << "'"
          << " replaceableId=" << irTex.replaceableId << std::endl;
 
-    BitmapTex* bmpTex = NewDefaultBitmapTex();
-    if (!bmpTex) {
-        MLOG << "[TEX]   ERROR: NewDefaultBitmapTex() returned null" << std::endl;
-        return nullptr;
+    // Preferred: a Wc3Bitmap scripted texture wrapping a BitmapTex delegate.
+    // The Wc3Bitmap carries the WC3 texture metadata (wrapU/wrapV,
+    // replaceableId) and — since the TXAN refactor — the UV animation params
+    // (anim_UOffset & co.) that the exporter reads back. Falls back to a
+    // plain BitmapTex when the scripted plugin isn't installed.
+    Texmap* resultTex = nullptr;
+    BitmapTex* bmpTex = nullptr;
+    if (gi) {
+        auto* wc3Bmp = static_cast<Texmap*>(
+            gi->CreateInstance(TEXMAP_CLASS_ID, mdx_ids::WC3_BITMAP));
+        if (wc3Bmp) {
+            bmpTex = unwrapToBitmapTex(wc3Bmp);
+            if (bmpTex) {
+                resultTex = wc3Bmp;
+            } else {
+                MLOG << "[TEX]   Wc3Bitmap created but no BitmapTex delegate found"
+                     << " - falling back to plain BitmapTex" << std::endl;
+            }
+        }
+    }
+    if (!resultTex) {
+        bmpTex = NewDefaultBitmapTex();
+        if (!bmpTex) {
+            MLOG << "[TEX]   ERROR: NewDefaultBitmapTex() returned null" << std::endl;
+            return nullptr;
+        }
+        resultTex = bmpTex;
+        MLOG << "[TEX]   using plain BitmapTex (Wc3Bitmap plugin unavailable)"
+             << std::endl;
     }
 
     // Decide which path to resolve. Priority:
@@ -176,7 +218,20 @@ Texmap* createNativeBitmap(const ir::Texture& irTex, const std::wstring& modelDi
              << " V=" << (irTex.wrapV ? "wrap" : "clamp") << std::endl;
     }
 
-    return bmpTex;
+    // Mirror the WC3 texture metadata onto the Wc3Bitmap params so the UI
+    // checkboxes / dropdown reflect reality. (The scripted on-set handlers
+    // don't fire for C++ SetValue, which is fine — the delegate's UVGen was
+    // already configured above.) The dropdown is 1-based: 1 = Not Used.
+    if (resultTex != bmpTex) {
+        auto* wc3Ref = dynamic_cast<ReferenceTarget*>(resultTex);
+        if (wc3Ref) {
+            pbSetBool(wc3Ref, L"wrapU", irTex.wrapU ? TRUE : FALSE);
+            pbSetBool(wc3Ref, L"wrapV", irTex.wrapV ? TRUE : FALSE);
+            pbSetInt(wc3Ref, L"replaceableId", irTex.replaceableId + 1);
+        }
+    }
+
+    return resultTex;
 }
 
 // Map ir::BlendMode to filterMode int (1-based)
@@ -549,9 +604,9 @@ static Mtl* buildSingleLayerWc3Material(
                 diffuseTexmap = texmap;
 
                 // ── sphereEnvMap: set via native BitmapTex StdUVGen mapping type ──
+                // (unwraps the Wc3Bitmap wrapper to its BitmapTex delegate)
                 if (layer.sphereEnvMap) {
-                    if (texmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
-                        BitmapTex* bmpTex = static_cast<BitmapTex*>(texmap);
+                    if (BitmapTex* bmpTex = unwrapToBitmapTex(texmap)) {
                         StdUVGen* uvGen = bmpTex->GetUVGen();
                         if (uvGen) {
                             uvGen->SetCoordMapping(UVMAP_SPHERE_ENV);
@@ -564,6 +619,11 @@ static Mtl* buildSingleLayerWc3Material(
 
         if (diffuseTexmap && showInViewport) {
             diffuseTexmap->SetMtlFlag(MTL_TEX_DISPLAY_ENABLED);
+            // Nitrous displays the scripted wrapper via its delegate — flag
+            // the delegate too so "Show Shaded Material in Viewport" works.
+            if (BitmapTex* d = unwrapToBitmapTex(diffuseTexmap))
+                if (static_cast<Texmap*>(d) != diffuseTexmap)
+                    d->SetMtlFlag(MTL_TEX_DISPLAY_ENABLED);
             mtl->SetActiveTexmap(diffuseTexmap);
         }
 
@@ -593,19 +653,19 @@ static Mtl* buildSingleLayerWc3Material(
         // playback controls to drive timing.
         MLOG << "[IFL-CHECK] layer.textureIdTrackIndex=" << layer.textureIdTrackIndex
              << " diffuseTexmap=" << (diffuseTexmap ? "yes" : "null");
+        BitmapTex* diffuseBmpTex = unwrapToBitmapTex(diffuseTexmap);
         if (diffuseTexmap) {
             Class_ID cid = diffuseTexmap->ClassID();
             MLOG << " cid=(" << cid.PartA() << "," << cid.PartB() << ")"
-                 << " isBMTEX=" << (cid == Class_ID(BMTEX_CLASS_ID, 0) ? "yes" : "NO");
+                 << " hasBitmapTex=" << (diffuseBmpTex ? "yes" : "NO");
         }
         MLOG << std::endl;
 
-        if (layer.textureIdTrackIndex >= 0 && diffuseTexmap &&
-            diffuseTexmap->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+        if (layer.textureIdTrackIndex >= 0 && diffuseBmpTex)
         {
             IFLGenResult ifl = generateIFLForLayer(layer, irModel, modelDir, resolver);
             if (!ifl.iflPath.empty()) {
-                BitmapTex* bmpTex = static_cast<BitmapTex*>(diffuseTexmap);
+                BitmapTex* bmpTex = diffuseBmpTex;
                 std::string narrowPath(ifl.iflPath.begin(), ifl.iflPath.end());
                 bmpTex->SetMapName(ifl.iflPath.c_str());
                 bmpTex->SetStartTime(ifl.startTime);

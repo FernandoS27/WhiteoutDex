@@ -215,6 +215,42 @@ inline BitmapTex* UnwrapBitmapTex(Texmap* tex) {
     return nullptr;
 }
 
+// True when the path names a 3ds Max .ifl (Image File List). The MDLXImporter
+// stores KMTF texture flipbooks as a BitmapTex pointing at a generated .ifl,
+// which the texture decoder can't read as an image — the frames inside it
+// have to be loaded individually.
+inline bool IsIflPath(const std::wstring& path) {
+    if (path.size() < 4)
+        return false;
+    std::wstring ext = path.substr(path.size() - 4);
+    for (auto& c : ext)
+        c = (wchar_t)towlower(c);
+    return ext == L".ifl";
+}
+
+// Read the frame paths out of a .ifl file — one path per line (the importer
+// writes absolute paths). Trims whitespace, skips blank lines; returns empty
+// when the file can't be opened.
+std::vector<std::wstring> ReadIflFrames(const std::wstring& iflPath) {
+    std::vector<std::wstring> frames;
+    std::ifstream ifs(iflPath.c_str());
+    if (!ifs.is_open())
+        return frames;
+    std::string line;
+    while (std::getline(ifs, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n' ||
+                                 line.back() == ' ' || line.back() == '\t'))
+            line.pop_back();
+        const auto start = line.find_first_not_of(" \t");
+        if (start == std::string::npos)
+            continue;
+        if (start > 0)
+            line.erase(0, start);
+        frames.emplace_back(line.begin(), line.end());
+    }
+    return frames;
+}
+
 // Max 2022+ exposes GetObjectName(bool); earlier versions need GetClassName(MSTR&)
 // with the MSTR holder outliving the returned pointer. Callers pass their own
 // MSTR so the storage stays in scope.
@@ -1014,7 +1050,39 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     PB2Texmap(mtl, L"diffuseMap", diffuseTexmap);
     const std::wstring baseTexPath = ResolveBitmapPath(mtl, L"diffuseMap");
     i32 baseTexId = -1;
-    if (!baseTexPath.empty()) {
+    if (!baseTexPath.empty() && IsIflPath(baseTexPath)) {
+        // Animated texture (KMTF flipbook): the BitmapTex points at a .ifl
+        // list, not an image. Load every frame as its own texture; the first
+        // frame becomes the layer's static texture and Evaluate() swaps the
+        // frames per-tick via FrameState::layerTextureIds using the timing
+        // the importer stored on the BitmapTex (startTime / playbackRate /
+        // endCondition).
+        const u32 wrapFlags = ReadWrapFlagsFromTexmap(diffuseTexmap);
+        const std::vector<std::wstring> frames = ReadIflFrames(baseTexPath);
+        IflAnim anim;
+        for (const auto& f : frames) {
+            const i32 id = LoadTexture(f, 0, wrapFlags);
+            if (id >= 0)
+                anim.frameTexIds.push_back(id);
+        }
+        mprintf(_M("    \x2192 diffuse IFL '%s': %d/%d frames loaded\n"), baseTexPath.c_str(),
+                (i32)anim.frameTexIds.size(), (i32)frames.size());
+        if (!anim.frameTexIds.empty()) {
+            baseTexId = anim.frameTexIds[0];
+            BitmapTex* bmt = UnwrapBitmapTex(diffuseTexmap);
+            if (anim.frameTexIds.size() > 1 && bmt) {
+                const TimeValue tpf = GetTicksPerFrame();
+                const f32 rate = bmt->GetPlaybackRate();
+                anim.startTime = bmt->GetStartTime();
+                anim.intervalTicks =
+                    (rate > 0.0001f) ? (TimeValue)((f32)tpf / rate + 0.5f) : tpf;
+                if (anim.intervalTicks <= 0)
+                    anim.intervalTicks = tpf;
+                anim.endCondition = bmt->GetEndCondition();
+                iflAnims_[mtl] = std::move(anim);
+            }
+        }
+    } else if (!baseTexPath.empty()) {
         mprintf(_M("    \x2192 diffuse path: '%s'\n"), baseTexPath.c_str());
         baseTexId = LoadTexture(baseTexPath, 0, ReadWrapFlagsFromTexmap(diffuseTexmap));
     } else {
@@ -1079,6 +1147,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
 void MaxSceneAdapter::CollectMaterials() {
     materials_.clear();
     mtlToId_.clear();
+    iflAnims_.clear();
     nextMatId_ = 0;
 
     // Copy sortOrder/priorityPlane from a Wc3Material onto MaterialInfo.
@@ -1096,9 +1165,19 @@ void MaxSceneAdapter::CollectMaterials() {
             Texmap* sub = src->GetSubTexmap(0);
             if (BitmapTex* bmt = UnwrapBitmapTex(sub)) {
                 const MCHAR* fname = bmt->GetMapName();
-                if (fname && fname[0])
-                    layer.textureId =
-                        LoadTexture(std::wstring(fname), 0, ReadWrapFlagsFromTexmap(sub));
+                if (fname && fname[0]) {
+                    std::wstring path(fname);
+                    if (IsIflPath(path)) {
+                        // .ifl flipbook on a non-Wc3 material: at least show
+                        // the first frame instead of a failed white load.
+                        const auto frames = ReadIflFrames(path);
+                        if (!frames.empty())
+                            layer.textureId =
+                                LoadTexture(frames[0], 0, ReadWrapFlagsFromTexmap(sub));
+                    } else {
+                        layer.textureId = LoadTexture(path, 0, ReadWrapFlagsFromTexmap(sub));
+                    }
+                }
             }
         }
         mi.layers.push_back(layer);
@@ -2262,27 +2341,37 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
     auto readUVAnim = [&](Mtl* mtl, i32 matId, i32 layerIdx) {
         f32 uOff = 0, vOff = 0, uTile = 1, vTile = 1, wAng = 0;
 
-        // Primary: Wc3Material PB2 UV-anim knobs (doesn't depend on a
-        // BitmapTex controller being present).
-        if (PB2Float(mtl, L"anim_UOffset", t, uOff)) {
+        // Primary: the diffuse texmap — TXAN lives on the texture now.
+        // Wc3Bitmap carries anim_* PB2 params (shared with its delegate's
+        // coords); a plain BitmapTex is read through its StdUVGen.
+        Texmap* texmap = nullptr;
+        bool gotTexAnim = false;
+        if (PB2Texmap(mtl, L"diffuseMap", texmap) && texmap) {
+            if (texmap->ClassID() == WC3_BITMAP_CLASS_ID &&
+                PB2Float(texmap, L"anim_UOffset", t, uOff)) {
+                PB2Float(texmap, L"anim_VOffset", t, vOff);
+                PB2Float(texmap, L"anim_UTiling", t, uTile);
+                PB2Float(texmap, L"anim_VTiling", t, vTile);
+                PB2Float(texmap, L"anim_WAngle", t, wAng);
+                gotTexAnim = true;
+            } else if (BitmapTex* bmt = UnwrapBitmapTex(texmap)) {
+                if (StdUVGen* uvg = bmt->GetUVGen()) {
+                    uOff = uvg->GetUOffs(t);
+                    vOff = uvg->GetVOffs(t);
+                    uTile = uvg->GetUScl(t);
+                    vTile = uvg->GetVScl(t);
+                    wAng = uvg->GetWAng(t);
+                    gotTexAnim = true;
+                }
+            }
+        }
+        // Legacy fallback: Wc3Material-level PB2 UV-anim knobs (scenes saved
+        // with the pre-2.3.0 material plugin that still carried anim_*).
+        if (!gotTexAnim && PB2Float(mtl, L"anim_UOffset", t, uOff)) {
             PB2Float(mtl, L"anim_VOffset", t, vOff);
             PB2Float(mtl, L"anim_UTiling", t, uTile);
             PB2Float(mtl, L"anim_VTiling", t, vTile);
             PB2Float(mtl, L"anim_WAngle", t, wAng);
-        } else {
-            // Fallback: read from BitmapTex UVGen (non-Wc3 materials).
-            Texmap* texmap = nullptr;
-            if (PB2Texmap(mtl, L"diffuseMap", texmap)) {
-                if (BitmapTex* bmt = UnwrapBitmapTex(texmap)) {
-                    if (StdUVGen* uvg = bmt->GetUVGen()) {
-                        uOff = uvg->GetUOffs(t);
-                        vOff = uvg->GetVOffs(t);
-                        uTile = uvg->GetUScl(t);
-                        vTile = uvg->GetVScl(t);
-                        wAng = uvg->GetWAng(t);
-                    }
-                }
-            }
         }
         if (uOff != 0 || vOff != 0 || uTile != 1 || vTile != 1 || wAng != 0) {
             FrameState::TexAnimState tas;
@@ -2310,6 +2399,50 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             continue;
         sentTA.push_back(matId);
         ForEachWc3SubMtl(mtl, [&](Mtl* sub, i32 layerIdx) { readUVAnim(sub, matId, layerIdx); });
+    }
+
+    // Animated textures (IFL flipbooks): swap the layer's diffuse texture to
+    // the frame the current Max time falls on, using the timing the importer
+    // stored on the BitmapTex. Delivered through the same
+    // FrameState::layerTextureIds channel the MDX adapter uses for KMTF.
+    if (!iflAnims_.empty()) {
+        std::vector<i32> sentIfl;
+        for (auto& gs : geosets_) {
+            Mtl* mtl = gs.node ? gs.node->GetMtl() : nullptr;
+            if (!mtl)
+                continue;
+            auto it = mtlToId_.find(mtl);
+            if (it == mtlToId_.end())
+                continue;
+            const i32 matId = it->second;
+            if (std::find(sentIfl.begin(), sentIfl.end(), matId) != sentIfl.end())
+                continue;
+            sentIfl.push_back(matId);
+            ForEachWc3SubMtl(mtl, [&](Mtl* sub, i32 layerIdx) {
+                auto ia = iflAnims_.find(sub);
+                if (ia == iflAnims_.end())
+                    return;
+                const IflAnim& anim = ia->second;
+                const i64 n = (i64)anim.frameTexIds.size();
+                if (n == 0)
+                    return;
+                const i64 interval = std::max<i64>(1, (i64)anim.intervalTicks);
+                i64 rel = (i64)t - (i64)anim.startTime;
+                if (rel < 0)
+                    rel = 0;
+                i64 idx = rel / interval;
+                if (anim.endCondition == 2)
+                    idx = std::min(idx, n - 1); // HOLD: clamp to last frame
+                else
+                    idx %= n; // LOOP (pingpong is approximated as loop)
+                FrameState::LayerTextureIdState lts;
+                lts.materialId = matId;
+                lts.layerIndex = layerIdx;
+                lts.slot = FrameState::LayerTexSlot::Diffuse;
+                lts.textureId = anim.frameTexIds[(usize)idx];
+                state.layerTextureIds.push_back(lts);
+            });
+        }
     }
 
     return state;

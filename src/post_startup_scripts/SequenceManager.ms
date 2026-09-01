@@ -80,34 +80,46 @@ struct WdxSequenceManager
         
         -- Legacy StandardMaterial alpha (meist undefined bei Wc3Material)
         try (this.checkControllerForGlobalSeq mat.alpha.controller &durations) catch()
-        
-        -- Wc3Material-eigene Animations-Properties (W_Angle nur hier, nicht auf Bitmap)
-        try (this.checkControllerForGlobalSeq mat.opacity.controller      &durations) catch()
-        try (this.checkControllerForGlobalSeq mat.anim_UOffset.controller &durations) catch()
-        try (this.checkControllerForGlobalSeq mat.anim_VOffset.controller &durations) catch()
-        try (this.checkControllerForGlobalSeq mat.anim_WAngle.controller  &durations) catch()
-        
-        -- Bitmap auflösen: erst .texture (StandardMaterial), dann .diffuseMap (Wc3Material)
-        local bmp = undefined
-        try (if mat.texture != undefined and classOf mat.texture == BitmapTexture then bmp = mat.texture) catch()
-        if bmp == undefined do (
-            try (if mat.diffuseMap != undefined and classOf mat.diffuseMap == BitmapTexture then bmp = mat.diffuseMap) catch()
+
+        -- Wc3Material-eigene Animations-Properties (nur noch Opacity/KMTA;
+        -- UV-Animation/TXAN lebt jetzt auf der Wc3Bitmap-Textur)
+        try (this.checkControllerForGlobalSeq mat.opacity.controller &durations) catch()
+
+        -- Bitmap auflösen: erst .texture (StandardMaterial), dann .diffuseMap
+        -- (Wc3Material). Akzeptiert BitmapTexture UND Wc3Bitmap — die
+        -- Property-Zugriffe (coords etc.) delegieren beim Scripted-Plugin
+        -- transparent an die Bitmaptexture darunter.
+        fn isUVBitmap tex = (
+            local cn = try ((classOf tex) as string) catch("")
+            cn == "BitmapTexture" or cn == "Wc3Bitmap"
         )
-        
-        -- Bitmap UV-Controller
+        local bmp = undefined
+        try (if mat.texture != undefined and isUVBitmap mat.texture then bmp = mat.texture) catch()
+        if bmp == undefined do (
+            try (if mat.diffuseMap != undefined and isUVBitmap mat.diffuseMap then bmp = mat.diffuseMap) catch()
+        )
+
+        -- Bitmap UV-Controller (bei Wc3Bitmap sind die anim_*-Params mit den
+        -- coords-Controllern geteilt — coords scannen genügt; anim_WOffset
+        -- hat kein coords-Pendant und wird separat geprüft).
+        -- ACHTUNG: Scripted Plugins delegieren unbekannte Properties NICHT —
+        -- coords/playbackrate einer Wc3Bitmap sind nur über .delegate erreichbar.
         if bmp != undefined do
         (
+            local uvBmp = bmp
+            try (if bmp.delegate != undefined and classOf bmp.delegate == BitmapTexture do uvBmp = bmp.delegate) catch()
             try (
-                local coords = bmp.coords
+                local coords = uvBmp.coords
                 this.checkControllerForGlobalSeq coords.U_offset.controller &durations
                 this.checkControllerForGlobalSeq coords.V_offset.controller &durations
                 this.checkControllerForGlobalSeq coords.W_angle.controller  &durations
                 this.checkControllerForGlobalSeq coords.U_tiling.controller &durations
                 this.checkControllerForGlobalSeq coords.V_tiling.controller &durations
             ) catch()
-            
+            try (this.checkControllerForGlobalSeq bmp.anim_WOffset.controller &durations) catch()
+
             -- IFL Texture Animation (erzeugt immer eine Global Sequence)
-            try (this.checkIFLForGlobalSeq bmp &durations) catch()
+            try (this.checkIFLForGlobalSeq uvBmp &durations) catch()
         )
         
         -- REKURSION: MultiMaterial
@@ -1385,28 +1397,65 @@ struct WdxSequenceManager
 							(
 								local matWorklist = #()
 								local visitedMats = #()
+								local visitedUVCtrls = #()
 								if obj.material != undefined do append matWorklist obj.material
-								
+
 								while matWorklist.count > 0 do
 								(
 									local mat = matWorklist[matWorklist.count]
 									deleteItem matWorklist matWorklist.count
-									
+
 									if mat != undefined and (findItem visitedMats mat) == 0 do
 									(
 										append visitedMats mat
-										
-										-- Wc3Material params (Wc3Material.ms Z. 297-308)
+
+										-- Wc3Material params (KMTA; TXAN lebt auf der Textur)
 										local matParams = #(
 											"opacity",
-											"anim_UOffset", "anim_VOffset", "anim_WOffset",
-											"anim_WAngle",
-											"anim_UTiling", "anim_VTiling",
 											"alpha"  -- Legacy StandardMaterial-Fallback
 										)
 										for paramName in matParams do
 											copyParamKeysViaSetter mat paramName srcInterval timeOffset
-										
+
+										-- UV-Animation (TXAN): lebt auf der Diffuse-Textur.
+										-- Wc3Bitmap: anim_*-Params (Controller geteilt mit den
+										-- eigenen coords). Plain BitmapTexture: coords-Controller.
+										-- Controller werden ueber Identitaet dedupliziert, damit
+										-- geteilte Controller nicht mehrfach kopiert werden.
+										try
+										(
+											local tex = undefined
+											try (if mat.diffuseMap != undefined do tex = mat.diffuseMap) catch()
+											if tex == undefined do ( try (if mat.texture != undefined do tex = mat.texture) catch() )
+											if tex != undefined do
+											(
+												-- Wc3Bitmap: coords sitzen am Delegate (kein Property-Forwarding)
+												local uvTex = tex
+												try (if tex.delegate != undefined and classOf tex.delegate == BitmapTexture do uvTex = tex.delegate) catch()
+												local uvCtrls = #()
+												try (appendIfUnique uvCtrls tex.anim_UOffset.controller) catch()
+												try (appendIfUnique uvCtrls tex.anim_VOffset.controller) catch()
+												try (appendIfUnique uvCtrls tex.anim_WOffset.controller) catch()
+												try (appendIfUnique uvCtrls tex.anim_WAngle.controller)  catch()
+												try (appendIfUnique uvCtrls tex.anim_UTiling.controller) catch()
+												try (appendIfUnique uvCtrls tex.anim_VTiling.controller) catch()
+												try (appendIfUnique uvCtrls uvTex.coords.U_Offset.controller) catch()
+												try (appendIfUnique uvCtrls uvTex.coords.V_Offset.controller) catch()
+												try (appendIfUnique uvCtrls uvTex.coords.W_Angle.controller)  catch()
+												try (appendIfUnique uvCtrls uvTex.coords.U_Tiling.controller) catch()
+												try (appendIfUnique uvCtrls uvTex.coords.V_Tiling.controller) catch()
+												for c in uvCtrls where c != undefined do
+												(
+													if (findItem visitedUVCtrls c) == 0 do
+													(
+														append visitedUVCtrls c
+														copyControllerKeys c srcInterval timeOffset self.bumpTime
+													)
+												)
+											)
+										)
+										catch()
+
 										-- Sub-Materials zur Worklist
 										try
 										(

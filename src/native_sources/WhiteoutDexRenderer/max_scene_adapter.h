@@ -322,6 +322,22 @@ private:
     i32 nextTexId_ = 0;
     i32 nextMatId_ = 0;
 
+    // Animated texture (KMTF flipbook) state for one Wc3Material layer.
+    // The MDLXImporter materialises a KMTF track as a BitmapTex whose
+    // filename is a generated .ifl list; the frames are pre-loaded as
+    // individual textures at collect time and swapped per frame in
+    // Evaluate() through FrameState::layerTextureIds — the same mechanism
+    // the MDX adapter uses for native KMTF tracks. Keyed by the
+    // (sub-)material the diffuse bitmap belongs to; rebuilt whenever
+    // CollectMaterials runs.
+    struct IflAnim {
+        std::vector<i32> frameTexIds;
+        TimeValue startTime = 0;
+        TimeValue intervalTicks = 0;
+        i32 endCondition = 0; // BitmapTex end condition: 0 loop, 1 pingpong, 2 hold
+    };
+    std::unordered_map<Mtl*, IflAnim> iflAnims_;
+
     io::FileContentProvider contentProvider_;
 
     // Material change detection: snapshot of per-material properties

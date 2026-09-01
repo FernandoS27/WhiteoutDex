@@ -213,41 +213,51 @@ struct WdxGlobalSequenceManager
 		
 		-- Legacy StandardMaterial alpha-Slot (meist undefined bei Wc3Material)
 		try (this.collectController mat.alpha.controller (matName + ".Alpha") "Alpha" &entriesMap) catch()
-		
-		-- Wc3Material-Properties direkt: opacity + anim_UOffset/VOffset/WAngle.
-		-- W_Angle liegt NUR am Material (Bitmap hat kein entsprechendes Feld).
-		-- U/V-Offset werden auch am Material synchron gehalten (siehe Wc3Material.ms).
-		try (this.collectController mat.opacity.controller      (matName + ".Opacity")     "Alpha" &entriesMap) catch()
-		try (this.collectController mat.anim_UOffset.controller (matName + ".UV.U_Offset") "Flow"  &entriesMap) catch()
-		try (this.collectController mat.anim_VOffset.controller (matName + ".UV.V_Offset") "Flow"  &entriesMap) catch()
-		try (this.collectController mat.anim_WAngle.controller  (matName + ".UV.Rotation") "Flow"  &entriesMap) catch()
-		
-		-- Bitmap-Slot auflösen: erst StandardMaterial.texture, dann Wc3Material.diffuseMap
-		local bmp = undefined
-		try (if mat.texture != undefined and classOf mat.texture == BitmapTexture then bmp = mat.texture) catch()
-		if bmp == undefined do (
-			try (if mat.diffuseMap != undefined and classOf mat.diffuseMap == BitmapTexture then bmp = mat.diffuseMap) catch()
+
+		-- Wc3Material-Properties direkt: nur noch opacity (KMTA).
+		-- UV-Animation (TXAN) lebt jetzt auf der Wc3Bitmap-Textur und wird
+		-- unten ueber den Bitmap-Slot gescannt.
+		try (this.collectController mat.opacity.controller (matName + ".Opacity") "Alpha" &entriesMap) catch()
+
+		-- Bitmap-Slot auflösen: erst StandardMaterial.texture, dann
+		-- Wc3Material.diffuseMap. Akzeptiert BitmapTexture UND Wc3Bitmap —
+		-- Property-Zugriffe (coords etc.) delegieren beim Scripted-Plugin
+		-- transparent an die Bitmaptexture darunter.
+		fn isUVBitmap tex = (
+			local cn = try ((classOf tex) as string) catch("")
+			cn == "BitmapTexture" or cn == "Wc3Bitmap"
 		)
-		
-		-- Bitmap-UV-Controller scannen
+		local bmp = undefined
+		try (if mat.texture != undefined and isUVBitmap mat.texture then bmp = mat.texture) catch()
+		if bmp == undefined do (
+			try (if mat.diffuseMap != undefined and isUVBitmap mat.diffuseMap then bmp = mat.diffuseMap) catch()
+		)
+
+		-- Bitmap-UV-Controller scannen (bei Wc3Bitmap sind die anim_*-Params
+		-- mit den coords-Controllern geteilt — coords genügt; anim_WOffset
+		-- hat kein coords-Pendant und kommt separat dazu).
+		-- ACHTUNG: Scripted Plugins delegieren unbekannte Properties NICHT —
+		-- coords/playbackrate einer Wc3Bitmap sind nur über .delegate erreichbar.
 		if bmp != undefined do
 		(
+			local uvBmp = bmp
+			try (if bmp.delegate != undefined and classOf bmp.delegate == BitmapTexture do uvBmp = bmp.delegate) catch()
 			try
 			(
-				local coords = bmp.coords
+				local coords = uvBmp.coords
 				local cU  = coords.U_offset.controller
 				local cV  = coords.V_offset.controller
 				local cW  = coords.W_angle.controller
 				local cSU = coords.U_tiling.controller
 				local cSV = coords.V_tiling.controller
-				
+
 				local uvType = "Flow"
 				for c in #(cU, cV, cW, cSU, cSV) where c != undefined do
 				(
 					uvType = this.classifyUVController c
 					exit
 				)
-				
+
 				this.collectController cU  (matName + ".UV.U_Offset")  uvType &entriesMap
 				this.collectController cV  (matName + ".UV.V_Offset")  uvType &entriesMap
 				this.collectController cW  (matName + ".UV.Rotation")  uvType &entriesMap
@@ -255,8 +265,9 @@ struct WdxGlobalSequenceManager
 				this.collectController cSV (matName + ".UV.V_Scale")   uvType &entriesMap
 			)
 			catch()
-			
-			try (this.collectIFL bmp matName &entriesMap) catch()
+			try (this.collectController bmp.anim_WOffset.controller (matName + ".UV.W_Offset") "Flow" &entriesMap) catch()
+
+			try (this.collectIFL uvBmp matName &entriesMap) catch()
 		)
 		
 		-- REKURSION: Multi/Sub-Object

@@ -1727,10 +1727,11 @@ void animateColorPB(IParamBlock2* pb, ParamID pid,
 
 // ParamIDs for native plugins (mirrored from scene builders)
 
-// ── Helper: get diffuse BitmapTex from a Wc3Material ────────
-// Reads the "diffuseMap" paramblock param and returns the BitmapTex pointer
-// (or nullptr if not a native BitmapTex).
-static BitmapTex* getDiffuseBitmapTex(ReferenceTarget* wc3MatRef) {
+// ── Helper: get the diffuse texmap from a Wc3Material ────────
+// Reads the "diffuseMap" paramblock param. With the TXAN-on-texture scheme
+// this is normally a Wc3Bitmap wrapper; legacy scenes may hold a plain
+// BitmapTex.
+static Texmap* getDiffuseTexmap(ReferenceTarget* wc3MatRef) {
     if (!wc3MatRef) return nullptr;
     auto p = findPBParam(wc3MatRef, L"diffuseMap");
     if (!p) return nullptr;
@@ -1739,9 +1740,23 @@ static BitmapTex* getDiffuseBitmapTex(ReferenceTarget* wc3MatRef) {
     Texmap* tex = nullptr;
     Interval valid = FOREVER;
     p.pb->GetValue(p.id, 0, tex, valid);
+    return tex;
+}
+
+// Unwrap a Texmap to its native BitmapTex: the texmap itself when it is one,
+// the BitmapTex delegate when it's a Wc3Bitmap wrapper, else nullptr.
+static BitmapTex* unwrapBitmapTex(Texmap* tex) {
     if (!tex) return nullptr;
-    if (tex->ClassID() != Class_ID(BMTEX_CLASS_ID, 0)) return nullptr;
-    return static_cast<BitmapTex*>(tex);
+    if (tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+        return static_cast<BitmapTex*>(tex);
+    if (tex->ClassID() == mdx_ids::WC3_BITMAP) {
+        for (int i = 0; i < tex->NumRefs(); i++) {
+            ReferenceTarget* ref = tex->GetReference(i);
+            if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+                return static_cast<BitmapTex*>(ref);
+        }
+    }
+    return nullptr;
 }
 
 // ── Helper: assign a float controller to a StdUVGen parameter ──
@@ -3341,19 +3356,30 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                     }
 
                     // Texture animation (KTAT translation, KTAR rotation, KTAS scale)
-                    // Controllers are written to BOTH targets:
-                    //   1. BitmapTex StdUVGen  (direct viewport animation)
-                    //   2. Wc3Material params  (exporter round-trip)
-                    // For composites with shared BitmapTex instances, write to the
-                    // bitmap only ONCE (first layer). Use materialControllersUpdate()
-                    // on subsequent layers to sync from the shared bitmap.
+                    // TXAN lives on the TEXTURE now, not on the material.
+                    // Controllers are written to BOTH texture-side targets:
+                    //   1. BitmapTex StdUVGen         (direct viewport animation)
+                    //   2. Wc3Bitmap anim_* params    (exporter round-trip; the
+                    //      scripted plugin shares these controllers with its
+                    //      delegate's coords)
+                    // Layers that share the same bitmap instance share the
+                    // animation by construction — the builder pre-clones a
+                    // bitmap when two layers use DIFFERENT texture animations
+                    // on the same texture — so each bitmap is processed once.
                     if (layer.textureAnimationIndex >= 0 &&
                         layer.textureAnimationIndex < (int32_t)irModel.textureAnimations.size()) {
                         const auto& ta = irModel.textureAnimations[layer.textureAnimationIndex];
 
-                        // Get the diffuse BitmapTex for direct StdUVGen access
-                        BitmapTex* diffuseBmp = getDiffuseBitmapTex(ref);
+                        // Get the diffuse texmap: Wc3Bitmap wrapper (preferred)
+                        // or plain BitmapTex (fallback when the scripted plugin
+                        // is unavailable — UVGen animation only, W offset lost).
+                        Texmap* diffuseTex = getDiffuseTexmap(ref);
+                        BitmapTex* diffuseBmp = unwrapBitmapTex(diffuseTex);
                         StdUVGen* uvGen = diffuseBmp ? diffuseBmp->GetUVGen() : nullptr;
+                        ReferenceTarget* texAnimRef =
+                            (diffuseTex && diffuseTex->ClassID() == mdx_ids::WC3_BITMAP)
+                                ? dynamic_cast<ReferenceTarget*>(diffuseTex)
+                                : nullptr;
 
                         // Check if this bitmap was already processed (shared texture)
                         bool bitmapAlreadyProcessed = false;
@@ -3384,77 +3410,55 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                             return ft;
                         };
 
+                        // Assign a controller to a named anim_* param on the
+                        // Wc3Bitmap wrapper (no-op when there is no wrapper).
+                        auto setTexAnimParam = [&](const wchar_t* name, Control* ctrl) {
+                            if (!texAnimRef || !ctrl) return;
+                            auto p = findPBParam(texAnimRef, name);
+                            if (p) p.pb->SetControllerByID(p.id, 0, ctrl, FALSE);
+                        };
+
                         // KTAT: UV offset — after swizzle: ch1=-X→U_Offset, ch0=Y→V_Offset
                         // NeoDex applies the same transform during read (readMDXPosition).
                         // Result: U_Offset = -X_original, V_Offset = Y_original.
                         //
                         // Z channel: StdUVGen has NO W_Offset property (only W_Angle).
                         // For 2D bitmaps the W component is not renderable in Max — but we
-                        // still preserve it on the Wc3Material.anim_WOffset custom attribute
-                        // so the exporter can round-trip the original MDX KTAT untouched.
-                        if (ta.translationTrackIndex >= 0 &&
+                        // still preserve it on the Wc3Bitmap's anim_WOffset param so the
+                        // exporter can round-trip the original MDX KTAT untouched.
+                        if (!bitmapAlreadyProcessed &&
+                            ta.translationTrackIndex >= 0 &&
                             ta.translationTrackIndex < (int32_t)irModel.vec3Tracks.size()) {
                             const auto& v3track = irModel.vec3Tracks[ta.translationTrackIndex];
                             if (!v3track.empty()) {
-                                if (!bitmapAlreadyProcessed) {
-                                    auto uTrack = splitVec3Channel(v3track, 1);  // Y → U_Offset
-                                    auto vTrack = splitVec3Channel(v3track, 0);  // X → V_Offset
-                                    auto wTrack = splitVec3Channel(v3track, 2);  // Z → anim_WOffset (round-trip only)
-                                    Control* uCtrl = createFloatController(uTrack);
-                                    Control* vCtrl = createFloatController(vTrack);
-                                    Control* wCtrl = createFloatController(wTrack);
+                                auto uTrack = splitVec3Channel(v3track, 1);  // Y → U_Offset
+                                auto vTrack = splitVec3Channel(v3track, 0);  // X → V_Offset
+                                auto wTrack = splitVec3Channel(v3track, 2);  // Z → anim_WOffset (round-trip only)
+                                Control* uCtrl = createFloatController(uTrack);
+                                Control* vCtrl = createFloatController(vTrack);
+                                Control* wCtrl = createFloatController(wTrack);
 
-                                    // Write directly to BitmapTex StdUVGen (U/V only — no W_Offset exists)
-                                    if (uvGen && uCtrl)
-                                        assignControllerToUVGen(uvGen, L"U_Offset", 0, uCtrl);
-                                    if (uvGen && vCtrl)
-                                        assignControllerToUVGen(uvGen, L"V_Offset", 1, vCtrl);
+                                // Write directly to BitmapTex StdUVGen (U/V only — no W_Offset exists)
+                                if (uvGen && uCtrl)
+                                    assignControllerToUVGen(uvGen, L"U_Offset", 0, uCtrl);
+                                if (uvGen && vCtrl)
+                                    assignControllerToUVGen(uvGen, L"V_Offset", 1, vCtrl);
 
-                                    // Also set on Wc3Material params (includes W for round-trip)
-                                    if (uCtrl) {
-                                        auto p = findPBParam(ref, L"anim_UOffset");
-                                        if (p) p.pb->SetControllerByID(p.id, 0, uCtrl, FALSE);
-                                    }
-                                    if (vCtrl) {
-                                        auto p = findPBParam(ref, L"anim_VOffset");
-                                        if (p) p.pb->SetControllerByID(p.id, 0, vCtrl, FALSE);
-                                    }
-                                    if (wCtrl) {
-                                        auto p = findPBParam(ref, L"anim_WOffset");
-                                        if (p) p.pb->SetControllerByID(p.id, 0, wCtrl, FALSE);
-                                    }
-                                } else {
-                                    // Shared bitmap already has controllers from first layer.
-                                    // Create same controllers for this sub-material's params only.
-                                    auto uTrack = splitVec3Channel(v3track, 1);
-                                    auto vTrack = splitVec3Channel(v3track, 0);
-                                    auto wTrack = splitVec3Channel(v3track, 2);
-                                    Control* uCtrl = createFloatController(uTrack);
-                                    Control* vCtrl = createFloatController(vTrack);
-                                    Control* wCtrl = createFloatController(wTrack);
-                                    if (uCtrl) {
-                                        auto p = findPBParam(ref, L"anim_UOffset");
-                                        if (p) p.pb->SetControllerByID(p.id, 0, uCtrl, FALSE);
-                                    }
-                                    if (vCtrl) {
-                                        auto p = findPBParam(ref, L"anim_VOffset");
-                                        if (p) p.pb->SetControllerByID(p.id, 0, vCtrl, FALSE);
-                                    }
-                                    if (wCtrl) {
-                                        auto p = findPBParam(ref, L"anim_WOffset");
-                                        if (p) p.pb->SetControllerByID(p.id, 0, wCtrl, FALSE);
-                                    }
-                                }
+                                // Also set on the Wc3Bitmap params (includes W for round-trip)
+                                setTexAnimParam(L"anim_UOffset", uCtrl);
+                                setTexAnimParam(L"anim_VOffset", vCtrl);
+                                setTexAnimParam(L"anim_WOffset", wCtrl);
 
                                 ILOG << "  mat[" << mi << "] layer[" << li << "] KTAT keys="
                                      << v3track.keys.size()
-                                     << " (direct-to-bitmap: " << (uvGen ? "yes" : "no")
-                                     << ", shared: " << (bitmapAlreadyProcessed ? "yes" : "no") << ")\n";
+                                     << " (uvgen: " << (uvGen ? "yes" : "no")
+                                     << ", wc3bitmap: " << (texAnimRef ? "yes" : "no") << ")\n";
                             }
                         }
 
                         // KTAR: UV rotation — quaternion → Z-euler angle → W_Angle (degrees)
-                        if (ta.rotationTrackIndex >= 0 &&
+                        if (!bitmapAlreadyProcessed &&
+                            ta.rotationTrackIndex >= 0 &&
                             ta.rotationTrackIndex < (int32_t)irModel.quatTracks.size()) {
                             const auto& qtrack = irModel.quatTracks[ta.rotationTrackIndex];
                             if (!qtrack.empty()) {
@@ -3483,26 +3487,23 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
                                 Control* wCtrl = createFloatController(rotFloat);
 
-                                if (!bitmapAlreadyProcessed) {
-                                    // Write directly to BitmapTex StdUVGen
-                                    if (uvGen && wCtrl)
-                                        assignControllerToUVGen(uvGen, L"W_Angle", 6, wCtrl);
-                                }
+                                // Write directly to BitmapTex StdUVGen
+                                if (uvGen && wCtrl)
+                                    assignControllerToUVGen(uvGen, L"W_Angle", 6, wCtrl);
 
-                                // Always set on Wc3Material param
-                                if (wCtrl) {
-                                    auto p = findPBParam(ref, L"anim_WAngle");
-                                    if (p) p.pb->SetControllerByID(p.id, 0, wCtrl, FALSE);
-                                }
+                                // Also set on the Wc3Bitmap param
+                                setTexAnimParam(L"anim_WAngle", wCtrl);
 
                                 ILOG << "  mat[" << mi << "] layer[" << li << "] KTAR keys="
                                      << qtrack.keys.size()
-                                     << " (direct-to-bitmap: " << (uvGen ? "yes" : "no") << ")\n";
+                                     << " (uvgen: " << (uvGen ? "yes" : "no")
+                                     << ", wc3bitmap: " << (texAnimRef ? "yes" : "no") << ")\n";
                             }
                         }
 
                         // KTAS: UV scale — X → U_Tiling, Y → V_Tiling
-                        if (ta.scaleTrackIndex >= 0 &&
+                        if (!bitmapAlreadyProcessed &&
+                            ta.scaleTrackIndex >= 0 &&
                             ta.scaleTrackIndex < (int32_t)irModel.vec3Tracks.size()) {
                             const auto& v3track = irModel.vec3Tracks[ta.scaleTrackIndex];
                             if (!v3track.empty()) {
@@ -3511,34 +3512,27 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                                 Control* uCtrl = createFloatController(uTrack);
                                 Control* vCtrl = createFloatController(vTrack);
 
-                                if (!bitmapAlreadyProcessed) {
-                                    // Write directly to BitmapTex StdUVGen
-                                    if (uvGen && uCtrl)
-                                        assignControllerToUVGen(uvGen, L"U_Tiling", 2, uCtrl);
-                                    if (uvGen && vCtrl)
-                                        assignControllerToUVGen(uvGen, L"V_Tiling", 3, vCtrl);
-                                }
+                                // Write directly to BitmapTex StdUVGen
+                                if (uvGen && uCtrl)
+                                    assignControllerToUVGen(uvGen, L"U_Tiling", 2, uCtrl);
+                                if (uvGen && vCtrl)
+                                    assignControllerToUVGen(uvGen, L"V_Tiling", 3, vCtrl);
 
-                                // Always set on Wc3Material params
-                                if (uCtrl) {
-                                    auto p = findPBParam(ref, L"anim_UTiling");
-                                    if (p) p.pb->SetControllerByID(p.id, 0, uCtrl, FALSE);
-                                }
-                                if (vCtrl) {
-                                    auto p = findPBParam(ref, L"anim_VTiling");
-                                    if (p) p.pb->SetControllerByID(p.id, 0, vCtrl, FALSE);
-                                }
+                                // Also set on the Wc3Bitmap params
+                                setTexAnimParam(L"anim_UTiling", uCtrl);
+                                setTexAnimParam(L"anim_VTiling", vCtrl);
 
                                 ILOG << "  mat[" << mi << "] layer[" << li << "] KTAS keys="
                                      << v3track.keys.size()
-                                     << " (direct-to-bitmap: " << (uvGen ? "yes" : "no") << ")\n";
+                                     << " (uvgen: " << (uvGen ? "yes" : "no")
+                                     << ", wc3bitmap: " << (texAnimRef ? "yes" : "no") << ")\n";
                             }
                         }
 
-                        // Set uvCtrlType dropdown to match interpolation type
-                        // Dropdown: 1=None, 2=Linear, 3=Bezier, 4=Hermite
+                        // Set uvCtrlType dropdown (on the Wc3Bitmap) to match
+                        // interpolation type. 1=None, 2=Linear, 3=Bezier, 4=Hermite
                         // Determine from KTAT, KTAR, or KTAS (first one found)
-                        {
+                        if (!bitmapAlreadyProcessed && texAnimRef) {
                             ir::InterpolationType interpType = ir::InterpolationType::None;
                             bool found = false;
                             if (!found && ta.translationTrackIndex >= 0 &&
@@ -3563,7 +3557,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                                 case ir::InterpolationType::Hermite: ctrlType = 4; break;
                                 default:                             ctrlType = 3; break; // Bezier
                                 }
-                                auto pUV = findPBParam(ref, L"uvCtrlType");
+                                auto pUV = findPBParam(texAnimRef, L"uvCtrlType");
                                 if (pUV) pUV.pb->SetValue(pUV.id, 0, ctrlType);
                             }
                         }
@@ -3575,9 +3569,9 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             //   - delegate.opacity sync: needed for composite sub-materials
             //     (on-set handlers don't fire reliably for nested Wc3Materials)
             //
-            // We do NOT call applyFilterMode() / generateOpacity() / materialControllersUpdate()
-            // here — those trigger coords refreshes (opMap.coords.U_Tile = true) that
-            // wipe animation controllers we just set up. The filter mode and opacity
+            // We do NOT call applyFilterMode() / generateOpacity() here — those
+            // trigger coords refreshes (opMap.coords.U_Tile = true) that wipe
+            // animation controllers we just set up. The filter mode and opacity
             // map were already configured in C++ during material build.
             ExecuteMAXScriptScript(
                 // Sync each Wc3Material's opacity to its StandardMaterial delegate so the
@@ -3650,12 +3644,14 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             // Setting bm.coords.U_Tile = X can trigger a paramblock refresh on
             // the UVGen. To protect animation controllers on U_Offset/V_Offset/
             // W_Angle set during Phase 2, we SAVE them before the tiling fix
-            // runs and RESTORE them afterwards. Same for Wc3Material params
-            // (anim_UOffset/VOffset/WAngle + opacity).
+            // runs and RESTORE them afterwards. Same for the Wc3Bitmap anim_*
+            // params (which carry the TXAN tracks now) and the Wc3Material
+            // opacity.
             {
                 std::wstring tilingScript =
                     L"( "
-                    // Phase A1: save bitmap coords controllers
+                    // Phase A1: save bitmap coords controllers (getClassInstances
+                    // Bitmaptexture also finds the Wc3Bitmap delegates)
                     L"local savedBmpCtrls = #();"
                     L"for bm in getClassInstances Bitmaptexture do ("
                       L"local uC = try(bm.coords.U_Offset.controller)catch(undefined);"
@@ -3664,20 +3660,30 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                       L"if uC != undefined or vC != undefined or wC != undefined do "
                         L"append savedBmpCtrls #(bm, uC, vC, wC)"
                     L");"
-                    // Phase A2: save Wc3Material anim_* + opacity controllers
+                    // Phase A2a: save Wc3Bitmap anim_* controllers (TXAN home)
+                    L"local savedTexCtrls = #();"
+                    L"for tx in (try(getClassInstances Wc3Bitmap)catch(#())) do ("
+                      L"local uC  = try(tx.anim_UOffset.controller)catch(undefined);"
+                      L"local vC  = try(tx.anim_VOffset.controller)catch(undefined);"
+                      L"local woC = try(tx.anim_WOffset.controller)catch(undefined);"
+                      L"local wC  = try(tx.anim_WAngle.controller)catch(undefined);"
+                      L"local utC = try(tx.anim_UTiling.controller)catch(undefined);"
+                      L"local vtC = try(tx.anim_VTiling.controller)catch(undefined);"
+                      L"if uC != undefined or vC != undefined or woC != undefined or "
+                         L"wC != undefined or utC != undefined or vtC != undefined do "
+                        L"append savedTexCtrls #(tx, uC, vC, woC, wC, utC, vtC)"
+                    L");"
+                    // Phase A2b: save Wc3Material opacity controllers.
                     // We also save delegate.opacity.controller because the opacity sync
                     // performed earlier (syncOpacity in the showInViewport pass) attaches
                     // a scaled controller copy to the StandardMaterial delegate, and the
                     // tiling fix below can trigger a paramblock refresh that wipes it.
                     L"local savedMatCtrls = #();"
                     L"fn saveMatCtrl m = ("
-                      L"local uC = try(m.anim_UOffset.controller)catch(undefined);"
-                      L"local vC = try(m.anim_VOffset.controller)catch(undefined);"
-                      L"local wC = try(m.anim_WAngle.controller)catch(undefined);"
                       L"local oC = try(m.opacity.controller)catch(undefined);"
                       L"local dC = try(m.delegate.opacity.controller)catch(undefined);"
-                      L"if uC != undefined or vC != undefined or wC != undefined or oC != undefined or dC != undefined do "
-                        L"append savedMatCtrls #(m, uC, vC, wC, oC, dC)"
+                      L"if oC != undefined or dC != undefined do "
+                        L"append savedMatCtrls #(m, oC, dC)"
                     L");"
                     L"for m in sceneMaterials do ("
                       L"if classof m == Wdx_Wc3Material do saveMatCtrl m;"
@@ -3742,47 +3748,66 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                       L"if entry[4] != undefined do "
                         L"try(bm.coords.W_Angle.controller = entry[4])catch()"
                     L");"
-                    // Phase C2: restore Wc3Material anim_* + opacity controllers
-                    // Including delegate.opacity (entry[6]) so the opacity sync set up
+                    // Phase C2a: restore Wc3Bitmap anim_* controllers
+                    L"for entry in savedTexCtrls do ("
+                      L"local tx = entry[1];"
+                      L"if entry[2] != undefined do "
+                        L"try(tx.anim_UOffset.controller = entry[2])catch();"
+                      L"if entry[3] != undefined do "
+                        L"try(tx.anim_VOffset.controller = entry[3])catch();"
+                      L"if entry[4] != undefined do "
+                        L"try(tx.anim_WOffset.controller = entry[4])catch();"
+                      L"if entry[5] != undefined do "
+                        L"try(tx.anim_WAngle.controller = entry[5])catch();"
+                      L"if entry[6] != undefined do "
+                        L"try(tx.anim_UTiling.controller = entry[6])catch();"
+                      L"if entry[7] != undefined do "
+                        L"try(tx.anim_VTiling.controller = entry[7])catch()"
+                    L");"
+                    // Phase C2b: restore Wc3Material opacity controllers
+                    // Including delegate.opacity (entry[3]) so the opacity sync set up
                     // earlier survives the tiling fix's paramblock refresh.
                     L"for entry in savedMatCtrls do ("
                       L"local m = entry[1];"
                       L"if entry[2] != undefined do "
-                        L"try(m.anim_UOffset.controller = entry[2])catch();"
+                        L"try(m.opacity.controller = entry[2])catch();"
                       L"if entry[3] != undefined do "
-                        L"try(m.anim_VOffset.controller = entry[3])catch();"
-                      L"if entry[4] != undefined do "
-                        L"try(m.anim_WAngle.controller = entry[4])catch();"
-                      L"if entry[5] != undefined do "
-                        L"try(m.opacity.controller = entry[5])catch();"
-                      L"if entry[6] != undefined do "
-                        L"try(m.delegate.opacity.controller = entry[6])catch()"
+                        L"try(m.delegate.opacity.controller = entry[3])catch()"
                     L");"
-                    // Phase C3: push material UV controllers down to diffuseMap.coords.
-                    // This is needed because the bitmap's own controllers may have
-                    // been wiped by a paramblock refresh, while the material's
-                    // controllers survived. Only push when the material controller
-                    // actually has keys (numKeys > 0) — otherwise an empty default
-                    // controller would overwrite a valid one on a shared bitmap.
+                    // Phase C3: push Wc3Bitmap anim_* controllers down to the
+                    // delegate's coords. Needed because the delegate's own
+                    // controllers may have been wiped by a paramblock refresh
+                    // while the Wc3Bitmap's params survived. Only push when the
+                    // param controller actually has keys (numKeys > 0) —
+                    // otherwise an empty default controller would overwrite a
+                    // valid one. NOTE: scripted plugins do NOT forward unknown
+                    // property accesses, so the coords must be reached through
+                    // tx.delegate explicitly.
                     L"local pushed = 0;"
-                    L"for entry in savedMatCtrls do ("
-                      L"local m = entry[1];"
-                      L"local dm = try(m.diffuseMap)catch(undefined);"
-                      L"if dm == undefined do continue;"
+                    L"for entry in savedTexCtrls do ("
+                      L"local tx = entry[1];"
                       L"local uC = entry[2];"
                       L"if uC != undefined and (try(numKeys uC)catch(0)) > 0 do ("
-                        L"try(dm.coords.U_Offset.controller = uC)catch(); pushed += 1"
+                        L"try(tx.delegate.coords.U_Offset.controller = uC)catch(); pushed += 1"
                       L");"
                       L"local vC = entry[3];"
                       L"if vC != undefined and (try(numKeys vC)catch(0)) > 0 do ("
-                        L"try(dm.coords.V_Offset.controller = vC)catch(); pushed += 1"
+                        L"try(tx.delegate.coords.V_Offset.controller = vC)catch(); pushed += 1"
                       L");"
-                      L"local wC = entry[4];"
+                      L"local wC = entry[5];"
                       L"if wC != undefined and (try(numKeys wC)catch(0)) > 0 do ("
-                        L"try(dm.coords.W_Angle.controller = wC)catch(); pushed += 1"
+                        L"try(tx.delegate.coords.W_Angle.controller = wC)catch(); pushed += 1"
+                      L");"
+                      L"local utC = entry[6];"
+                      L"if utC != undefined and (try(numKeys utC)catch(0)) > 0 do ("
+                        L"try(tx.delegate.coords.U_Tiling.controller = utC)catch(); pushed += 1"
+                      L");"
+                      L"local vtC = entry[7];"
+                      L"if vtC != undefined and (try(numKeys vtC)catch(0)) > 0 do ("
+                        L"try(tx.delegate.coords.V_Tiling.controller = vtC)catch(); pushed += 1"
                       L")"
                     L");"
-                    L"format \"[MDLX] Tiling fix: % bitmaps, bmp ctrls=%, mat ctrls=%, pushed=%\\n\" fixed savedBmpCtrls.count savedMatCtrls.count pushed"
+                    L"format \"[MDLX] Tiling fix: % bitmaps, bmp ctrls=%, tex ctrls=%, mat ctrls=%, pushed=%\\n\" fixed savedBmpCtrls.count savedTexCtrls.count savedMatCtrls.count pushed"
                     L" )";
 
                 ExecuteMAXScriptScript(tilingScript.c_str(),
