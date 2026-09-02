@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <cwchar>
 #include <fstream>
@@ -880,6 +881,7 @@ void MaxSceneAdapter::CollectScene() {
     attachments_.clear();
     ribbons_.clear();
     collisions_.clear();
+    lights_.clear();
 
     CollectGeometry();
     CollectMaterials();
@@ -888,6 +890,7 @@ void MaxSceneAdapter::CollectScene() {
     CollectParticleEmitters();
     CollectRibbonEmitters();
     CollectCollisionShapes();
+    CollectLights();
 
     // Capture the initial material-state snapshot so RefreshMaterials can
     // detect per-property changes on subsequent frames.
@@ -1657,6 +1660,57 @@ void MaxSceneAdapter::CollectCollisionShapes() {
 }
 
 // ============================================================================
+// Collect lights — Wc3Light (LITE) plus stock Max Omni / Spot / Direct
+//
+// Hidden lights are collected rather than skipped: Evaluate gates `enabled` on
+// visibility every frame, so hiding and unhiding one takes effect immediately
+// instead of needing a Resync.
+// ============================================================================
+
+void MaxSceneAdapter::CollectLights() {
+    lights_.clear();
+    ForEachSceneNode([&](INode* node) {
+        Object* baseObj = GetBaseObject(node);
+        if (!baseObj)
+            return;
+
+        const Class_ID cid = baseObj->ClassID();
+        if (cid == WC3LIGHT_CLASS_ID || cid == NEODEX_LIGHT_CLASS_ID) {
+            lights_.push_back({node, true});
+            return;
+        }
+
+        // Wc3Light is a scripted simpleManipulator, and Max does not reliably
+        // route a scripted plugin's declared classID through ClassID() — the
+        // collision-shape collector above hits the same wall and resolves by
+        // class name. Same fallback here before giving up on a helper.
+        if (baseObj->SuperClassID() == HELPER_CLASS_ID) {
+            MSTR cnBuf;
+            const MCHAR* cn = GetObjectClassName(baseObj, cnBuf);
+            if (cn && (wcsstr(cn, L"Wc3Light") || wcsstr(cn, L"Wc3 Light"))) {
+                lights_.push_back({node, true});
+                return;
+            }
+        }
+
+        // Stock Max lights. They export to nothing — MDX only has LITE, which
+        // Wc3Light authors — but previewing a scene lit with them beats
+        // previewing it unlit, and it is what most imported scenes actually
+        // carry.
+        if (baseObj->SuperClassID() == LIGHT_CLASS_ID)
+            lights_.push_back({node, false});
+    });
+
+    if (!lights_.empty()) {
+        i32 nWc3 = 0;
+        for (const auto& li : lights_)
+            nWc3 += li.wc3 ? 1 : 0;
+        mprintf(_M("  %d light(s): %d Wc3Light, %d stock Max\n"), (i32)lights_.size(), nWc3,
+                (i32)lights_.size() - nWc3);
+    }
+}
+
+// ============================================================================
 // GetVNormal helper
 // ============================================================================
 
@@ -2346,6 +2400,107 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
         state.ribbonStates.push_back(rs);
     }
 
+    // Scene lights.
+    //
+    // Wc3Light's parameter names do not match its UI labels — `ShadowColor` /
+    // `ShadowValue` are the *primary* colour and intensity and `AmbColor` /
+    // `AmbValue` the ambient pair, not the other way round. This mirrors the
+    // exporter's mapping (wc3_light_extractor.cpp) exactly; reading them the
+    // way the labels suggest would light the preview differently from the
+    // model that gets written out.
+    //
+    // Conventions on the renderer side follow MdxModelAdapter::Evaluate:
+    // diffuse is colour premultiplied by intensity, only Omni is positional
+    // (WC3's CreateLight_1 runs Directional *and* Ambient through the
+    // directional path), and a non-positional light's direction is its node's
+    // local -Z.
+    for (const auto& li : lights_) {
+        INode* node = li.node;
+        if (!node)
+            continue;
+        Object* obj = GetBaseObject(node);
+        if (!obj)
+            continue;
+
+        FrameState::LightState ls;
+        const Matrix44f world = PackMatrix(node->GetNodeTM(t));
+        const bool visible = !node->IsNodeHidden() && node->GetVisibility(t) > 0.0f;
+
+        Vector3f color{1.0f, 1.0f, 1.0f};
+        f32 intensity = 0.0f;
+
+        if (li.wc3) {
+            // The plugin's dropdown is 1-based (1=Omni, 2=Directional,
+            // 3=Ambient); MDX is 0-based. Same remap the exporter does.
+            switch (PB2IntOr(obj, L"LightType", t, 1)) {
+            case 2:
+                ls.kind = FrameState::LightKind::Directional;
+                break;
+            case 3:
+                ls.kind = FrameState::LightKind::Ambient;
+                break;
+            default:
+                ls.kind = FrameState::LightKind::Omni;
+                break;
+            }
+
+            Color c(1.0f, 1.0f, 1.0f);
+            if (PB2Color(obj, L"ShadowColor", t, c))
+                color = {c.r, c.g, c.b};
+            intensity = PB2FloatOr(obj, L"ShadowValue", t, 0.0f);
+
+            // SetLightColor clamps the ambient track to 0..1 and
+            // SetLightIntensity floors both intensities at 0
+            // (Engine/Source/Anim/Anim.cpp), so do the same here.
+            Color amb(0.0f, 0.0f, 0.0f);
+            if (PB2Color(obj, L"AmbColor", t, amb)) {
+                ls.ambientColor = {std::clamp(amb.r, 0.0f, 1.0f), std::clamp(amb.g, 0.0f, 1.0f),
+                                   std::clamp(amb.b, 0.0f, 1.0f)};
+            }
+            ls.ambIntensity = std::max(0.0f, PB2FloatOr(obj, L"AmbValue", t, 0.0f));
+            ls.attenStart = PB2FloatOr(obj, L"DecayStart", t, 0.0f);
+            ls.attenEnd = PB2FloatOr(obj, L"DecayEnd", t, 0.0f);
+            ls.enabled = visible;
+        } else {
+            // Stock Max light. SuperClassID() == LIGHT_CLASS_ID is the SDK's
+            // guarantee that this derives from LightObject; Type() lives one
+            // level down on GenLight, which a third-party or photometric light
+            // need not be — hence the dynamic_cast and the Omni default.
+            auto* lo = static_cast<LightObject*>(obj);
+            i32 type = OMNI_LIGHT;
+            if (auto* gl = dynamic_cast<GenLight*>(obj))
+                type = gl->Type();
+            // A spot previews as a point light at its apex: LightState has no
+            // cone, so Omni is the closest honest mapping. Only the two
+            // parallel types become Directional.
+            ls.kind = (type == DIR_LIGHT || type == TDIR_LIGHT)
+                          ? FrameState::LightKind::Directional
+                          : FrameState::LightKind::Omni;
+
+            const Point3 c = lo->GetRGBColor(t);
+            color = {c.x, c.y, c.z};
+            intensity = lo->GetIntensity(t);
+            // No MDX-style ambient pair on a Max light, so it contributes a
+            // diffuse term only.
+            if (lo->GetUseAtten()) {
+                ls.attenStart = lo->GetAtten(t, LIGHT_ATTEN_START);
+                ls.attenEnd = lo->GetAtten(t, LIGHT_ATTEN_END);
+            }
+            ls.enabled = visible && lo->GetUseLight();
+        }
+
+        intensity = std::max(0.0f, intensity);
+        ls.diffuse = {color.x * intensity, color.y * intensity, color.z * intensity};
+        ls.dirIntensity = intensity;
+
+        if (ls.kind == FrameState::LightKind::Omni)
+            ls.worldPos = whiteout::transform_point(Vector3f{0.0f, 0.0f, 0.0f}, world);
+        else
+            ls.worldDir = whiteout::transform_normal(Vector3f{0.0f, 0.0f, -1.0f}, world);
+
+        state.lights.push_back(ls);
+    }
+
     // Collision transforms
     for (auto& ci : collisions_)
         state.collisionTransforms.push_back(PackMatrix(ci.node->GetNodeTM(t)));
@@ -2676,4 +2831,99 @@ std::vector<CameraPreset> MaxSceneAdapter::GetCameraPresets() {
         presets.push_back(cp);
     });
     return presets;
+}
+
+// ============================================================================
+// ReadActiveViewportCamera — sample the active Max viewport as a camera pose
+//
+// Max's affine TM maps world → view, so its inverse is the view's own frame in
+// world space. Row 2 there points back at the viewer (the SDK doc calls it
+// "the view direction"), matching the −Z-is-forward convention GetCameraPresets
+// already uses for camera nodes.
+//
+// Orthographic viewports — Top / Front / user iso — have no eye position to
+// borrow, so they get emulated: the affine TM's origin is the world point at
+// the centre of the viewport, and the eye is pushed back far enough that a
+// perspective camera of kOrthoFovH spans the same world width the ortho view
+// shows. The framing only drifts for geometry far off that centre plane, which
+// is the price of previewing an ortho view through a perspective camera.
+//
+// FOV comes from GetVPWorldWidth rather than GetFOV: it is the viewport's
+// world-space *width* at a given depth either way, so it needs no assumption
+// about which screen axis Max measures its FOV across. GetFOV is the fallback
+// for the degenerate readings.
+// ============================================================================
+
+// Qualified: this TU has no `namespace whiteout::flakes { … }` block, only a
+// using-directive, so an unqualified definition would land in the global
+// namespace and never match the declaration.
+bool whiteout::flakes::ReadActiveViewportCamera(ViewportCameraPose& out) {
+    Interface* ip = GetCOREInterface();
+    if (!ip)
+        return false;
+    ViewExp& vp = ip->GetActiveViewExp();
+    if (!vp.IsAlive())
+        return false;
+
+    Matrix3 affine;
+    vp.GetAffineTM(affine);
+    const Matrix3 viewToWorld = Inverse(affine);
+
+    const Point3 origin = viewToWorld.GetRow(3);
+    const Point3 back = Normalize(viewToWorld.GetRow(2)); // toward the viewer
+    const Point3 upMax = Normalize(viewToWorld.GetRow(1));
+
+    // Nominal horizontal FOV for orthographic viewports, which have none of
+    // their own. Matches Max's own default user-perspective field of view.
+    constexpr f32 kOrthoFovH = 0.7853982f; // 45°
+
+    Point3 eyeMax, tgtMax;
+    f32 sampleDist = 0.0f;
+    if (vp.IsPerspView()) {
+        sampleDist = vp.GetFocalDist();
+        if (!(sampleDist > 0.01f))
+            sampleDist = 1000.0f;
+        eyeMax = origin;
+        tgtMax = origin - back * sampleDist;
+
+        const f32 worldWidth = vp.GetVPWorldWidth(tgtMax);
+        out.fovHorizontal = (worldWidth > 0.01f)
+                                ? 2.0f * std::atan((worldWidth * 0.5f) / sampleDist)
+                                : vp.GetFOV();
+    } else {
+        out.fovHorizontal = kOrthoFovH;
+        f32 worldWidth = vp.GetVPWorldWidth(origin);
+        if (!(worldWidth > 0.01f))
+            worldWidth = 1000.0f;
+        sampleDist = (worldWidth * 0.5f) / std::tan(kOrthoFovH * 0.5f);
+        tgtMax = origin;
+        eyeMax = origin + back * sampleDist;
+    }
+    if (!(out.fovHorizontal > 0.01f) || out.fovHorizontal >= std::numbers::pi_v<f32>)
+        out.fovHorizontal = kOrthoFovH;
+
+    out.position = MaxPointToDefault(eyeMax);
+    out.target = MaxPointToDefault(tgtMax);
+
+    // Roll. Camera::SetDirectPose rebuilds `up` from the look direction and
+    // world Z, then rotates it by `roll` — so recover the angle between that
+    // zero-roll up and the viewport's actual one, mirroring the same basis
+    // construction Camera::ComputeUpFromLookDirection uses. This is what keeps
+    // a Top view (whose look direction is world Z, where the basis degenerates
+    // and falls back to +X) from arriving rotated 90°.
+    out.roll = 0.0f;
+    Vector3f fwd{out.target.x - out.position.x, out.target.y - out.position.y,
+                 out.target.z - out.position.z};
+    if (fwd.length() > 1e-4f) {
+        fwd = fwd.normalized();
+        const Vector3f worldUp{0.0f, 0.0f, 1.0f};
+        Vector3f right = cross(fwd, worldUp);
+        if (right.length_squared() < 1e-6f)
+            right = cross(fwd, Vector3f{1.0f, 0.0f, 0.0f});
+        right = right.normalized();
+        const Vector3f upBase = cross(right, fwd).normalized();
+        const Vector3f up = MaxDirToDefault(upMax);
+        out.roll = std::atan2(up.dot(right), up.dot(upBase));
+    }
+    return true;
 }

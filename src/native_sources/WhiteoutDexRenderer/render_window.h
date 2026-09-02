@@ -80,17 +80,57 @@ public:
 
     void SetTitle(const wchar_t* title);
 
-    // ---- Modal handshake with the asset picker ----
+    // ---- Parking the render thread ----
     //
-    // Dear ImGui's *current* context is one process-global pointer, so two
-    // windows can each own a context (they do) but only one may be in use at a
-    // time. Rather than making that pointer thread-local, the picker parks this
-    // window for its lifetime: SuspendForModal() blocks until the render thread
-    // has finished the frame it was on and stopped touching ImGui, and Resume()
-    // lets it go again. The preview freezes while the picker is up, which is
-    // what a modal dialog means anyway.
-    void SuspendForModal();
-    void Resume();
+    // SuspendRendering() blocks until the render thread has finished the frame
+    // it was on and gone idle; ResumeRendering() lets it go again. Two callers,
+    // two reasons:
+    //
+    //  * The asset picker (SuspendForModal): Dear ImGui's *current* context is
+    //    one process-global pointer, so two windows can each own a context
+    //    (they do) but only one may be in use at a time. The picker parks this
+    //    window for its lifetime rather than making that pointer thread-local.
+    //  * A Resync: the Max thread reaps the old actor and spawns a new one,
+    //    both of which mutate the actor map RenderFrame walks every frame.
+    //
+    // Either way the preview freezes for the duration, which is what both
+    // callers want.
+    void SuspendRendering();
+    void ResumeRendering();
+    void SuspendForModal() {
+        SuspendRendering();
+    }
+    void Resume() {
+        ResumeRendering();
+    }
+
+    // ---- Active-viewport camera sync (Max thread → render thread) ----
+    //
+    // While enabled, the Max UI thread samples whichever viewport Max has
+    // active and pushes its pose here; the render thread stamps it onto the
+    // scene camera at the top of every frame. Mouse orbit goes inert for the
+    // duration — the next frame would overwrite it anyway.
+    //
+    // SetSyncCamera runs on the render thread (it is a toolbar checkbox) and
+    // touches the camera directly to hand control back cleanly on the way out.
+    void SetSyncCamera(bool on);
+    bool SyncCamera() const {
+        return syncCamera_.load(std::memory_order_relaxed);
+    }
+    void SetExternalCameraPose(const Vector3f& position, const Vector3f& target, f32 roll,
+                               f32 fovHorizontal);
+
+    // ---- Full-rebuild request (render thread → Max thread) ----
+    //
+    // The toolbar's Resync button cannot re-walk the Max scene itself — that is
+    // Max-UI-thread work — so it raises a flag the plugin's viewport-sync timer
+    // picks up on the next tick.
+    void RequestResync() {
+        resyncRequested_.store(true, std::memory_order_relaxed);
+    }
+    bool ConsumeResyncRequest() {
+        return resyncRequested_.exchange(false, std::memory_order_relaxed);
+    }
 
     RenderService& Service() {
         return service_;
@@ -119,6 +159,12 @@ private:
     void InitImGui();
     void ShutdownImGui();
     void UpdateCameraPresetAnimator();
+    // Stamp the last pose the Max thread pushed onto the scene camera. Render
+    // thread, once per frame; a no-op while camera sync is off.
+    void ApplyExternalCamera();
+    // Mouse orbit is inert whenever a live camera preset or the viewport sync
+    // owns the pose.
+    bool CameraInputBlocked() const;
 
     RenderService& service_;
 
@@ -134,8 +180,14 @@ private:
     std::unique_ptr<MaxPluginUI> ui_;
 
     // Set by the Max thread, observed by the render thread; `suspendedAck_`
-    // goes true once the render thread is parked and has stopped using ImGui.
-    std::atomic<bool> suspend_{false};
+    // goes true once the render thread is parked and has stopped touching
+    // ImGui and scene state.
+    //
+    // A count, not a flag: the asset picker's modal loop pumps the plugin's
+    // timers, so a queued Resync can start while the picker already holds a
+    // park. The inner ResumeRendering must not unpark the render thread while
+    // the picker still owns the ImGui context.
+    std::atomic<i32> suspendCount_{0};
     std::atomic<bool> suspendedAck_{false};
 
     bool lmbDown_ = false, rmbDown_ = false, mmbDown_ = false;
@@ -150,6 +202,21 @@ private:
 
     std::vector<std::string> sequenceNames_;
     std::vector<SequenceInfo> sequenceRanges_;
+
+    // Latest active-viewport pose, written by the Max thread under hostMutex_
+    // and consumed by ApplyExternalCamera on the render thread. `extCamValid_`
+    // stays false until the first push, so enabling the checkbox never snaps
+    // the camera to an all-zero pose for one frame.
+    Vector3f extCamPos_{};
+    Vector3f extCamTarget_{};
+    f32 extCamRoll_ = 0.0f;
+    f32 extCamFovH_ = 0.0f;
+    bool extCamValid_ = false;
+    std::atomic<bool> syncCamera_{false};
+
+    // Raised by the toolbar on the render thread, drained by the plugin's
+    // timer on Max's.
+    std::atomic<bool> resyncRequested_{false};
 
     std::atomic<ActorId> focusActor_{0};
 

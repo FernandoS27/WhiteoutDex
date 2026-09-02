@@ -8,6 +8,7 @@
 #include <MeshNormalSpec.h>
 #include <bitmap.h>
 #include <bmmlib.h>
+#include <genlight.h>
 #include <icustattribcontainer.h>
 #include <inode.h>
 #include <iparamb2.h>
@@ -44,6 +45,10 @@
 #define WC3VERTEXMOD_CLASS_ID Class_ID(0x7A1B2C07, 0x3D4E5F07)
 #define WC3PARTICLES1_CLASS_ID Class_ID(0x12E4F5A6, 0x3B7C8D9E)
 #define WC3ATTACHPOINT_CLASS_ID Class_ID(0x1136ac20, 0x6f9cfeb7)
+// Wc3Light — the LITE-authoring scripted plugin, plus NeoDex's equivalent.
+// Same pair the exporter registers (MDLXExporter/src/mdx_class_ids.h).
+#define WC3LIGHT_CLASS_ID Class_ID(0x7A1B2C04, 0x3D4E5F04)
+#define NEODEX_LIGHT_CLASS_ID Class_ID(0x456E2573, 0x2A456757)
 // BlizzPopcorn — Reforged v1200 PopcornFX corn emitter scripted plugin.
 #define BLIZZ_POPCORN_CLASS_ID Class_ID(0x7A1B2C09, 0x3D4E5F09)
 
@@ -168,6 +173,18 @@ struct CollisionShapeInfo {
     INode* node = nullptr;
 };
 
+// One scene light, feeding FrameState::lights each frame.
+//
+// `wc3` marks the Wc3Light scripted plugin — the only kind that survives an
+// MDX export, and the only one carrying the LITE ambient pair. A stock Max
+// Omni / Spot / Direct light previews as a plain diffuse light and writes no
+// LITE chunk, which is why the two are told apart here rather than normalised
+// into one shape at collect time.
+struct LightInfo {
+    INode* node = nullptr;
+    bool wc3 = false;
+};
+
 // ============================================================================
 // MaxSceneAdapter — implements IModelSource
 // ============================================================================
@@ -245,6 +262,7 @@ private:
     void CollectParticleEmitters();
     void CollectRibbonEmitters();
     void CollectCollisionShapes();
+    void CollectLights();
 
     // Helpers
     static Matrix44f PackMatrix(const Matrix3& tm);
@@ -320,6 +338,7 @@ private:
     std::vector<AttachmentInfo> attachments_;
     std::vector<RibbonEmitterInfo> ribbons_;
     std::vector<CollisionShapeInfo> collisions_;
+    std::vector<LightInfo> lights_;
 
     std::unordered_map<std::wstring, i32> texPathToId_;
     std::unordered_map<Mtl*, i32> mtlToId_;
@@ -387,5 +406,26 @@ private:
     // Rebuild matSnapshots_ from the current materials_ list.
     void UpdateMaterialSnapshots();
 };
+
+// ============================================================================
+// Active-viewport camera read
+// ============================================================================
+
+// One 3ds Max viewport's view, already lifted into renderer-native space.
+// Feeds RenderWindow::SetExternalCameraPose, which is why the FOV is the
+// horizontal one: the preview window has its own aspect ratio and converts to
+// the camera's diagonal FOV itself.
+struct ViewportCameraPose {
+    Vector3f position{};
+    Vector3f target{};
+    f32 roll = 0.0f;          // radians, about the view axis
+    f32 fovHorizontal = 0.0f; // radians, across the viewport's width
+};
+
+// Sample whichever viewport 3ds Max currently has active — including the case
+// where the user switched viewports or moved a camera since the last call, so
+// a caller polling this tracks both for free. Max UI thread only: ViewExp is
+// not safe to touch from the render thread. False when no viewport is live.
+bool ReadActiveViewportCamera(ViewportCameraPose& out);
 
 } // namespace whiteout::flakes

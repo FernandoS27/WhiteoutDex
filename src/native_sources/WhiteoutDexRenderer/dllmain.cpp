@@ -10,6 +10,7 @@
 // MaxScript API:
 //   WhiteoutFlakesStart()             → Extract scene + open renderer + start sync
 //   WhiteoutFlakesStop()              → Stop everything + close window
+//   WhiteoutFlakesResync()            → Re-extract the whole scene in place
 //   WhiteoutFlakesRefreshMaterials()  → Re-read material properties (hot reload)
 // ============================================================================
 
@@ -30,6 +31,8 @@
 #include <chrono>
 #include <filesystem>
 #include <memory>
+#include <string>
+#include <vector>
 
 // clang-format off
 #include <max.h>
@@ -65,6 +68,16 @@ static whiteout::flakes::RenderWindow* g_renderWindow = nullptr;
 static bool g_running = false;
 static HINSTANCE g_hInstance = nullptr;
 static DWORD g_lastTimeChangedTick = 0;
+
+// Sequence ranges last handed over by WhiteoutFlakesPushSequences. Cached
+// because a Resync mints a fresh adapter, and the ranges live on the adapter —
+// without this the popcorn animVisibilityGuide gate would silently go dark
+// after every rescan.
+static std::vector<whiteout::flakes::SequenceRange> g_sequenceRanges;
+
+// Re-entrancy guard for the full rebuild: it parks the render thread and moves
+// Max's time cursor, and neither timer may re-enter it while that runs.
+static bool g_rebuilding = false;
 
 // Convert Max time (TimeValue ticks) to milliseconds. Returns 0 if Max
 // reports a missing tick rate (rare; tested WhiteoutFlakesStart paths).
@@ -112,7 +125,7 @@ static UINT_PTR g_materialTimerId = 0;
 static void WhiteoutFlakesCleanup(); // forward declaration
 
 static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
-    if (!g_running)
+    if (!g_running || g_rebuilding)
         return;
     // User closed the renderer window (X button → WM_DESTROY on the render
     // thread). The thread has exited, but the renderer/adapter/actor/scene
@@ -173,12 +186,307 @@ static void EnsureSceneNotificationsRegistered() {
 }
 
 // ============================================================================
+// Shared IO configuration — read once at Start, and again on every Resync so a
+// settings change lands without restarting the preview.
+// ============================================================================
+
+// The WC3 install root the Settings dialog wrote to
+// `<plugcfg>\WhiteoutDex_Settings.ini`. Also hands back the plugcfg directory,
+// which is where the MPQ load order lives. Empty when nothing is configured.
+static std::string ReadUserInstallPath(std::wstring& plugcfgDirOut) {
+    plugcfgDirOut.clear();
+    Interface* ip = GetCOREInterface();
+    if (!ip)
+        return {};
+
+    MSTR pcDir = ip->GetDir(APP_PLUGCFG_DIR);
+    plugcfgDirOut = std::wstring(pcDir.data());
+    std::wstring cascIni = plugcfgDirOut + L"\\WhiteoutDex_Settings.ini";
+    if (GetFileAttributesW(cascIni.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return {};
+
+    wchar_t w3buf[MAX_PATH] = {};
+    // Disambiguate Win32 GetPrivateProfileStringW from the MaxSDK::Util overload
+    // the 2026 SDK added (Util/IniUtil.h) by taking a function pointer to the
+    // exact Win32 signature — the same trick the exporter and importer already
+    // use for this conflict.
+    static auto Win32_GetPrivateProfileStringW =
+        static_cast<DWORD(WINAPI*)(LPCWSTR, LPCWSTR, LPCWSTR, LPWSTR, DWORD, LPCWSTR)>(
+            &::GetPrivateProfileStringW);
+    Win32_GetPrivateProfileStringW(L"CASC", L"W3Path", L"", w3buf, MAX_PATH, cascIni.c_str());
+    if (!w3buf[0])
+        return {};
+
+    // SetInstallPath takes UTF-8 narrow; MDX install paths are ASCII-safe in
+    // practice (Windows refuses to install WC3 under a non-ASCII path via
+    // Battle.net), so the naive wide-to-narrow truncation here matches what the
+    // importer does for the same setting.
+    std::string out;
+    out.reserve(MAX_PATH);
+    for (wchar_t c : std::wstring_view(w3buf))
+        out += static_cast<char>(c);
+    return out;
+}
+
+// Apply the persisted IO overrides (Ignore Casc/Mpq toggles + MPQ load list)
+// from the WhiteoutFlakes-side settings file sitting next to 3dsmax.exe.
+//
+// Its `installPath` field is deliberately ignored: the WhiteoutDex Settings
+// dialog writes the install path to `WhiteoutDex_Settings.ini` under plugcfg
+// (see ReadUserInstallPath) and that is the authoritative source for all three
+// plug-ins. Letting LoadIoPathOverrides win here is what made the renderer treat
+// the .dlx directory as the WC3 install for users who never created
+// WhiteoutFlakes.ini — i.e. everyone.
+static void ApplyIoOverridesTo(whiteout::flakes::io::FileContentProvider& provider,
+                               const std::wstring& plugcfgDir) {
+    auto overrides = whiteout::flakes::LoadIoPathOverrides();
+    provider.SetIgnoreCasc(overrides.ignoreCasc);
+    provider.SetIgnoreMpq(overrides.ignoreMpq);
+    if (overrides.mpqListSet)
+        provider.SetMpqList(std::move(overrides.mpqList));
+
+    // The WhiteoutDex Settings dialog's own MPQ load order, applied last so it
+    // wins: it is the one a user of this plug-in can actually edit, while the
+    // WhiteoutFlakes ini above is a file almost none of them have. Empty means
+    // "never customised" — the provider then keeps whichever list it already
+    // had, which is the point of the distinction.
+    //
+    // Absolute paths, so StorageBuilder::Archives' `installPath / name` join
+    // lands on the archive wherever it actually is. That join is also why this
+    // needs an install path at all: with none set the builder opens nothing, but
+    // a provider with no install path has no Warcraft III to draw either.
+    auto listed = wdx::mpq::ResolvedArchivesUtf8(plugcfgDir);
+    if (!listed.empty()) {
+        mprintf(_M("WhiteoutDex: MPQ load order - %d archive(s), '%hs' first\n"),
+                static_cast<int>(listed.size()), listed.front().c_str());
+        provider.SetMpqList(std::move(listed));
+    }
+}
+
+// ============================================================================
+// BuildSceneAndSpawn — everything WhiteoutFlakesStart does between "the window
+// is up" and "the timeline callback is hooked": mint an adapter, walk the Max
+// scene at t=0, spawn the actor, pick HD vs SD and publish the host-side
+// snapshots.
+//
+// Shared with the Resync path, which throws the outgoing actor away and runs
+// this again against the same SceneManager / RenderService / RenderWindow.
+// Max UI thread only.
+// ============================================================================
+static bool BuildSceneAndSpawn(Interface* ip) {
+    if (!ip || !g_scene || !g_renderer || !g_renderWindow)
+        return false;
+
+    std::wstring plugcfgDir;
+    const std::string userInstallPath = ReadUserInstallPath(plugcfgDir);
+
+    g_adapter = std::make_shared<whiteout::flakes::MaxSceneAdapter>();
+    // The adapter has its own FileContentProvider (independent of
+    // SceneManager's), used during CollectScene for CASC/MPQ texture reads, so
+    // it needs the same W3Path and the same overrides.
+    if (!userInstallPath.empty())
+        g_adapter->GetContentProvider().SetInstallPath(userInstallPath);
+    ApplyIoOverridesTo(g_adapter->GetContentProvider(), plugcfgDir);
+    // Cross-model dedup: skip BLP/CASC decode for textures another model
+    // already uploaded. SpawnUnitFromSource sets this too, but setting it now
+    // means CollectScene's incidental texture reads also benefit.
+    g_adapter->SetTextureCacheQuery(
+        [](std::string_view k) { return g_renderer->Assets().IsTextureCached(k); });
+    // Ranges pushed by WdxSequenceManager outlive the adapter that held them.
+    if (!g_sequenceRanges.empty())
+        g_adapter->SetSequenceRanges(g_sequenceRanges);
+
+    // Walk the Max scene at t=0 for stable bind-pose extraction.
+    const TimeValue savedTime = ip->GetTime();
+    ip->SetTime(0, FALSE);
+    mprintf(_M("WhiteoutDex: Collecting scene...\n"));
+    g_adapter->CollectScene();
+
+    // ---- One-call spawn ----
+    // Pulls all static data via IModelDataSource::Build, builds an inline
+    // ModelTemplate, registers attachment + PE1 configs, and binds the actor's
+    // AnimationDriver to the adapter (which is also an IAnimationSource).
+    mprintf(_M("WhiteoutDex: Loading model...\n"));
+    g_actor = g_renderer->Loader().SpawnUnitFromSource(g_adapter);
+    if (!g_actor) {
+        mprintf(_M("WhiteoutDex: ERROR - SpawnUnitFromSource failed\n"));
+        ip->SetTime(savedTime, FALSE);
+        return false;
+    }
+    // Max scrubs Max's timeline; the renderer's per-frame ticker must skip its
+    // own evaluation pass and let EvalFromMax push the cursor instead.
+    g_actor->role = whiteout::flakes::renderer::model::ActorRole::External;
+
+    {
+        using whiteout::flakes::ProductId;
+        if (g_scene->Product() != ProductId::Wc3) {
+            g_scene->SetProduct(ProductId::Wc3);
+            g_renderer->Settings().MarkRenderModeDirty();
+        }
+        g_renderer->EnsureWc3GameData();
+    }
+
+    // Pick HD vs SD by walking the adapter's freshly extracted materials.
+    // `Actor::PreferredRenderMode()` would be the natural choice, but the
+    // ModelLoader::AddModel path (used by SpawnUnitFromSource) never populates
+    // `Actor::sourceTemplate`, so that accessor short-circuits to SD regardless
+    // of the layers' actual shaderIds. Reading the IR materials from the adapter
+    // directly mirrors what the renderer's PreferredRenderMode would do if
+    // sourceTemplate were wired: any layer with shaderId != 0 (HD = 1,
+    // SD_on_HD = 2, Crystal = 24) promotes the whole model to HD.
+    {
+        using whiteout::flakes::RenderMode;
+        RenderMode mode = RenderMode::SD;
+        for (const auto& md : g_adapter->GetMaterials()) {
+            for (const auto& ld : md.layers) {
+                if (ld.shaderId != 0) {
+                    mode = RenderMode::HD;
+                    break;
+                }
+            }
+            if (mode == RenderMode::HD)
+                break;
+        }
+        g_renderer->Settings().SetRenderMode(mode);
+        mprintf(_M("WhiteoutDex: render mode = %s\n"),
+                mode == RenderMode::HD ? _M("HD") : _M("SD"));
+    }
+    g_renderWindow->SetFocusActor(g_actor->handle);
+
+    // Push the actor's discovered sequences into the preview window so the
+    // ImGui Animation dropdown can pick which sub-range Max's timeline scrubs
+    // through.
+    {
+        auto seqs = g_actor->animation.Sequences();
+        std::vector<std::string> names;
+        names.reserve(seqs.size());
+        for (auto& s : seqs)
+            names.push_back(s.name);
+        g_renderWindow->SetSequences(std::move(names), std::move(seqs));
+    }
+
+    // Restore Max's time and run an eval so the model is visible before
+    // TimeChanged starts firing again.
+    ip->SetTime(savedTime, FALSE);
+    EvalFromMax(MaxTimeToMs(ip->GetTime()));
+    return true;
+}
+
+// ============================================================================
+// WhiteoutFlakesRebuild — the Resync: drop the actor and re-run the whole
+// collect/spawn pass against the live scene, keeping the window, the graphics
+// device and every renderer setting exactly where they were. Max UI thread only.
+// ============================================================================
+static bool WhiteoutFlakesRebuild() {
+    if (!g_running || g_rebuilding || !g_renderer || !g_scene || !g_renderWindow)
+        return false;
+    if (!g_renderWindow->IsOpen())
+        return false;
+    Interface* ip = GetCOREInterface();
+    if (!ip)
+        return false;
+
+    auto start = std::chrono::high_resolution_clock::now();
+    g_rebuilding = true;
+    // Park the render thread: the reap below and the spawn that follows both
+    // mutate the actor map RenderFrame walks every frame.
+    g_renderWindow->SuspendRendering();
+
+    // Clearing g_actor first also disarms the TimeChanged callback for the
+    // duration — BuildSceneAndSpawn moves Max's time cursor to 0 and back, and
+    // an eval against a half-torn-down scene is exactly the crash we're
+    // avoiding.
+    g_actor = nullptr;
+    // Asynchronous by contract: the outgoing actors are flagged here and reaped,
+    // GPU resources and all, by the render thread's next CommitPendingUploads.
+    // Dropping our own adapter handle is safe — the outgoing actor's
+    // AnimationDriver keeps it alive until then. The freshly spawned actor is
+    // not flagged, so it survives that reap.
+    g_renderer->Loader().RequestClearAll();
+    g_adapter.reset();
+
+    const bool ok = BuildSceneAndSpawn(ip);
+
+    g_renderWindow->ResumeRendering();
+    g_rebuilding = false;
+    g_lastTimeChangedTick = GetTickCount();
+
+    auto end = std::chrono::high_resolution_clock::now();
+    const i32 ms = (i32)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    if (ok) {
+        mprintf(_M("WhiteoutDex: === RESYNCED in %d ms ===\n"), ms);
+        mprintf(_M("  %d geosets, %d materials, %d collisions\n"),
+                (i32)g_actor->render.gpuGeosets.size(), (i32)g_actor->render.surfaces.size(),
+                (i32)g_actor->render.collisionShapes.size());
+    } else {
+        mprintf(_M("WhiteoutDex: ERROR - resync failed; the preview is now empty\n"));
+    }
+    return ok;
+}
+
+// Re-run the toolkit's sequence push so a Resync also picks up sequence edits
+// made since the last one. Best-effort: the function lives in
+// SequenceManager.ms, and a user whose scripts aren't installed simply keeps the
+// ranges cached from the last push.
+//
+// Only ever called from the timer, never from the MaxScript primitive — the
+// primitive already runs inside a MaxScript evaluation, and its caller pushes
+// sequences itself the way WhiteoutDex_Renderer does after Start.
+static void RefreshSequencesFromMaxScript() {
+    const MCHAR* script = _M("try(WdxPushRendererSequences())catch()");
+#if MAX_VERSION_MAJOR >= 24 // 3ds Max 2022 added the ScriptSource argument
+    // NonEmbedded, not Dynamic: the string is a compile-time literal in this
+    // .dlx with no caller-supplied input spliced into it, which is exactly the
+    // case NonEmbedded describes. Dynamic would run it under Safe Scene Script
+    // Execution's restricted rights for no reason.
+    ExecuteMAXScriptScript(script, MAXScript::ScriptSource::NonEmbedded, TRUE);
+#else
+    ExecuteMAXScriptScript(script, TRUE);
+#endif
+}
+
+// ============================================================================
+// Viewport-sync timer — the Max-main-thread half of the two toolbar controls
+// that need it. Both are raised on the render thread and can only be serviced
+// here: reading a ViewExp and re-walking the scene are Max UI thread work, and
+// the 500 ms material poll is far too coarse for a camera tracking an orbit.
+// ============================================================================
+static UINT_PTR g_syncTimerId = 0;
+
+static void CALLBACK ViewportSyncTimer(HWND, UINT, UINT_PTR, DWORD) {
+    if (!g_running || g_rebuilding || !g_renderWindow || !g_renderWindow->IsOpen())
+        return;
+
+    // A rebuild is long enough that servicing the camera on the same tick would
+    // just push a pose at a scene that is about to be replaced.
+    if (g_renderWindow->ConsumeResyncRequest()) {
+        if (WhiteoutFlakesRebuild())
+            RefreshSequencesFromMaxScript();
+        return;
+    }
+
+    if (!g_renderWindow->SyncCamera())
+        return;
+    // Re-read every tick rather than caching a ViewExp, which is what makes
+    // this follow the user switching viewports or moving the camera.
+    whiteout::flakes::ViewportCameraPose pose;
+    if (whiteout::flakes::ReadActiveViewportCamera(pose)) {
+        g_renderWindow->SetExternalCameraPose(pose.position, pose.target, pose.roll,
+                                              pose.fovHorizontal);
+    }
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 static void WhiteoutFlakesCleanup() {
     if (g_materialTimerId) {
         KillTimer(nullptr, g_materialTimerId);
         g_materialTimerId = 0;
+    }
+    if (g_syncTimerId) {
+        KillTimer(nullptr, g_syncTimerId);
+        g_syncTimerId = 0;
     }
     if (g_timeCallback) {
         Interface* ip = GetCOREInterface();
@@ -210,6 +518,11 @@ static void WhiteoutFlakesCleanup() {
         delete g_scene;
         g_scene = nullptr;
     }
+    // The ranges describe the scene we just let go of — File > Open routes
+    // through here, so keeping them would hand the next model the previous
+    // one's sequence gate. WhiteoutDex_Renderer re-pushes on every Start.
+    g_sequenceRanges.clear();
+    g_rebuilding = false;
     mprintf(_M("WhiteoutDex: === STOPPED ===\n"));
 }
 
@@ -386,46 +699,17 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
     //
     // The importer (mdlx_import_options.cpp) and TextureBrowserHelper read
     // from the same file; this keeps the three plug-ins consistent so the
-    // user only has to type the install path once. The captured value is
-    // re-applied to the MaxSceneAdapter's own provider further below — the
-    // adapter has its own FileContentProvider instance used during scene
-    // collection, and it needs the same root.
-    std::string userInstallPath;
-    // Hoisted out of the block below because the MPQ load order lives in the
-    // same directory and is read further down, after this scope has closed.
+    // user only has to type the install path once. BuildSceneAndSpawn reads it
+    // again for the MaxSceneAdapter's own provider — the adapter has its own
+    // FileContentProvider instance used during scene collection, and it needs
+    // the same root.
+    //
+    // plugcfgDir is kept because the MPQ load order lives in the same folder.
     std::wstring plugcfgDir;
-    {
-        Interface* ipForPath = GetCOREInterface();
-        if (ipForPath) {
-            MSTR pcDir = ipForPath->GetDir(APP_PLUGCFG_DIR);
-            plugcfgDir = std::wstring(pcDir.data());
-            std::wstring cascIni = plugcfgDir + L"\\WhiteoutDex_Settings.ini";
-            if (GetFileAttributesW(cascIni.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                wchar_t w3buf[MAX_PATH] = {};
-                // Disambiguate Win32 GetPrivateProfileStringW from the
-                // MaxSDK::Util overload the 2026 SDK added (Util/IniUtil.h) by
-                // taking a function pointer to the exact Win32 signature —
-                // the same trick the exporter and importer already use for
-                // this conflict.
-                static auto Win32_GetPrivateProfileStringW =
-                    static_cast<DWORD(WINAPI*)(LPCWSTR, LPCWSTR, LPCWSTR, LPWSTR, DWORD, LPCWSTR)>(
-                        &::GetPrivateProfileStringW);
-                Win32_GetPrivateProfileStringW(L"CASC", L"W3Path", L"", w3buf, MAX_PATH,
-                                               cascIni.c_str());
-                if (w3buf[0]) {
-                    // SetInstallPath takes UTF-8 narrow; MDX install paths
-                    // are ASCII-safe in practice (Windows refuses to install
-                    // WC3 under non-ASCII paths via Battle.net), so the
-                    // naive wide-to-narrow truncation here matches what the
-                    // importer does for the same setting.
-                    userInstallPath.reserve(MAX_PATH);
-                    for (wchar_t c : std::wstring_view(w3buf))
-                        userInstallPath += static_cast<char>(c);
-                    g_scene->GetContentProvider().SetInstallPath(userInstallPath);
-                    mprintf(_M("WhiteoutDex: CASC W3Path = '%s'\n"), w3buf);
-                }
-            }
-        }
+    const std::string userInstallPath = ReadUserInstallPath(plugcfgDir);
+    if (!userInstallPath.empty()) {
+        g_scene->GetContentProvider().SetInstallPath(userInstallPath);
+        mprintf(_M("WhiteoutDex: CASC W3Path = '%hs'\n"), userInstallPath.c_str());
     }
 
     // UI language. Done here rather than at DllMain time because plugcfgDir is
@@ -474,41 +758,7 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
         g_scene->SetPE1BasePath(std::filesystem::path(wp));
     }
 
-    // Apply persisted IO overrides (Ignore Casc/Mpq toggles + MPQ load list)
-    // from the WhiteoutFlakes-side settings file sitting next to 3dsmax.exe.
-    // We deliberately ignore its `installPath` field here — the WhiteoutDex
-    // Settings dialog writes the install path to `WhiteoutDex_Settings.ini`
-    // under plugcfg (read above), and that's the authoritative source for
-    // all three plug-ins. Letting LoadIoPathOverrides override at this point
-    // is what made the renderer treat the .dlx directory as the WC3 install
-    // for users who never created WhiteoutFlakes.ini (i.e. everyone).
-    auto applyIoOverrides = [&plugcfgDir](whiteout::flakes::io::FileContentProvider& provider) {
-        auto overrides = whiteout::flakes::LoadIoPathOverrides();
-        provider.SetIgnoreCasc(overrides.ignoreCasc);
-        provider.SetIgnoreMpq(overrides.ignoreMpq);
-        if (overrides.mpqListSet)
-            provider.SetMpqList(std::move(overrides.mpqList));
-
-        // The WhiteoutDex Settings dialog's own MPQ load order, applied last
-        // so it wins: it is the one a user of this plug-in can actually edit,
-        // while the WhiteoutFlakes ini above is a file almost none of them
-        // have. Empty means "never customised" — the provider then keeps
-        // whichever list it already had, which is the point of the
-        // distinction.
-        //
-        // Absolute paths, so StorageBuilder::Archives' `installPath / name`
-        // join lands on the archive wherever it actually is. That join is also
-        // why this needs an install path at all: with none set the builder
-        // opens nothing, but a provider with no install path has no Warcraft
-        // III to draw either.
-        auto listed = wdx::mpq::ResolvedArchivesUtf8(plugcfgDir);
-        if (!listed.empty()) {
-            mprintf(_M("WhiteoutDex: MPQ load order - %d archive(s), '%hs' first\n"),
-                    static_cast<int>(listed.size()), listed.front().c_str());
-            provider.SetMpqList(std::move(listed));
-        }
-    };
-    applyIoOverrides(g_scene->GetContentProvider());
+    ApplyIoOverridesTo(g_scene->GetContentProvider(), plugcfgDir);
 
     // Audio: the same cubeb-backed ISoundEmitter the standalone exe uses.
     // Borrows the scene's content provider for CASC/MPQ lookup so SND
@@ -517,109 +767,26 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
     g_renderer->SwapSoundEmitter(
         std::make_unique<whiteout::flakes::CubebSoundEmitter>(g_scene->ActiveContentProvider()));
 
-    // ---- Build the live adapter ----
-    g_adapter = std::make_shared<whiteout::flakes::MaxSceneAdapter>();
-
-    // Same install path + IO overrides apply to the adapter's own provider —
-    // it's used during CollectScene below for CASC/MPQ texture reads. The
-    // adapter has its own FileContentProvider instance (independent of
-    // SceneManager's), so it needs the W3Path set on it too.
-    if (!userInstallPath.empty())
-        g_adapter->GetContentProvider().SetInstallPath(userInstallPath);
-    applyIoOverrides(g_adapter->GetContentProvider());
-    // Cross-model dedup: skip BLP/CASC decode for textures that other models
-    // already uploaded. SpawnActorFromLiveSource sets this too, but we set
-    // it now so CollectScene's incidental texture reads also benefit.
-    // The cache now lives on AssetManager (post-asset-manager refactor)
-    // and Assets().IsTextureCached() returns true once Apply has run.
-    g_adapter->SetTextureCacheQuery(
-        [](std::string_view k) { return g_renderer->Assets().IsTextureCached(k); });
-
-    // Walk the Max scene at t=0 for stable bind-pose extraction.
-    TimeValue savedTime = ip->GetTime();
-    ip->SetTime(0, FALSE);
-    mprintf(_M("WhiteoutDex: Collecting scene...\n"));
-    g_adapter->CollectScene();
-
-    // ---- One-call spawn ----
-    // Pulls all static data via IModelDataSource::Build, builds an inline
-    // ModelTemplate, registers attachment + PE1 configs, and binds the
-    // actor's AnimationDriver to the adapter (which is also an
-    // IAnimationSource). Replaces ~15 lines of GetX + LoadModel + SetX boilerplate.
-    mprintf(_M("WhiteoutDex: Loading model...\n"));
-    g_actor = g_renderer->Loader().SpawnUnitFromSource(g_adapter);
-    if (!g_actor) {
-        mprintf(_M("WhiteoutDex: ERROR - SpawnUnitFromSource failed\n"));
+    // ---- Build the live adapter, walk the scene, spawn the actor ----
+    // Shared verbatim with the Resync path; see BuildSceneAndSpawn.
+    //
+    // Camera presets are no longer plumbed into the renderer — Max owns its
+    // own viewport, so MaxSceneAdapter::GetCameraPresets() is currently unused
+    // by the plugin and the toolbar's Sync Camera checkbox reads the live
+    // viewport instead.
+    if (!BuildSceneAndSpawn(ip)) {
         WhiteoutFlakesCleanup();
         return Integer::intern(-1);
     }
-    // Max scrubs Max's timeline; the renderer's per-frame ticker must skip
-    // its own evaluation pass and let EvalFromMax push the cursor instead.
-    g_actor->role = whiteout::flakes::renderer::model::ActorRole::External;
 
-    {
-        using whiteout::flakes::ProductId;
-        if (g_scene->Product() != ProductId::Wc3) {
-            g_scene->SetProduct(ProductId::Wc3);
-            g_renderer->Settings().MarkRenderModeDirty();
-        }
-        g_renderer->EnsureWc3GameData();
-    }
-
-    // Pick HD vs SD by walking the adapter's freshly extracted materials.
-    // `Actor::PreferredRenderMode()` would be the natural choice, but the
-    // ModelLoader::AddModel path (used by SpawnUnitFromSource) never
-    // populates `Actor::sourceTemplate`, so that accessor short-circuits to
-    // SD regardless of the layers' actual shaderIds. Reading the IR
-    // materials from the adapter directly mirrors what the renderer's
-    // PreferredRenderMode would do if sourceTemplate were wired:
-    // any layer with shaderId != 0 (HD = 1, SD_on_HD = 2, Crystal = 24)
-    // promotes the whole model to HD.
-    {
-        using whiteout::flakes::RenderMode;
-        RenderMode mode = RenderMode::SD;
-        for (const auto& md : g_adapter->GetMaterials()) {
-            for (const auto& ld : md.layers) {
-                if (ld.shaderId != 0) {
-                    mode = RenderMode::HD;
-                    break;
-                }
-            }
-            if (mode == RenderMode::HD)
-                break;
-        }
-        g_renderer->Settings().SetRenderMode(mode);
-        mprintf(_M("WhiteoutDex: render mode = %s\n"),
-                mode == RenderMode::HD ? _M("HD") : _M("SD"));
-    }
-    g_renderWindow->SetFocusActor(g_actor->handle);
-
-    // Push the actor's discovered sequences into the preview window so the
-    // ImGui Animation dropdown can pick which sub-range Max's timeline
-    // scrubs through.
-    {
-        auto seqs = g_actor->animation.Sequences();
-        std::vector<std::string> names;
-        names.reserve(seqs.size());
-        for (auto& s : seqs)
-            names.push_back(s.name);
-        g_renderWindow->SetSequences(std::move(names), std::move(seqs));
-    }
-
-    // Camera presets are no longer plumbed into the renderer — Max owns its
-    // own viewport so MaxSceneAdapter::GetCameraPresets() is currently unused
-    // by the plugin. Re-add a Max-side preset UI if needed.
-
-    // Restore Max's time and run the initial eval so the model is visible
-    // before TimeChanged starts firing.
-    ip->SetTime(savedTime, FALSE);
-    EvalFromMax(MaxTimeToMs(ip->GetTime()));
-
-    // Hook Max's timeline + start the polling timer for hot-reload.
+    // Hook Max's timeline + start the polling timers: 500 ms for material
+    // hot-reload, 20 ms for the viewport camera sync and the Resync request
+    // the toolbar raises from the render thread.
     g_timeCallback = new WhiteoutFlakesTimeCallback();
     ip->RegisterTimeChangeCallback(g_timeCallback);
     g_running = true;
     g_materialTimerId = SetTimer(nullptr, 0, 500, MaterialPollTimer);
+    g_syncTimerId = SetTimer(nullptr, 0, 20, ViewportSyncTimer);
 
     auto end = std::chrono::high_resolution_clock::now();
     i32 ms = (i32)std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
@@ -706,9 +873,34 @@ Value* WhiteoutFlakesPushSequences_cf(Value** arg_list, i32 count) {
                 r.name.c_str(), r.startMs, r.endMs, (i32)sTv, (i32)eTv);
         ranges.push_back(std::move(r));
     }
+    // Cached as well as pushed: a Resync mints a fresh adapter, and this is the
+    // only copy of the ranges on the C++ side.
+    g_sequenceRanges = ranges;
     g_adapter->SetSequenceRanges(std::move(ranges));
     mprintf(_M("WhiteoutDex: pushed %d sequence ranges\n"), n);
     return Integer::intern(n);
+}
+
+// ============================================================================
+// WhiteoutFlakesResync() — re-extract the entire scene into the running
+// preview: geometry, materials, textures, bones, emitters, attachments and
+// collision shapes, exactly as WhiteoutFlakesStart does. The window, the
+// graphics device and every renderer setting survive.
+//
+// Callers should push sequences afterwards the same way WhiteoutDex_Renderer
+// does after Start — this primitive is already running inside a MaxScript
+// evaluation and does not re-enter the scripter to do it for them. (The
+// toolbar's Resync button, which is not, does re-push them.)
+// ============================================================================
+
+def_visible_primitive(WhiteoutFlakesResync, "WhiteoutFlakesResync");
+Value* WhiteoutFlakesResync_cf(Value** /*arg_list*/, i32 count) {
+    check_arg_count(WhiteoutFlakesResync, 0, count);
+    if (!g_running || !g_renderer || !g_renderWindow) {
+        mprintf(_M("WhiteoutDex: Resync: the renderer is not running — start it first\n"));
+        return &false_value;
+    }
+    return WhiteoutFlakesRebuild() ? &true_value : &false_value;
 }
 
 // ============================================================================

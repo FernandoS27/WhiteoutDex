@@ -189,6 +189,18 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
             }
         }
 
+        // Parked — see SuspendRendering. Messages still pump (above) so the
+        // window stays responsive to the OS; everything below this point is
+        // skipped, so a parked thread touches no ImGui state (what the asset
+        // picker needs) and no scene state (what a Resync needs, since it is
+        // swapping the actor out from under us on Max's thread).
+        if (suspendCount_.load(std::memory_order_acquire) > 0) {
+            suspendedAck_.store(true);
+            Sleep(16);
+            continue;
+        }
+        suspendedAck_.store(false);
+
         QueryPerformanceCounter(&now);
         lastTime = now;
 
@@ -208,6 +220,9 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
             cp->Pump();
 
         UpdateCameraPresetAnimator();
+        // After the preset animator: when both are somehow live, the viewport
+        // the user is actually looking at wins.
+        ApplyExternalCamera();
         (void)service_.Replaceables().ConsumeDirty();
         (void)service_.Settings().ConsumeRenderModeDirty();
 
@@ -218,16 +233,6 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
             const Vector3f fwd = cam.GetTarget() - eye;
             service_.Sound().SetListener(eye, fwd, cam.GetUp());
         }
-
-        // Parked while the asset picker owns ImGui — see SuspendForModal.
-        // Messages still pump (above) so the window stays responsive to the OS;
-        // we simply draw nothing and touch no ImGui state.
-        if (suspend_.load()) {
-            suspendedAck_.store(true);
-            Sleep(16);
-            continue;
-        }
-        suspendedAck_.store(false);
 
         // ---- ImGui frame ----
         ImGui::SetCurrentContext(imguiCtx_);
@@ -384,12 +389,16 @@ void RenderWindow::ShutdownImGui() {
     imguiInitialised_ = false;
 }
 
-// Park the render thread outside its ImGui section. Called from the Max thread
-// with the asset picker about to bring up a context of its own.
-void RenderWindow::SuspendForModal() {
+// Park the render thread outside its ImGui section and outside RenderFrame.
+// Called from the Max thread — by the asset picker, which is about to bring up
+// an ImGui context of its own, and by a Resync, which is about to swap the
+// actor out from under the scene.
+void RenderWindow::SuspendRendering() {
+    // Counted before the running_ check so an unbalanced pair can't happen if
+    // the window dies between Suspend and Resume.
+    suspendCount_.fetch_add(1, std::memory_order_acq_rel);
     if (!running_.load())
         return;
-    suspend_.store(true);
     // Bounded: a render thread wedged in a driver call must not take the Max UI
     // thread down with it. If the wait times out we go ahead anyway — the worst
     // case is one garbled preview frame, not a crash, because both windows
@@ -398,8 +407,106 @@ void RenderWindow::SuspendForModal() {
         Sleep(5);
 }
 
-void RenderWindow::Resume() {
-    suspend_.store(false);
+void RenderWindow::ResumeRendering() {
+    if (suspendCount_.fetch_sub(1, std::memory_order_acq_rel) <= 0)
+        suspendCount_.store(0, std::memory_order_release);
+}
+
+// ============================================================================
+// Active-viewport camera sync
+// ============================================================================
+
+void RenderWindow::SetExternalCameraPose(const Vector3f& position, const Vector3f& target,
+                                         f32 roll, f32 fovHorizontal) {
+    std::lock_guard<std::mutex> lk(hostMutex_);
+    extCamPos_ = position;
+    extCamTarget_ = target;
+    extCamRoll_ = roll;
+    extCamFovH_ = fovHorizontal;
+    extCamValid_ = true;
+}
+
+void RenderWindow::ApplyExternalCamera() {
+    if (!syncCamera_.load(std::memory_order_relaxed))
+        return;
+
+    Vector3f pos, tgt;
+    f32 roll = 0.0f, fovH = 0.0f;
+    {
+        std::lock_guard<std::mutex> lk(hostMutex_);
+        if (!extCamValid_)
+            return;
+        pos = extCamPos_;
+        tgt = extCamTarget_;
+        roll = extCamRoll_;
+        fovH = extCamFovH_;
+    }
+
+    auto& cam = service_.Scene().Camera();
+    cam.SetDirectPose(pos, tgt, roll);
+
+    // Mirror the same pose onto the orbital parameters. Nothing reads them in
+    // Direct mode, but two things care that they are current: the view-cube
+    // gizmo draws itself from GetYaw/GetPitch, and SetSyncCamera hands control
+    // back by switching to orbital mode — with these live, that hand-back keeps
+    // the pose on screen exactly.
+    {
+        const Vector3f d{pos.x - tgt.x, pos.y - tgt.y, pos.z - tgt.z};
+        const f32 dist = d.length();
+        if (dist > 1e-3f) {
+            cam.SetTarget(tgt);
+            cam.SetDistance(dist);
+            cam.SetPitch(std::asin(std::clamp(d.z / dist, -1.0f, 1.0f)));
+            cam.SetYaw(std::atan2(d.y, d.x));
+        }
+    }
+
+    // Max reports its viewport FOV across the width; the renderer's camera
+    // takes a diagonal one. Invert what perspective_diag_sgcompat does —
+    //     tan(fovDiag / 2 / sqrt(a² + 1)) * a == tan(fovH / 2)
+    // — against this window's live aspect, so the two frames span the same
+    // world width however the preview window happens to be sized. Both extents
+    // are render-thread state (WM_SIZE is dispatched here), so reading them
+    // needs no lock.
+    if (fovH > 1e-3f && lastFbW_ > 0 && lastFbH_ > 0) {
+        const f32 a = static_cast<f32>(lastFbW_) / static_cast<f32>(lastFbH_);
+        const f32 diag =
+            2.0f * std::sqrt(a * a + 1.0f) * std::atan(std::tan(fovH * 0.5f) / a);
+        cam.SetFovDiagonal(diag);
+    }
+}
+
+void RenderWindow::SetSyncCamera(bool on) {
+    if (syncCamera_.exchange(on, std::memory_order_relaxed) == on)
+        return;
+
+    if (on) {
+        // A camera preset and the viewport would fight over the same pose.
+        std::lock_guard<std::mutex> lk(hostMutex_);
+        activeCameraPresetIdx_ = -1;
+        cameraLocked_ = false;
+        return;
+    }
+
+    // Handing control back. ApplyExternalCamera has been keeping the orbital
+    // parameters in step with every pose it pushed, so switching modes leaves
+    // the view where it is and the first drag continues from there.
+    //
+    // Roll is the one thing dropped: the two modes build `up` from opposite
+    // signs of it (ComputeUpFromLookDirection adds roll·right, orbital's
+    // ComputeUpFromAngles subtracts it), and carrying a roll the user has no
+    // control to clear into free orbiting is worse than levelling the horizon
+    // on release.
+    auto& cam = service_.Scene().Camera();
+    cam.SetOrbitalMode();
+    cam.SetRoll(0.0f);
+}
+
+bool RenderWindow::CameraInputBlocked() const {
+    if (syncCamera_.load(std::memory_order_relaxed))
+        return true;
+    std::lock_guard<std::mutex> lk(hostMutex_);
+    return cameraLocked_;
 }
 
 bool RenderWindow::PumpMessages() {
@@ -432,7 +539,8 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     // GetIO() both read the CURRENT context, and selecting ours here would pull
     // it out from under the thread that is mid-frame with its own. No input is
     // lost that matters — the picker is modal over this window.
-    const bool useImGui = imguiInitialised_ && !suspend_.load();
+    const bool useImGui =
+        imguiInitialised_ && suspendCount_.load(std::memory_order_acquire) == 0;
     if (useImGui)
         ImGui::SetCurrentContext(imguiCtx_);
 
@@ -499,12 +607,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         if (imguiWantsMouse)
             return 0;
-        bool locked;
-        {
-            std::lock_guard<std::mutex> lk(hostMutex_);
-            locked = cameraLocked_;
-        }
-        if (!locked) {
+        if (!CameraInputBlocked()) {
             auto& cam = service_.Scene().Camera();
             if (lmbDown_)
                 cam.Rotate(dx, dy);
@@ -519,12 +622,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_MOUSEWHEEL: {
         if (imguiWantsMouse)
             return 0;
-        bool locked;
-        {
-            std::lock_guard<std::mutex> lk(hostMutex_);
-            locked = cameraLocked_;
-        }
-        if (!locked) {
+        if (!CameraInputBlocked()) {
             i32 delta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
             service_.Scene().Camera().Zoom(delta * 30);
         }

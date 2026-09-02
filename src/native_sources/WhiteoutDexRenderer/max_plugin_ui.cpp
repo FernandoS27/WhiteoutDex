@@ -345,6 +345,30 @@ void MaxPluginUI::BuildToolbar() {
             svc.Settings().SetLightingMode(static_cast<LightingMode>(sel));
             SaveIni(win_);
         }
+        ImGui::SameLine();
+    }
+
+    // ---- Active-viewport camera sync ----
+    // Both halves of the work live off the render thread: the Max UI thread
+    // samples the viewport and pushes the pose in, and RenderWindow stamps it
+    // on at the top of each frame. All the checkbox owns is the flag.
+    {
+        bool sync = win_.SyncCamera();
+        if (ImGui::Checkbox(i18n::tr("wdx.toolbar.sync_camera"), &sync))
+            win_.SetSyncCamera(sync);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", i18n::tr("wdx.toolbar.sync_camera.tip"));
+        ImGui::SameLine();
+    }
+
+    // ---- Full rescan ----
+    // Re-walking the Max scene is Max-UI-thread work, so this only raises a
+    // request; the plugin's timer picks it up on its next tick.
+    {
+        if (ImGui::Button(i18n::tr("wdx.toolbar.resync")))
+            win_.RequestResync();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", i18n::tr("wdx.toolbar.resync.tip"));
     }
 
     ImGui::End();

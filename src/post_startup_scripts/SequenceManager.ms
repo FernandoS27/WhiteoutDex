@@ -2304,3 +2304,51 @@ struct WdxSequenceManager
     )
 )
 global WdxSequenceManager = WdxSequenceManager()
+
+-- ============================================================================
+-- WdxPushRendererSequences
+--
+-- Hand the running previewer the scene's current sequence ranges. Called by
+-- the Renderer macroscript right after WhiteoutFlakesStart, and again by the
+-- previewer itself when its Resync button rebuilds the scene: the ranges live
+-- on the MaxSceneAdapter, which a resync replaces, and without them the
+-- popcorn animVisibilityGuide gate has no current-animation name to match
+-- against so every emitter spawns on every sequence.
+--
+-- Forces a LoadSequences() so it works even when the Sequence Manager UI has
+-- never been opened this session. Returns the number of ranges pushed.
+-- ============================================================================
+global WdxPushRendererSequences
+fn WdxPushRendererSequences =
+(
+    local pushed = 0
+    if ::WdxSequenceManager == undefined then
+        format "WDX Renderer: WdxSequenceManager is undefined - no sequences pushed\n"
+    else
+    (
+        try (::WdxSequenceManager.sequences = ::WdxSequenceManager.LoadSequences()) catch
+            (format "WDX Renderer: LoadSequences threw: %\n" (getCurrentException()))
+        local seqs = ::WdxSequenceManager.sequences
+        format "WDX Renderer: WdxSequenceManager has % sequences\n" seqs.count
+        local namesArr  = #()
+        local startsArr = #()
+        local endsArr   = #()
+        for s in seqs do
+        (
+            try
+            (
+                append namesArr  (s.name as string)
+                append startsArr (s.startTime as integer)
+                append endsArr   (s.endTime   as integer)
+            )
+            catch
+            (
+                format "WDX Renderer:   skipped seq (decode failed): %\n" (getCurrentException())
+            )
+        )
+        format "WDX Renderer: pushing % sequences via WhiteoutFlakesPushSequences\n" namesArr.count
+        if namesArr.count > 0 do
+            pushed = WhiteoutFlakesPushSequences namesArr startsArr endsArr
+    )
+    pushed
+)
