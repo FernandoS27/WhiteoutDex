@@ -120,7 +120,10 @@ struct WdxGlobalSequenceManager
 		type == "Bone" or type == "Flow"
 	),
 	
-	fn collectController ctrl description ctrlType &entriesMap =
+	-- srcObj: Node, zu dem der Controller gehört (undefined für Material-Tracks).
+	-- Wird als 5. Element im ctrlPair mitgeführt, damit später NIE über den
+	-- Namen aufgelöst werden muss — Node-Namen sind nicht eindeutig.
+	fn collectController ctrl description ctrlType &entriesMap srcObj:undefined =
 	(
 		try
 		(
@@ -128,17 +131,17 @@ struct WdxGlobalSequenceManager
 			if not (isProperty ctrl #keys) then return()
 			if ctrl.keys == undefined or ctrl.keys.count == 0 then return()
 			if getAfterORT ctrl != #cycle then return()
-			
+
 			local lastKeyTime = ctrl.keys[ctrl.keys.count].time
 			if lastKeyTime <= 0f then return()
-			
+
 			local editable = this.isTypeEditable ctrlType
 			local sourceStr = description + "  [" + ctrlType + "]"
-			
+
 			local found = false
 			for entry in entriesMap where entry[1] == lastKeyTime do
 			(
-				append entry[2] #(ctrl, description, ctrlType, editable)
+				append entry[2] #(ctrl, description, ctrlType, editable, srcObj)
 				appendIfUnique entry[4] sourceStr
 				if editable then entry[5] = true
 				found = true
@@ -146,7 +149,7 @@ struct WdxGlobalSequenceManager
 			)
 			if not found then
 			(
-				append entriesMap #(lastKeyTime, #(#(ctrl, description, ctrlType, editable)), false, #(sourceStr), editable, ctrlType)
+				append entriesMap #(lastKeyTime, #(#(ctrl, description, ctrlType, editable, srcObj)), false, #(sourceStr), editable, ctrlType)
 			)
 		)
 		catch()
@@ -308,10 +311,10 @@ struct WdxGlobalSequenceManager
 		(
 			local objName = obj.name
 			
-			try (this.collectController obj.pos.controller        (objName + ".Position")   "Bone" &entriesMap) catch()
-			try (this.collectController obj.rotation.controller   (objName + ".Rotation")   "Bone" &entriesMap) catch()
-			try (this.collectController obj.scale.controller      (objName + ".Scale")      "Bone" &entriesMap) catch()
-			try (this.collectController obj.visibility.controller (objName + ".Visibility") "Vis"  &entriesMap) catch()
+			try (this.collectController obj.pos.controller        (objName + ".Position")   "Bone" &entriesMap srcObj:obj) catch()
+			try (this.collectController obj.rotation.controller   (objName + ".Rotation")   "Bone" &entriesMap srcObj:obj) catch()
+			try (this.collectController obj.scale.controller      (objName + ".Scale")      "Bone" &entriesMap srcObj:obj) catch()
+			try (this.collectController obj.visibility.controller (objName + ".Visibility") "Vis"  &entriesMap srcObj:obj) catch()
 			
 			-- Scan Modifier-Stack: Wc3VertexMod.VertexColor (KGAC-Tracks) und
 			-- andere potenziell animierte Modifier-Parameter.
@@ -325,7 +328,7 @@ struct WdxGlobalSequenceManager
 						try
 						(
 							local vc = m.VertexColor.controller
-							this.collectController vc (objName + ".VertexColor") "Color" &entriesMap
+							this.collectController vc (objName + ".VertexColor") "Color" &entriesMap srcObj:obj
 						) catch()
 					)
 				)
@@ -502,10 +505,12 @@ struct WdxGlobalSequenceManager
 				local dotIdx = findString desc "."
 				if dotIdx != undefined then
 				(
-					local oName = substring desc 1 (dotIdx - 1)
 					local channel = substring desc (dotIdx + 1) -1
-					local obj = getNodeByName oName
-					if obj != undefined then
+					-- Node aus dem ctrlPair (Element 5) — Namen sind nicht
+					-- eindeutig, getNodeByName träfe ggf. den falschen Node.
+					local obj = if ctrlPair.count >= 5 then ctrlPair[5] else undefined
+					if obj == undefined then obj = getNodeByName (substring desc 1 (dotIdx - 1))
+					if obj != undefined and isValidNode obj then
 					(
 						local freshCtrl = case channel of
 						(
@@ -1500,34 +1505,42 @@ struct WdxGlobalSequenceManager
 				return()
 			)
 			
-			-- Objekte und Channels aus Entry ermitteln
+			-- Objekte und Channels aus Entry ermitteln — Nodes direkt aus dem
+			-- ctrlPair (Element 5), NICHT über den Namen (Namen sind nicht
+			-- eindeutig; getNodeByName träfe ggf. den falschen Node).
+			local objs = #()
 			local objNames = #()
 			local hasPos = false
 			local hasRot = false
 			local hasScl = false
-			
+
 			for cInfo in entry[2] do
 			(
+				if cInfo.count >= 5 and cInfo[5] != undefined and isValidNode cInfo[5] then
+					appendIfUnique objs cInfo[5]
+
 				local desc = cInfo[2]
 				local dotIdx = findString desc "."
 				if dotIdx != undefined then
 				(
 					local oName = substring desc 1 (dotIdx - 1)
 					appendIfUnique objNames oName
-					
+
 					local channel = substring desc (dotIdx + 1) -1
 					if channel == "Position" then hasPos = true
 					else if channel == "Rotation" then hasRot = true
 					else if channel == "Scale" then hasScl = true
 				)
 			)
-			
-			-- Objekte in Szene finden und selektieren
-			local objs = #()
-			for n in objNames do
+
+			-- Fallback nur, wenn kein Entry einen Node mitführt (alte Einträge)
+			if objs.count == 0 then
 			(
-				local o = getNodeByName n
-				if o != undefined then append objs o
+				for n in objNames do
+				(
+					local o = getNodeByName n
+					if o != undefined then append objs o
+				)
 			)
 			
 			if objs.count == 0 then

@@ -305,7 +305,9 @@ private:
     std::vector<LoadedTexture> loadedTextures_;
 
     std::vector<BoneInfo> bones_;
-    std::unordered_map<std::wstring, i32> boneNameToIdx_;
+    // Keyed by INode* — duplicate node names are routine in community models,
+    // so a name key would collapse same-named bones onto one index.
+    std::unordered_map<INode*, i32> boneNodeToIdx_;
     std::vector<GeosetInfo> geosets_;
     std::vector<MaterialInfo> materials_;
     std::vector<TextureEntry> texEntries_;

@@ -918,8 +918,10 @@ void Wc3EventBuilder::buildEvents(
             }
             kl << L")";
 
+            // Resolve by handle — event node names can collide, and
+            // getNodeByName would set the keyList on the wrong node.
             std::wstringstream ss;
-            ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
+            ss << L"(local n = maxOps.getNodeByHandle " << node->GetHandle() << L";"
                << L"if n != undefined do ("
                << L"n.keyList = " << kl.str()
                << L"))";
@@ -1095,17 +1097,17 @@ void Wc3VertexColorBuilder::applyVertexColors(
         // Plugin classname is Wdx_Wc3VertexMod (see Wc3VertexColor.ms line 1:
         // `plugin modifier Wdx_Wc3VertexMod`). Older code used the bare
         // "Wc3VertexMod" which is undefined in MaxScript.
-        std::wstring nodeName(meshNode->GetName());
+        // Resolve by handle — mesh node names are not guaranteed unique.
         wchar_t script[512];
         swprintf_s(script, 512,
-            L"(local n = getNodeByName \"%s\";"
+            L"(local n = maxOps.getNodeByHandle %u;"
             L"if n != undefined do ("
             L"local m = Wdx_Wc3VertexMod();"
             L"m.UsesDropShadow = %s;"
             L"m.UsesColor = %s;"
             L"m.VertexColor = color %d %d %d;"
             L"addModifier n m))",
-            nodeName.c_str(),
+            (unsigned)meshNode->GetHandle(),
             ga.dropShadow ? L"true" : L"false",
             ga.usesColor ? L"true" : L"false",
             (int)(ga.color.r * 255.0f + 0.5f),

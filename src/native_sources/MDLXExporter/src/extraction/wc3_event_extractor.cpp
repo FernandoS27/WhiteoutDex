@@ -99,10 +99,10 @@ std::vector<int> readEventKeyList(INode* node) {
     if (!nameRaw) return frames;
 
     std::wstring nodeName(nameRaw);
-    std::wstring nodeNameEsc = escapeForMaxScript(nodeName);
 
-    // Build the MaxScript:
-    //   (local n = getNodeByName "<name>";
+    // Build the MaxScript (node resolved by HANDLE — names are not unique,
+    // and getNodeByName would read the keyList off the wrong node):
+    //   (local n = maxOps.getNodeByHandle <handle>;
     //    local result = "";
     //    if n != undefined and isProperty n #keyList do (
     //        for i = 1 to n.keyList.count do (
@@ -112,7 +112,7 @@ std::vector<int> readEventKeyList(INode* node) {
     //    );
     //    result)
     std::wstringstream ss;
-    ss << L"(local n = getNodeByName \"" << nodeNameEsc << L"\";"
+    ss << L"(local n = maxOps.getNodeByHandle " << node->GetHandle() << L";"
        << L" local result = \"\";"
        << L" if n != undefined and isProperty n #keyList do ("
        << L"   for i = 1 to n.keyList.count do ("

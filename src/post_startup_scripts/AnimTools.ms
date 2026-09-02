@@ -799,18 +799,27 @@ struct WdxAnimTools
         mapped fn saveParents s =
         (
             local p = s.parent
-            if p != undefined then setUserProp s "OriginalParent" p.name
+            if p != undefined then
+            (
+                -- Handle ist der Schlüssel (Namen sind nicht eindeutig);
+                -- der Name bleibt nur als Fallback für alte Szenen.
+                setUserProp s "OriginalParentHandle" p.inode.handle
+                setUserProp s "OriginalParent" p.name
+            )
             s.parent = undefined
         )
 
         mapped fn restoreParents s =
         (
-            local tmp = getUserProp s "OriginalParent"
-            if tmp != undefined then
+            local p = undefined
+            local h = getUserProp s "OriginalParentHandle"
+            if h != undefined then try ( p = maxOps.getNodeByHandle (h as integer) ) catch()
+            if p == undefined then
             (
-                local p = getNodeByName tmp
-                s.parent = p
+                local tmp = getUserProp s "OriginalParent"
+                if tmp != undefined then p = getNodeByName tmp
             )
+            if p != undefined then s.parent = p
         )
         
         -- Event-Handler

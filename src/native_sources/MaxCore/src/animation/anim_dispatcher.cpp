@@ -383,19 +383,68 @@ static std::vector<TimeValue> filterIKKeyTimes(
 // regular-rotation pipelines are currently validated and should not
 // be disturbed by this targeted fix.
 
-static bool isWc3Particles2Node(INode* maxNode) {
-    if (!maxNode) return false;
+// Walk the derived-object chain down to the base object.
+static Object* baseObjectOf(INode* maxNode) {
+    if (!maxNode) return nullptr;
     Object* obj = maxNode->GetObjectRef();
-    if (!obj) return false;
-    // Walk derived-object chain to get to the base object
     while (obj && obj->SuperClassID() == GEN_DERIVOB_CLASS_ID) {
         IDerivedObject* d = static_cast<IDerivedObject*>(obj);
         obj = d->GetObjRef();
     }
+    return obj;
+}
+
+static bool isWc3Particles2Node(INode* maxNode) {
+    Object* obj = baseObjectOf(maxNode);
     if (!obj) return false;
     // WC3_PARTICLES2 from mdx_class_ids.h
     const Class_ID kWc3Particles2(0xD9F33BC9u, 0x7A0DA37Au);
     return obj->ClassID() == kWc3Particles2;
+}
+
+// ── Orientation-critical nodes: export ABSOLUTE rotation ─────────────
+//
+// The delta-from-bind KGRT convention below is correct for bones and
+// plain helpers because their bind orientation is baked into the skinned
+// vertices (exported in world space at bind). Emitter-like nodes carry
+// no geometry that could bake the bind orientation: in game their rest
+// orientation is exactly what KGRT says — identity when there are no
+// keys. Exporting the delta silently discards any static aim (e.g. a
+// PE2 rotated 90° to emit sideways exports identity and emits straight
+// up in game) and offsets every animated rotation by the bind rotation.
+//
+// For these node types KGRT must reproduce the node's Max WORLD
+// orientation: local = worldRot * Inverse(parentGameRot), where the
+// parent's in-game rotation is its bind delta (bone convention) or its
+// own world rotation (parent is itself an absolute node).
+//
+// ClassIDs duplicated from MDLXExporter mdx_class_ids.h (MaxCore cannot
+// include exporter headers) — keep in sync.
+static bool isOrientationAbsoluteNode(INode* maxNode) {
+    Object* obj = baseObjectOf(maxNode);
+    if (!obj) return false;
+    const Class_ID id = obj->ClassID();
+    static const Class_ID kAbsoluteIds[] = {
+        Class_ID(0x12E4F5A6u, 0x3B7C8D9Eu), // WC3_PARTICLES1
+        Class_ID(0xD9F33BC9u, 0x7A0DA37Au), // WC3_PARTICLES2
+        Class_ID(0x937AA064u, 0x9EFFA3DAu), // WC3_RIBBON
+        Class_ID(0x7A1B2C04u, 0x3D4E5F04u), // WC3_LIGHT
+        Class_ID(0x7A1B2C05u, 0x3D4E5F05u), // WC3_EVENT_V2021
+        Class_ID(0x7A1B2C06u, 0x3D4E5F06u), // WC3_EVENT_V2020
+        Class_ID(0x7A1B2C09u, 0x3D4E5F09u), // WC3_POPCORN
+        Class_ID(0x7A1B2C01u, 0x3D4E5F01u), // WC3_ATTACH_POINT
+        Class_ID(0x750735E3u, 0x21F2D857u), // NEODEX_PARTICLES1
+        Class_ID(0x02942cacu, 0x43c6a3d9u), // NEODEX_PARTICLES2
+        Class_ID(0x179527d0u, 0x1c217376u), // NEODEX_RIBBON
+        Class_ID(0x456E2573u, 0x2A456757u), // NEODEX_LIGHT
+        Class_ID(0x189dc89eu, 0x2e9f652du), // NEODEX_EVENT
+        Class_ID(0x956e6a9bu, 0x87f39a9eu), // NEODEX_EVENT_V2020
+        Class_ID(0x6a17b48cu, 0x291672feu), // NEODEX_POPCORN
+        Class_ID(0x1136ac20u, 0x6f9cfeb7u), // NEODEX_ATTACH_POINT
+    };
+    for (const auto& k : kAbsoluteIds)
+        if (id == k) return true;
+    return false;
 }
 
 // Returns true if any of the rotation sub-controller's after-ORT is
@@ -520,6 +569,14 @@ static bool extractPre2CyclicRotation(INode* maxNode, int32_t nodeIdx,
     nodeAnim.rotation.interpolation = ir::InterpolationType::Linear;
     nodeAnim.rotation.globalSequenceIndex = gsIdx;
 
+    // The parent (a bone) exports delta-from-bind, so its in-game rotation
+    // at time t is Pb^-1 * P(t). Solving world = local * parentGame for the
+    // emitter's local rotation leaves a trailing * Pb. Identity when the
+    // parent rests unrotated (the common case).
+    Quat parentBindRot(0.0f, 0.0f, 0.0f, 1.0f);
+    if (hasParent)
+        parentBindRot = extractRotation(parentNode->GetNodeTM(0));
+
     PLOG << "  --- Key extraction ---\n";
 
     for (int i = 0; i < numKeys; ++i) {
@@ -540,6 +597,7 @@ static bool extractPre2CyclicRotation(INode* maxNode, int32_t nodeIdx,
         float det = DotProd(r0, CrossProd(r1, r2));
         if (det < 0.0f) r0 = -r0;
         Quat localRot = Quat(Matrix3(r0, r1, r2, Point3(0, 0, 0)));
+        localRot = localRot * parentBindRot;
 
         // Log RAW value before any adjustments
         PLOG << "    key[" << i << "] t=" << t << " ticks ("
@@ -756,11 +814,24 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
             }
         }
 
+        // Emitter-like nodes export absolute rotation AND scale instead of
+        // the bind delta/ratio (see isOrientationAbsoluteNode) — nothing
+        // bakes their bind transform the way skinned vertices do for bones.
+        // Translation stays delta-based for all nodes: the pivot is the
+        // world bind position, so absolute positions are preserved anyway.
+        // The parent's convention decides how its in-game rotation is
+        // reconstructed when solving for this node's local rotation.
+        const bool useAbsoluteRotScale = isOrientationAbsoluteNode(maxNode);
+        const bool parentIsAbsolute =
+            (parentNode && !parentNode->IsRootNode()) &&
+            isOrientationAbsoluteNode(parentNode);
+
         ALOG << "  node[" << nodeIdx << "] '" << irNode.name << "'"
              << " bindPos=(" << bindPos.x << "," << bindPos.y << "," << bindPos.z << ")"
              << " bindRot=(" << bindRot.x << "," << bindRot.y << "," << bindRot.z << "," << bindRot.w << ")"
              << " bindScl=(" << bindScl.x << "," << bindScl.y << "," << bindScl.z << ")"
              << " rotDelta=" << (needsRotDelta ? "ACTIVE" : "none(identity)")
+             << " rotMode=" << (useAbsoluteRotScale ? "ABSOLUTE" : "bind-delta")
              << "\n";
 
         // ── Patch C: PRE2 cyclic rotation short-circuit ────────────
@@ -1039,11 +1110,23 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                         parentWorldRot = extractRotation(parentNode->GetNodeTM(t));
                     }
 
-                    // Delta-from-bind rotation (matches NeoDex GetRot):
-                    // MDX KGRT stores rotation CHANGE from bind pose.
+                    // Bone convention (matches NeoDex GetRot): KGRT stores the
+                    // rotation CHANGE from bind pose — the bind orientation
+                    // itself is baked into the world-space skinned vertices.
+                    // Orientation-critical nodes (emitters, lights, events,
+                    // attachments) have nothing that bakes the bind
+                    // orientation, so their KGRT must reproduce the absolute
+                    // Max world orientation instead.
                     Quat worldDelta = invWorldBind * worldRot;
                     Quat parentDelta = invParentWorldBind * parentWorldRot;
-                    Quat localRot = worldDelta * Inverse(parentDelta);
+                    Quat localRot;
+                    if (useAbsoluteRotScale) {
+                        Quat parentGameRot = parentIsAbsolute ? parentWorldRot
+                                                              : parentDelta;
+                        localRot = worldRot * Inverse(parentGameRot);
+                    } else {
+                        localRot = worldDelta * Inverse(parentDelta);
+                    }
 
                     // Hemisphere consistency: force w >= 0, then check prev-key
                     if (localRot.w < 0.0f) {
@@ -1103,6 +1186,17 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 if (bindSx < 0.0001f) bindSx = 1.0f;
                 if (bindSy < 0.0001f) bindSy = 1.0f;
                 if (bindSz < 0.0001f) bindSz = 1.0f;
+
+                // Absolute nodes export their local scale verbatim: KGSC is
+                // the in-game scale, and nothing bakes an emitter's bind
+                // scale the way world-space vertices do for bones. Dividing
+                // by bind scale would silently discard a statically scaled
+                // emitter (ratio 1.0 → all-identity → track stripped).
+                if (useAbsoluteRotScale) {
+                    bindSx = 1.0f;
+                    bindSy = 1.0f;
+                    bindSz = 1.0f;
+                }
 
                 auto sclTimes = isIKNode
                     ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
@@ -1249,7 +1343,15 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
             if (hasAnyRealRotation) {
                 ir::Keyframe<Quat> key;
                 key.time = 0;
+                // Bones rest at identity (delta convention). Absolute nodes
+                // rest at their bind orientation so a static aim survives
+                // outside every sequence range too.
                 key.value = Quat(0.0f, 0.0f, 0.0f, 1.0f);
+                if (useAbsoluteRotScale) {
+                    key.value = parentIsAbsolute
+                        ? worldBindRot * Inverse(parentWorldBindRot)
+                        : worldBindRot;
+                }
                 restAnim.rotation.keys.push_back(key);
                 restAnim.rotation.interpolation = ir::InterpolationType::Linear;
             }
@@ -1257,7 +1359,9 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
             if (hasAnyRealScale) {
                 ir::Keyframe<Point3> key;
                 key.time = 0;
-                key.value = Point3(1, 1, 1);
+                // Absolute nodes rest at their bind scale (see the scale
+                // sampling block above); bones rest at 1.
+                key.value = useAbsoluteRotScale ? bindScl : Point3(1, 1, 1);
                 restAnim.scale.keys.push_back(key);
                 restAnim.scale.interpolation = ir::InterpolationType::Linear;
             }

@@ -863,7 +863,7 @@ void MaxSceneAdapter::CollectScene() {
     loadedTextures_.clear();
     texEntries_.clear();
     bones_.clear();
-    boneNameToIdx_.clear();
+    boneNodeToIdx_.clear();
     geosets_.clear();
     materials_.clear();
     particles_.clear();
@@ -1243,7 +1243,7 @@ void MaxSceneAdapter::CollectMaterials() {
 
 void MaxSceneAdapter::CollectBones() {
     bones_.clear();
-    boneNameToIdx_.clear();
+    boneNodeToIdx_.clear();
 
     std::vector<INode*> allBones;
     std::unordered_map<INode*, bool> boneSet;
@@ -1268,7 +1268,7 @@ void MaxSceneAdapter::CollectBones() {
         bi.node = allBones[i];
         bi.index = i;
         bones_.push_back(bi);
-        boneNameToIdx_[std::wstring(allBones[i]->GetName())] = i;
+        boneNodeToIdx_[allBones[i]] = i;
     }
 }
 
@@ -1807,8 +1807,8 @@ std::vector<SkinWeightData> MaxSceneAdapter::GetSkinWeights() {
                 INode* bn = skin->GetBone(ctx->GetAssignedBone(v, b));
                 i32 idx = 0;
                 if (bn) {
-                    auto it = boneNameToIdx_.find(std::wstring(bn->GetName()));
-                    if (it != boneNameToIdx_.end())
+                    auto it = boneNodeToIdx_.find(bn);
+                    if (it != boneNodeToIdx_.end())
                         idx = it->second;
                 }
                 ow[v].bi[b] = idx;

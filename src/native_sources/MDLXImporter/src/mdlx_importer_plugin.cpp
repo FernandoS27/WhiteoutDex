@@ -394,17 +394,12 @@ INode* createBoneNode(const ir::Bone& bone, Interface* gi, bool asPointHelper) {
         // Wirecolor we can set directly via the C++ API.
         node->SetWireColor(RGB(0, 255, 0));
 
-        // Display flags via MaxScript. We escape the node name in case it
-        // contains characters that would break the script string literal.
-        std::wstring nm(node->GetName());
-        std::wstring escaped;
-        escaped.reserve(nm.size());
-        for (wchar_t c : nm) {
-            if (c == L'"' || c == L'\\') escaped.push_back(L'\\');
-            escaped.push_back(c);
-        }
+        // Display flags via MaxScript. Resolve the node by HANDLE, not by
+        // name — node names are not unique (community models routinely have
+        // several nodes named "1"), and getNodeByName returns the first
+        // match, silently configuring the wrong node.
         std::wstringstream ss;
-        ss << L"(local n = getNodeByName \"" << escaped << L"\";"
+        ss << L"(local n = maxOps.getNodeByHandle " << node->GetHandle() << L";"
            << L"if n != undefined and (classOf n) == Point do ("
            << L"n.size = 20;"
            << L"n.box = true;"
@@ -1589,9 +1584,10 @@ void animateFloatNamedScript(INode* node, const wchar_t* paramName,
         default: break;
     }
 
-    std::wstring nodeName(node->GetName());
+    // Resolve by handle: node names are not unique, getNodeByName would
+    // animate the first same-named node instead of this one.
     std::wstringstream ss;
-    ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
+    ss << L"(local n = maxOps.getNodeByHandle " << node->GetHandle() << L";"
        << L"if n != undefined do ("
        << L"n." << paramName << L".controller = bezier_float();"
        << L"local c = n." << paramName << L".controller;";
@@ -1650,9 +1646,9 @@ void animateColorNamedScript(INode* node, const wchar_t* paramName,
         default: break;
     }
 
-    std::wstring nodeName(node->GetName());
+    // Resolve by handle — see animateFloatNamedScript.
     std::wstringstream ss;
-    ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
+    ss << L"(local n = maxOps.getNodeByHandle " << node->GetHandle() << L";"
        << L"if n != undefined do ("
        << L"n." << paramName << L".controller = bezier_color();"
        << L"local c = n." << paramName << L".controller;";
@@ -1859,9 +1855,13 @@ void insertVisibilityKeys(INode* node, const ir::FloatTrack& track,
         // get here, the key list already contains the proper per-sequence
         // boundary stubs with correct hold values.
 
-        std::wstring nodeName(node->GetName());
+        // Resolve by HANDLE, never by name: node names are not unique
+        // (e.g. Madara_SusanooHum has five PE2 nodes all named "1"), and
+        // getNodeByName returns the first match — every same-named node's
+        // visibility track landed on that one node (last write wins) while
+        // the rest got NO visibility at all, breaking the round-trip.
         std::wstringstream ss;
-        ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
+        ss << L"(local n = maxOps.getNodeByHandle " << node->GetHandle() << L";"
            << L"if n != undefined do ("
            << L"n.visibility = bezier_float();"    // create the visibility track
            << L"n.visibility.controller = boolean_float();"
@@ -3901,9 +3901,10 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                             default: break;
                         }
 
-                        std::wstring nodeName(meshNode->GetName());
+                        // Resolve by handle — names are not unique.
                         std::wstringstream ss;
-                        ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
+                        ss << L"(local n = maxOps.getNodeByHandle "
+                           << meshNode->GetHandle() << L";"
                            << L"if n != undefined do ("
                            << L"for m in n.modifiers do ("
                            // Match the Wc3VertexMod modifier robustly. Depending
