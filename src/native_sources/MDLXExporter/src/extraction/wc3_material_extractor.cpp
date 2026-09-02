@@ -475,6 +475,28 @@ static ir::InterpolationType detectInterpFromController(Control* ctrl) {
     return ir::InterpolationType::None;
 }
 
+// A bezier_float controller whose keys all hold with STEP out-tangents is a
+// DontInterp track: the importer stores MDX DontInterp alpha tracks exactly
+// this way (BEZKEY_STEP on both sides of every key). Detecting it here lets
+// the exporter round-trip DontInterp instead of writing a Bezier track whose
+// reconstructed tangents overshoot (negative alpha) and crossfade a form
+// switch that should be instant.
+static bool isStepBezierController(Control* ctrl) {
+    if (!ctrl || ctrl->ClassID().PartA() != HYBRIDINTERP_FLOAT_CLASS_ID)
+        return false;
+    IKeyControl* ikc = GetKeyControlInterface(ctrl);
+    if (!ikc) return false;
+    int n = ikc->GetNumKeys();
+    if (n == 0) return false;
+    for (int i = 0; i < n; i++) {
+        IBezFloatKey k;
+        ikc->GetKey(i, &k);
+        if (GetOutTanType(k.flags) != BEZKEY_STEP)
+            return false;
+    }
+    return true;
+}
+
 // Read a float controller's keys into parallel vectors: time, value, in-tangent,
 // out-tangent. hasTangents is set to true iff the controller is Hermite or
 // Bezier (only those have meaningful tangents). For Linear/TCB/other, tangents
@@ -1449,7 +1471,10 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         Control* opacCtrl = getParamController(mtlRef, L"opacity");
         if (opacCtrl) {
             ir::InterpolationType interp = detectInterpFromController(opacCtrl);
-            if (interp == ir::InterpolationType::None)
+            if (interp == ir::InterpolationType::Bezier &&
+                isStepBezierController(opacCtrl))
+                interp = ir::InterpolationType::None; // DontInterp round-trip
+            else if (interp == ir::InterpolationType::None)
                 interp = ir::InterpolationType::Linear;
             int32_t trackIdx = extractOpacityTrack(mtlRef, interp, model);
             if (trackIdx >= 0) {

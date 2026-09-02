@@ -904,14 +904,18 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
     }
 
     for (int j = 0; j < numLayers; ++j) {
-        bool isLastLayer = (j == numLayers - 1);
         // Each layer gets its own texmap vector — this ensures that when two
         // layers in the same composite reference the same texture with
         // different texture animations, each gets its own bitmap instance.
         auto layerTexmaps = buildLayerTexmaps(irMat.layers[j]);
+        // Every sub gets its texture display-flagged (showInViewport=true).
+        // The old "last layer only" policy made Nitrous render a 2-layer
+        // form-switch composite as its alternate-form texture at full
+        // opacity — per-layer opacity animation needs ALL subs displayable
+        // so the viewport blends them.
         Mtl* subMtl = buildSingleLayerWc3Material(
             irMat.layers[j], irMat, irModel, layerTexmaps, modelDir,
-            resolver, gi, isLastLayer);
+            resolver, gi, true);
 
         if (subMtl) {
             MSTR subName;

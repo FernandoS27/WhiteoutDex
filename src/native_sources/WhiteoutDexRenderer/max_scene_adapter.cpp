@@ -1356,6 +1356,24 @@ void MaxSceneAdapter::CollectBones() {
         bones_.push_back(bi);
         boneNodeToIdx_[allBones[i]] = i;
     }
+
+    // Unskinned meshes: the mesh node itself acts as a bone, mirroring the
+    // exporter (which generates a bone per unskinned mesh). GetSkinWeights
+    // rigid-binds the geoset to this entry so node-level mesh animation —
+    // its own keys, a custom pivot, links to animated parents — plays in
+    // the preview. A node can already be here as another mesh's skin bone;
+    // reuse that index.
+    for (auto& gs : geosets_) {
+        if (!gs.node || FindSkinModifier(gs.node))
+            continue;
+        if (boneNodeToIdx_.count(gs.node))
+            continue;
+        BoneInfo bi;
+        bi.node = gs.node;
+        bi.index = (i32)bones_.size();
+        boneNodeToIdx_[gs.node] = bi.index;
+        bones_.push_back(bi);
+    }
 }
 
 // ============================================================================
@@ -1668,21 +1686,17 @@ std::vector<MeshData> MaxSceneAdapter::GetMeshes() {
         mprintf(_M("    mesh[%d] '%s' ...\n"), gs.geosetId, gs.node->GetName());
 
         Modifier* skinMod = FindSkinModifier(gs.node);
-        if (skinMod)
-            skinMod->DisableMod();
+        // Mirror the exporter's policy (MeshExtractor): evaluate WITH the Skin
+        // modifier active at frame 0 — the bind pose by WC3 convention (the
+        // editable-mesh state under a Skin can sit in an arbitrary authoring
+        // pose on FBX-style rigs).
         ObjectState os = gs.node->EvalWorldState(0);
 
-        if (!os.obj || !os.obj->CanConvertToType(triObjectClassID)) {
-            if (skinMod)
-                skinMod->EnableMod();
+        if (!os.obj || !os.obj->CanConvertToType(triObjectClassID))
             continue;
-        }
         TriObject* triObj = static_cast<TriObject*>(os.obj->ConvertToType(0, triObjectClassID));
-        if (!triObj) {
-            if (skinMod)
-                skinMod->EnableMod();
+        if (!triObj)
             continue;
-        }
 
         Mesh& mesh = triObj->GetMesh();
         mesh.buildNormals();
@@ -1703,6 +1717,15 @@ std::vector<MeshData> MaxSceneAdapter::GetMeshes() {
         MeshNormalSpec* specN = mesh.GetSpecifiedNormals();
         bool hasSpecN = specN && specN->GetNumNormals() > 0;
 
+        // Object → world at bind time. EvalWorldState hands back OBJECT-space
+        // vertices; GetObjectTM(0) = objectOffset × nodeTM brings them to
+        // world space including a custom pivot's object offset. The skinning
+        // palette applies worldTM(t) × Inverse(nodeTM(0)) per bone, which
+        // expects world-space bind vertices — same math as the exporter.
+        const Matrix3 objTM = gs.node->GetObjectTM(0);
+        Matrix3 normalTM = objTM;
+        normalTM.NoTrans();
+
         for (i32 f = 0; f < numFaces; f++) {
             Face& face = mesh.faces[f];
             for (i32 v = 0; v < 3; v++) {
@@ -1710,11 +1733,11 @@ std::vector<MeshData> MaxSceneAdapter::GetMeshes() {
                 i32 origV = face.v[v];
                 gs.faceVertMap[outIdx] = origV;
 
-                Point3 pos = mesh.verts[origV];
+                Point3 pos = mesh.verts[origV] * objTM;
                 md.positions[outIdx] = MaxPointToDefault(pos);
 
                 Point3 n = hasSpecN ? specN->GetNormal(f, v) : GetVNormal(mesh, f, origV);
-                n = Normalize(n);
+                n = Normalize(n * normalTM);
                 md.normals[outIdx] = MaxDirToDefault(n);
 
                 if (hasUVs) {
@@ -1730,8 +1753,6 @@ std::vector<MeshData> MaxSceneAdapter::GetMeshes() {
 
         if (triObj != os.obj)
             triObj->DeleteThis();
-        if (skinMod)
-            skinMod->EnableMod();
 
         // Validate skin vertex count
         if (skinMod) {
@@ -1870,7 +1891,25 @@ std::vector<SkinWeightData> MaxSceneAdapter::GetSkinWeights() {
             continue;
         Modifier* skinMod = FindSkinModifier(gs.node);
         if (!skinMod) {
-            mprintf(_M("  Geoset %d: no Skin modifier\n"), gs.geosetId);
+            // Rigid bind to the mesh's own node-bone (registered by
+            // CollectBones): every vertex weighted 1.0 to local palette
+            // slot 0, whose subset entry is the node's global bone index.
+            auto it = boneNodeToIdx_.find(gs.node);
+            if (it == boneNodeToIdx_.end()) {
+                mprintf(_M("  Geoset %d: no Skin modifier and no node bone\n"), gs.geosetId);
+                continue;
+            }
+            SkinWeightData sw;
+            sw.geosetId = gs.geosetId;
+            sw.influences.resize(gs.expandedVertCount);
+            for (auto& inf : sw.influences) {
+                inf.boneIdx[0] = 0;
+                inf.weight[0] = 1.0f;
+            }
+            sw.subsetNodeIndices.push_back(it->second);
+            mprintf(_M("  Geoset %d: unskinned, rigid-bound to node bone %d\n"), gs.geosetId,
+                    it->second);
+            result.push_back(std::move(sw));
             continue;
         }
         ISkin* skin = (ISkin*)skinMod->GetInterface(I_SKIN);

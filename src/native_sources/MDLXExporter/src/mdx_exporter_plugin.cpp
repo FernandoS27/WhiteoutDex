@@ -18,6 +18,7 @@
 #include <optimization/bone_optimizer.h>
 #include <util/max_helpers.h>
 
+#include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
 #include <decomp.h>
@@ -254,6 +255,7 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     // Meshes
     ELOG << "\n==== Mesh Extraction ====\n";
     core::MeshExtractor meshEx;
+    std::vector<int32_t> meshBoneIdxs; // bones minted for unskinned meshes
     for (auto& sn:sceneResult.nodes) {
         if(sn.category!=core::NodeCategory::Mesh) continue;
         auto mesh=meshEx.extract(sn.maxNode,sn.nodeIndex,0,reporter);
@@ -267,39 +269,112 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
                 ELOG << " sum=" << tw << "\n";
             }
         } else {
-            // Unskinned mesh: check if parent is already a bone/helper.
-            // Matches NeoDex generateFakeBone: "else if m.parent != undefined then m.parent"
-            // → parent becomes a BONE (not helper) and the mesh is skinned to it.
-            INode* par=sn.maxNode->GetParentNode();
-            auto parentIt=boneResult.nodeToIndex.end();
-            if(par&&!par->IsRootNode())
-                parentIt=boneResult.nodeToIndex.find(par);
-
-            if(parentIt!=boneResult.nodeToIndex.end()) {
-                // Parent is already in bone list → skin mesh to parent, promote to bone
-                int32_t parentBoneIdx=parentIt->second;
-                int32_t parentNodeIdx=irModel.bones[parentBoneIdx].nodeIndex;
-                irModel.bones[parentBoneIdx].isHelper=false; // promote helper→bone
-                irModel.bones[parentBoneIdx].nodeFlags |= core::collectNodeFlags(sn.maxNode);
-                for(auto& v:mesh.vertices){v.skinInfluences.clear();v.skinInfluences.push_back({parentNodeIdx,1.0f});}
-                ELOG << "  mesh '" << mesh.name << "' unskinned -> parent bone '"
-                     << irModel.bones[parentBoneIdx].name << "' (promoted to BONE)\n";
+            // Unskinned mesh: the mesh node itself always becomes a bone and
+            // every vertex rigid-binds to it. The mesh's IR node already
+            // exists from scene traversal (sn.nodeIndex) with the correct
+            // parent chain, pivot (= the custom pivot's world position at
+            // frame 0), bind TM and node flags — the bone just points at it,
+            // and AnimDispatcher bakes the node's own animation. This covers
+            // a standalone animated mesh, a mesh linked to a bone/helper/
+            // dummy, and a mesh linked to another (animated) mesh alike.
+            // The old behavior skinned the mesh to its PARENT when the
+            // parent was in the bone list, silently dropping the mesh's own
+            // animation and pivot.
+            int32_t ni;
+            auto selfIt = boneResult.nodeToIndex.find(sn.maxNode);
+            if (selfIt != boneResult.nodeToIndex.end()) {
+                // Node is already a bone (e.g. it's referenced by another
+                // mesh's Skin modifier). Carry the influences on the bone's
+                // own nodeIndex — it can differ from sn.nodeIndex when the
+                // bone came in as an implicit skin reference.
+                auto& b = irModel.bones[selfIt->second];
+                b.isHelper = false; // carries geometry → BONE chunk
+                ni = b.nodeIndex;
+                ELOG << "  mesh '" << mesh.name << "' unskinned -> existing bone '"
+                     << b.name << "' (nodeIdx=" << ni << ")\n";
             } else {
-                // No parent in bone list → create synthetic bone (original behavior)
-                int32_t ni=(int32_t)irModel.nodes.size();
-                ir::IRModel::Node irn; irn.name="Mesh "+mesh.name; irn.maxNode=sn.maxNode;
-                irn.worldTM=sn.maxNode->GetNodeTM(0); irn.pivotPoint=irn.worldTM.GetTrans();
-                irn.nodeFlags=core::collectNodeFlags(sn.maxNode);
-                if(par&&!par->IsRootNode()) for(int32_t j=0;j<(int32_t)irModel.nodes.size();++j) if(irModel.nodes[j].maxNode==par){irn.parentIndex=j;break;}
-                irModel.nodes.push_back(std::move(irn));
-                ir::Bone sb; sb.name="Mesh "+mesh.name; sb.nodeIndex=ni; sb.pivotPoint=irModel.nodes[ni].pivotPoint; sb.bindPose=irModel.nodes[ni].worldTM;
-                sb.nodeFlags=irModel.nodes[ni].nodeFlags;
+                ni = sn.nodeIndex;
+                ir::Bone sb;
+                sb.name = irModel.nodes[ni].name;
+                sb.nodeIndex = ni;
+                sb.pivotPoint = irModel.nodes[ni].pivotPoint;
+                sb.bindPose = irModel.nodes[ni].worldTM;
+                sb.nodeFlags = irModel.nodes[ni].nodeFlags;
+                sb.isHelper = false; // carries geometry → BONE chunk
+                boneResult.nodeToIndex[sn.maxNode] = (int32_t)irModel.bones.size();
+                meshBoneIdxs.push_back((int32_t)irModel.bones.size());
                 irModel.bones.push_back(std::move(sb));
-                for(auto& v:mesh.vertices){v.skinInfluences.clear();v.skinInfluences.push_back({ni,1.0f});}
-                ELOG << "  mesh '" << mesh.name << "' unskinned -> synth bone irNode[" << ni << "]\n";
+                ELOG << "  mesh '" << mesh.name << "' unskinned -> own bone irNode[" << ni << "]\n";
+            }
+            for (auto& v : mesh.vertices) {
+                v.skinInfluences.clear();
+                v.skinInfluences.push_back({ni, 1.0f});
             }
         }
         irModel.meshes.push_back(std::move(mesh));
+    } EFLUSH;
+
+    // Fixup pass: resolve bone-array parent links for the bones just created
+    // for unskinned meshes. Runs after the mesh loop so a mesh linked to a
+    // mesh that appears LATER in traversal order still resolves. The bone
+    // parentIndex is what BoneOptimizer uses to keep ancestor chains alive;
+    // the node-level parentIndex (already set by traversal) is what the
+    // hierarchy resolver writes into the MDX.
+    if (!meshBoneIdxs.empty()) {
+        // nodeIndex → bone-array index for every bone that has an IR node.
+        std::unordered_map<int32_t, int32_t> nodeIdxToBone;
+        for (size_t b = 0; b < irModel.bones.size(); ++b)
+            if (irModel.bones[b].nodeIndex >= 0)
+                nodeIdxToBone[irModel.bones[b].nodeIndex] = (int32_t)b;
+
+        // Mesh-category IR nodes (these have no MDX objectId of their own
+        // unless a bone points at them).
+        std::unordered_set<int32_t> meshCatNodes;
+        for (auto& sn : sceneResult.nodes)
+            if (sn.category == core::NodeCategory::Mesh)
+                meshCatNodes.insert(sn.nodeIndex);
+
+        // Worklist: resolving one bone can mint a helper for a skinned-mesh
+        // ancestor, which then needs its own parent resolved too.
+        std::vector<int32_t> work(meshBoneIdxs.begin(), meshBoneIdxs.end());
+        while (!work.empty()) {
+            const int32_t bi = work.back();
+            work.pop_back();
+            const int32_t ni = irModel.bones[bi].nodeIndex;
+            if (ni < 0 || irModel.bones[bi].parentIndex >= 0) continue;
+            int32_t p = irModel.nodes[ni].parentIndex;
+            while (p >= 0) {
+                auto pit = nodeIdxToBone.find(p);
+                if (pit != nodeIdxToBone.end()) {
+                    irModel.bones[bi].parentIndex = pit->second;
+                    break;
+                }
+                if (meshCatNodes.count(p)) {
+                    // Ancestor is a SKINNED mesh (unskinned ones are all in
+                    // nodeIdxToBone by now): give it a helper bone so the
+                    // chain stays connected and its node animation exports.
+                    ir::Bone hb;
+                    hb.name = irModel.nodes[p].name;
+                    hb.nodeIndex = p;
+                    hb.pivotPoint = irModel.nodes[p].pivotPoint;
+                    hb.bindPose = irModel.nodes[p].worldTM;
+                    hb.nodeFlags = irModel.nodes[p].nodeFlags;
+                    hb.isHelper = true;
+                    const int32_t hbIdx = (int32_t)irModel.bones.size();
+                    nodeIdxToBone[p] = hbIdx;
+                    irModel.bones.push_back(std::move(hb));
+                    irModel.bones[bi].parentIndex = hbIdx;
+                    ELOG << "  helper minted for skinned-mesh ancestor '"
+                         << irModel.nodes[p].name << "' (nodeIdx=" << p << ")\n";
+                    work.push_back(hbIdx);
+                    break;
+                }
+                // Non-bone content node (light, emitter, …): it has its own
+                // objectId, so the MDX hierarchy resolves through it; for the
+                // bone-array linkage keep walking to the nearest bone above.
+                p = irModel.nodes[p].parentIndex;
+            }
+        }
     } EFLUSH;
 
     // MDX extractors
@@ -421,9 +496,27 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         for (const auto& at   : irModel.attachments)      addIfValid(at.visibilityTrackIndex);
         for (const auto& pe   : irModel.particleEmitters) addIfValid(pe.visibilityTrackIndex); // PE1+PE2+Corn
         for (const auto& rib  : irModel.ribbonEmitters)   addIfValid(rib.visibilityTrackIndex);
+        // KMTA layer alpha behaves like visibility: DontInterp holds with a
+        // boundary stub at every sequence start (form-switch composites flip
+        // 1.0/0.0 per sequence). Reduction dropped those stubs (27 → 16 keys
+        // on Mr.War3's 2-layer body material), breaking per-sequence holds.
+        for (const auto& mat  : irModel.materials)
+            for (const auto& lay : mat.layers)            addIfValid(lay.alphaTrackIndex);
 
         ELOG << "Keyframe optimizer: exempting " << visibilityTrackIndices.size()
              << " visibility floatTrack(s) from reduction\n";
+
+        // Texture-anim (TXAN) vec3 tracks need their keys AT sequence
+        // interval boundaries: WC3/Flakes track evaluation loop-wraps
+        // between the last and first in-interval key, so a UV-scroll
+        // track whose seq-start/end stub keys get reduced away spends
+        // the rest of the sequence lerping back to the first key —
+        // Mr.War3's spell rays all re-swept at once. Keep every key.
+        std::unordered_set<int32_t> texAnimVec3TrackIndices;
+        for (const auto& ta : irModel.textureAnimations) {
+            if (ta.translationTrackIndex >= 0) texAnimVec3TrackIndices.insert(ta.translationTrackIndex);
+            if (ta.scaleTrackIndex >= 0)       texAnimVec3TrackIndices.insert(ta.scaleTrackIndex);
+        }
 
         // ── PE2 Rotation Fix (NeoDex-compatible) ─────────────────
         // The AnimDispatcher bakes rotations as parent-relative deltas,
@@ -616,8 +709,15 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
             ko.optimize(irModel.floatTracks[i]);
         }
 
-        // Vec3 tracks
-        for (auto& vt : irModel.vec3Tracks) ko.optimize(vt);
+        // Vec3 tracks: skip texture-anim tracks (boundary stubs required)
+        for (size_t i = 0; i < irModel.vec3Tracks.size(); ++i) {
+            if (texAnimVec3TrackIndices.count(static_cast<int32_t>(i))) {
+                ELOG << "  skip vec3Track[" << i << "] (texture-anim, "
+                     << irModel.vec3Tracks[i].keys.size() << " keys preserved)\n";
+                continue;
+            }
+            ko.optimize(irModel.vec3Tracks[i]);
+        }
 
         EFLUSH;
     }

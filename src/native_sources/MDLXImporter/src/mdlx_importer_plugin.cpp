@@ -3340,8 +3340,9 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                             // Set opacityCtrl dropdown to match interpolation type
                             // Dropdown: 1=None, 2=Linear, 3=Bezier, 4=Hermite
                             {
-                                int ctrlType = 1; // None
+                                int ctrlType = 1; // None (DontInterp)
                                 switch (srcTrack.interpolation) {
+                                case ir::InterpolationType::None:    ctrlType = 1; break;
                                 case ir::InterpolationType::Linear:  ctrlType = 2; break;
                                 case ir::InterpolationType::Hermite: ctrlType = 4; break;
                                 default:                             ctrlType = 3; break; // Bezier
@@ -3625,8 +3626,15 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                          ") else ("
                            "try(sub.showInViewport = true)catch()"
                          ");"
-                         "local tex = try(sub.diffuseMap)catch(undefined);"
-                         "if tex != undefined do try(showTextureMap m tex true)catch();"
+                         // NOTE: deliberately NO showTextureMap on the composite
+                         // here. "Show map in viewport" is EXCLUSIVE within one
+                         // material tree — activating each sub's texture on the
+                         // composite in turn left only the LAST layer displayed,
+                         // so a 2-layer form-switch composite rendered its
+                         // alternate-form texture at full opacity, ignoring the
+                         // animated per-layer opacity. Per-sub showInViewport
+                         // (re-asserted in the final viewport pass below) is
+                         // what makes Nitrous blend the sub materials.
                          "syncOpacity sub"
                        ")"
                      ");"
@@ -3829,7 +3837,37 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             // default in 3ds Max 2020.2+, but older defaults or user prefs may
             // leave it off, which breaks transparent composite materials.
             ExecuteMAXScriptScript(
-                _M("try ("
+                // Re-assert per-material viewport display flags as the LAST
+                // material operation. The tiling fix's paramblock refreshes
+                // (and scripted-plugin on-set handlers) can clear the
+                // showInViewport flags set during the sync pass — verified on
+                // Mr.War3: both composite subs read showInViewport=false at
+                // the end of import, so Nitrous displayed a single (last)
+                // texture instead of blending the opacity-animated layers.
+                _M("for m in sceneMaterials do ("
+                     "local isComp = try(m.materialList != undefined)catch(false);"
+                     "if isComp then ("
+                       "local hasAdd = false;"
+                       "for i = 1 to m.materialList.count do ("
+                         "local sub = try(m.materialList[i])catch(undefined);"
+                         "if sub != undefined do ("
+                           "local fm = try(sub.filterMode)catch(1);"
+                           "if fm >= 4 and fm <= 5 do hasAdd = true"
+                         ")"
+                       ");"
+                       "for i = 1 to m.materialList.count do ("
+                         "local sub = try(m.materialList[i])catch(undefined);"
+                         "if sub != undefined do ("
+                           "local fm = try(sub.filterMode)catch(1);"
+                           "local isAdd = (fm >= 4 and fm <= 5);"
+                           "try(sub.showInViewport = (if hasAdd then isAdd else true))catch()"
+                         ")"
+                       ")"
+                     ") else ("
+                       "try(m.showInViewport = true)catch()"
+                     ")"
+                   ");"
+                   "try ("
                      "local vs = NitrousGraphicsManager.GetActiveViewportSetting();"
                      "if vs != undefined do ("
                        "vs.UseTextureEnabled = true;"
