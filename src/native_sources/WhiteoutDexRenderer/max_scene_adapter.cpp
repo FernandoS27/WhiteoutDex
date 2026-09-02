@@ -621,6 +621,14 @@ MaxSceneAdapter::MaterialSnapshot MaxSceneAdapter::SnapshotMaterial(Mtl* mtl) {
     snap.ormTexPath = ResolveBitmapPath(mtl, L"ormMap");
     snap.emissiveTexPath = ResolveBitmapPath(mtl, L"emissiveMap");
     snap.teamColorTexPath = ResolveBitmapPath(mtl, L"teamColorMap");
+    {
+        // Newly authored (or removed) UV animation must trigger a material
+        // re-upload — the layer's textureAnimationId lives in the surface
+        // table, not in the per-frame state.
+        Texmap* diffTex = nullptr;
+        PB2Texmap(mtl, L"diffuseMap", diffTex);
+        snap.hasUvAnim = FindUvAnimSource(mtl, diffTex).any();
+    }
     return snap;
 }
 
@@ -1137,7 +1145,83 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
         layer.textureId = baseTexId;
     }
 
+    // TXAN: register this layer's UV-animation source (Wc3Bitmap anim_*
+    // controllers, StdUVGen tracks, or legacy material-level params) so
+    // Evaluate() can feed the renderer's texAnimPalette.
+    layer.textureAnimationId = RegisterUvAnimSource(mtl, diffuseTexmap);
+
     return layer;
+}
+
+// ============================================================================
+// UV animation (TXAN) source resolution
+// ============================================================================
+
+// A channel only counts as animated when a controller is assigned: the
+// exporter builds TXAN exclusively from controllers, so a static non-default
+// offset doesn't move in-game and must not move in the preview either.
+MaxSceneAdapter::UvAnimSource MaxSceneAdapter::FindUvAnimSource(Mtl* mtl, Texmap* diffuseTex) {
+    // PB2 params only grow a controller once animation is authored, so
+    // presence alone is the signal (unlike PB1, see the StdUVGen path).
+    auto pb2Animated = [](Animatable* a) {
+        static const wchar_t* kChannels[] = {L"anim_UOffset", L"anim_VOffset", L"anim_WAngle",
+                                             L"anim_UTiling", L"anim_VTiling"};
+        for (const wchar_t* ch : kChannels) {
+            Control* c = nullptr;
+            FindPB2Param(a, ch, [&](IParamBlock2* pb, ParamID pid, ParamDef&) {
+                const int animIdx = pb->GetAnimNum(pid, 0);
+                if (animIdx >= 0 && animIdx < pb->NumSubs())
+                    if (Animatable* sub = pb->SubAnim(animIdx))
+                        c = GetControlInterface(sub);
+            });
+            if (c)
+                return true;
+        }
+        return false;
+    };
+
+    UvAnimSource src;
+    if (diffuseTex && diffuseTex->ClassID() == WC3_BITMAP_CLASS_ID) {
+        if (pb2Animated(diffuseTex))
+            src.texmap = diffuseTex;
+    } else if (BitmapTex* bmt = UnwrapBitmapTex(diffuseTex)) {
+        // Plain BitmapTex (importer fallback when the scripted plugin is
+        // missing): the TXAN controllers live on the StdUVGen. Its PB1
+        // params ALWAYS carry a controller, so gate on IsAnimated().
+        // Stable sub-anim indices: 0=U_Offset 1=V_Offset 2=U_Tiling
+        // 3=V_Tiling 6=W_Angle (matches wc3_material_extractor.cpp).
+        if (StdUVGen* uvg = bmt->GetUVGen()) {
+            static const int kSubs[] = {0, 1, 2, 3, 6};
+            for (int si : kSubs) {
+                if (si >= uvg->NumSubs())
+                    continue;
+                Animatable* sub = uvg->SubAnim(si);
+                Control* c = sub ? GetControlInterface(sub) : nullptr;
+                if (c && c->IsAnimated()) {
+                    src.texmap = diffuseTex;
+                    break;
+                }
+            }
+        }
+    }
+    // Legacy: scenes saved with the pre-2.3.0 material plugin that still
+    // carried the anim_* params on the Wc3Material itself.
+    if (!src.texmap && mtl && pb2Animated(mtl))
+        src.legacyMtl = mtl;
+    return src;
+}
+
+i32 MaxSceneAdapter::RegisterUvAnimSource(Mtl* mtl, Texmap* diffuseTex) {
+    UvAnimSource src = FindUvAnimSource(mtl, diffuseTex);
+    if (!src.any())
+        return -1;
+    void* key = src.texmap ? (void*)src.texmap : (void*)src.legacyMtl;
+    if (auto it = uvAnimSrcToId_.find(key); it != uvAnimSrcToId_.end())
+        return it->second;
+    const i32 id = (i32)uvAnimSources_.size();
+    uvAnimSources_.push_back(src);
+    uvAnimSrcToId_[key] = id;
+    return id;
 }
 
 // ============================================================================
@@ -1148,6 +1232,8 @@ void MaxSceneAdapter::CollectMaterials() {
     materials_.clear();
     mtlToId_.clear();
     iflAnims_.clear();
+    uvAnimSources_.clear();
+    uvAnimSrcToId_.clear();
     nextMatId_ = 0;
 
     // Copy sortOrder/priorityPlane from a Wc3Material onto MaterialInfo.
@@ -1732,6 +1818,7 @@ std::vector<MaterialData> MaxSceneAdapter::GetMaterials() {
             ld.fresnelOpacity = li.fresnelOpacity;
             ld.fresnelTeamColor = li.fresnelTeamColor;
             ld.fresnelColor = li.fresnelColor;
+            ld.textureAnimationId = li.textureAnimationId;
             md.layers.push_back(ld);
         }
         result.push_back(std::move(md));
@@ -2336,69 +2423,64 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
         }
     }
 
-    // Texture animations: one entry per unique (material, layer) with any
-    // non-default UV animation authored.
-    auto readUVAnim = [&](Mtl* mtl, i32 matId, i32 layerIdx) {
-        f32 uOff = 0, vOff = 0, uTile = 1, vTile = 1, wAng = 0;
-
-        // Primary: the diffuse texmap — TXAN lives on the texture now.
-        // Wc3Bitmap carries anim_* PB2 params (shared with its delegate's
-        // coords); a plain BitmapTex is read through its StdUVGen.
-        Texmap* texmap = nullptr;
-        bool gotTexAnim = false;
-        if (PB2Texmap(mtl, L"diffuseMap", texmap) && texmap) {
-            if (texmap->ClassID() == WC3_BITMAP_CLASS_ID &&
-                PB2Float(texmap, L"anim_UOffset", t, uOff)) {
-                PB2Float(texmap, L"anim_VOffset", t, vOff);
-                PB2Float(texmap, L"anim_UTiling", t, uTile);
-                PB2Float(texmap, L"anim_VTiling", t, vTile);
-                PB2Float(texmap, L"anim_WAngle", t, wAng);
-                gotTexAnim = true;
-            } else if (BitmapTex* bmt = UnwrapBitmapTex(texmap)) {
-                if (StdUVGen* uvg = bmt->GetUVGen()) {
-                    uOff = uvg->GetUOffs(t);
-                    vOff = uvg->GetVOffs(t);
-                    uTile = uvg->GetUScl(t);
-                    vTile = uvg->GetVScl(t);
-                    wAng = uvg->GetWAng(t);
-                    gotTexAnim = true;
-                }
+    // Texture animations (TXAN): compose one UV matrix per registered
+    // source into FrameState::texAnimMatrices — the palette the WC3 geoset
+    // passes read through the layer's textureAnimationId (see
+    // ApplyTexAnimPaletteToFrame; the old FrameState::texAnims channel fed
+    // RenderModel::matTexAnim, which nothing reads). Values convert
+    // Max → MDX exactly as the exporter writes them (KTAT.x = -U_Offset,
+    // KTAT.y = V_Offset, KTAR = anim_WAngle degrees CCW around the texture
+    // centre, KTAS = tiling) and the matrix is composed exactly like
+    // MdxModelAdapter's TXAN build, so preview == exported file.
+    for (i32 taId = 0; taId < (i32)uvAnimSources_.size(); taId++) {
+        const auto& src = uvAnimSources_[taId];
+        f32 uOff = 0, vOff = 0, uTile = 1, vTile = 1, angDeg = 0;
+        if (src.texmap && src.texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
+            PB2Float(src.texmap, L"anim_UOffset", t, uOff);
+            PB2Float(src.texmap, L"anim_VOffset", t, vOff);
+            PB2Float(src.texmap, L"anim_UTiling", t, uTile);
+            PB2Float(src.texmap, L"anim_VTiling", t, vTile);
+            PB2Float(src.texmap, L"anim_WAngle", t, angDeg);
+        } else if (BitmapTex* bmt = UnwrapBitmapTex(src.texmap)) {
+            if (StdUVGen* uvg = bmt->GetUVGen()) {
+                uOff = uvg->GetUOffs(t);
+                vOff = uvg->GetVOffs(t);
+                uTile = uvg->GetUScl(t);
+                vTile = uvg->GetVScl(t);
+                // The importer's KTAR controller stores degree values
+                // (shared with Wc3Bitmap's anim_WAngle) and the exporter
+                // reads this channel as degrees too — match them.
+                angDeg = uvg->GetWAng(t);
             }
+        } else if (src.legacyMtl) {
+            PB2Float(src.legacyMtl, L"anim_UOffset", t, uOff);
+            PB2Float(src.legacyMtl, L"anim_VOffset", t, vOff);
+            PB2Float(src.legacyMtl, L"anim_UTiling", t, uTile);
+            PB2Float(src.legacyMtl, L"anim_VTiling", t, vTile);
+            PB2Float(src.legacyMtl, L"anim_WAngle", t, angDeg);
         }
-        // Legacy fallback: Wc3Material-level PB2 UV-anim knobs (scenes saved
-        // with the pre-2.3.0 material plugin that still carried anim_*).
-        if (!gotTexAnim && PB2Float(mtl, L"anim_UOffset", t, uOff)) {
-            PB2Float(mtl, L"anim_VOffset", t, vOff);
-            PB2Float(mtl, L"anim_UTiling", t, uTile);
-            PB2Float(mtl, L"anim_VTiling", t, vTile);
-            PB2Float(mtl, L"anim_WAngle", t, wAng);
-        }
-        if (uOff != 0 || vOff != 0 || uTile != 1 || vTile != 1 || wAng != 0) {
-            FrameState::TexAnimState tas;
-            tas.materialId = matId;
-            tas.layerIndex = layerIdx;
-            tas.uOff = uOff;
-            tas.vOff = vOff;
-            tas.uTile = uTile;
-            tas.vTile = vTile;
-            tas.rotation = wAng;
-            state.texAnims.push_back(tas);
-        }
-    };
 
-    std::vector<i32> sentTA;
-    for (auto& gs : geosets_) {
-        Mtl* mtl = gs.node ? gs.node->GetMtl() : nullptr;
-        if (!mtl)
-            continue;
-        auto it = mtlToId_.find(mtl);
-        if (it == mtlToId_.end())
-            continue;
-        const i32 matId = it->second;
-        if (std::find(sentTA.begin(), sentTA.end(), matId) != sentTA.end())
-            continue;
-        sentTA.push_back(matId);
-        ForEachWc3SubMtl(mtl, [&](Mtl* sub, i32 layerIdx) { readUVAnim(sub, matId, layerIdx); });
+        // Max → MDX: U offset negates into KTAT.x (matches the exporter's
+        // signA = -1), V passes through.
+        const f32 tx = -uOff, ty = vOff;
+        const f32 ang = angDeg * kDegToRad;
+        const f32 c = std::cos(ang), si = std::sin(ang);
+        const f32 a = uTile * c;
+        const f32 b = -vTile * si;
+        const f32 d = uTile * si;
+        const f32 e = vTile * c;
+        const f32 px = tx - 0.5f, py = ty - 0.5f;
+        FrameState::TexAnimMatrix tam{};
+        tam.textureAnimId = taId;
+        tam.row0[0] = a;
+        tam.row0[1] = b;
+        tam.row0[2] = 0.0f;
+        tam.row0[3] = a * px + b * py + 0.5f;
+        tam.row1[0] = d;
+        tam.row1[1] = e;
+        tam.row1[2] = 0.0f;
+        tam.row1[3] = d * px + e * py + 0.5f;
+        state.texAnimMatrices.push_back(tam);
     }
 
     // Animated textures (IFL flipbooks): swap the layer's diffuse texture to
@@ -2463,7 +2545,7 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
                a.replaceableTexture == b.replaceableTexture && a.shaderId == b.shaderId &&
                a.texturePath == b.texturePath && a.normalTexPath == b.normalTexPath &&
                a.ormTexPath == b.ormTexPath && a.emissiveTexPath == b.emissiveTexPath &&
-               a.teamColorTexPath == b.teamColorTexPath;
+               a.teamColorTexPath == b.teamColorTexPath && a.hasUvAnim == b.hasUvAnim;
     };
 
     bool anyChanged = false;

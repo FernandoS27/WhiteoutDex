@@ -93,6 +93,8 @@ struct MaterialLayerInfo {
     f32 fresnelOpacity = 0.0f;
     f32 fresnelTeamColor = 0.0f;
     Vector3f fresnelColor = {0.0f, 0.0f, 0.0f};
+    // Index into uvAnimSources_ / the renderer's texAnimPalette, -1 = none.
+    i32 textureAnimationId = -1;
 };
 
 struct MaterialInfo {
@@ -340,6 +342,27 @@ private:
     };
     std::unordered_map<Mtl*, IflAnim> iflAnims_;
 
+    // UV animation (TXAN) sources, one per palette id. A layer's
+    // textureAnimationId indexes this vector; Evaluate() composes
+    // FrameState::texAnimMatrices from it every frame — that palette is
+    // the channel the WC3 geoset passes actually read
+    // (FrameState::texAnims → RenderModel::matTexAnim has no readers).
+    struct UvAnimSource {
+        Texmap* texmap = nullptr; // Wc3Bitmap (anim_* PB2) or plain BitmapTex (StdUVGen)
+        Mtl* legacyMtl = nullptr; // pre-TXAN-refactor material-level anim_* params
+        bool any() const { return texmap || legacyMtl; }
+    };
+    std::vector<UvAnimSource> uvAnimSources_;
+    // Dedup: layers sharing one bitmap instance share the animation (the
+    // importer pre-clones bitmaps when two layers need different TXANs).
+    std::unordered_map<void*, i32> uvAnimSrcToId_;
+    // Resolve where a layer's UV animation lives, empty when no channel is
+    // animated. Shared by RegisterUvAnimSource and SnapshotMaterial.
+    UvAnimSource FindUvAnimSource(Mtl* mtl, Texmap* diffuseTex);
+    // Register the layer's UV-anim source (if any channel is animated) and
+    // return its palette id, or -1.
+    i32 RegisterUvAnimSource(Mtl* mtl, Texmap* diffuseTex);
+
     io::FileContentProvider contentProvider_;
 
     // Material change detection: snapshot of per-material properties
@@ -355,6 +378,7 @@ private:
         std::wstring ormTexPath;
         std::wstring emissiveTexPath;
         std::wstring teamColorTexPath;
+        bool hasUvAnim = false;
     };
     std::unordered_map<i32, MaterialSnapshot> matSnapshots_; // materialId → snapshot
 
