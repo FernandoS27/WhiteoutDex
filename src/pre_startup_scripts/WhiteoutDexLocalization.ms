@@ -52,6 +52,28 @@
 	    src/native_sources/WhiteoutDexRenderer/wdx_ui_language.h. WhiteoutDex's
 	    additions to that set live in resources/lang/wdx_<code>.ini.
 
+	WHERE THE PREFERENCE LIVES:
+	  <plugcfg>\WhiteoutDex_Settings.ini -> [Localization] Language.
+	  NOT the copy beside PackageContents.xml: a system-wide install leaves
+	  that one read-only for ordinary users, so writes there are dropped and
+	  the choice reappears as English on the next start. plugcfg is also what
+	  the renderer reads (wdx_ui_language.h), so one write covers both.
+
+	KNOWN LIMITATION — menu bar needs a restart:
+	  The menu is built once, from #cuiRegisterMenus (Max 2025+) or at
+	  postSystemStartup (2016-2024). Neither the CUI menu manager nor menuMan
+	  exposes a rebuild, so a language change reaches the menu on the next
+	  start of 3ds Max. Dialogs and the sidebar re-read the catalog every time
+	  they open, so those change straight away.
+
+	KNOWN LIMITATION — macroScript `toolTip:`:
+	  A macroScript's toolTip and buttonText are fixed when the action is
+	  registered and have no runtime setter, so they stay English wherever Max
+	  itself shows them: Customize User Interface, and a toolbar button a user
+	  made. Every surface WhiteoutDex draws itself does translate — the menu
+	  overrides the label per item (see WhiteoutDexMenuCallback.ms) and the
+	  sidebar sets its own button tooltips from this catalog.
+
 	KNOWN LIMITATION — `group` captions:
 	  A MaxScript `group "Caption" ( ... )` block has no control name, so its
 	  caption cannot be reassigned at runtime and stays English. `groupBox`
@@ -211,7 +233,21 @@ struct WhiteoutDexLocalizationStruct
 		)
 		this.currentLanguage = lang
 		if this.iniPath != "" then
-			setINISetting this.iniPath "Localization" "Language" lang
+		(
+			-- setINISetting reports success even when the file cannot be
+			-- written, so the value is read back. Silence here is what made
+			-- the choice look like it saved and then reappear as English on
+			-- the next start.
+			local stored = ""
+			try
+			(
+				setINISetting this.iniPath "Localization" "Language" lang
+				stored = getINISetting this.iniPath "Localization" "Language"
+			)
+			catch ()
+			if stored != lang then
+				format "WhiteoutDex L10n: could not save the language to % - it will reset on restart\n" this.iniPath
+		)
 		format "WhiteoutDex L10n: set to '%'\n" lang
 		true
 	),
@@ -2192,6 +2228,7 @@ struct WhiteoutDexLocalizationStruct
 			#("popcorn_export_btn", "Export"),
 			#("popcorn_browse_popcorn_fx_file_btn", "Browse Popcorn FX File"),
 			#("popcorn_browse_game_archives_btn", "Browse Game Archives"),
+			#("popcorn_browse_archives_tip", "Pick a .pkb / .pkfx straight out of the CASC or MPQ archives"),
 			#("popcorn_popcorn_fx_explanation_btn", "Popcorn FX Explanation"),
 			#("popcorn__btn", "..."),
 			#("popcorn__btn_2", "..."),
@@ -2392,7 +2429,7 @@ struct WhiteoutDexLocalizationStruct
 			#("common_cancel_btn", "Cancel"),
 			-- ===== MAIN MENU =====
 			#("menu_importer", "Import MDX..."),
-			#("menu_import_casc", "Import from Archives..."),
+			#("menu_import_casc", "Import from Game Storages..."),
 			#("menu_exporter", "Export MDX..."),
 			#("menu_sequence_manager", "Sequence Manager"),
 			#("menu_visibility_keyer", "Visibility Keyer"),
@@ -2413,7 +2450,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== SETTINGS DIALOG =====
 			#("set_settings_title", "WhiteoutDex Settings"),
 			#("set_language_lbl", "Interface Language:"),
-			#("set_language_reopen_note", "Please reopen dialogs to see changes."),
+			#("set_language_reopen_note", "Reopen dialogs to apply. Menus follow after a restart."),
 			#("set_casc_archives_grp", "CASC Archives"),
 			#("set_mpq_browse_caption", "Select Warcraft III Game Data Folder"),
 			#("set_mpq_clear_tip", "Clear the MPQ directory"),
@@ -4595,6 +4632,7 @@ struct WhiteoutDexLocalizationStruct
 			#("popcorn_export_btn", "导出"),
 			#("popcorn_browse_popcorn_fx_file_btn", "浏览Popcorn FX文件"),
 			#("popcorn_browse_game_archives_btn", "浏览游戏档案"),
+			#("popcorn_browse_archives_tip", "直接从 CASC 或 MPQ 存档中选择 .pkb / .pkfx"),
 			#("popcorn_popcorn_fx_explanation_btn", "Popcorn FX 说明"),
 			#("popcorn__btn", "..."),
 			#("popcorn__btn_2", "..."),
@@ -4798,7 +4836,7 @@ struct WhiteoutDexLocalizationStruct
 			#("common_cancel_btn", "取消"),
 			-- ===== MAIN MENU =====
 			#("menu_importer", "导入 MDX..."),
-			#("menu_import_casc", "从存档导入..."),
+			#("menu_import_casc", "从游戏存储导入..."),
 			#("menu_exporter", "导出 MDX..."),
 			#("menu_sequence_manager", "序列管理器"),
 			#("menu_visibility_keyer", "可见性关键帧工具"),
@@ -4819,7 +4857,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== SETTINGS DIALOG =====
 			#("set_settings_title", "WhiteoutDex 设置"),
 			#("set_language_lbl", "界面语言："),
-			#("set_language_reopen_note", "请重新打开对话框以查看更改。"),
+			#("set_language_reopen_note", "重新打开对话框即可生效，菜单需重启后更新。"),
 			#("set_casc_archives_grp", "CASC 存档"),
 			#("set_mpq_browse_caption", "选择魔兽争霸 III 游戏数据文件夹"),
 			#("set_mpq_clear_tip", "清除 MPQ 目录"),
@@ -7001,6 +7039,7 @@ struct WhiteoutDexLocalizationStruct
 			#("popcorn_export_btn", "Exportieren"),
 			#("popcorn_browse_popcorn_fx_file_btn", "Popcorn FX-Datei durchsuchen"),
 			#("popcorn_browse_game_archives_btn", "Spielarchive durchsuchen"),
+			#("popcorn_browse_archives_tip", "Eine .pkb / .pkfx direkt aus den CASC- oder MPQ-Archiven wählen"),
 			#("popcorn_popcorn_fx_explanation_btn", "Popcorn FX Erklärung"),
 			#("popcorn__btn", "..."),
 			#("popcorn__btn_2", "..."),
@@ -7204,7 +7243,7 @@ struct WhiteoutDexLocalizationStruct
 			#("common_cancel_btn", "Abbrechen"),
 			-- ===== MAIN MENU =====
 			#("menu_importer", "MDX importieren..."),
-			#("menu_import_casc", "Aus Archiven importieren..."),
+			#("menu_import_casc", "Aus dem Spielspeicher importieren..."),
 			#("menu_exporter", "MDX exportieren..."),
 			#("menu_sequence_manager", "Sequenz-Manager"),
 			#("menu_visibility_keyer", "Sichtbarkeits-Keyer"),
@@ -7225,7 +7264,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== SETTINGS DIALOG =====
 			#("set_settings_title", "WhiteoutDex-Einstellungen"),
 			#("set_language_lbl", "Oberflächensprache:"),
-			#("set_language_reopen_note", "Bitte Dialoge erneut öffnen, um die Änderungen zu sehen."),
+			#("set_language_reopen_note", "Dialoge erneut öffnen; Menüs folgen nach einem Neustart."),
 			#("set_casc_archives_grp", "CASC-Archive"),
 			#("set_mpq_browse_caption", "Warcraft-III-Spieldatenordner wählen"),
 			#("set_mpq_clear_tip", "MPQ-Verzeichnis leeren"),
@@ -9407,6 +9446,7 @@ struct WhiteoutDexLocalizationStruct
 			#("popcorn_export_btn", "Экспортировать"),
 			#("popcorn_browse_popcorn_fx_file_btn", "Обзор файла Popcorn FX"),
 			#("popcorn_browse_game_archives_btn", "Обзор игровых архивов"),
+			#("popcorn_browse_archives_tip", "Выбрать .pkb / .pkfx прямо из архивов CASC или MPQ"),
 			#("popcorn_popcorn_fx_explanation_btn", "Описание Popcorn FX"),
 			#("popcorn__btn", "..."),
 			#("popcorn__btn_2", "..."),
@@ -9610,7 +9650,7 @@ struct WhiteoutDexLocalizationStruct
 			#("common_cancel_btn", "Отмена"),
 			-- ===== MAIN MENU =====
 			#("menu_importer", "Импорт MDX..."),
-			#("menu_import_casc", "Импорт из архивов..."),
+			#("menu_import_casc", "Импорт из хранилищ игры..."),
 			#("menu_exporter", "Экспорт MDX..."),
 			#("menu_sequence_manager", "Менеджер секвенций"),
 			#("menu_visibility_keyer", "Ключи видимости"),
@@ -9631,7 +9671,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== SETTINGS DIALOG =====
 			#("set_settings_title", "Настройки WhiteoutDex"),
 			#("set_language_lbl", "Язык интерфейса:"),
-			#("set_language_reopen_note", "Откройте диалоги заново, чтобы увидеть изменения."),
+			#("set_language_reopen_note", "Откройте диалоги заново; меню обновится после перезапуска."),
 			#("set_casc_archives_grp", "Архивы CASC"),
 			#("set_mpq_browse_caption", "Выберите папку с данными Warcraft III"),
 			#("set_mpq_clear_tip", "Очистить каталог MPQ"),
@@ -11813,6 +11853,7 @@ struct WhiteoutDexLocalizationStruct
 			#("popcorn_export_btn", "エクスポート"),
 			#("popcorn_browse_popcorn_fx_file_btn", "Popcorn FXファイルを参照"),
 			#("popcorn_browse_game_archives_btn", "ゲームアーカイブを参照"),
+			#("popcorn_browse_archives_tip", "CASC または MPQ アーカイブから直接 .pkb / .pkfx を選択"),
 			#("popcorn_popcorn_fx_explanation_btn", "Popcorn FX説明"),
 			#("popcorn__btn", "..."),
 			#("popcorn__btn_2", "..."),
@@ -12016,7 +12057,7 @@ struct WhiteoutDexLocalizationStruct
 			#("common_cancel_btn", "キャンセル"),
 			-- ===== MAIN MENU =====
 			#("menu_importer", "MDX をインポート..."),
-			#("menu_import_casc", "アーカイブからインポート..."),
+			#("menu_import_casc", "ゲームストレージからインポート..."),
 			#("menu_exporter", "MDX をエクスポート..."),
 			#("menu_sequence_manager", "シーケンスマネージャ"),
 			#("menu_visibility_keyer", "表示キーヤー"),
@@ -12037,7 +12078,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== SETTINGS DIALOG =====
 			#("set_settings_title", "WhiteoutDex 設定"),
 			#("set_language_lbl", "インターフェース言語:"),
-			#("set_language_reopen_note", "変更を反映するにはダイアログを開き直してください。"),
+			#("set_language_reopen_note", "ダイアログを開き直すと反映されます。メニューは再起動後です。"),
 			#("set_casc_archives_grp", "CASC アーカイブ"),
 			#("set_mpq_browse_caption", "Warcraft III のゲームデータフォルダを選択"),
 			#("set_mpq_clear_tip", "MPQ ディレクトリをクリア"),
@@ -14219,6 +14260,7 @@ struct WhiteoutDexLocalizationStruct
 			#("popcorn_export_btn", "내보내기"),
 			#("popcorn_browse_popcorn_fx_file_btn", "Popcorn FX 파일 찾아보기"),
 			#("popcorn_browse_game_archives_btn", "게임 아카이브 찾아보기"),
+			#("popcorn_browse_archives_tip", "CASC 또는 MPQ 아카이브에서 .pkb / .pkfx 직접 선택"),
 			#("popcorn_popcorn_fx_explanation_btn", "Popcorn FX 설명"),
 			#("popcorn__btn", "..."),
 			#("popcorn__btn_2", "..."),
@@ -14422,7 +14464,7 @@ struct WhiteoutDexLocalizationStruct
 			#("common_cancel_btn", "취소"),
 			-- ===== MAIN MENU =====
 			#("menu_importer", "MDX 가져오기..."),
-			#("menu_import_casc", "아카이브에서 가져오기..."),
+			#("menu_import_casc", "게임 저장소에서 가져오기..."),
 			#("menu_exporter", "MDX 내보내기..."),
 			#("menu_sequence_manager", "시퀀스 관리자"),
 			#("menu_visibility_keyer", "표시 키어"),
@@ -14443,7 +14485,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== SETTINGS DIALOG =====
 			#("set_settings_title", "WhiteoutDex 설정"),
 			#("set_language_lbl", "인터페이스 언어:"),
-			#("set_language_reopen_note", "변경 사항을 보려면 대화 상자를 다시 여세요."),
+			#("set_language_reopen_note", "대화 상자를 다시 열면 적용됩니다. 메뉴는 재시작 후 반영됩니다."),
 			#("set_casc_archives_grp", "CASC 아카이브"),
 			#("set_mpq_browse_caption", "Warcraft III 게임 데이터 폴더 선택"),
 			#("set_mpq_clear_tip", "MPQ 디렉터리 지우기"),
@@ -16627,6 +16669,7 @@ struct WhiteoutDexLocalizationStruct
 			#("popcorn_export_btn", "Exporter"),
 			#("popcorn_browse_popcorn_fx_file_btn", "Parcourir le fichier Popcorn FX"),
 			#("popcorn_browse_game_archives_btn", "Parcourir les archives du jeu"),
+			#("popcorn_browse_archives_tip", "Choisir un .pkb / .pkfx directement dans les archives CASC ou MPQ"),
 			#("popcorn_popcorn_fx_explanation_btn", "Explication Popcorn FX"),
 			#("popcorn__btn", "..."),
 			#("popcorn__btn_2", "..."),
@@ -16827,7 +16870,7 @@ struct WhiteoutDexLocalizationStruct
 			#("common_cancel_btn", "Annuler"),
 			-- ===== MAIN MENU =====
 			#("menu_importer", "Importer un MDX..."),
-			#("menu_import_casc", "Importer depuis les archives..."),
+			#("menu_import_casc", "Importer depuis le stockage du jeu..."),
 			#("menu_exporter", "Exporter en MDX..."),
 			#("menu_sequence_manager", "Gestionnaire de séquences"),
 			#("menu_visibility_keyer", "Générateur de clés de visibilité"),
@@ -16848,7 +16891,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== SETTINGS DIALOG =====
 			#("set_settings_title", "Paramètres de WhiteoutDex"),
 			#("set_language_lbl", "Langue de l'interface :"),
-			#("set_language_reopen_note", "Rouvrez les boîtes de dialogue pour voir les changements."),
+			#("set_language_reopen_note", "Rouvrez les boîtes de dialogue ; les menus suivront au redémarrage."),
 			#("set_casc_archives_grp", "Archives CASC"),
 			#("set_mpq_browse_caption", "Sélectionner le dossier de données de Warcraft III"),
 			#("set_mpq_clear_tip", "Effacer le dossier MPQ"),
@@ -19032,6 +19075,7 @@ struct WhiteoutDexLocalizationStruct
 			#("popcorn_export_btn", "Exportar"),
 			#("popcorn_browse_popcorn_fx_file_btn", "Examinar el archivo de Popcorn FX"),
 			#("popcorn_browse_game_archives_btn", "Explorar los archivos del juego"),
+			#("popcorn_browse_archives_tip", "Elige un .pkb / .pkfx directamente de los archivos CASC o MPQ"),
 			#("popcorn_popcorn_fx_explanation_btn", "Explicación de Popcorn FX"),
 			#("popcorn__btn", "..."),
 			#("popcorn__btn_2", "..."),
@@ -19232,7 +19276,7 @@ struct WhiteoutDexLocalizationStruct
 			#("common_cancel_btn", "Cancelar"),
 			-- ===== MAIN MENU =====
 			#("menu_importer", "Importar MDX..."),
-			#("menu_import_casc", "Importar desde los archivos..."),
+			#("menu_import_casc", "Importar desde el almacenamiento del juego..."),
 			#("menu_exporter", "Exportar MDX..."),
 			#("menu_sequence_manager", "Gestor de secuencias"),
 			#("menu_visibility_keyer", "Generador de claves de visibilidad"),
@@ -19253,7 +19297,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== SETTINGS DIALOG =====
 			#("set_settings_title", "Ajustes de WhiteoutDex"),
 			#("set_language_lbl", "Idioma de la interfaz:"),
-			#("set_language_reopen_note", "Vuelve a abrir los diálogos para ver los cambios."),
+			#("set_language_reopen_note", "Vuelve a abrir los diálogos; los menús cambiarán al reiniciar."),
 			#("set_casc_archives_grp", "Archivos CASC"),
 			#("set_mpq_browse_caption", "Seleccionar la carpeta de datos de Warcraft III"),
 			#("set_mpq_clear_tip", "Borrar el directorio MPQ"),
@@ -21437,6 +21481,7 @@ struct WhiteoutDexLocalizationStruct
 			#("popcorn_export_btn", "Esporta"),
 			#("popcorn_browse_popcorn_fx_file_btn", "Sfoglia il file Popcorn FX"),
 			#("popcorn_browse_game_archives_btn", "Sfoglia gli archivi del gioco"),
+			#("popcorn_browse_archives_tip", "Scegli un .pkb / .pkfx direttamente dagli archivi CASC o MPQ"),
 			#("popcorn_popcorn_fx_explanation_btn", "Spiegazione Popcorn FX"),
 			#("popcorn__btn", "..."),
 			#("popcorn__btn_2", "..."),
@@ -21637,7 +21682,7 @@ struct WhiteoutDexLocalizationStruct
 			#("common_cancel_btn", "Annulla"),
 			-- ===== MAIN MENU =====
 			#("menu_importer", "Importa MDX..."),
-			#("menu_import_casc", "Importa dagli archivi..."),
+			#("menu_import_casc", "Importa dagli archivi di gioco..."),
 			#("menu_exporter", "Esporta MDX..."),
 			#("menu_sequence_manager", "Gestore sequenze"),
 			#("menu_visibility_keyer", "Generatore chiavi di visibilità"),
@@ -21658,7 +21703,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== SETTINGS DIALOG =====
 			#("set_settings_title", "Impostazioni di WhiteoutDex"),
 			#("set_language_lbl", "Lingua dell'interfaccia:"),
-			#("set_language_reopen_note", "Riapri le finestre di dialogo per vedere le modifiche."),
+			#("set_language_reopen_note", "Riapri le finestre di dialogo; i menu seguiranno al riavvio."),
 			#("set_casc_archives_grp", "Archivi CASC"),
 			#("set_mpq_browse_caption", "Seleziona la cartella dati di Warcraft III"),
 			#("set_mpq_clear_tip", "Cancella la cartella MPQ"),
@@ -23842,6 +23887,7 @@ struct WhiteoutDexLocalizationStruct
 			#("popcorn_export_btn", "Exportar"),
 			#("popcorn_browse_popcorn_fx_file_btn", "Procurar o arquivo do Popcorn FX"),
 			#("popcorn_browse_game_archives_btn", "Navegar pelos arquivos do jogo"),
+			#("popcorn_browse_archives_tip", "Escolha um .pkb / .pkfx diretamente dos arquivos CASC ou MPQ"),
 			#("popcorn_popcorn_fx_explanation_btn", "Explicação do Popcorn FX"),
 			#("popcorn__btn", "..."),
 			#("popcorn__btn_2", "..."),
@@ -24042,7 +24088,7 @@ struct WhiteoutDexLocalizationStruct
 			#("common_cancel_btn", "Cancelar"),
 			-- ===== MAIN MENU =====
 			#("menu_importer", "Importar MDX..."),
-			#("menu_import_casc", "Importar dos arquivos..."),
+			#("menu_import_casc", "Importar do armazenamento do jogo..."),
 			#("menu_exporter", "Exportar MDX..."),
 			#("menu_sequence_manager", "Gerenciador de sequências"),
 			#("menu_visibility_keyer", "Gerador de chaves de visibilidade"),
@@ -24063,7 +24109,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== SETTINGS DIALOG =====
 			#("set_settings_title", "Configurações do WhiteoutDex"),
 			#("set_language_lbl", "Idioma da interface:"),
-			#("set_language_reopen_note", "Reabra as caixas de diálogo para ver as alterações."),
+			#("set_language_reopen_note", "Reabra as caixas de diálogo; os menus mudam ao reiniciar."),
 			#("set_casc_archives_grp", "Arquivos CASC"),
 			#("set_mpq_browse_caption", "Selecionar a pasta de dados do Warcraft III"),
 			#("set_mpq_clear_tip", "Limpar a pasta MPQ"),
@@ -24335,16 +24381,44 @@ struct WhiteoutDexLocalizationStruct
 	
 	public fn init =
 	(
-		-- Setup INI
+		-- The preference lives in the per-user plugcfg INI, NOT in the copy
+		-- beside PackageContents.xml. A system-wide install puts the bundle
+		-- under %ALLUSERSPROFILE% with Users = ReadAndExecute, so a language
+		-- written there is dropped on the floor and the choice reappears as
+		-- English on the next start. plugcfg is per-user and always writable,
+		-- and it is the same file the renderer reads for [Localization]
+		-- Language (see wdx_ui_language.h), so one write now drives the
+		-- MaxScript UI and the renderer chrome together.
 		local bundleRoot = (::WhiteoutDexInstallRoot)
 		this.iniPath = bundleRoot + "\\WhiteoutDex_Settings.ini"
-		
+		try (this.iniPath = (getDir #plugcfg) + "\\WhiteoutDex_Settings.ini") catch ()
+
 		-- Load all translations
 		this.loadTranslations()
-		
+
 		-- Read saved language preference
 		local saved = ""
 		try (saved = getINISetting this.iniPath "Localization" "Language") catch ()
+
+		-- Carry over a choice made by a build that wrote to the bundle, but
+		-- only a non-English one: the bundle INI used to ship with
+		-- Language=en, so "en" there is indistinguishable from "never chosen"
+		-- and honouring it would suppress auto-detection for everyone.
+		if saved == "" then
+		(
+			try
+			(
+				local legacy = getINISetting (bundleRoot + "\\WhiteoutDex_Settings.ini") "Localization" "Language"
+				if legacy != "" and legacy != "en" and findItem this.supportedLanguages legacy != 0 then
+				(
+					saved = legacy
+					setINISetting this.iniPath "Localization" "Language" saved
+					format "WhiteoutDex L10n: migrated '%' from the bundle settings\n" saved
+				)
+			)
+			catch ()
+		)
+
 		if saved != "" and findItem this.supportedLanguages saved != 0 then
 			this.currentLanguage = saved
 		else
@@ -24352,7 +24426,7 @@ struct WhiteoutDexLocalizationStruct
 			-- Auto-detect from system
 			this.currentLanguage = this.detectMaxLanguage()
 		)
-		
+
 		format "WhiteoutDex L10n: initialized with '%' (% keys)\n" this.currentLanguage (_wdxDictCount this.enDict)
 	),
 	

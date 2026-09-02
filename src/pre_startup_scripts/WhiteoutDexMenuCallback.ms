@@ -50,17 +50,33 @@ struct WhiteoutDexMenuStruct
         local m = mainMenuBar.CreateSubMenu "BDBFDF2A-73A5-44B9-B98C-967D9C54835B" "WhiteoutDex"
 
         -- An action's default label is the macroscript's buttonText, fixed at
-        -- registration time and therefore English. The CUI action object
-        -- exposes a per-item Text override, which is where the translated
-        -- label goes; the action keeps its English name in Customize User
-        -- Interface, matching how Max labels its own actions. Wrapped in a
-        -- try because the property is not present on every 2025+ point
-        -- release — a menu in English beats a menu that failed to build.
+        -- registration time and therefore English. ICuiActionMenuItem::SetTitle
+        -- overrides it per menu item — published to MaxScript as the `title`
+        -- property, the same way SetIsMenuFlat surfaces as `isFlat`. The action
+        -- keeps its English name in Customize User Interface, matching how Max
+        -- labels its own actions.
+        --
+        -- The assignment is guarded because a menu in English beats a menu that
+        -- failed to build, but a failure is reported rather than swallowed: an
+        -- earlier version set a `Text` property that does not exist here, and
+        -- the silent catch turned "menus are never translated" into a bug with
+        -- no trace of itself.
+        -- The manager is only reachable from inside this callback, so which of
+        -- the two publishing forms MaxScript exposes cannot be checked ahead of
+        -- time. Both are tried: the property first, then the method.
         fn addAction menu guid actionName locKey =
         (
             local a = menu.CreateAction guid 647394 (actionName + "`WhiteoutDex Toolkit")
             if a != undefined and ::WdxL != undefined do
-                try ( a.Text = ::WdxL.t locKey ) catch ()
+            (
+                local label = ::WdxL.t locKey
+                local done = false
+                try ( a.title = label ; done = true ) catch ()
+                if not done do try ( a.SetTitle label ; done = true ) catch ()
+                if not done do
+                    format "WhiteoutDex: could not set the menu title for % - menu stays English\n" \
+                           actionName
+            )
             a
         )
 

@@ -27,14 +27,11 @@ AppSupportURL={#MyAppURL}
 AppUpdatesURL=https://github.com/{#GitHubUser}/{#GitHubRepo}/releases
 VersionInfoVersion={#MyAppVersion}
 
-; Install location is decided by Pascal (GetDefaultDir) so the package lands
-; where the user's Max version can actually find it:
-;   Max ≤2018 → %ALLUSERSPROFILE%\Autodesk\ApplicationPlugins\WhiteoutDex
-;                (Max 2016/2017/2018 only scan this path)
-;   Max ≥2019 → %APPDATA%\Autodesk\ApplicationPlugins\WhiteoutDex
-;                (per-user; no scattered system files)
-;   Neither   → defaults to %APPDATA% (still valid for Max 2019+ if they later
-;                install one).
+; Install location (GetDefaultDir): always
+;   %ALLUSERSPROFILE%\Autodesk\ApplicationPlugins\WhiteoutDex
+; Every Max version scans that root — it is where Autodesk's own bundles go —
+; and it is the only choice that means the same thing under elevation. See
+; GetDefaultDir() for why the old per-user branch had to go.
 DefaultDirName={code:GetDefaultDir}
 DirExistsWarning=no
 DisableProgramGroupPage=yes
@@ -50,10 +47,11 @@ SolidCompression=yes
 LZMANumBlockThreads=4
 
 ; Misc
-; Admin required because Max ≤2018 needs the package under ProgramData. The
-; UAC prompt is cheap; if the user only has modern Max we still install to
-; AppData (no scattering of system files), but elevation lets one installer
-; cover both cases without re-running.
+; Admin required: the package goes under ProgramData, and the bundled VC++
+; redistributable is a machine-wide install. Note that under elevation the
+; user-area constants ({userappdata} and friends) refer to whoever answered
+; the UAC prompt, not to whoever runs Max — nothing installed here may depend
+; on them.
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
@@ -196,6 +194,19 @@ spanish.DotNetMissing=Nota: no se ha detectado .NET 8.0 Desktop Runtime.%n%nLas 
 italian.DotNetMissing=Nota: .NET 8.0 Desktop Runtime non è stato rilevato.%n%nLe funzionalità native di WhiteoutDex per Max 2026+ lo richiedono.%nDownload: https://dotnet.microsoft.com/download/dotnet/8.0%n%nL'installazione proseguirà. Puoi installare .NET 8.0 in un secondo momento.
 brazilianportuguese.DotNetMissing=Observação: o .NET 8.0 Desktop Runtime não foi detectado.%n%nOs recursos nativos do WhiteoutDex para o Max 2026+ precisam dele.%nDownload: https://dotnet.microsoft.com/download/dotnet/8.0%n%nA instalação vai continuar. Você pode instalar o .NET 8.0 depois.
 
+; Shown on the progress page while the bundled vc_redist.x64.exe runs. Only
+; appears on machines that actually need it — see NeedsVCRedist().
+english.InstallingVCRedist=Installing the Microsoft Visual C++ runtime...
+german.InstallingVCRedist=Microsoft Visual C++-Laufzeitumgebung wird installiert...
+japanese.InstallingVCRedist=Microsoft Visual C++ ランタイムをインストールしています...
+russian.InstallingVCRedist=Установка среды выполнения Microsoft Visual C++...
+korean.InstallingVCRedist=Microsoft Visual C++ 런타임을 설치하는 중...
+chinesesimplified.InstallingVCRedist=正在安装 Microsoft Visual C++ 运行时...
+french.InstallingVCRedist=Installation du runtime Microsoft Visual C++...
+spanish.InstallingVCRedist=Instalando el runtime de Microsoft Visual C++...
+italian.InstallingVCRedist=Installazione del runtime Microsoft Visual C++...
+brazilianportuguese.InstallingVCRedist=Instalando o runtime do Microsoft Visual C++...
+
 ; ============================================================================
 ; FILES
 ; ============================================================================
@@ -242,6 +253,21 @@ Source: "@WDX_STAGE_DIR@\scripts\scripted_plugins\*.ms";       \
 ; === MAPS (TeamGlow textures etc.) ===
 Source: "@WDX_REPO_ROOT@\resources\maps\*"; DestDir: "{app}\maps"; \
     Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+
+; === Microsoft VC++ runtime ===
+; Every plug-in links /MD, so the machine needs a runtime at least as new as
+; the toolset that built them. Off by default — 3ds Max installs the
+; redistributable as a prerequisite, so a machine with Max already has one.
+; When WDX_BUNDLE_VCREDIST is ON, the line below extracts vc_redist.x64.exe to
+; {tmp}, the [Run] entry installs it if NeedsVCRedist() says so, and
+; deleteafterinstall clears it up again.
+@WDX_VCREDIST_FILES_BLOCK@
+
+; ============================================================================
+; RUN — post-install payloads.
+; ============================================================================
+[Run]
+@WDX_VCREDIST_RUN_BLOCK@
 
 ; ============================================================================
 ; REGISTRY — track version + install path so the Pascal upgrade check
@@ -296,31 +322,35 @@ begin
   Result := FileExists(ExePath);
 end;
 
-// True when the user has any Max 2016-2018 installed. Those versions only
-// scan %ALLUSERSPROFILE%\Autodesk\ApplicationPlugins (ProgramData); newer
-// Max versions also scan %APPDATA%, so we only need to leave AppData for
-// those.
-function NeedsProgramDataInstall(): Boolean;
-var
-  Year: Integer;
-begin
-  Result := False;
-  for Year := 2016 to 2018 do
-    if IsMaxYearInstalled(Year) then begin
-      Result := True;
-      Exit;
-    end;
-end;
-
 // -------------------------------------------------------
 // Default-install-dir selector, wired to DefaultDirName via {code:GetDefaultDir}.
 // -------------------------------------------------------
+// Always ProgramData. This used to hand Max 2019+ {userappdata} instead, which
+// is wrong for an installer that runs elevated: with PrivilegesRequired=admin,
+// {userappdata} is the profile of whoever answered the UAC prompt, not the
+// person who will run Max. On a machine where the signed-in user is a standard
+// account, every file lands in the administrator's AppData and Max — scanning
+// its own user's %APPDATA% — finds nothing at all. The symptom is that the
+// installer reports success and no WhiteoutDex menu ever appears.
+//
+// It never showed up here because this machine has Max 2016 installed, which
+// sent NeedsProgramDataInstall() down the ProgramData branch every single time;
+// the {userappdata} branch has never once run on a developer machine.
+//
+// ProgramData is the correct target regardless: every Max version scans
+// %ALLUSERSPROFILE%\Autodesk\ApplicationPlugins, and it is where Autodesk's own
+// 2025/2027 bundles (MAXtoA, USD for 3ds Max, Substance, Retopology) install.
+// It is also machine-wide, which is what an admin install should produce.
 function GetDefaultDir(Param: String): String;
 begin
-  if NeedsProgramDataInstall() then
-    Result := ExpandConstant('{commonappdata}\Autodesk\ApplicationPlugins\WhiteoutDex')
-  else
-    Result := ExpandConstant('{userappdata}\Autodesk\ApplicationPlugins\WhiteoutDex');
+  Result := ExpandConstant('{commonappdata}\Autodesk\ApplicationPlugins\WhiteoutDex');
+end;
+
+// The pre-1.0 layout for Max 2019+. Left behind, it would load a second,
+// stale copy of every plug-in alongside the ProgramData one.
+function GetLegacyUserDir(): String;
+begin
+  Result := ExpandConstant('{userappdata}\Autodesk\ApplicationPlugins\WhiteoutDex');
 end;
 
 // -------------------------------------------------------
@@ -336,11 +366,77 @@ begin
 end;
 
 // -------------------------------------------------------
-// Detect Autodesk AppData presence (sanity check — 3ds Max installed?)
+// Should the bundled VC++ redistributable actually run?
+//
+// The plug-ins link /MD, so the machine needs a Microsoft VC++ runtime at
+// least as new as the toolset that built them. The redistributable is
+// cumulative and refuses to downgrade, but running it unconditionally costs
+// time on every install and can ask for a reboot, so skip it whenever the
+// installed runtime is already equal or newer.
+//
+// Version lives at HKLM\...\VC\Runtimes\X64 as Major/Minor DWORDs (the
+// string 'Version' value is prefixed with 'v', hence the numeric ones).
+// A missing key means no runtime at all — install.
+// -------------------------------------------------------
+function NeedsVCRedist(): Boolean;
+var
+  Major, Minor: Cardinal;
+  Key: String;
+begin
+  // No redistributable was bundled — nothing to run.
+  if (@WDX_VCREDIST_MAJOR@ = 0) then
+  begin
+    Result := False;
+    Exit;
+  end;
+
+  Key := 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64';
+
+  if not RegQueryDWordValue(HKLM, Key, 'Major', Major) then
+  begin
+    Result := True;
+    Exit;
+  end;
+  if not RegQueryDWordValue(HKLM, Key, 'Minor', Minor) then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  Result := (Major < @WDX_VCREDIST_MAJOR@) or
+            ((Major = @WDX_VCREDIST_MAJOR@) and (Minor < @WDX_VCREDIST_MINOR@));
+
+  // Built by concatenation rather than Format(): ISCC looks for section tags
+  // after trimming a line, so a wrapped Format() whose argument array lands at
+  // the start of the next line reads as "[Major, Minor]" — an invalid section
+  // tag, and a compile error a long way from its cause.
+  if Result then
+    Log('VC++ runtime ' + IntToStr(Major) + '.' + IntToStr(Minor) +
+        ' is older than bundled @WDX_VCREDIST_VERSION@ — installing.')
+  else
+    Log('VC++ runtime ' + IntToStr(Major) + '.' + IntToStr(Minor) +
+        ' already covers @WDX_VCREDIST_VERSION@ — skipping.');
+end;
+
+// -------------------------------------------------------
+// Sanity check — is 3ds Max installed at all?
+//
+// This used to test {userappdata}\Autodesk, which under elevation is the
+// administrator's profile rather than the profile Max runs in: on a machine
+// whose admin account has never launched an Autodesk product, a perfectly
+// good install got the "Is 3ds Max installed?" prompt. Ask the registry
+// instead, and only fall back to the machine-wide AppData root.
 // -------------------------------------------------------
 function IsAutodeskInstalled(): Boolean;
+var
+  Year: Integer;
 begin
-  Result := DirExists(ExpandConstant('{userappdata}\Autodesk'));
+  Result := True;
+  for Year := 2016 to 2030 do
+    if IsMaxYearInstalled(Year) then Exit;
+
+  Result := DirExists(ExpandConstant('{commonappdata}\Autodesk')) or
+            DirExists(ExpandConstant('{userappdata}\Autodesk'));
 end;
 
 // -------------------------------------------------------
@@ -571,6 +667,46 @@ end;
 // -------------------------------------------------------
 // Install lifecycle hooks.
 // -------------------------------------------------------
+// -------------------------------------------------------
+// Retire a pre-1.0 per-user install now that everything lives in ProgramData.
+//
+// Max reads every ApplicationPlugins root it knows about, so leaving the old
+// copy in place would load two WhiteoutDex bundles at once — duplicate menu
+// entries, and stale plug-ins shadowing the ones just installed. maps/ and
+// WhiteoutDex_Settings.ini are left alone: they are the user's, and the
+// folder is theirs to keep once the plug-in payload is gone.
+// -------------------------------------------------------
+procedure RemoveLegacyUserInstall();
+var
+  Dir: String;
+begin
+  Dir := GetLegacyUserDir();
+
+  // Guard against the case where the two are the same folder: an installer
+  // run by a user whose {userappdata} somehow resolves into ProgramData
+  // would otherwise delete what it just wrote.
+  if CompareText(Dir, ExpandConstant('{app}')) = 0 then Exit;
+  if not DirExists(Dir) then Exit;
+
+  Log('Removing legacy per-user install at ' + Dir);
+
+  DelTree(Dir + '\scripts', True, True, True);
+  DelTree(Dir + '\native plugins', True, True, True);
+  DelTree(Dir + '\whiteoutdex_icons', True, True, True);
+  DelTree(Dir + '\lang', True, True, True);
+
+  // PackageContents.xml is the file that makes Max load the bundle at all;
+  // once it is gone the leftover folder is inert even if something remains.
+  DeleteFile(Dir + '\PackageContents.xml');
+  DeleteFile(Dir + '\version.txt');
+  DeleteFile(Dir + '\LICENSE.md');
+  DeleteFile(Dir + '\THIRD_PARTY.md');
+  DeleteFile(Dir + '\install.bat');
+  DeleteFile(Dir + '\uninstall.bat');
+
+  Log('Legacy per-user install retired.');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then
@@ -587,5 +723,6 @@ begin
     );
 
     UpdatePackageContentsXml();
+    RemoveLegacyUserInstall();
   end;
 end;

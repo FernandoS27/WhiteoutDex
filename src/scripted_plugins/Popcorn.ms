@@ -227,6 +227,7 @@ parameters main rollout:params2
 				params1.title = ::WdxL.t "popcorn_popcorn_fx_file_title"
 				l1.text = ::WdxL.t "popcorn__popcorn_fx_path_lbl"
 				btnBrowseArchive.text = ::WdxL.t "popcorn_browse_game_archives_btn"
+				btnBrowseArchive.tooltip = ::WdxL.t "popcorn_browse_archives_tip"
 				btnBrowse.text = ::WdxL.t "popcorn_browse_popcorn_fx_file_btn"
 				btnInfo.text = ::WdxL.t "popcorn_popcorn_fx_explanation_btn"
 			)

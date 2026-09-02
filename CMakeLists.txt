@@ -85,6 +85,138 @@ endif()
 message(STATUS "WhiteoutDex: multi-version build for Max ${WDX_MAX_VERSIONS}")
 
 # ----------------------------------------------------------------------------
+# Redistributable floor.
+#
+# Everything here links the DLL runtime (/MD, see _wdx_static_runtime_args) and
+# the installer ships no redistributable, so every binary we produce has to run
+# against whatever VC++ runtime the target machine already carries. In practice
+# that is the "2015-2022" redistributable (14.4x): Max installs it, and Windows
+# Update hands it out. MSVC's compatibility promise only runs forward — a
+# binary linked by the VS 2026 toolset (v145 / 14.5x) needs the newer
+# "2015-2026" redistributable, which end users do not have yet.
+#
+# `cmake -B <dir>` with no -G picks the NEWEST Visual Studio, so a maintainer
+# machine with both VS 2022 and VS 2026 silently produces a 14.5x build that
+# loads nowhere but on itself. That is not hypothetical: it is what shipped in
+# the Max 2025 installer for v0.0.1, while the 2016/2026/2027 installers —
+# configured before VS 2026 landed — stayed on v143 and worked.
+#
+# CMake cannot switch its own generator after the fact, so this warns and
+# names the fix rather than trying to correct it.
+# ----------------------------------------------------------------------------
+set(WDX_REDIST_TOOLSET "v143" CACHE STRING
+    "Newest MSVC toolset whose redistributable we assume users have")
+
+# ---- The redistributable, deliberately NOT shipped -----------------------
+# 3ds Max does not carry the CRT in its own program folder; it depends on the
+# machine-wide VC++ redistributable, which its installer lays down as a
+# prerequisite. So any machine with Max already has one, and bundling our own
+# copy added ~17 MB to every installer to re-install what is already there.
+#
+# Left as an opt-in for the case that assumption stops holding — a toolset
+# newer than the runtime Max provides. Turn it on with
+# -DWDX_BUNDLE_VCREDIST=ON, and the [Files]/[Run] entries and the
+# NeedsVCRedist() version check come back with it.
+option(WDX_BUNDLE_VCREDIST
+    "Ship vc_redist.x64.exe inside the installer (Max normally provides it)" OFF)
+
+find_program(VSWHERE_EXE vswhere
+    PATHS "$ENV{ProgramFiles\(x86\)}/Microsoft Visual Studio/Installer"
+    NO_DEFAULT_PATH
+)
+
+set(WDX_VCREDIST_SOURCE "" CACHE FILEPATH
+    "vc_redist.x64.exe to bundle (auto-detected from the installed Visual Studios)")
+
+if(WDX_BUNDLE_VCREDIST AND NOT WDX_VCREDIST_SOURCE AND VSWHERE_EXE)
+    execute_process(
+        COMMAND "${VSWHERE_EXE}" -all -prerelease -products * -property installationPath
+        OUTPUT_VARIABLE _vs_paths
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    string(REPLACE "\n" ";" _vs_paths "${_vs_paths}")
+    set(_best_redist "")
+    set(_best_redist_ver "0")
+    foreach(_vs IN LISTS _vs_paths)
+        string(STRIP "${_vs}" _vs)
+        if(_vs)
+            file(TO_CMAKE_PATH "${_vs}" _vs)
+            file(GLOB _cands "${_vs}/VC/Redist/MSVC/*/vc_redist.x64.exe")
+            foreach(_c IN LISTS _cands)
+                get_filename_component(_cdir "${_c}" DIRECTORY)
+                get_filename_component(_cver "${_cdir}" NAME)
+                if(_cver MATCHES "^[0-9]+\\.[0-9]+" AND _cver VERSION_GREATER _best_redist_ver)
+                    set(_best_redist_ver "${_cver}")
+                    set(_best_redist "${_c}")
+                endif()
+            endforeach()
+        endif()
+    endforeach()
+    if(_best_redist)
+        set(WDX_VCREDIST_SOURCE "${_best_redist}" CACHE FILEPATH "" FORCE)
+    endif()
+endif()
+
+set(WDX_VCREDIST_VERSION "")
+if(WDX_BUNDLE_VCREDIST AND WDX_VCREDIST_SOURCE AND EXISTS "${WDX_VCREDIST_SOURCE}")
+    get_filename_component(_vcr_dir "${WDX_VCREDIST_SOURCE}" DIRECTORY)
+    get_filename_component(WDX_VCREDIST_VERSION "${_vcr_dir}" NAME)
+endif()
+
+# This project() is LANGUAGES NONE — the compiler only gets enabled down in the
+# ExternalProject sub-builds — so CMAKE_VS_PLATFORM_TOOLSET and MSVC are both
+# empty here. The generator name is what we actually have to go on.
+set(_wdx_toolset "${CMAKE_GENERATOR_TOOLSET}")
+if(NOT _wdx_toolset)
+    if(CMAKE_GENERATOR MATCHES "^Visual Studio ([0-9]+)")
+        set(_wdx_vs_major "${CMAKE_MATCH_1}")
+        if(_wdx_vs_major EQUAL 16)
+            set(_wdx_toolset "v142")
+        elseif(_wdx_vs_major EQUAL 17)
+            set(_wdx_toolset "v143")
+        elseif(_wdx_vs_major GREATER_EQUAL 18)
+            set(_wdx_toolset "v145")
+        endif()
+    endif()
+endif()
+
+# Runtime floor each toolset's output needs from the redistributable.
+if(_wdx_toolset STREQUAL "v145")
+    set(_wdx_toolset_floor "14.50")
+elseif(_wdx_toolset STREQUAL "v143")
+    set(_wdx_toolset_floor "14.30")
+elseif(_wdx_toolset STREQUAL "v142")
+    set(_wdx_toolset_floor "14.20")
+else()
+    set(_wdx_toolset_floor "0")
+endif()
+
+if(WDX_VCREDIST_VERSION AND
+   WDX_VCREDIST_VERSION VERSION_GREATER_EQUAL _wdx_toolset_floor)
+    message(STATUS
+        "VC++ runtime: bundling ${WDX_VCREDIST_VERSION} — covers toolset "
+        "${_wdx_toolset}")
+elseif(_wdx_toolset AND NOT _wdx_toolset STREQUAL WDX_REDIST_TOOLSET)
+    message(WARNING
+        "Generator '${CMAKE_GENERATOR}' builds with toolset ${_wdx_toolset}, "
+        "not ${WDX_REDIST_TOOLSET} — so the plug-ins need a VC++ runtime "
+        "${_wdx_toolset_floor}+, newer than the one 3ds Max installs.\n"
+        "These plug-ins link /MD and the installer ships no runtime of its own, "
+        "so they will load only on machines that already have that version — "
+        "i.e. machines with this Visual Studio installed.\n"
+        "Either reconfigure a fresh tree:\n"
+        "  cmake -S . -B <dir> -G \"Visual Studio 17 2022\" -A x64 "
+        "-DWDX_MAX_VERSIONS=<year>\n"
+        "or build with -DWDX_BUNDLE_VCREDIST=ON to ship a matching "
+        "redistributable.")
+elseif(WDX_BUNDLE_VCREDIST AND NOT WDX_VCREDIST_VERSION)
+    message(WARNING
+        "WDX_BUNDLE_VCREDIST is ON but no vc_redist.x64.exe was found, so "
+        "nothing will be bundled. Pass -DWDX_VCREDIST_SOURCE=<path> to supply "
+        "one.")
+endif()
+
+# ----------------------------------------------------------------------------
 # Forward the parent generator + arch to every sub-build so the IDE picks up
 # matching .vcxproj files across all per-version build dirs.
 # ----------------------------------------------------------------------------
@@ -204,24 +336,102 @@ if(WDX_BUILD_MANAGED_WRAPPERS)
 
     set(MSBUILD_EXE "" CACHE FILEPATH "Path to MSBuild.exe (auto-detected from vswhere)")
     set(_platform_toolset "v143")
+
+    # Which runtime lanes this build actually needs. Computed here rather than
+    # further down because it decides which MSBuild we can afford to use.
+    set(_wdx_needs_dotnet_lane FALSE)
+    foreach(v IN LISTS WDX_MAX_VERSIONS)
+        if(NOT v LESS 2026)
+            set(_wdx_needs_dotnet_lane TRUE)
+        endif()
+    endforeach()
+
     if(VSWHERE_EXE AND NOT MSBUILD_EXE)
-        execute_process(
-            COMMAND "${VSWHERE_EXE}" -latest -products * -requires Microsoft.Component.MSBuild
-                    -find "MSBuild/**/Bin/MSBuild.exe"
-            OUTPUT_VARIABLE _msbuild_out
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
+        # This DLL ships in the same installer as the /MD native plug-ins, so it
+        # answers to the same redistributable floor: prefer VS 2022 (v143) when
+        # it is installed, and only fall back to whatever is newest when it is
+        # not. `-latest` alone picked VS 2026 here and quietly produced a v145
+        # assembly — see the WDX_REDIST_TOOLSET block above.
+        #
+        # The net8/net10 lanes are the exception. Those .vcxproj files are
+        # SDK-style, so MSBuild needs the ".NET SDK" component's resolver
+        # (see _dotnet_sdk_resolver below), and a VS 2022 that lacks that
+        # component cannot build them at all — preferring it there would trade
+        # a redist mismatch for a silently missing DLL. So only take VS 2022
+        # when it can actually serve every lane this build needs.
+        if(WDX_REDIST_TOOLSET STREQUAL "v143")
+            execute_process(
+                COMMAND "${VSWHERE_EXE}" -version "[17.0,18.0)" -products *
+                        -requires Microsoft.Component.MSBuild
+                        -find "MSBuild/**/Bin/MSBuild.exe"
+                OUTPUT_VARIABLE _msbuild_out
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+            if(_msbuild_out AND _wdx_needs_dotnet_lane)
+                string(REGEX REPLACE "\n.*$" "" _vs17_msbuild "${_msbuild_out}")
+                get_filename_component(_vs17_bin "${_vs17_msbuild}" DIRECTORY)
+                if(NOT EXISTS
+                   "${_vs17_bin}/SdkResolvers/Microsoft.DotNet.MSBuildSdkResolver")
+                    message(STATUS
+                        "Managed wrappers: VS 2022 has no \".NET SDK\" component, "
+                        "so it cannot resolve the SDK-style net8/net10 project — "
+                        "driving the build with the newest Visual Studio instead. "
+                        "The toolset is chosen separately below, so this does not "
+                        "by itself change which runtime the DLL needs.")
+                    set(_msbuild_out "")
+                endif()
+            endif()
+        endif()
+        if(NOT _msbuild_out)
+            execute_process(
+                COMMAND "${VSWHERE_EXE}" -latest -products * -requires Microsoft.Component.MSBuild
+                        -find "MSBuild/**/Bin/MSBuild.exe"
+                OUTPUT_VARIABLE _msbuild_out
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+        endif()
+        # vswhere returns one path per line when several editions are installed.
         if(_msbuild_out)
+            string(REGEX REPLACE "\n.*$" "" _msbuild_out "${_msbuild_out}")
             set(MSBUILD_EXE "${_msbuild_out}" CACHE FILEPATH "" FORCE)
         endif()
-        # VS 2026 raises the toolset to v145; detect by querying for it.
+    endif()
+
+    # ---- PlatformToolset, chosen independently of which MSBuild drives it ----
+    # These are two separate questions and conflating them is what produced a
+    # v145 assembly earlier. The net8/net10 projects need the NEWEST MSBuild,
+    # for its .NET SDK resolver — but that MSBuild compiles perfectly happily
+    # against v143 when VS 2022 is installed alongside, and v143 output runs on
+    # the redistributable everyone already has. Verified: VS 2026's MSBuild
+    # building WhiteoutDexTextureBrowser_net10.vcxproj with
+    # /p:PlatformToolset=v143 yields a 14.44 binary importing ijwhost.dll.
+    #
+    # So: take v143 whenever the v143 toolset is actually on this machine, and
+    # only move up when it is not. This runs unconditionally — a cached
+    # MSBUILD_EXE must not leave the toolset undecided.
+    if(VSWHERE_EXE)
         execute_process(
-            COMMAND "${VSWHERE_EXE}" -version "[18.0,19.0)" -property installationPath
-            OUTPUT_VARIABLE _vs2026_install
+            COMMAND "${VSWHERE_EXE}" -version "[17.0,18.0)" -products *
+                    -property installationPath
+            OUTPUT_VARIABLE _vs17_install
             OUTPUT_STRIP_TRAILING_WHITESPACE
         )
-        if(_vs2026_install)
-            set(_platform_toolset "v145")
+        if(_vs17_install)
+            set(_platform_toolset "v143")
+        else()
+            execute_process(
+                COMMAND "${VSWHERE_EXE}" -version "[18.0,19.0)" -products *
+                        -property installationPath
+                OUTPUT_VARIABLE _vs18_install
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+            if(_vs18_install)
+                set(_platform_toolset "v145")
+                message(STATUS
+                    "Managed wrappers: no VS 2022 toolset on this machine, so the "
+                    "managed DLL will be v145 and needs the bundled "
+                    "redistributable.")
+            endif()
         endif()
     endif()
 
@@ -737,6 +947,31 @@ else()
 
     # Generate the working .iss next to the template so relative paths inside
     # the script (compiler:Default.isl etc.) resolve identically.
+    # ---- VC++ redistributable blocks -------------------------------------
+    # Bundled as a payload the installer runs, not as loose DLLs beside the
+    # plug-ins: app-local CRT copies do not help a .dle that Max loads out of
+    # its own process, and Microsoft supports only the redistributable for
+    # machine-wide deployment. NeedsVCRedist() in [Code] skips the run when
+    # the machine already has an equal or newer runtime, so upgrades stay
+    # quiet and no reboot is provoked.
+    if(WDX_BUNDLE_VCREDIST AND WDX_VCREDIST_VERSION AND
+       EXISTS "${WDX_VCREDIST_SOURCE}")
+        string(REPLACE "." ";" _vcr_parts "${WDX_VCREDIST_VERSION}")
+        list(GET _vcr_parts 0 WDX_VCREDIST_MAJOR)
+        list(GET _vcr_parts 1 WDX_VCREDIST_MINOR)
+        set(WDX_VCREDIST_FILES_BLOCK
+            "Source: \"${WDX_VCREDIST_SOURCE}\"; DestDir: \"{tmp}\"; Flags: deleteafterinstall")
+        set(WDX_VCREDIST_RUN_BLOCK
+            "Filename: \"{tmp}\\vc_redist.x64.exe\"; Parameters: \"/install /passive /norestart\"; StatusMsg: \"{cm:InstallingVCRedist}\"; Check: NeedsVCRedist; Flags: waituntilterminated")
+    else()
+        set(WDX_VCREDIST_MAJOR 0)
+        set(WDX_VCREDIST_MINOR 0)
+        set(WDX_VCREDIST_FILES_BLOCK
+            "; VC++ runtime not bundled: 3ds Max installs it as a prerequisite. Build with -DWDX_BUNDLE_VCREDIST=ON to ship a copy.")
+        set(WDX_VCREDIST_RUN_BLOCK
+            "; nothing to run - see the VC++ runtime note in [Files] above.")
+    endif()
+
     set(_iss_in  "${CMAKE_SOURCE_DIR}/packaging/Whiteout_Setup.iss.in")
     set(_iss_out "${CMAKE_BINARY_DIR}/packaging/Whiteout_Setup.iss")
     configure_file("${_iss_in}" "${_iss_out}" @ONLY)

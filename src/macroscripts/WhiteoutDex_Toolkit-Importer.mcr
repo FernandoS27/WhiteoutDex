@@ -46,10 +46,16 @@ macroScript WhiteoutDex_Importer
 	)
 )
 
+-- The macroScript name stays WhiteoutDex_ImportCASC: it is the identifier a
+-- user's customised toolbars and quad menus refer to, and renaming it would
+-- silently drop the action out of every one of them. Only the label changes —
+-- and it says "game storages" because this browses a classic MPQ install as
+-- readily as a Reforged CASC one (see wdxMBAssetRoots in
+-- WhiteoutDexModelBrowser.ms).
 macroScript WhiteoutDex_ImportCASC
 	category:"WhiteoutDex Toolkit"
-	toolTip:"Import a Warcraft III model straight out of the game archives"
-	buttonText:"Import from CASC"
+	toolTip:"Import a Warcraft III model straight out of the game storages"
+	buttonText:"Import from Game Storages"
 (
 	/* Same import as WhiteoutDex_Importer, but the file comes out of the
 	   installed game rather than off disk: the CASC browser picks a model,
