@@ -4445,6 +4445,19 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         }
     }
 
+    // Tell an open Sequence Manager to re-read the scene. We wrote the sequence
+    // Custom Attributes ourselves (Wc3SequenceBuilder::buildSequences), which the
+    // dialog knows nothing about: it would keep showing the previous model's list
+    // and, because closing it saves, write that stale list back over ours -
+    // leaving the freshly imported model with no sequences at all.
+    // No-op when the manager was never instanced.
+    ExecuteMAXScriptScript(
+        _M("try(WdxSequenceManagerRefresh())catch()"),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+        MAXScript::ScriptSource::NonEmbedded,
+#endif
+        TRUE, nullptr);
+
     gi->ForceCompleteRedraw();
 
     // TextureResolver (in resolverOpt) closes its CASC + MPQ handles

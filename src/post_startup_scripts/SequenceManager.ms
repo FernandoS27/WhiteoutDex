@@ -7,6 +7,7 @@ struct WdxSequenceManager
 	lastListSelection = #{},
 	ignoredSequences = #(),  -- Separate Liste für ignorierte Sequenzen
 	globalSequences = #(),   -- Array von Global Sequence Durationen (als time-Werte)
+	caSignature = undefined, -- Fingerprint der zuletzt gelesenen/geschriebenen CA-Daten
 
     -- ============================================================================
     -- GLOBAL SEQUENCE FUNCTIONS
@@ -413,8 +414,52 @@ struct WdxSequenceManager
 		)
 	),
 	
+    -- Cheap fingerprint of the sequence data currently stored on the rootNode.
+    -- LoadSequences records it, saveSequences compares against it: a mismatch
+    -- means something outside this dialog (the MDX importer, the rebuilder, a
+    -- user script) replaced the scene's sequences while it was open, so the
+    -- in-memory list is stale and must not be written back over the new data.
+    fn caSignatureNow =
+    (
+        local sig = "-"
+        try
+        (
+            if ::SequenceStorage != undefined and ::SequenceStorage.hasCA() then
+            (
+                local names = rootNode.seqNames
+                if names != undefined then
+                (
+                    sig = names.count as string
+                    for i = 1 to names.count do
+                        sig += "|" + (names[i] as string) \
+                            + ":" + (rootNode.startFrames[i] as string) \
+                            + "-" + (rootNode.endFrames[i] as string)
+                )
+            )
+            else if (HasNoteTracks rootNode) then
+                sig = "nt" + ((getNoteTrack rootNode 1).keys.count as string)
+        )
+        catch ( sig = "?" )
+        sig
+    ),
+
+    -- Re-read the scene's sequences into this dialog and refresh the list.
+    -- Deliberately does NOT call saveSequences() - the scene is the source of
+    -- truth here, and writing back would defeat the purpose.
+    fn refreshFromScene =
+    (
+        this.sequences = this.LoadSequences()
+        this.scanGlobalSequences()
+        try ( this.mainRollout.setListItems() ) catch ()
+        this.sequences.count
+    ),
+
     fn LoadSequences =
     (
+        -- Remember what the scene held at the moment we read it, so a later
+        -- saveSequences() can tell whether it still owns this data.
+        this.caSignature = this.caSignatureNow()
+
         -- Primary: Read from WhiteoutDex Custom Attributes
         if ::SequenceStorage != undefined and ::SequenceStorage.hasCA() then
         (
@@ -488,6 +533,19 @@ struct WdxSequenceManager
     
     fn saveSequences  =
     (
+        -- Refuse to overwrite sequence data that changed behind our back.
+        -- Importing an MDX with this dialog open used to leave the model with no
+        -- sequences at all: the importer wrote the new ones straight into the
+        -- rootNode CA, the dialog kept showing (and holding) the old list, and
+        -- closing it triggered a save that wiped the CA and re-appended the
+        -- stale entries. Reload instead - the scene wins.
+        if this.caSignature != undefined and (this.caSignatureNow()) != this.caSignature then
+        (
+            format "** WDX saveSequences: scene sequences changed externally - reloading instead of overwriting\n"
+            this.refreshFromScene()
+            return ok
+        )
+
         -- Remove legacy NoteTracks if present
         while (HasNoteTracks Rootnode) do deleteNoteTrack Rootnode (getNoteTrack Rootnode 1)
         
@@ -513,6 +571,8 @@ struct WdxSequenceManager
                 -- Reforged v1200: Shared Group Info speichern
                 append rootNode.sharedGroup (if seq.sharedGroup != undefined then seq.sharedGroup else "")
             )
+            -- This dialog is now in sync with the scene again.
+            this.caSignature = this.caSignatureNow()
         ) catch (format "** WDX saveSequences ERROR: %\n" (getCurrentException()))
     ),
 	
@@ -570,6 +630,14 @@ struct WdxSequenceManager
         print overlappingStr
     ),
     
+    -- An MDX import (or a merge) writes the sequence CA directly. Only reload:
+    -- saving here would push this dialog's stale list back over the fresh data.
+    fn importChangeCallback =
+    (
+        ::WdxSequenceManager.refreshFromScene()
+        ::WdxSequenceManager.checkSequenceOverlapping()
+    ),
+
     fn sceneChangeCallback =
     (
         print "SequenceManager updated"
@@ -2182,6 +2250,13 @@ struct WdxSequenceManager
 			callbacks.addScript #sceneUndo listUpdateAfterUndoRedo id:#WhiteoutDex
 			callbacks.addScript #sceneRedo listUpdateAfterUndoRedo id:#WhiteoutDex
 
+			-- An import or merge replaces the scene's sequence data without going
+			-- through this dialog. Pick the new data up right away so the list is
+			-- correct and the close handler has nothing stale to write back.
+			-- try/catch because not every Max version broadcasts every event.
+			try ( callbacks.addScript #postImport importChangeCallback id:#WhiteoutDex ) catch ()
+			try ( callbacks.addScript #filePostMerge importChangeCallback id:#WhiteoutDex ) catch ()
+
 			-- Localization
 			if ::WdxL != undefined then
 			(
@@ -2304,6 +2379,29 @@ struct WdxSequenceManager
     )
 )
 global WdxSequenceManager = WdxSequenceManager()
+
+-- ============================================================================
+-- WdxSequenceManagerRefresh
+--
+-- Re-read the scene's sequences into the Sequence Manager. Called by the MDLX
+-- importer at the end of an import: it writes the sequence Custom Attributes
+-- itself, and an already-open Sequence Manager would otherwise keep showing the
+-- previous model's list and write that list back over the new one when closed.
+--
+-- Safe to call at any time - a no-op if the manager was never instanced.
+-- ============================================================================
+global WdxSequenceManagerRefresh
+fn WdxSequenceManagerRefresh =
+(
+    if ::WdxSequenceManager == undefined then 0
+    else
+    (
+        local n = 0
+        try ( n = ::WdxSequenceManager.refreshFromScene() )
+        catch ( format "WDX SequenceManager refresh failed: %\n" (getCurrentException()) )
+        n
+    )
+)
 
 -- ============================================================================
 -- WdxPushRendererSequences
