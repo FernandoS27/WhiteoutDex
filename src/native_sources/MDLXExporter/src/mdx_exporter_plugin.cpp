@@ -47,6 +47,7 @@
 #include <MaxDirectories.h>
 #include <shellapi.h>
 #include <cmath>
+#include <cctype>
 
 extern HINSTANCE GetDllInstance();
 
@@ -741,21 +742,32 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     // NeoDex always forces .blp via: (getFilenameFile s) + ".blp"
     // This runs BEFORE texture conversion so the converter sees the
     // correct target extension; it also works when conversion is off.
+    //
+    // Classic (v800) has no DDS loader at all, so .dds must be rewritten to
+    // .blp there. Reforged reads BLP as well as DDS, so .blp is left alone
+    // when targeting v1200.
     {
-        const char* targetExt = (opts.version >= 1200) ? ".dds" : ".blp";
+        const bool isReforged = (opts.version >= 1200);
+        const char* targetExt = isReforged ? ".dds" : ".blp";
         int fixed = 0;
         for (auto& tex : irModel.textures) {
             if (tex.filePath.empty()) continue;
             auto dot = tex.filePath.rfind('.');
             if (dot == std::string::npos) continue;
-            std::string ext = tex.filePath.substr(dot);
-            // Skip if already correct, or if it's a known game format
-            if (ext == targetExt) continue;
-            if (ext == ".blp" || ext == ".dds") continue;
-            // Swap .tga/.png/.bmp/.jpg/.jpeg to target format
+            const std::string ext = tex.filePath.substr(dot);
+            std::string extLower = ext;
+            std::transform(extLower.begin(), extLower.end(), extLower.begin(),
+                           [](unsigned char c) { return static_cast<char>(::tolower(c)); });
+            // Skip if already correct
+            if (extLower == targetExt) continue;
+            // Reforged keeps .blp references as-is (the engine loads both);
+            // classic must convert .dds since it cannot load DDS at all.
+            if (isReforged && extLower == ".blp") continue;
+            // Swap .dds/.tga/.png/.bmp/.jpg/.jpeg to target format
+            const std::string oldPath = tex.filePath;
             tex.filePath = tex.filePath.substr(0, dot) + targetExt;
             fixed++;
-            ELOG << "  texPath fix: '" << tex.filePath.substr(0, dot) << ext
+            ELOG << "  texPath fix: '" << oldPath
                  << "' -> '" << tex.filePath << "'\n";
         }
         if (fixed > 0) {

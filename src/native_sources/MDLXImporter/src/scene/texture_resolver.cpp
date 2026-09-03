@@ -409,10 +409,10 @@ openMpqImpl(const std::wstring& mpqDir) {
         std::string error;
         auto storage = whiteout::storages::mpq::Storage::open(entry.path().string(), &error);
         if (storage) {
-            RLOG << "[MPQ]   opened: '" << entry.path().string() << "'" << std::endl;
+            RLOG << "[MPQ]   opened: '" << wlog(entry.path().wstring()) << "'" << std::endl;
             out.push_back(std::move(*storage));
         } else {
-            RLOG << "[MPQ]   open FAILED for '" << entry.path().string() << "': "
+            RLOG << "[MPQ]   open FAILED for '" << wlog(entry.path().wstring()) << "': "
                  << (error.empty() ? std::string{"(no error message)"} : error)
                  << std::endl;
         }
@@ -462,14 +462,14 @@ bool writeBytesToDisk(const fs::path& outPath, const std::vector<std::uint8_t>& 
     fs::create_directories(outPath.parent_path(), ec);
     std::ofstream ofs(outPath, std::ios::binary);
     if (!ofs) {
-        RLOG << "[EXT]   write open failed: " << outPath.string() << std::endl;
+        RLOG << "[EXT]   write open failed: " << wlog(outPath.wstring()) << std::endl;
         return false;
     }
     ofs.write(reinterpret_cast<const char*>(bytes.data()),
               static_cast<std::streamsize>(bytes.size()));
     ofs.close();
     if (!ofs.good()) {
-        RLOG << "[EXT]   write failed: " << outPath.string() << std::endl;
+        RLOG << "[EXT]   write failed: " << wlog(outPath.wstring()) << std::endl;
         return false;
     }
     return true;
@@ -570,11 +570,11 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
                 fs::path outPath = fs::path(impl_->modelDir) / outRel;
                 std::error_code ec;
                 if (fs::exists(outPath, ec)) {
-                    RLOG << "[CASC]   already on disk: " << outPath.string() << std::endl;
+                    RLOG << "[CASC]   already on disk: " << wlog(outPath.wstring()) << std::endl;
                     return outPath.wstring();
                 }
                 if (writeBytesToDisk(outPath, *data)) {
-                    RLOG << "[CASC]   extracted to: " << outPath.string() << std::endl;
+                    RLOG << "[CASC]   extracted to: " << wlog(outPath.wstring()) << std::endl;
                     return outPath.wstring();
                 }
             }
@@ -598,11 +598,11 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
                 fs::path outPath = fs::path(impl_->modelDir) / outRel;
                 std::error_code ec;
                 if (fs::exists(outPath, ec)) {
-                    RLOG << "[MPQ]   already on disk: " << outPath.string() << std::endl;
+                    RLOG << "[MPQ]   already on disk: " << wlog(outPath.wstring()) << std::endl;
                     return outPath.wstring();
                 }
                 if (writeBytesToDisk(outPath, *data)) {
-                    RLOG << "[MPQ]   extracted to: " << outPath.string() << std::endl;
+                    RLOG << "[MPQ]   extracted to: " << wlog(outPath.wstring()) << std::endl;
                     return outPath.wstring();
                 }
             }

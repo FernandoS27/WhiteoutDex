@@ -16,8 +16,10 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace fs  = std::filesystem;
 namespace wt  = whiteout::textures;
@@ -42,6 +44,37 @@ std::wstring widen(const std::string& s) {
     return w;
 }
 
+// Narrow a wide path for the debug log, ASCII only.
+// std::filesystem::path::string() must NEVER be used for this: it uses the
+// STL's strict wide→narrow converter, which throws std::system_error ("No
+// mapping for the Unicode character exists in the target multi-byte code
+// page") for any character the ANSI code page cannot represent — e.g. an
+// export target under a CJK folder. Nothing here catches it, so it would
+// escape DoExport and surface in Max as an unexpected system exception.
+std::string wlog(const std::wstring& ws) {
+    std::string s;
+    s.reserve(ws.size());
+    for (wchar_t c : ws)
+        s += (c < 128) ? static_cast<char>(c) : '?';
+    return s;
+}
+
+std::string wlog(const fs::path& p) { return wlog(p.wstring()); }
+
+// Write an encoded texture to disk through the wide path. The WhiteoutLib
+// writers' file overloads take a narrow std::string, which cannot name a
+// file under a non-ANSI directory, so we encode to a buffer and do the file
+// I/O ourselves — std::ofstream's fs::path overload is wide on Windows.
+bool writeBytes(const fs::path& dstPath, const std::vector<whiteout::u8>& bytes) {
+    if (bytes.empty()) return false;
+    std::ofstream ofs(dstPath, std::ios::binary);
+    if (!ofs) return false;
+    ofs.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    ofs.close();
+    return ofs.good();
+}
+
 std::string lowerExt(const std::string& path) {
     auto dot = path.rfind('.');
     if (dot == std::string::npos) return {};
@@ -58,31 +91,54 @@ std::string stripExt(const std::string& path) {
 
 // ── Source loader: dispatch by extension ────────────────────────────────────
 
+// Read a whole file through the wide path. Same reason as writeBytes: the
+// parsers' file overloads take a narrow std::string, which cannot name a
+// source bitmap sitting under a non-ANSI directory, so the bytes are read
+// here and handed to the parsers' span overload instead.
+std::optional<std::vector<whiteout::u8>> readAllBytes(const fs::path& p) {
+    std::ifstream ifs(p, std::ios::binary | std::ios::ate);
+    if (!ifs) return std::nullopt;
+    const std::streamoff size = ifs.tellg();
+    if (size < 0) return std::nullopt;
+    ifs.seekg(0, std::ios::beg);
+    std::vector<whiteout::u8> bytes(static_cast<size_t>(size));
+    if (size > 0 &&
+        !ifs.read(reinterpret_cast<char*>(bytes.data()),
+                  static_cast<std::streamsize>(size)))
+        return std::nullopt;
+    return bytes;
+}
+
 std::optional<wt::Texture> loadSource(const std::string& srcPath) {
     const std::string ext = lowerExt(srcPath);
+
+    const auto bytes = readAllBytes(fs::path(widen(srcPath)));
+    if (!bytes) return std::nullopt;
+    const std::span<const whiteout::u8> data(*bytes);
+
     if (ext == ".blp") {
         blp::Parser p;
-        return p.parse(srcPath);
+        return p.parse(data);
     }
     if (ext == ".dds") {
         dds::Parser p;
-        return p.parse(srcPath);
+        return p.parse(data);
     }
     if (ext == ".png") {
         png::Parser p;
-        return p.parse(srcPath);
+        return p.parse(data);
     }
     if (ext == ".tga") {
         tga::Parser p;
-        return p.parse(srcPath);
+        return p.parse(data);
     }
     if (ext == ".bmp") {
         bmp::Parser p;
-        return p.parse(srcPath);
+        return p.parse(data);
     }
     if (ext == ".jpg" || ext == ".jpeg") {
         jpg::Parser p;
-        return p.parse(srcPath);
+        return p.parse(data);
     }
     return std::nullopt;
 }
@@ -112,7 +168,7 @@ void ensureMipChain(wt::Texture& tex) {
 
 // ── Encoders ────────────────────────────────────────────────────────────────
 
-bool writeBlp(const wt::Texture& texIn, const std::string& dstPath,
+bool writeBlp(const wt::Texture& texIn, const fs::path& dstPath,
               const MdxExportOptions& opts)
 {
     blp::SaveOptions sopt;
@@ -131,17 +187,18 @@ bool writeBlp(const wt::Texture& texIn, const std::string& dstPath,
         tex.format(wt::PixelFormat::RGBA8);
 
     blp::Writer writer;
-    writer.write(dstPath, tex, sopt);
+    const auto bytes = writer.write(tex, sopt);
     // Lenient mode reports "issues" for warnings too; treat the write as
     // successful whenever the file is on disk afterwards.
     if (writer.hasIssues()) {
         for (const auto& m : writer.getIssues())
             ELOG << "    [BLP issue] " << m << "\n";
     }
+    if (!writeBytes(dstPath, bytes)) return false;
     return fs::exists(dstPath);
 }
 
-bool writeDds(const wt::Texture& texIn, const std::string& dstPath,
+bool writeDds(const wt::Texture& texIn, const fs::path& dstPath,
               const MdxExportOptions& opts, ir::TextureSlot slot)
 {
     // Slot-aware format selection.
@@ -162,11 +219,12 @@ bool writeDds(const wt::Texture& texIn, const std::string& dstPath,
         tex.format(target);
 
     dds::Writer writer;
-    writer.write(dstPath, tex);
+    const auto bytes = writer.write(tex);
     if (writer.hasIssues()) {
         for (const auto& m : writer.getIssues())
             ELOG << "    [DDS issue] " << m << "\n";
     }
+    if (!writeBytes(dstPath, bytes)) return false;
     return fs::exists(dstPath);
 }
 
@@ -197,7 +255,7 @@ void convertExportTextures(ir::IRModel& model,
     fs::path mdxDir = fs::path(widen(mdxOutputPath)).parent_path();
     ELOG << "[texconv] target=" << (isReforged ? "DDS" : "BLP")
          << " textures=" << model.textures.size()
-         << " mdxDir=" << mdxDir.string() << "\n";
+         << " mdxDir=" << wlog(mdxDir) << "\n";
 
     // Build texture-index -> slot map from material layers. A texture can be
     // referenced from multiple slots; we keep the first non-Diffuse hit so
@@ -250,7 +308,7 @@ void convertExportTextures(ir::IRModel& model,
         std::replace(mdxRelFwd.begin(), mdxRelFwd.end(), '\\', '/');
         fs::path dstPath = mdxDir / widen(mdxRelFwd);
         dstPath = dstPath.make_preferred();
-        ELOG << "    dst=" << dstPath.string() << "\n";
+        ELOG << "    dst=" << wlog(dstPath) << "\n";
 
         // Skip if destination exists and overwrite is off — but still
         // update the in-MDX path to the converted extension so the model
@@ -280,12 +338,12 @@ void convertExportTextures(ir::IRModel& model,
         // Make sure the destination directory exists.
         fs::create_directories(dstPath.parent_path(), ec);
 
-        // Encode + write.
-        const std::string dstUtf8 = dstPath.string();
+        // Encode + write. dstPath stays a fs::path (wide on Windows) so an
+        // export target under a non-ANSI directory names the file correctly.
         const ir::TextureSlot slot = slotByTex[i];
         const bool ok = isReforged
-                            ? writeDds(*loaded, dstUtf8, opts, slot)
-                            : writeBlp(*loaded, dstUtf8, opts);
+                            ? writeDds(*loaded, dstPath, opts, slot)
+                            : writeBlp(*loaded, dstPath, opts);
 
         if (!ok) {
             ELOG << "    FAIL: writer did not produce dst file\n";

@@ -84,6 +84,36 @@ std::wstring toWstr(const std::string& u8) {
     return r;
 }
 
+// Narrow a wide string for the debug log, ASCII only.
+// std::filesystem::path::string() must NEVER be used for this: it uses the
+// STL's strict wide→narrow converter, which throws std::system_error ("No
+// mapping for the Unicode character exists in the target multi-byte code
+// page") for any character the ANSI code page cannot represent — e.g. a
+// model imported from a folder with a CJK name. Nothing in the import path
+// catches that, so it escaped DoImport and Max reported an unexpected
+// system exception. Same helper as texture_resolver.cpp's wlog().
+std::string wlog(const std::wstring& ws) {
+    std::string s;
+    s.reserve(ws.size());
+    for (wchar_t c : ws)
+        s += (c < 128) ? static_cast<char>(c) : '?';
+    return s;
+}
+
+// Narrow a wide path to UTF-8 for writing into an .ifl file.
+// Verified against Max 2027 (see the IFL writer below for what was tested):
+// Max decodes IFL entries as UTF-8, so this round-trips a path under a
+// non-ANSI directory. For an all-ASCII path the bytes are unchanged.
+std::string toUtf8(const std::wstring& ws) {
+    if (ws.empty()) return {};
+    const int n = static_cast<int>(ws.size());
+    int len = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), n, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string out(static_cast<size_t>(len), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), n, out.data(), len, nullptr, nullptr);
+    return out;
+}
+
 } // anonymous namespace
 
 
@@ -377,11 +407,21 @@ IFLGenResult generateIFLForLayer(
         std::wstring fullPath = resolver ? resolver->Resolve(rel)
                                           : mdx_scene::resolveTexturePath(modelDir, rel);
 
-        // Convert wide path to UTF-8 for IFL file (narrow ASCII output).
-        // Standard library's wstring→string conversion via std::string
-        // constructor assumes the source is ASCII-compatible which is
-        // fine for typical Windows filesystem paths.
-        std::string narrow(fullPath.begin(), fullPath.end());
+        // Write the ABSOLUTE path, encoded as UTF-8. Tested against Max 2027
+        // with a bitmap under a CJK directory:
+        //   absolute + UTF-8            -> loads
+        //   absolute + UTF-8 with BOM   -> loads
+        //   absolute + ANSI code page   -> fails ('?' substitutions)
+        //   relative to the IFL's dir   -> fails; Max resolves a relative
+        //                                  entry against the configured
+        //                                  External Files paths, NOT against
+        //                                  the IFL's own location
+        // For an all-ASCII path this is byte-for-byte what we wrote before.
+        //
+        // This was originally a char-by-char wchar_t->char truncation, which
+        // turned every non-ASCII path character into a stray byte — U+6E0A
+        // ('渊') became 0x0A, splitting the entry across two lines.
+        const std::string narrow = toUtf8(fullPath);
         iflA << narrow << "\n";
         ++linesWritten;
 
@@ -417,11 +457,11 @@ IFLGenResult generateIFLForLayer(
     namespace fs = std::filesystem;
     fs::path iflPath = fs::path(modelDir) / iflName.str();
 
-    MLOG << "[IFL-DEBUG] writing IFL file to: " << iflPath.string() << std::endl;
+    MLOG << "[IFL-DEBUG] writing IFL file to: " << wlog(iflPath.wstring()) << std::endl;
 
     std::ofstream ofs(iflPath, std::ios::binary);
     if (!ofs) {
-        MLOG << "[IFL] Failed to open for write: " << iflPath.string() << std::endl;
+        MLOG << "[IFL] Failed to open for write: " << wlog(iflPath.wstring()) << std::endl;
         return result;
     }
     std::string content = iflA.str();
@@ -666,7 +706,48 @@ static Mtl* buildSingleLayerWc3Material(
             IFLGenResult ifl = generateIFLForLayer(layer, irModel, modelDir, resolver);
             if (!ifl.iflPath.empty()) {
                 BitmapTex* bmpTex = diffuseBmpTex;
-                std::string narrowPath(ifl.iflPath.begin(), ifl.iflPath.end());
+
+                // `texmaps` holds ONE Texmap per MDX texture index, so every
+                // layer referencing the same texture shares this object.
+                // Writing the IFL name straight onto it let the last layer
+                // processed win for all of them: a model with five KMTF
+                // tracks generated anim_t0..t4 but ended up with all six
+                // flipbook materials pointing at anim_t4.ifl. Give this
+                // layer its own copy and re-point the material at it, so
+                // each track drives only its own material.
+                DefaultRemapDir iflRemap;
+                if (Texmap* cloneTm =
+                        static_cast<Texmap*>(diffuseTexmap->Clone(iflRemap))) {
+                    if (BitmapTex* cloneBmp = unwrapToBitmapTex(cloneTm)) {
+                        bmpTex        = cloneBmp;
+                        diffuseTexmap = cloneTm;
+
+                        if (const wchar_t* dp =
+                                textureSlotParamName(ir::TextureSlot::Diffuse))
+                            pbSetTexmap(ref, dp, cloneTm);
+
+                        // Mirror onto the StdMat2 delegate, same reason as
+                        // the diffuse sync above.
+                        for (int ri = 0; ri < mtl->NumRefs(); ri++) {
+                            if (auto* sm =
+                                    dynamic_cast<StdMat2*>(mtl->GetReference(ri))) {
+                                sm->SetSubTexmap(ID_DI, cloneTm);
+                                sm->EnableMap(ID_DI, TRUE);
+                                break;
+                            }
+                        }
+
+                        if (showInViewport) {
+                            cloneTm->SetMtlFlag(MTL_TEX_DISPLAY_ENABLED);
+                            cloneBmp->SetMtlFlag(MTL_TEX_DISPLAY_ENABLED);
+                            mtl->SetActiveTexmap(cloneTm);
+                        }
+                        MLOG << "[IFL] cloned shared texmap for this layer"
+                             << std::endl;
+                    }
+                }
+
+                const std::string narrowPath = wlog(ifl.iflPath);
                 bmpTex->SetMapName(ifl.iflPath.c_str());
                 bmpTex->SetStartTime(ifl.startTime);
                 bmpTex->SetPlaybackRate(ifl.playbackRate);

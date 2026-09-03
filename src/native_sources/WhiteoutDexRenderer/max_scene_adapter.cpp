@@ -229,6 +229,25 @@ inline bool IsIflPath(const std::wstring& path) {
     return ext == L".ifl";
 }
 
+// Decode an IFL line from UTF-8. Max reads .ifl entries as UTF-8 (verified
+// against Max 2027: a UTF-8 entry loads, an ANSI-code-page one does not) and
+// MDLXImporter writes them that way. Widening the bytes one-by-one into
+// wchar_t instead — which is what this used to do — turned '月' (E6 9C 88)
+// into three bogus characters, so any frame under a non-ANSI directory
+// resolved to a path that does not exist and the texture came up missing.
+// For an all-ASCII line the result is unchanged.
+inline std::wstring IflUtf8ToWide(const std::string& s) {
+    if (s.empty())
+        return {};
+    const int n = static_cast<int>(s.size());
+    const int len = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), n, nullptr, 0);
+    if (len <= 0)
+        return {};
+    std::wstring out(static_cast<size_t>(len), L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, s.data(), n, out.data(), len);
+    return out;
+}
+
 // Read the frame paths out of a .ifl file — one path per line (the importer
 // writes absolute paths). Trims whitespace, skips blank lines; returns empty
 // when the file can't be opened.
@@ -238,7 +257,17 @@ std::vector<std::wstring> ReadIflFrames(const std::wstring& iflPath) {
     if (!ifs.is_open())
         return frames;
     std::string line;
+    bool firstLine = true;
     while (std::getline(ifs, line)) {
+        // A hand-authored .ifl may carry a UTF-8 BOM; Max accepts one, so skip
+        // it rather than folding it into the first frame's path.
+        if (firstLine) {
+            firstLine = false;
+            if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF &&
+                static_cast<unsigned char>(line[1]) == 0xBB &&
+                static_cast<unsigned char>(line[2]) == 0xBF)
+                line.erase(0, 3);
+        }
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n' ||
                                  line.back() == ' ' || line.back() == '\t'))
             line.pop_back();
@@ -247,7 +276,7 @@ std::vector<std::wstring> ReadIflFrames(const std::wstring& iflPath) {
             continue;
         if (start > 0)
             line.erase(0, start);
-        frames.emplace_back(line.begin(), line.end());
+        frames.push_back(IflUtf8ToWide(line));
     }
     return frames;
 }
@@ -519,6 +548,17 @@ std::wstring MaxSceneAdapter::GetMaxFilePath() {
 // Texture loading (stores pixel data for GetTextures() instead of renderer calls)
 // ============================================================================
 
+// True when every character of the path is plain ASCII, i.e. it round-trips
+// through the narrow shared-asset key that NormalizeTextureKey produces by
+// truncating each wchar_t to a byte. Anything outside that range turns into a
+// different byte (U+6708 '月' -> 0x08), so the key names no real file.
+static bool PathIsNarrowSafe(const std::wstring& p) {
+    for (wchar_t c : p)
+        if (c < 0x20 || c > 0x7E)
+            return false;
+    return true;
+}
+
 // Read raw bytes from a wide-string disk path; ext receives the lowercased extension.
 static bool ReadFileBytesFromDisk(const std::wstring& filePath, std::vector<u8>& out,
                                   std::string& ext) {
@@ -786,8 +826,21 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
     // sees the empty rgba + non-empty sharedKey and binds via
     // TextureAssetManager::BindShared. This skips the entire bitmap-
     // manager / disk / CASC pipeline for textures another model loaded.
-    std::string sharedKey = NormalizeTextureKey(filePath);
-    if (IsTextureCached(sharedKey)) {
+    // Only claim a shared key when the path survives the trip into a narrow
+    // string. The key is NOT just a cache tag: ModelLoader::uploadStagedGpu
+    // binds an AssetManager slot from it via ContentRef::FromPath and then
+    // `continue`s — our decoded pixels are never uploaded, and the slot
+    // renders placeholder WHITE until the host's FileContentProvider reads
+    // that path back off disk. NormalizeTextureKey builds the key by
+    // truncating each wchar_t to a byte, so a model under a non-ANSI
+    // directory (a CJK folder, say) yields a key naming no real file — the
+    // texture then stays white forever even though we decoded it fine.
+    // Leaving the key empty for those paths sends them down the plain
+    // Upload path with the pixels we already have. Only cross-model dedup is
+    // given up, and only for paths that could never have deduped correctly.
+    std::string sharedKey = PathIsNarrowSafe(filePath) ? NormalizeTextureKey(filePath)
+                                                       : std::string{};
+    if (!sharedKey.empty() && IsTextureCached(sharedKey)) {
         mprintf(_M("  Texture: [cache hit, skipping decode] '%s'\n"), filePath.c_str());
         return RegisterTexture(filePath, 0, {}, 0, 0, /*displayPath*/ L"", std::move(sharedKey),
                                wrapFlags);

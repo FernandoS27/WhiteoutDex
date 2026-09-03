@@ -567,9 +567,20 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_hInstance = hInst;
         DisableThreadLibraryCalls(hInst);
-    } else if (reason == DLL_PROCESS_DETACH) {
-        WhiteoutFlakesCleanup();
     }
+    // Deliberately nothing on DLL_PROCESS_DETACH. Calling
+    // WhiteoutFlakesCleanup() here crashed Max on *every* exit: the loader
+    // lock is held, other DLLs may already be detached, and the cleanup's
+    // trailing mprintf() resolves MaxScript's context out of TLS
+    // (thread_locals_index) and calls a virtual on it. By process-detach time
+    // that slot is gone, so TlsGetValue returned null and the call
+    // dereferenced 0x28 — the 0xC0000005 at RVA 0xa0d3 that WER kept
+    // reporting against this module.
+    //
+    // Real teardown already has proper homes, all of which run while Max is
+    // still alive: NOTIFY_SYSTEM_SHUTDOWN / PRE_RESET / FILE_PRE_OPEN /
+    // FILE_PRE_MERGE (see OnMaxSceneEvent) and the explicit Stop primitive.
+    // At process exit there is nothing left worth releasing by hand.
     return TRUE;
 }
 
