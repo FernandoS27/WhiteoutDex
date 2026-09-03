@@ -200,10 +200,14 @@ ir::IRModel MdxModelDisassembler::disassemble(
     mapCameras(mdxModel, ir);
     mapCollisionShapes(mdxModel, ir);
 
-    if (version_ >= 1200) {
+    // Corn / FaceFX are nominally v1200 features, but Reforged exporters
+    // sometimes ship CORN / FAFX chunks while keeping the header version
+    // below 1200. Map whenever the parser actually found the chunks — the
+    // mappers no-op if the source vector is empty.
+    if (!mdxModel.cornEmitters.empty())
         mapCornEmitters(mdxModel, ir);
+    if (version_ >= 1200)
         mapFaceEffects(mdxModel, ir);
-    }
 
     mapNodeAnimations(mdxModel, ir);
 
@@ -442,9 +446,7 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                     }
                     irLayer.textureRefs.push_back(ref);
                 }
-            } else if (layer.textureId != 0 && layer.textureId < mdx.textures.size()) {
-                // Raw v800 without sub-textures (textureId is the actual diffuse texture index).
-                // textureId == 0 is the reset value for v1100+ layers — not a real texture ref.
+            } else if (layer.textureId < mdx.textures.size()) {
                 ir::TextureRef ref;
                 ref.textureIndex = static_cast<int32_t>(layer.textureId);
                 ref.slot = ir::TextureSlot::Diffuse;
@@ -1117,6 +1119,17 @@ void MdxModelDisassembler::mapCornEmitters(const wdx::Model& mdx, ir::IRModel& i
         irPE.speed = corn.speed;
         irPE.replaceableId = static_cast<int32_t>(corn.replaceableId);
         irPE.modelPath = corn.path;
+        irPE.animVisibilityGuide = corn.animVisibilityGuide;
+        // Base color / alpha ride in segmentColors[0] / segmentAlpha[0] for
+        // variant 3 — the same slots wc3_popcorn_extractor reads back out.
+        irPE.segmentColors[0] = Color(corn.color.x, corn.color.y, corn.color.z);
+        irPE.segmentAlpha[0] = corn.alpha;
+        // Carry the Popcorn-relevant Node flag bits straight through. The
+        // builder reads them as `flagUnshaded` (0x8000), `flagUnfogged`
+        // (0x20000) and `flagScaling` (0x40000) on the Wc3Popcorn helper.
+        // DontInherit / billboard bits stay on irNode.nodeFlags as usual.
+        irPE.flags =
+            static_cast<uint32_t>(corn.node.flags) & 0x68000u; // 0x8000 | 0x20000 | 0x40000
 
         if (corn.emissionRateTracks.isUsed)
             irPE.emissionRateTrackIndex = storeFloatTrack(ir,
@@ -1133,6 +1146,12 @@ void MdxModelDisassembler::mapCornEmitters(const wdx::Model& mdx, ir::IRModel& i
         if (corn.colorTracks.isUsed)
             irPE.colorTrackIndex = storeColorTrack(ir,
                 mapColorTrack(corn.colorTracks));
+        // KPPA. WhiteoutLib used to land this chunk in `lifeSpanTracks`; the
+        // parser now routes it to its own field, so read it by name and keep
+        // it off the lifespan slot (KPPL) it used to collide with.
+        if (corn.alphaTracks.isUsed)
+            irPE.alphaTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(corn.alphaTracks));
 
         ir.particleEmitters.push_back(std::move(irPE));
     }

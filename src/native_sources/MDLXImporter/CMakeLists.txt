@@ -15,7 +15,11 @@ file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.h")
 
 add_library(MDLXImporter SHARED ${SOURCES} src/MDLXImporter.rc)
 
-target_include_directories(MDLXImporter PRIVATE src)
+target_include_directories(MDLXImporter PRIVATE
+    src
+    # wdx_mpq_settings.h - the shared MPQ load order, also read by the renderer
+    "${CMAKE_CURRENT_SOURCE_DIR}/../common"
+)
 
 target_link_libraries(MDLXImporter PRIVATE
     MaxCore

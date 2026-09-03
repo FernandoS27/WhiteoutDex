@@ -760,23 +760,29 @@ struct WdxAnimTools
 		-- Localization
 		on generalRoll open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon generalRoll) catch()
 			if ::WdxL != undefined then
 			(
 				generalRoll.title = ::WdxL.t "anim_general_tools_title"
+				animationGrpB.text = ::WdxL.t "anim_animation_grp"
+				tcbToolsGrpB.text = ::WdxL.t "anim_tcb_tools_grp"
+				smoothRotationsGrpB.text = ::WdxL.t "anim_smooth_rotations_grp"
+				boneToolsGrpB.text = ::WdxL.t "anim_bone_tools_grp"
 				addSEkeysbtn.text = ::WdxL.t "anim_addnstart_and_ending_keysnto_selected_ob_btn"
-				addSEkeysbtn.tooltip = ::WdxL.t "anim_adds_keyframes_to_frame_0_and_tip"
+				try (addSEkeysbtn.tooltip = ::WdxL.t "anim_adds_keyframes_to_frame_0_and_tip") catch ()
 				PosChk.text = ::WdxL.t "anim_position_chk"
-				PosChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip"
+				try (PosChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip") catch ()
 				RotChk.text = ::WdxL.t "anim_rotation_chk"
-				RotChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip_2"
+				try (RotChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip_2") catch ()
 				ScaChk.text = ::WdxL.t "anim_scaling_chk"
-				ScaChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip_3"
+				try (ScaChk.tooltip = ::WdxL.t "anim_apply_continuity_adjustment_to_tip_3") catch ()
 				continuityBtn.text = ::WdxL.t "anim_set_continuity_to_zero_btn"
-				continuityBtn.tooltip = ::WdxL.t "anim_sets_the_continuity_parameter_tip"
+				try (continuityBtn.tooltip = ::WdxL.t "anim_sets_the_continuity_parameter_tip") catch ()
 				fixSquadbtn.text = ::WdxL.t "anim_fix_nonlinearnrotation_problemsnon_selec_btn"
-				fixSquadbtn.tooltip = ::WdxL.t "anim_nonlinear_rotation_keys_may_a_tip"
+				try (fixSquadbtn.tooltip = ::WdxL.t "anim_nonlinear_rotation_keys_may_a_tip") catch ()
 				createAttachmentPointsBtn.text = ::WdxL.t "anim_create_attachment_points_btn"
-				createAttachmentPointsBtn.tooltip = ::WdxL.t "anim_automatically_create_attachmen_tip"
+				try (createAttachmentPointsBtn.tooltip = ::WdxL.t "anim_automatically_create_attachmen_tip") catch ()
 			)
 		)
     ),
@@ -793,18 +799,27 @@ struct WdxAnimTools
         mapped fn saveParents s =
         (
             local p = s.parent
-            if p != undefined then setUserProp s "OriginalParent" p.name
+            if p != undefined then
+            (
+                -- Handle ist der Schlüssel (Namen sind nicht eindeutig);
+                -- der Name bleibt nur als Fallback für alte Szenen.
+                setUserProp s "OriginalParentHandle" p.inode.handle
+                setUserProp s "OriginalParent" p.name
+            )
             s.parent = undefined
         )
 
         mapped fn restoreParents s =
         (
-            local tmp = getUserProp s "OriginalParent"
-            if tmp != undefined then
+            local p = undefined
+            local h = getUserProp s "OriginalParentHandle"
+            if h != undefined then try ( p = maxOps.getNodeByHandle (h as integer) ) catch()
+            if p == undefined then
             (
-                local p = getNodeByName tmp
-                s.parent = p
+                local tmp = getUserProp s "OriginalParent"
+                if tmp != undefined then p = getNodeByName tmp
             )
+            if p != undefined then s.parent = p
         )
         
         -- Event-Handler
@@ -891,13 +906,16 @@ struct WdxAnimTools
 		-- Localization
 		on skinRoll open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon skinRoll) catch()
 			if ::WdxL != undefined then
 			(
 				skinRoll.title = ::WdxL.t "anim_skinning_title"
+				atSkinningGrpB.text = ::WdxL.t "anim_at_skinning_grp"
 				saveBtn.text = ::WdxL.t "anim_save_and_unlink_btn"
-				saveBtn.tooltip = ::WdxL.t "anim_saves_parent_relationships_of_tip"
+				try (saveBtn.tooltip = ::WdxL.t "anim_saves_parent_relationships_of_tip") catch ()
 				restoreBtn.text = ::WdxL.t "anim_restore_parents_btn"
-				restoreBtn.tooltip = ::WdxL.t "anim_restores_previously_saved_pare_tip"
+				try (restoreBtn.tooltip = ::WdxL.t "anim_restores_previously_saved_pare_tip") catch ()
 			)
 		)
     ),
@@ -1068,11 +1086,31 @@ struct WdxAnimTools
 		-- Localization
 		on controllersRoll open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon controllersRoll) catch()
 			if ::WdxL != undefined then
 			(
 				controllersRoll.title = ::WdxL.t "anim_controllers_title"
+				controllersGrpB.text = ::WdxL.t "anim_controllers_grp"
+				-- `.labels` on radiobuttons resets `.state`, so each control's
+				-- current choice is restored right after the swap.
+				local savPos = PosRdo.state
+				local savRot = RotRdo.state
+				local savSca = ScaRdo.state
+				PosRdo.caption = ::WdxL.t "anim_position_rdo"
+				RotRdo.caption = ::WdxL.t "anim_rotation_rdo"
+				ScaRdo.caption = ::WdxL.t "anim_scaling_rdo"
+				PosRdo.labels = ::WdxL.tList "anim_pos_rdo_labels"
+				RotRdo.labels = ::WdxL.tList "anim_rot_rdo_labels"
+				ScaRdo.labels = ::WdxL.tList "anim_sca_rdo_labels"
+				PosRdo.state = savPos
+				RotRdo.state = savRot
+				ScaRdo.state = savSca
+				try (PosRdo.tooltip = ::WdxL.t "anim_choose_the_type_of_controller_tip") catch ()
+				try (RotRdo.tooltip = ::WdxL.t "anim_choose_the_type_of_controller_tip_2") catch ()
+				try (ScaRdo.tooltip = ::WdxL.t "anim_choose_the_type_of_controller_tip_3") catch ()
 				controllerBtn.text = ::WdxL.t "anim_apply_to_selected_btn"
-				controllerBtn.tooltip = ::WdxL.t "anim_applies_the_selected_controlle_tip"
+				try (controllerBtn.tooltip = ::WdxL.t "anim_applies_the_selected_controlle_tip") catch ()
 			)
 		)
     ),
@@ -1143,9 +1181,9 @@ struct WdxAnimTools
             local cn = (classOf obj) as string
             if cn == "BoneGeometry" or cn == "Biped_Object" do return false
             if cn == "CATParent" or cn == "CATBone" or cn == "HubObject" or cn == "IKTarget" do return false
-            if cn == "BlizzParticle1" or cn == "BlizzParticle2" or cn == "BlizRibbon" do return false
+            if cn == "Wc3Particles1" or cn == "Wc3Particles2" or cn == "BlizRibbon" do return false
             if cn == "Wdx_CollisionSphere" or cn == "Wdx_CollisionBox" or cn == "Wc3CollisionCylinder" do return false
-            if cn == "Wdx_Light" or cn == "Wdx_Popcorn" do return false
+            if cn == "Wdx_Wc3Light" or cn == "Wdx_Wc3Popcorn" do return false
             true
         )
         fn measureMeshHeight =
@@ -1177,16 +1215,16 @@ struct WdxAnimTools
             for obj in objects do
             (
                 local cn = (classOf obj) as string
-                if cn == "BlizzParticle2" do
+                if cn == "Wc3Particles2" do
                 ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.speed *= factor)catch(); try(obj.gravity *= factor)catch(); try(obj.startscale *= factor)catch(); try(obj.middlescale *= factor)catch(); try(obj.endscale *= factor)catch(); try(obj.taillength *= factor)catch(); count += 1 )
-                if cn == "BlizzParticle1" do
+                if cn == "Wc3Particles1" do
                 ( try(obj.radius *= factor)catch(); try(obj.Gravity *= factor)catch(); count += 1 )
                 if cn == "BlizRibbon" do
                 ( try(obj.Above *= factor)catch(); try(obj.Below *= factor)catch(); try(obj.gravity *= factor)catch(); count += 1 )
                 if cn == "Wdx_CollisionSphere" do ( try(obj.radius *= factor)catch(); count += 1 )
                 if cn == "Wdx_CollisionBox" do ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.height *= factor)catch(); count += 1 )
-                if cn == "Wdx_Light" do ( try(obj.DS_Spn *= factor)catch(); try(obj.DE_Spn *= factor)catch(); count += 1 )
-                if cn == "Wdx_Popcorn" do ( try(obj.speed *= factor)catch(); count += 1 )
+                if cn == "Wdx_Wc3Light" do ( try(obj.DS_Spn *= factor)catch(); try(obj.DE_Spn *= factor)catch(); count += 1 )
+                if cn == "Wdx_Wc3Popcorn" do ( try(obj.speed *= factor)catch(); count += 1 )
             )
             count
         )
@@ -1244,12 +1282,12 @@ struct WdxAnimTools
         -- Main
         fn doScale factor =
         (
-            if factor == 1.0 do ( lblStatus.text = "Factor 1.0 - no change."; return true )
-            if factor <= 0.0 do ( lblStatus.text = "Invalid factor."; return false )
+            if factor == 1.0 do ( lblStatus.text = ::WdxL.t "anim_factor_no_change_msg"; return true )
+            if factor <= 0.0 do ( lblStatus.text = ::WdxL.t "anim_invalid_factor_msg"; return false )
             local d = detectRig(); local hasBiped = d[1]; local hasCat = d[2]; local stdRoots = d[3]
             if stdRoots.count == 0 and not hasBiped and not hasCat do ( messageBox (::WdxL.t "anim_no_objects_in_scene_msg") title:(::WdxL.t "anim_error_ptitle"); return false )
-            if hasBiped do ( if not (queryBox "Biped detected!\nBiped + Skin cannot be auto-scaled.\nStandard objects will still be scaled.\nContinue?" title:(::WdxL.t "anim_biped_warning_ptitle") beep:false) do return false )
-            if hasCat do ( if not (queryBox "CAT rig detected!\nCAT + Skin cannot be auto-scaled.\nStandard objects will still be scaled.\nContinue?" title:(::WdxL.t "anim_cat_warning_ptitle") beep:false) do return false )
+            if hasBiped do ( if not (queryBox (::WdxL.t "anim_biped_detected_msg") title:(::WdxL.t "anim_biped_warning_ptitle") beep:false) do return false )
+            if hasCat do ( if not (queryBox (::WdxL.t "anim_cat_detected_msg") title:(::WdxL.t "anim_cat_warning_ptitle") beep:false) do return false )
             local autoKeyOn = animButtonState
             undo label:("Scale " + (factor as string) + "x") on
             (
@@ -1258,12 +1296,12 @@ struct WdxAnimTools
                 local result = if autoKeyOn then (scaleRootsAtFrame stdRoots factor) else (scaleRootsAllKeys stdRoots factor)
                 local scaled = result[1]; local skinned = result[2]; local wc3n = scaleWc3 factor
                 for obj in frozenObjs do try(obj.isFrozen = true)catch()
-                local parts = #(); append parts ((scaled as string) + " scaled")
-                if skinned > 0 do append parts ((skinned as string) + " Skin(s)")
+                local parts = #(); append parts ((scaled as string) + " " + (::WdxL.t "anim_status_scaled"))
+                if skinned > 0 do append parts ((skinned as string) + " " + (::WdxL.t "anim_status_skins"))
                 if wc3n > 0 do append parts ((wc3n as string) + " WC3")
                 if autoKeyOn do append parts ("Key@F" + (sliderTime.frame as integer) as string)
-                if hasBiped do append parts "Biped skipped"
-                if hasCat do append parts "CAT skipped"
+                if hasBiped do append parts (::WdxL.t "anim_status_biped_skipped")
+                if hasCat do append parts (::WdxL.t "anim_status_cat_skipped")
                 local s2 = ""
                 for i = 1 to parts.count do ( s2 += parts[i]; if i < parts.count do s2 += " | " )
                 lblStatus.text = ((((factor * 1000.0) as integer / 1000.0) as string) + "x | " + s2)
@@ -1280,7 +1318,7 @@ struct WdxAnimTools
                 if currentH > 0.01 then
                 ( local factorStr = ((((targetH / currentH) * 1000.0) as integer / 1000.0) as string)
                     lblStatus.text = (((currentH * 10.0) as integer / 10.0) as string) + " -> " + (((targetH * 10.0) as integer / 10.0) as string) + " = " + factorStr + "x" )
-                else lblStatus.text = "No meshes found!"
+                else lblStatus.text = ::WdxL.t "anim_no_meshes_found_in_scene_msg"
             ) else lblStatus.text = ""
         )
         on btnPreset pressed do
@@ -1373,9 +1411,13 @@ struct WdxAnimTools
 		-- Localization
 		on scalerRoll open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon scalerRoll) catch()
 			if ::WdxL != undefined then
 			(
 				scalerRoll.title = ::WdxL.t "anim_model_scaler_title"
+				presetGrpB.text = ::WdxL.t "anim_scale_to_target_height_grp"
+				manualGrpB.text = ::WdxL.t "anim_manual_factor_grp"
 				spnScale.caption = ::WdxL.t "anim_factor_spn"
 				btnPreset.text = ::WdxL.t "anim_scale_btn"
 				btnApply.text = ::WdxL.t "anim_apply_btn"

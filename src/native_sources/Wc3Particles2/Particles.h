@@ -25,6 +25,11 @@
 #include <iparamm2.h>
 #include <custcont.h>
 #include <maxscript/maxscript.h>
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+// ExecuteMAXScriptScript gained a required MAXScript::ScriptSource argument in
+// Max 2022; BrowseTextureFromArchives passes it under the same guard.
+#include <maxscript/ScriptSource.h>
+#endif
 /// Permutation table lookup, exported from core.dll.
 /// Forward-declared here to avoid the texutil.h/fmin conflict with MSVC.
 CoreExport int Perm(int v);
@@ -374,6 +379,14 @@ public:
     void    SetupMaxRate(HWND hWnd, IParamBlock2* pb, TimeValue t);
     /// @brief Opens a file-open dialog and writes the result to the path CustEdit.
     void    BrowseForMdlFile(HWND hWnd);
+    /// @brief Pick the particle texture out of the game archives rather than
+    ///        off disk. Drives the MaxScript asset browser
+    ///        (WhiteoutDexModelBrowser.ms), which hands back the CASC-relative
+    ///        path MDX actually stores.
+    void    BrowseTextureFromArchives(HWND hWnd);
+    /// @brief Split @p relPath at its last separator into the prefix and
+    ///        file-name fields and push both to the object and the dialog.
+    void    ApplyTexturePath(HWND hWnd, const MCHAR* relPath);
 };
 
 /**

@@ -80,34 +80,46 @@ struct WdxSequenceManager
         
         -- Legacy StandardMaterial alpha (meist undefined bei Wc3Material)
         try (this.checkControllerForGlobalSeq mat.alpha.controller &durations) catch()
-        
-        -- Wc3Material-eigene Animations-Properties (W_Angle nur hier, nicht auf Bitmap)
-        try (this.checkControllerForGlobalSeq mat.opacity.controller      &durations) catch()
-        try (this.checkControllerForGlobalSeq mat.anim_UOffset.controller &durations) catch()
-        try (this.checkControllerForGlobalSeq mat.anim_VOffset.controller &durations) catch()
-        try (this.checkControllerForGlobalSeq mat.anim_WAngle.controller  &durations) catch()
-        
-        -- Bitmap auflösen: erst .texture (StandardMaterial), dann .diffuseMap (Wc3Material)
-        local bmp = undefined
-        try (if mat.texture != undefined and classOf mat.texture == BitmapTexture then bmp = mat.texture) catch()
-        if bmp == undefined do (
-            try (if mat.diffuseMap != undefined and classOf mat.diffuseMap == BitmapTexture then bmp = mat.diffuseMap) catch()
+
+        -- Wc3Material-eigene Animations-Properties (nur noch Opacity/KMTA;
+        -- UV-Animation/TXAN lebt jetzt auf der Wc3Bitmap-Textur)
+        try (this.checkControllerForGlobalSeq mat.opacity.controller &durations) catch()
+
+        -- Bitmap auflösen: erst .texture (StandardMaterial), dann .diffuseMap
+        -- (Wc3Material). Akzeptiert BitmapTexture UND Wc3Bitmap — die
+        -- Property-Zugriffe (coords etc.) delegieren beim Scripted-Plugin
+        -- transparent an die Bitmaptexture darunter.
+        fn isUVBitmap tex = (
+            local cn = try ((classOf tex) as string) catch("")
+            cn == "BitmapTexture" or cn == "Wc3Bitmap"
         )
-        
-        -- Bitmap UV-Controller
+        local bmp = undefined
+        try (if mat.texture != undefined and isUVBitmap mat.texture then bmp = mat.texture) catch()
+        if bmp == undefined do (
+            try (if mat.diffuseMap != undefined and isUVBitmap mat.diffuseMap then bmp = mat.diffuseMap) catch()
+        )
+
+        -- Bitmap UV-Controller (bei Wc3Bitmap sind die anim_*-Params mit den
+        -- coords-Controllern geteilt — coords scannen genügt; anim_WOffset
+        -- hat kein coords-Pendant und wird separat geprüft).
+        -- ACHTUNG: Scripted Plugins delegieren unbekannte Properties NICHT —
+        -- coords/playbackrate einer Wc3Bitmap sind nur über .delegate erreichbar.
         if bmp != undefined do
         (
+            local uvBmp = bmp
+            try (if bmp.delegate != undefined and classOf bmp.delegate == BitmapTexture do uvBmp = bmp.delegate) catch()
             try (
-                local coords = bmp.coords
+                local coords = uvBmp.coords
                 this.checkControllerForGlobalSeq coords.U_offset.controller &durations
                 this.checkControllerForGlobalSeq coords.V_offset.controller &durations
                 this.checkControllerForGlobalSeq coords.W_angle.controller  &durations
                 this.checkControllerForGlobalSeq coords.U_tiling.controller &durations
                 this.checkControllerForGlobalSeq coords.V_tiling.controller &durations
             ) catch()
-            
+            try (this.checkControllerForGlobalSeq bmp.anim_WOffset.controller &durations) catch()
+
             -- IFL Texture Animation (erzeugt immer eine Global Sequence)
-            try (this.checkIFLForGlobalSeq bmp &durations) catch()
+            try (this.checkIFLForGlobalSeq uvBmp &durations) catch()
         )
         
         -- REKURSION: MultiMaterial
@@ -892,6 +904,8 @@ struct WdxSequenceManager
                 
                 on newSequenceRollout open do
                 (
+                    -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+                    try (WdxSetDialogIcon newSequenceRollout) catch()
                     self = WdxSequenceManager
                     parent = mainRollout
                     
@@ -927,20 +941,22 @@ struct WdxSequenceManager
                     (
                         newSequenceRollout.title = ::WdxL.t "seq_new_sequence_title"
                         presetLbl.text = ::WdxL.t "seq_preset_lbl"
-                        presetDDL.tooltip = ::WdxL.t "seq_select_animation_preset_tip"
+                        try (presetDDL.tooltip = ::WdxL.t "seq_select_animation_preset_tip") catch ()
                         nameLbl.text = ::WdxL.t "seq_name_lbl"
-                        nameEdt.tooltip = ::WdxL.t "seq_enter_the_name_of_the_new_sequ_tip"
+                        try (nameEdt.tooltip = ::WdxL.t "seq_enter_the_name_of_the_new_sequ_tip") catch ()
                         startFrameLbl.text = ::WdxL.t "seq_start_frame_lbl"
+                        try (startFrameSpn.tooltip = ::WdxL.t "seq_set_the_start_frame_of_the_seq_tip") catch ()
                         endFrameLbl.text = ::WdxL.t "seq_end_frame_lbl"
+                        try (endFrameSpn.tooltip = ::WdxL.t "seq_set_the_end_frame_of_the_seque_tip") catch ()
                         rarityChk.text = ::WdxL.t "seq_rarity_chk"
-                        rarityChk.tooltip = ::WdxL.t "seq_enabledisable_rarity_of_the_a_tip"
+                        try (rarityChk.tooltip = ::WdxL.t "seq_enabledisable_rarity_of_the_a_tip") catch ()
                         movespeedChk.text = ::WdxL.t "seq_move_speed_chk"
-                        movespeedChk.tooltip = ::WdxL.t "seq_enabledisable_movement_speed_tip"
+                        try (movespeedChk.tooltip = ::WdxL.t "seq_enabledisable_movement_speed_tip") catch ()
                         nonloopingChk.text = ::WdxL.t "seq_non_looping_chk"
                         okBtn.text = ::WdxL.t "seq_ok_btn"
-                        okBtn.tooltip = ::WdxL.t "seq_create_new_sequence_and_close_tip"
+                        try (okBtn.tooltip = ::WdxL.t "seq_create_new_sequence_and_close_tip") catch ()
                         cancelBtn.text = ::WdxL.t "seq_cancel_btn"
-                        cancelBtn.tooltip = ::WdxL.t "seq_cancel_without_creating_a_sequ_tip"
+                        try (cancelBtn.tooltip = ::WdxL.t "seq_cancel_without_creating_a_sequ_tip") catch ()
                     )
                 )
             )
@@ -1385,28 +1401,65 @@ struct WdxSequenceManager
 							(
 								local matWorklist = #()
 								local visitedMats = #()
+								local visitedUVCtrls = #()
 								if obj.material != undefined do append matWorklist obj.material
-								
+
 								while matWorklist.count > 0 do
 								(
 									local mat = matWorklist[matWorklist.count]
 									deleteItem matWorklist matWorklist.count
-									
+
 									if mat != undefined and (findItem visitedMats mat) == 0 do
 									(
 										append visitedMats mat
-										
-										-- Wc3Material params (Wc3Material.ms Z. 297-308)
+
+										-- Wc3Material params (KMTA; TXAN lebt auf der Textur)
 										local matParams = #(
 											"opacity",
-											"anim_UOffset", "anim_VOffset", "anim_WOffset",
-											"anim_WAngle",
-											"anim_UTiling", "anim_VTiling",
 											"alpha"  -- Legacy StandardMaterial-Fallback
 										)
 										for paramName in matParams do
 											copyParamKeysViaSetter mat paramName srcInterval timeOffset
-										
+
+										-- UV-Animation (TXAN): lebt auf der Diffuse-Textur.
+										-- Wc3Bitmap: anim_*-Params (Controller geteilt mit den
+										-- eigenen coords). Plain BitmapTexture: coords-Controller.
+										-- Controller werden ueber Identitaet dedupliziert, damit
+										-- geteilte Controller nicht mehrfach kopiert werden.
+										try
+										(
+											local tex = undefined
+											try (if mat.diffuseMap != undefined do tex = mat.diffuseMap) catch()
+											if tex == undefined do ( try (if mat.texture != undefined do tex = mat.texture) catch() )
+											if tex != undefined do
+											(
+												-- Wc3Bitmap: coords sitzen am Delegate (kein Property-Forwarding)
+												local uvTex = tex
+												try (if tex.delegate != undefined and classOf tex.delegate == BitmapTexture do uvTex = tex.delegate) catch()
+												local uvCtrls = #()
+												try (appendIfUnique uvCtrls tex.anim_UOffset.controller) catch()
+												try (appendIfUnique uvCtrls tex.anim_VOffset.controller) catch()
+												try (appendIfUnique uvCtrls tex.anim_WOffset.controller) catch()
+												try (appendIfUnique uvCtrls tex.anim_WAngle.controller)  catch()
+												try (appendIfUnique uvCtrls tex.anim_UTiling.controller) catch()
+												try (appendIfUnique uvCtrls tex.anim_VTiling.controller) catch()
+												try (appendIfUnique uvCtrls uvTex.coords.U_Offset.controller) catch()
+												try (appendIfUnique uvCtrls uvTex.coords.V_Offset.controller) catch()
+												try (appendIfUnique uvCtrls uvTex.coords.W_Angle.controller)  catch()
+												try (appendIfUnique uvCtrls uvTex.coords.U_Tiling.controller) catch()
+												try (appendIfUnique uvCtrls uvTex.coords.V_Tiling.controller) catch()
+												for c in uvCtrls where c != undefined do
+												(
+													if (findItem visitedUVCtrls c) == 0 do
+													(
+														append visitedUVCtrls c
+														copyControllerKeys c srcInterval timeOffset self.bumpTime
+													)
+												)
+											)
+										)
+										catch()
+
 										-- Sub-Materials zur Worklist
 										try
 										(
@@ -1430,17 +1483,17 @@ struct WdxSequenceManager
 
 							-- Plugin-Params: alle bekannten animatable Properties durchprobieren.
 							-- Klassen-unabhaengig: try/catch macht unbekannte Props harmlos.
-							-- Deckt sowohl alte (BlizzParticle1, Wdx_Light) als auch neue Plugin-Varianten
+							-- Deckt sowohl alte (Wc3Particles1, Wdx_Wc3Light) als auch neue Plugin-Varianten
 							-- (Wc3Particles1Emitter, Wc3Particles2Emitter, RibbonObj) ab.
 							try
 							(
 								local bo = obj.baseObject
 								local pluginParams = #(
-									-- Light (Wdx_Light / Wdx_Wc3Light)
+									-- Light (Wdx_Wc3Light / Wdx_Wc3Light)
 									"DecayStart", "DecayEnd", "AmbColor", "AmbValue", "ShadowColor", "ShadowValue",
 									-- AttachPoint (Wdx_Wc3AttachPoint)
 									"A_Visibility",
-									-- BlizzParticle1 (legacy)
+									-- Wc3Particles1 (legacy)
 									"radius", "PartEmit",
 									-- Wc3Particles1Emitter (C++ verifiziert)
 									"Speed", "EmissionRate", "Gravity", "Latitude", "Longitude",
@@ -1448,7 +1501,7 @@ struct WdxSequenceManager
 									-- speed, variation, width, length, Parts_Sec, Cone_Angle, gravity
 									-- (Speed und Gravity sind bereits oben gelistet)
 									"Variation", "Parts_Sec", "Cone_Angle", "width", "length",
-									-- BlizzParticle2 legacy size/scale-Tracks (falls vorhanden)
+									-- Wc3Particles2 legacy size/scale-Tracks (falls vorhanden)
 									"startscale", "middlescale", "endscale", "taillength",
 									-- BlizRibbon legacy
 									"slots", "Above", "Below", "vertexcolor", "alpha",
@@ -1479,7 +1532,7 @@ struct WdxSequenceManager
 							try
 							(
 								local boCls = (classOf obj.baseObject) as string
-								if boCls == "Wdx_Wc3Event" or boCls == "Wdx_Event" or boCls == "Wc3_Event" do
+								if boCls == "Wdx_Wc3Event" or boCls == "Wdx_Wc3Event" or boCls == "Wc3_Event" do
 								(
 									try
 									(
@@ -1583,8 +1636,8 @@ struct WdxSequenceManager
 					-- Reset Ranges für read-only Anzeige
 					startFrameSpn.range = [0, 0, 0]
 					endFrameSpn.range = [0, duration.frame as integer, duration.frame as integer]
-					startFrameSpn.tooltip = "Global Sequence - read only"
-					endFrameSpn.tooltip = "Global Sequence - read only"
+					try (startFrameSpn.tooltip = "Global Sequence - read only") catch ()
+					try (endFrameSpn.tooltip = "Global Sequence - read only") catch ()
 					
 					ignoreChk.triState = 0
 					nonloopingChk.triState = 0
@@ -1615,8 +1668,8 @@ struct WdxSequenceManager
 					local minEndFrame = (seq.starttime.frame as integer) + 1
 					endFrameSpn.range = [minEndFrame, bounds[2], seq.endtime.frame as integer]
 					
-					startFrameSpn.tooltip = "Valid range: " + bounds[1] as string + " to " + maxStartFrame as string + " (limited by adjacent sequences)"
-					endFrameSpn.tooltip = "Valid range: " + minEndFrame as string + " to " + bounds[2] as string + " (limited by adjacent sequences)"
+					try (startFrameSpn.tooltip = "Valid range: " + bounds[1] as string + " to " + maxStartFrame as string + " (limited by adjacent sequences)") catch ()
+					try (endFrameSpn.tooltip = "Valid range: " + minEndFrame as string + " to " + bounds[2] as string + " (limited by adjacent sequences)") catch ()
 					
 					ignoreChk.triState = if self.isSequenceIgnored seq.name then 1 else 0
 					nonloopingChk.triState = if seq.loop then 1 else 0
@@ -1643,8 +1696,8 @@ struct WdxSequenceManager
 				-- Reset Spinner Ranges bei Mehrfachauswahl
 				startFrameSpn.range = [-999999, 999999, 0]
 				endFrameSpn.range = [-999999, 999999, 0]
-				startFrameSpn.tooltip = "Multiple sequences selected"
-				endFrameSpn.tooltip = "Multiple sequences selected"
+				try (startFrameSpn.tooltip = "Multiple sequences selected") catch ()
+				try (endFrameSpn.tooltip = "Multiple sequences selected") catch ()
 				
 				-- Wenn NUR Globals selektiert sind, alles deaktivieren
 				if selectionIsOnlyGlobals() then
@@ -2109,6 +2162,8 @@ struct WdxSequenceManager
 
         on mainRollout open do
         (
+            -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+            try (WdxSetDialogIcon mainRollout) catch()
             self = WdxSequenceManager
 			self.sequences = self.LoadSequences()
 			self.loadIgnoredSequences()  -- Ignore-Liste laden
@@ -2131,46 +2186,64 @@ struct WdxSequenceManager
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "seq_sequence_manager_title"
+				filterGrp.text = ::WdxL.t "seq_filter_list_grp"
+				try (filterGrp.tooltip = ::WdxL.t "seq_options_for_filtering_the_sequ_tip") catch ()
+				try (filterTxt.tooltip = ::WdxL.t "seq_enter_a_search_term_to_filter_tip") catch ()
+				try (sequencesLbox.tooltip = ::WdxL.t "seq_list_of_all_available_animatio_tip") catch ()
+				selectGrp.text = ::WdxL.t "seq_select_grp"
+				try (selectGrp.tooltip = ::WdxL.t "seq_options_for_selecting_sequence_tip") catch ()
+				sequenceGrp.text = ::WdxL.t "seq_sequence_grp"
+				try (sequenceGrp.tooltip = ::WdxL.t "seq_options_for_creating_and_manag_tip") catch ()
+				editSelectedGrp.text = ::WdxL.t "seq_edit_selected_grp"
+				try (editSelectedGrp.tooltip = ::WdxL.t "seq_edit_properties_of_selected_se_tip") catch ()
+				try (startFrameSpn.tooltip = ::WdxL.t "seq_set_the_start_frame_of_selecte_tip") catch ()
+				try (endFrameSpn.tooltip = ::WdxL.t "seq_set_the_end_frame_of_selected_tip") catch ()
+				try (raritySpn.tooltip = ::WdxL.t "seq_set_the_rarity_value_040_t_tip") catch ()
+				try (movespeedSpn.tooltip = ::WdxL.t "seq_set_the_movement_speed_value_tip") catch ()
+				nudgeKeysGrp.text = ::WdxL.t "seq_nudge_keys_grp"
+				try (nudgeKeysGrp.tooltip = ::WdxL.t "seq_fine_adjustment_of_keyframes_tip") catch ()
+				fileGrp.text = ::WdxL.t "seq_file_grp"
+				try (fileGrp.tooltip = ::WdxL.t "seq_file_management_for_sequences_tip") catch ()
 				filterClearBtn.text = ::WdxL.t "seq_clear_btn"
-				filterClearBtn.tooltip = ::WdxL.t "seq_clear_the_search_field_and_sho_tip"
+				try (filterClearBtn.tooltip = ::WdxL.t "seq_clear_the_search_field_and_sho_tip") catch ()
 				selectAllBtn.text = ::WdxL.t "seq_all_btn"
-				selectAllBtn.tooltip = ::WdxL.t "seq_select_all_sequences_in_the_li_tip"
+				try (selectAllBtn.tooltip = ::WdxL.t "seq_select_all_sequences_in_the_li_tip") catch ()
 				selectNoneBtn.text = ::WdxL.t "seq_none_btn"
-				selectNoneBtn.tooltip = ::WdxL.t "seq_deselect_all_sequences_tip"
+				try (selectNoneBtn.tooltip = ::WdxL.t "seq_deselect_all_sequences_tip") catch ()
 				selectInvertBtn.text = ::WdxL.t "seq_invert_btn"
-				selectInvertBtn.tooltip = ::WdxL.t "seq_invert_the_current_selection_tip"
+				try (selectInvertBtn.tooltip = ::WdxL.t "seq_invert_the_current_selection_tip") catch ()
 				sequenceNewBtn.text = ::WdxL.t "seq_new_btn"
-				sequenceNewBtn.tooltip = ::WdxL.t "seq_create_a_new_animation_sequenc_tip"
+				try (sequenceNewBtn.tooltip = ::WdxL.t "seq_create_a_new_animation_sequenc_tip") catch ()
 				sequenceDeleteBtn.text = ::WdxL.t "seq_delete_selected_btn"
-				sequenceDeleteBtn.tooltip = ::WdxL.t "seq_delete_selected_sequences_tip"
+				try (sequenceDeleteBtn.tooltip = ::WdxL.t "seq_delete_selected_sequences_tip") catch ()
 				duplicateBtn.text = ::WdxL.t "seq_duplicate_btn"
-				duplicateBtn.tooltip = ::WdxL.t "seq_duplicate_selected_sequences_tip"
+				try (duplicateBtn.tooltip = ::WdxL.t "seq_duplicate_selected_sequences_tip") catch ()
 				globalsBtn.text = ::WdxL.t "seq_globals_btn"
-				globalsBtn.tooltip = ::WdxL.t "seq_open_the_global_sequence_manag_tip"
+				try (globalsBtn.tooltip = ::WdxL.t "seq_open_the_global_sequence_manag_tip") catch ()
 				nameLbl.text = ::WdxL.t "seq_name_lbl_2"
-				nameEdt.tooltip = ::WdxL.t "seq_edit_name_of_the_selected_sequ_tip"
+				try (nameEdt.tooltip = ::WdxL.t "seq_edit_name_of_the_selected_sequ_tip") catch ()
 				startFrameLbl.text = ::WdxL.t "seq_start_frame_lbl_2"
-				setStartFrameBtn.tooltip = ::WdxL.t "seq_set_current_frame_as_start_fra_tip"
+				try (setStartFrameBtn.tooltip = ::WdxL.t "seq_set_current_frame_as_start_fra_tip") catch ()
 				endFrameLbl.text = ::WdxL.t "seq_end_frame_lbl_2"
-				setEndFrameBtn.tooltip = ::WdxL.t "seq_set_current_frame_as_end_frame_tip"
+				try (setEndFrameBtn.tooltip = ::WdxL.t "seq_set_current_frame_as_end_frame_tip") catch ()
 				rarityChk.text = ::WdxL.t "seq_rarity_chk_2"
-				rarityChk.tooltip = ::WdxL.t "seq_enabledisable_rarity_of_the_a_tip_2"
+				try (rarityChk.tooltip = ::WdxL.t "seq_enabledisable_rarity_of_the_a_tip_2") catch ()
 				movespeedChk.text = ::WdxL.t "seq_move_speed_chk_2"
-				movespeedChk.tooltip = ::WdxL.t "seq_enabledisable_movement_speed_tip_2"
+				try (movespeedChk.tooltip = ::WdxL.t "seq_enabledisable_movement_speed_tip_2") catch ()
 				nonloopingChk.text = ::WdxL.t "seq_non_looping_chk_2"
-				nonloopingChk.tooltip = ::WdxL.t "seq_animation_will_not_loop_when_p_tip"
+				try (nonloopingChk.tooltip = ::WdxL.t "seq_animation_will_not_loop_when_p_tip") catch ()
 				ignoreChk.text = ::WdxL.t "seq_ignore_chk"
-				ignoreChk.tooltip = ::WdxL.t "seq_if_this_checkbox_is_enabled_t_tip"
+				try (ignoreChk.tooltip = ::WdxL.t "seq_if_this_checkbox_is_enabled_t_tip") catch ()
 				nudgeKeysStartLbl.text = ::WdxL.t "seq_start_lbl"
 				nudgeKeysEndLbl.text = ::WdxL.t "seq_end_lbl"
-				nudgeKeysStartDownBtn.tooltip = ::WdxL.t "seq_move_the_start_frame_of_the_se_tip"
-				nudgeKeysStartUpBtn.tooltip = ::WdxL.t "seq_move_the_start_frame_of_the_se_tip_2"
-				nudgeKeysEndDownBtn.tooltip = ::WdxL.t "seq_move_the_end_frame_of_the_sele_tip"
-				nudgeKeysEndUpBtn.tooltip = ::WdxL.t "seq_move_the_end_frame_of_the_sele_tip_2"
+				try (nudgeKeysStartDownBtn.tooltip = ::WdxL.t "seq_move_the_start_frame_of_the_se_tip") catch ()
+				try (nudgeKeysStartUpBtn.tooltip = ::WdxL.t "seq_move_the_start_frame_of_the_se_tip_2") catch ()
+				try (nudgeKeysEndDownBtn.tooltip = ::WdxL.t "seq_move_the_end_frame_of_the_sele_tip") catch ()
+				try (nudgeKeysEndUpBtn.tooltip = ::WdxL.t "seq_move_the_end_frame_of_the_sele_tip_2") catch ()
 				fileLoadBtn.text = ::WdxL.t "seq_load_btn"
-				fileLoadBtn.tooltip = ::WdxL.t "seq_load_sequences_from_a_file_tip"
+				try (fileLoadBtn.tooltip = ::WdxL.t "seq_load_sequences_from_a_file_tip") catch ()
 				fileSaveBtn.text = ::WdxL.t "seq_save_btn"
-				fileSaveBtn.tooltip = ::WdxL.t "seq_save_sequences_to_a_file_tip"
+				try (fileSaveBtn.tooltip = ::WdxL.t "seq_save_sequences_to_a_file_tip") catch ()
 			)
         )
         
@@ -2231,3 +2304,51 @@ struct WdxSequenceManager
     )
 )
 global WdxSequenceManager = WdxSequenceManager()
+
+-- ============================================================================
+-- WdxPushRendererSequences
+--
+-- Hand the running previewer the scene's current sequence ranges. Called by
+-- the Renderer macroscript right after WhiteoutFlakesStart, and again by the
+-- previewer itself when its Resync button rebuilds the scene: the ranges live
+-- on the MaxSceneAdapter, which a resync replaces, and without them the
+-- popcorn animVisibilityGuide gate has no current-animation name to match
+-- against so every emitter spawns on every sequence.
+--
+-- Forces a LoadSequences() so it works even when the Sequence Manager UI has
+-- never been opened this session. Returns the number of ranges pushed.
+-- ============================================================================
+global WdxPushRendererSequences
+fn WdxPushRendererSequences =
+(
+    local pushed = 0
+    if ::WdxSequenceManager == undefined then
+        format "WDX Renderer: WdxSequenceManager is undefined - no sequences pushed\n"
+    else
+    (
+        try (::WdxSequenceManager.sequences = ::WdxSequenceManager.LoadSequences()) catch
+            (format "WDX Renderer: LoadSequences threw: %\n" (getCurrentException()))
+        local seqs = ::WdxSequenceManager.sequences
+        format "WDX Renderer: WdxSequenceManager has % sequences\n" seqs.count
+        local namesArr  = #()
+        local startsArr = #()
+        local endsArr   = #()
+        for s in seqs do
+        (
+            try
+            (
+                append namesArr  (s.name as string)
+                append startsArr (s.startTime as integer)
+                append endsArr   (s.endTime   as integer)
+            )
+            catch
+            (
+                format "WDX Renderer:   skipped seq (decode failed): %\n" (getCurrentException())
+            )
+        )
+        format "WDX Renderer: pushing % sequences via WhiteoutFlakesPushSequences\n" namesArr.count
+        if namesArr.count > 0 do
+            pushed = WhiteoutFlakesPushSequences namesArr startsArr endsArr
+    )
+    pushed
+)

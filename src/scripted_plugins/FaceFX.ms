@@ -1,5 +1,5 @@
 
-plugin simpleManipulator Wdx_Wc3FaceFX
+plugin simpleManipulator Wdx_FaceFX
 name:"Wc3 FaceFX"
 classID:#(0x7A1B2C08, 0x3D4E5F08)
 category:"Warcraft III Plugins"
@@ -35,7 +35,7 @@ category:"Warcraft III Plugins"
 		if (d01 != undefined and d01 != "") do (obj.facefxName = d01)
 		if (d02 != undefined and d02 != "") do (obj.facefxPath = d02)
 		----------------------------------------------------------------------------------------------------------------------
-		messagebox "Import Complete!"
+		messagebox (::WdxL.t "common_import_complete_msg")
 	)
 
 	-----------------------------------Export FaceFX configuration parameters-----------------------------------
@@ -48,7 +48,7 @@ category:"Warcraft III Plugins"
 		setINISetting output_file "FaceFX" "Name"	obj.facefxName
 		setINISetting output_file "FaceFX" "Path"	obj.facefxPath
 		----------------------------------------------------------------------------------------------------------------------
-		messagebox "Export Complete!"
+		messagebox (::WdxL.t "common_export_complete_msg")
 	)
 
 	------------------------------------- Rollout Definitions -------------------------------------
@@ -64,13 +64,19 @@ category:"Warcraft III Plugins"
 				selection[1].pos = obj.pos
 				selection[1].parent = obj
 				Temp_adsorption.text = obj.name
-				btn_adsorption.text = "Parent: " + Temp_adsorption.text
+				btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
 			)catch()
 		)
 		on General open do
 		(
 			if ::WdxL != undefined then
+			(
 				General.title = ::WdxL.t "facefx_general_functions_title"
+				-- Only reset the caption while nothing is adsorbed; once a
+				-- parent is picked the button shows that name instead.
+				if Temp_adsorption.text == "" do
+					btn_adsorption.text = ::WdxL.t "common_adsorb_btn"
+			)
 		)
 	)
 

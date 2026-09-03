@@ -127,3 +127,10 @@ BEGIN
     DEFPUSHBUTTON   "Import", IDOK, 97, 344, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 155, 344, 50, 14
 END
+
+// ============================================================================
+// Window icon - the shared 16-64 px WhiteoutDex icon, put on the dialog from
+// WM_INITDIALOG (see common/wdx_window_icon.h). rc.exe anchors a relative name
+// at the first /I entry, which is this plug-in's own src/ directory.
+// ============================================================================
+IDI_WHITEOUTDEX_ICON ICON "../../../../whiteoutdex_icons/whiteoutdex.ico"

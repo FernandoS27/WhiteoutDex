@@ -127,18 +127,6 @@ macroScript WhiteoutDex_NodeManager
 	)
 )
 
-macroScript WhiteoutDex_TeamColor
-	category:"WhiteoutDex Toolkit"
-	toolTip:"Team Color Manager"
-	buttonText:"Team Color Manager"
-(
-	on execute do
-	(
-		try (destroyDialog ::WdxTeamColorManager.mainRollout) catch()
-		try (createDialog ::WdxTeamColorManager.mainRollout width:440 height:82) catch()
-	)
-)
-
 macroScript WhiteoutDex_ObjectSettings
 	category:"WhiteoutDex Toolkit"
 	toolTip:"Object Settings"
@@ -158,7 +146,26 @@ macroScript WhiteoutDex_Renderer
 (
 	on execute do
 	(
-		try (ndxStart()) catch (messageBox "Renderer could not be started.")
+		try
+		(
+			WhiteoutFlakesStart()
+			-- Hand the renderer the active sequence ranges so its popcorn
+			-- animVisibilityGuide gate has a current-sequence name to
+			-- match against. Lives in SequenceManager.ms because the
+			-- previewer's own Resync button calls the same function.
+			try
+			(
+				if ::WdxPushRendererSequences == undefined then
+					format "WDX Renderer: WdxPushRendererSequences is undefined — no sequences pushed\n"
+				else
+					WdxPushRendererSequences()
+			)
+			catch
+			(
+				format "WDX Renderer: sequence push failed: %\n" (getCurrentException())
+			)
+		)
+		catch (messageBox (::WdxL.t "tools_renderer_failed_msg"))
 	)
 )
 
@@ -171,9 +178,16 @@ macroScript WhiteoutDex_KeyframeOptimizer
 	(
 		try
 		(
-			local scriptPath = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\post_startup_scripts\\Keyframe_Optimizer.ms"
-			fileIn scriptPath
-		) catch (messageBox ("KFO error:\n" + (getCurrentException())))
+			-- Keyframe_Optimizer.ms is auto-loaded on Max startup (it lives in
+			-- post_startup_scripts), so wdxOpenKfoDialog should already be defined.
+			-- Re-fileIn defensively in case the user installed mid-session.
+			if ::wdxOpenKfoDialog == undefined do
+			(
+				local scriptPath = (::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\Keyframe_Optimizer.ms"
+				fileIn scriptPath
+			)
+			::wdxOpenKfoDialog()
+		) catch (messageBox ((::WdxL.t "tools_kfo_error_msg") + "\n" + (getCurrentException())))
 	)
 )
 
@@ -186,8 +200,12 @@ macroScript WhiteoutDex_CellShadeCreator
 	(
 		try
 		(
-			local scriptPath = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\post_startup_scripts\\Cell_Shade_Creator.ms"
-			fileIn scriptPath
-		) catch (messageBox ("Cell Shade error:\n" + (getCurrentException())))
+			if ::wdxOpenCellShadeDialog == undefined do
+			(
+				local scriptPath = (::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\Cell_Shade_Creator.ms"
+				fileIn scriptPath
+			)
+			::wdxOpenCellShadeDialog()
+		) catch (messageBox ((::WdxL.t "tools_cellshade_error_msg") + "\n" + (getCurrentException())))
 	)
 )

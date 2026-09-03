@@ -9,6 +9,7 @@
 #include "texture_resolver.h"
 #include "../mdlx_class_ids.h"
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <cctype>
 #include <utility>
@@ -22,6 +23,35 @@
 #include <ilayermanager.h>
 #include <modstack.h>
 #include <maxscript/maxscript.h>
+
+// ── Crash-safe diagnostic log (appended to %TEMP%\mdlx_import_debug.log) ──
+// Mirrors the MLOG helper in wc3_material_builder.cpp. Used by Wc3PopcornBuilder
+// (and the import-side gate logging) so a crash mid-import still leaves a
+// readable trail. Every line is flushed immediately.
+static std::ofstream& popcornLog() {
+    static std::ofstream s_log;
+    if (!s_log.is_open()) {
+        wchar_t tmp[MAX_PATH];
+        GetTempPathW(MAX_PATH, tmp);
+        std::wstring p(tmp);
+        p += L"mdlx_import_debug.log";
+        s_log.open(p, std::ios::app);
+    }
+    return s_log;
+}
+// One-shot helper: writes the message to the persistent log AND to the
+// MAXScript Listener (when it survives). Pass narrow UTF-8 / ASCII text;
+// caller is responsible for any pre-formatting.
+namespace mdx_scene {
+void PopcornDiagLog(const std::string& msg) {
+    popcornLog() << msg << std::endl; // std::endl flushes
+    // Best-effort Listener echo — won't survive a crash but helps when the
+    // import succeeds.
+    std::wstring w(msg.begin(), msg.end());
+    mprintf(_M("%s\n"), w.c_str());
+}
+} // namespace mdx_scene
+#define PopLog(msg) ::mdx_scene::PopcornDiagLog(msg)
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -566,7 +596,7 @@ void Wc3Particle1Builder::buildParticles(
 
 void Wc3Particle2Builder::buildParticles(
     const ir::IRModel& irModel, std::vector<INode*>& nodeMap,
-    const std::wstring& modelDir, void* cascStorage, void* mpqStorage,
+    const std::wstring& modelDir, TextureResolver* resolver,
     Interface* gi, core::ExportErrorReporter& reporter)
 {
     for (const auto& irPE : irModel.particleEmitters) {
@@ -722,8 +752,10 @@ void Wc3Particle2Builder::buildParticles(
                 // consistent with what the plugin produces when the user
                 // picks a texture by hand. Re-export (if/when implemented)
                 // will need to convert this back to a relative MDX path.
-                std::wstring fullDiskPath = mdx_scene::resolveTexturePathFull(
-                    modelDir, toWstr(mdxPath), cascStorage, mpqStorage);
+                std::wstring relW = toWstr(mdxPath);
+                std::wstring fullDiskPath = resolver
+                    ? resolver->Resolve(relW)
+                    : mdx_scene::resolveTexturePath(modelDir, relW);
 
                 auto* pathPtr   = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PATH_IID));
                 auto* prefixPtr = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PREFIX_IID));
@@ -886,8 +918,10 @@ void Wc3EventBuilder::buildEvents(
             }
             kl << L")";
 
+            // Resolve by handle — event node names can collide, and
+            // getNodeByName would set the keyList on the wrong node.
             std::wstringstream ss;
-            ss << L"(local n = getNodeByName \"" << nodeName << L"\";"
+            ss << L"(local n = maxOps.getNodeByHandle " << node->GetHandle() << L";"
                << L"if n != undefined do ("
                << L"n.keyList = " << kl.str()
                << L"))";
@@ -1063,17 +1097,17 @@ void Wc3VertexColorBuilder::applyVertexColors(
         // Plugin classname is Wdx_Wc3VertexMod (see Wc3VertexColor.ms line 1:
         // `plugin modifier Wdx_Wc3VertexMod`). Older code used the bare
         // "Wc3VertexMod" which is undefined in MaxScript.
-        std::wstring nodeName(meshNode->GetName());
+        // Resolve by handle — mesh node names are not guaranteed unique.
         wchar_t script[512];
         swprintf_s(script, 512,
-            L"(local n = getNodeByName \"%s\";"
+            L"(local n = maxOps.getNodeByHandle %u;"
             L"if n != undefined do ("
             L"local m = Wdx_Wc3VertexMod();"
             L"m.UsesDropShadow = %s;"
             L"m.UsesColor = %s;"
             L"m.VertexColor = color %d %d %d;"
             L"addModifier n m))",
-            nodeName.c_str(),
+            (unsigned)meshNode->GetHandle(),
             ga.dropShadow ? L"true" : L"false",
             ga.usesColor ? L"true" : L"false",
             (int)(ga.color.r * 255.0f + 0.5f),
@@ -1090,21 +1124,72 @@ void Wc3VertexColorBuilder::applyVertexColors(
 
 // ── Wc3PopcornBuilder (v1200) ───────────────────────────────
 
+namespace {
+
+// PopcornFX runtime paths in MDX are sometimes authored without an extension
+// (engine appends one at load time). The TextureResolver only triggers its
+// .pkb ↔ .pkfx alias fallback when the input ends in one of those two
+// extensions, so we have to canonicalize first. Default to .pkb (the Reforged
+// runtime payload) when no extension is present — the resolver's alias
+// fallback then picks up the .pkfx sibling if that's what's actually shipped.
+std::wstring ensurePopcornExtension(const std::wstring& path) {
+    if (path.empty()) return path;
+
+    auto lastSlash = path.find_last_of(L"/\\");
+    auto lastDot = path.find_last_of(L'.');
+    const bool hasExt = (lastDot != std::wstring::npos) &&
+                        (lastSlash == std::wstring::npos || lastDot > lastSlash);
+    if (!hasExt)
+        return path + L".pkb";
+
+    std::wstring ext = path.substr(lastDot);
+    std::wstring extLower = ext;
+    for (auto& c : extLower) c = (wchar_t)::towlower(c);
+    if (extLower == L".pkb" || extLower == L".pkfx")
+        return path;
+
+    // Some pipelines store a totally unrelated extension on the runtime path
+    // (e.g. ".xml"). Treat as missing: swap to .pkb so the resolver runs its
+    // alias probe.
+    return path.substr(0, lastDot) + L".pkb";
+}
+
+} // anonymous
+
 void Wc3PopcornBuilder::buildPopcorn(
     const ir::IRModel& irModel, std::vector<INode*>& nodeMap,
+    const std::wstring& modelDir, TextureResolver* resolver,
     Interface* gi, core::ExportErrorReporter& reporter)
 {
+    int cornCount = 0;
+    for (const auto& pe : irModel.particleEmitters)
+        if (pe.variant == 3) ++cornCount;
+    {
+        std::ostringstream ss;
+        ss << "[Popcorn] buildPopcorn: " << cornCount << " corn variants of "
+           << irModel.particleEmitters.size() << " particle emitters";
+        PopLog(ss.str());
+    }
+
+    int created = 0, failed = 0;
     for (const auto& irPE : irModel.particleEmitters) {
-        if (irPE.variant != 3) continue; // Corn emitter variant
+        if (irPE.variant != 3) continue;
 
         Object* obj = static_cast<Object*>(
             gi->CreateInstance(HELPER_CLASS_ID, mdx_ids::BLIZZ_POPCORN));
         if (!obj) {
+            ++failed;
             reporter.warning(L"BlizzPopcorn scripted plugin not found — skipping corn emitter");
             continue;
         }
 
         INode* node = gi->CreateObjectNode(obj);
+        if (!node) {
+            ++failed;
+            obj->DeleteThis();
+            continue;
+        }
+
         MSTR name;
         if (irPE.nodeIndex >= 0 && irPE.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
             name.printf(_T("%hs"), irModel.nodes[irPE.nodeIndex].name.c_str());
@@ -1120,19 +1205,72 @@ void Wc3PopcornBuilder::buildPopcorn(
         auto* ref = dynamic_cast<ReferenceTarget*>(obj);
         if (ref) {
             if (!irPE.modelPath.empty()) {
-                auto wpath = toWstr(irPE.modelPath);
-                pbSetString(ref, L"popcornPath", wpath.c_str());
+                // Canonicalize extension + try to resolve through
+                // disk → CASC → MPQ. When the file actually exists on disk
+                // (resolver hit), store the absolute path so 3ds Max users
+                // can see / edit it. When the resolver only returned a
+                // best-guess (CASC/MPQ closed or miss), keep the canonical
+                // relative path instead so the renderer's content provider
+                // can try its own CASC/MPQ at draw time and round-tripping
+                // back through the exporter writes the original game path
+                // rather than a local disk leak.
+                const std::wstring rel = ensurePopcornExtension(toWstr(irPE.modelPath));
+                std::wstring resolved;
+                try {
+                    resolved = resolver
+                        ? resolver->Resolve(rel)
+                        : mdx_scene::resolveTexturePath(modelDir, rel);
+                } catch (const std::exception& e) {
+                    PopLog(std::string("[Popcorn] resolver threw: ") + e.what());
+                } catch (...) {
+                    PopLog("[Popcorn] resolver threw (non-std)");
+                }
+                std::error_code ec;
+                const bool resolvedExists =
+                    !resolved.empty() && std::filesystem::exists(resolved, ec);
+                const std::wstring& finalPath = resolvedExists ? resolved : rel;
+                pbSetString(ref, L"popcornPath", finalPath.c_str());
             }
             pbSetFloat(ref, L"LifeSpan", irPE.lifespan);
             pbSetFloat(ref, L"EmissionRate", irPE.emissionRate);
             pbSetFloat(ref, L"Speed", irPE.speed);
-            pbSetFloat(ref, L"alpha", 1.0f); // Default alpha; animated via colorTrack
-            pbSetInt(ref, L"ReplaceableId", irPE.replaceableId);
+            // Base color / alpha — CORN carries both as static fields next to
+            // their KPPC / KPPA tracks. The disassembler parks them in
+            // segmentColors[0] / segmentAlpha[0]; alpha used to be hardcoded
+            // to 1.0 here, which silently discarded the file's value.
+            pbSetFloat(ref, L"alpha", irPE.segmentAlpha[0]);
+            pbSetColor(ref, L"baseColor", irPE.segmentColors[0]);
+            // YS_baseColor is the plugin's hidden mirror of baseColor — the
+            // rollout keeps the two in lockstep, so seed it the same way.
+            pbSetColor(ref, L"YS_baseColor", irPE.segmentColors[0]);
+            // Replaceable texture and team color are not used by Popcorn
+            // emitters at runtime — intentionally not written here.
+            // Render flags: NodeFlag bits 0x8000 Unshaded / 0x20000
+            // PopcornUnfogged / 0x40000 PopcornScaling. The disassembler
+            // pre-masked them onto irPE.flags, so we just project to bools.
+            pbSetBool(ref, L"flagUnshaded", (irPE.flags & 0x8000u)  ? TRUE : FALSE);
+            pbSetBool(ref, L"flagUnfogged", (irPE.flags & 0x20000u) ? TRUE : FALSE);
+            pbSetBool(ref, L"flagScaling",  (irPE.flags & 0x40000u) ? TRUE : FALSE);
+            // PopcornFX anim-visibility gate ("Stand=on,Death=off" etc.). The
+            // scripted plugin keeps the raw string in `rawFlags`; flagAlways /
+            // flagBirth / ... booleans are derived from it inside MaxScript.
+            // The renderer reads rawFlags directly so the engine convention
+            // ("listed names enable against implicit default-off") survives
+            // the round trip without us having to parse the string here.
+            if (!irPE.animVisibilityGuide.empty()) {
+                const std::wstring guideW = toWstr(irPE.animVisibilityGuide);
+                pbSetString(ref, L"rawFlags", guideW.c_str());
+            }
         }
 
-        // Register for animation key insertion
         if (irPE.nodeIndex >= 0 && irPE.nodeIndex < static_cast<int32_t>(nodeMap.size()))
             nodeMap[irPE.nodeIndex] = node;
+        ++created;
+    }
+    {
+        std::ostringstream ss;
+        ss << "[Popcorn] buildPopcorn done: created=" << created << " failed=" << failed;
+        PopLog(ss.str());
     }
 }
 
@@ -1182,40 +1320,72 @@ std::vector<Wc3CameraBuilder::CameraNodePair> Wc3CameraBuilder::buildCameras(
     std::vector<INode*> allCamNodes;
 
     for (const auto& irCam : irModel.cameras) {
-        // Create camera + target via MaxScript — SDK's LOOKAT_CAM_CLASS_ID + SetTarget
-        // doesn't wire the LookAt controller properly; MaxScript Targetcamera does.
+        // Camera + target are built straight through the SDK. An earlier
+        // revision drove MaxScript (`Targetcamera ... target:(Targetobject ...)`,
+        // the NeoDex idiom) and then fished the nodes back out of the scene
+        // with GetINodeByName — that lookup returned null during import and
+        // every camera was silently dropped. CreateCameraObject +
+        // CreateTargetObject + BindToTarget is the documented SDK sequence
+        // (maxsdk/howto/import_export/asciiimp) and hands us the INode*
+        // directly, so there is nothing left to look up.
         std::wstring wname = toWstr(irCam.name);
+        if (wname.empty()) wname = L"Camera";
 
-        wchar_t script[2048];
-        swprintf_s(script, 2048,
-            L"(\n"
-            L"local tgt = Targetobject transform:(matrix3 [1,0,0] [0,1,0] [0,0,1] [%g,%g,%g])\n"
-            L"tgt.name = \"%s_Target\"\n"
-            L"local cam = Targetcamera fov:(radToDeg %g) nearclip:%g farclip:%g pos:[%g,%g,%g] target:tgt\n"
-            L"cam.name = \"%s\"\n"
-            L"true\n"
-            L")",
-            irCam.targetPosition.x, irCam.targetPosition.y, irCam.targetPosition.z,
-            wname.c_str(),
-            irCam.fov, irCam.nearClip, irCam.farClip,
-            irCam.position.x, irCam.position.y, irCam.position.z,
-            wname.c_str());
-
-        ExecuteMAXScriptScript(script,
-#if MAX_PRODUCT_YEAR_NUMBER >= 2022
-            MAXScript::ScriptSource::NonEmbedded,
-#endif
-            TRUE, nullptr);
-
-        // Look up created nodes by name
-        std::wstring tgtName = wname + L"_Target";
-        INode* camNode = gi->GetINodeByName(wname.c_str());
-        INode* targetNode = gi->GetINodeByName(tgtName.c_str());
-
-        if (!camNode) {
-            reporter.warning(L"Failed to create camera '" + wname + L"'");
+        GenCamera* camObj = gi->CreateCameraObject(TARGETED_CAMERA);
+        if (!camObj) {
+            reporter.warning(L"Failed to create camera object '" + wname + L"'");
+            PopLog("[Camera] CreateCameraObject failed");
             result.push_back({});
             continue;
+        }
+
+        INode* camNode = gi->CreateObjectNode(camObj);
+        if (!camNode) {
+            reporter.warning(L"Failed to create camera node '" + wname + L"'");
+            PopLog("[Camera] CreateObjectNode failed");
+            camObj->DeleteThis();
+            result.push_back({});
+            continue;
+        }
+        camNode->SetName(wname.c_str());
+
+        // Target object + LookAt controller. BindToTarget is what actually
+        // wires the controller — INode::SetTarget only stores the pointer.
+        INode* targetNode = nullptr;
+        if (Object* targObj = gi->CreateTargetObject()) {
+            targetNode = gi->CreateObjectNode(targObj);
+            if (targetNode) {
+                gi->BindToTarget(camNode, targetNode);
+                targetNode->SetName((wname + L"_Target").c_str());
+                Matrix3 targetTM;
+                targetTM.IdentityMatrix();
+                targetTM.SetTrans(irCam.targetPosition);
+                targetNode->SetNodeTM(0, targetTM);
+            } else {
+                targObj->DeleteThis();
+            }
+        }
+
+        Matrix3 camTM;
+        camTM.IdentityMatrix();
+        camTM.SetTrans(irCam.position);
+        camNode->SetNodeTM(0, camTM);
+
+        // GenCamera works in radians, the same unit ir::Camera carries and
+        // the same unit CameraExtractor::extract reads back on export.
+        // Clip distances are stored but manual clipping stays off, matching
+        // what the MaxScript `nearclip:`/`farclip:` creation params did.
+        camObj->SetFOV(0, irCam.fov);
+        camObj->SetClipDist(0, CAM_HITHER_CLIP, irCam.nearClip);
+        camObj->SetClipDist(0, CAM_YON_CLIP, irCam.farClip);
+        camObj->Enable(TRUE);
+
+        {
+            std::ostringstream ss;
+            ss << "[Camera] created '" << irCam.name << "' fov=" << irCam.fov
+               << " near=" << irCam.nearClip << " far=" << irCam.farClip
+               << " target=" << (targetNode ? "yes" : "no");
+            PopLog(ss.str());
         }
 
         result.push_back({ camNode, targetNode });

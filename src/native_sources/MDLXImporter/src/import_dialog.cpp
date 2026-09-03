@@ -7,12 +7,18 @@
 #include <commctrl.h>
 #include <string>
 
+// After max.h: that header has opinions about windows.h, which this one
+// includes.
+#include "wdx_localization.h" // wdx::l10n::LocalizeDialog
+#include "wdx_window_icon.h"  // wdx::ApplyWindowIcon
+
 // ============================================================================
 // Dialog state passed via LPARAM → GWLP_USERDATA
 // ============================================================================
 struct DialogState {
     MdlxImportOptions* opts;
     bool isReforged;
+    bool hasCornEmitters; // CORN chunks present in the source MDX
     bool confirmed;       // true if user clicked Import
     bool onControlSet;    // re-entrancy guard for cascading checkbox updates
 };
@@ -114,12 +120,8 @@ void saveDialogSettingsToINI(HWND hDlg, bool isReforged) {
     writeB(L"OptimizeGeometry", getCheck(hDlg, IDC_CHK_OPT_GEOMETRY));
     writeB(L"OptimizeBonesAndHelpers", getCheck(hDlg, IDC_CHK_OPT_BONES));
 
-    // Texture search
-    if (isReforged) {
-        writeB(L"SearchCASC", getCheck(hDlg, IDC_CHK_SEARCH_TEXTURES));
-    } else {
-        writeB(L"SearchMPQ", getCheck(hDlg, IDC_CHK_SEARCH_TEXTURES));
-    }
+    // Texture search flags are no longer persisted — the resolver always
+    // tries whichever archive directory is configured (matches WhiteoutFlakes).
 
     // Mode
     writeB(L"ImportMode", getCheck(hDlg, IDC_RDO_MERGE)); // true => "Merge"
@@ -134,11 +136,12 @@ void saveDialogSettingsToINI(HWND hDlg, bool isReforged) {
     else if (getCheck(hDlg, IDC_RDO_ALL))            preset = 6;
     writeI(L"FastSettings", preset);
 
-    // Reforged objects
-    if (isReforged) {
+    // Reforged objects. Same visibility gating as dialogToOptions — only
+    // persist the value the user actually saw.
+    if (IsWindowVisible(GetDlgItem(hDlg, IDC_CHK_CORN_EMITTERS)))
         writeB(L"ImportCornEmitters", getCheck(hDlg, IDC_CHK_CORN_EMITTERS));
+    if (isReforged)
         writeB(L"ImportFaceFX", getCheck(hDlg, IDC_CHK_FACEFX));
-    }
 }
 
 // ── Populate options struct from dialog state ──────────────
@@ -190,20 +193,19 @@ void dialogToOptions(HWND hDlg, MdlxImportOptions& opts, bool isReforged) {
     else if (getCheck(hDlg, IDC_RDO_ANIM_NO_OBJ))   c.preset = ir::CoreImportOptions::Preset::AnimatedNoObjects;
     else                                              c.preset = ir::CoreImportOptions::Preset::All;
 
-    // Texture search
-    if (isReforged) {
-        opts.searchMPQ = false;
-        opts.searchCASC = getCheck(hDlg, IDC_CHK_SEARCH_TEXTURES);
-    } else {
-        opts.searchMPQ = getCheck(hDlg, IDC_CHK_SEARCH_TEXTURES);
-        opts.searchCASC = false;
-    }
+    // Texture search flags are no longer carried in opts — the resolver
+    // always tries whichever archive directory is configured. The dialog's
+    // "Search Textures" checkbox is kept for future use but currently a no-op.
+    (void)IDC_CHK_SEARCH_TEXTURES;
 
-    // Reforged objects
-    if (isReforged) {
+    // Reforged objects. The Corn Emitters checkbox is honored whenever it
+    // was actually visible (i.e. the file has corn data OR header is v1200);
+    // otherwise leave the default-true alone so legacy paths still import
+    // any stray CORN chunks. FaceFX stays Reforged-only.
+    if (IsWindowVisible(GetDlgItem(hDlg, IDC_CHK_CORN_EMITTERS)))
         opts.importCornEmitters = getCheck(hDlg, IDC_CHK_CORN_EMITTERS);
+    if (isReforged)
         opts.importFaceFX = getCheck(hDlg, IDC_CHK_FACEFX);
-    }
 }
 
 // ── Populate dialog controls from options struct ───────────
@@ -255,12 +257,10 @@ void optionsToDialog(HWND hDlg, const MdlxImportOptions& opts, bool isReforged) 
     setCheck(hDlg, IDC_RDO_ANIM_NO_OBJ,   c.preset == ir::CoreImportOptions::Preset::AnimatedNoObjects);
     setCheck(hDlg, IDC_RDO_ALL,           c.preset == ir::CoreImportOptions::Preset::All);
 
-    // Texture search
-    if (isReforged) {
-        setCheck(hDlg, IDC_CHK_SEARCH_TEXTURES, opts.searchCASC);
-    } else {
-        setCheck(hDlg, IDC_CHK_SEARCH_TEXTURES, opts.searchMPQ);
-    }
+    // Texture search checkbox is currently a no-op (kept for future use);
+    // the resolver always tries whichever archive directory is configured.
+    setCheck(hDlg, IDC_CHK_SEARCH_TEXTURES, !opts.cascDirectory.empty() ||
+                                             !opts.mpqDirectory.empty());
 
     // Reforged objects
     setCheck(hDlg, IDC_CHK_CORN_EMITTERS, opts.importCornEmitters);
@@ -422,29 +422,123 @@ void onFastSettingsChanged(HWND hDlg, DialogState* ds) {
     ds->onControlSet = true;
 }
 
+// ── Localization ───────────────────────────────────────────
+//
+// The .rc gives every control an English caption; this replaces them from the
+// shared catalog (src/pre_startup_scripts/WhiteoutDexLocalization.ms) in one
+// MaxScript round trip. Entries the catalog is missing keep their English, so
+// the table can list controls whose keys have not been translated yet.
+//
+// The texture-search group and the window caption are deliberately absent:
+// they say something different for Classic and Reforged, so
+// setupReforgedVisibility sets them afterwards from its own pair of keys.
+
+constexpr wdx::l10n::DialogString kImportStrings[] = {
+    {IDC_GRP_GEOMETRY, "imp_geometry_grp"},
+    {IDC_CHK_SKINNED, "imp_skinned_chk"},
+
+    {IDC_GRP_MATERIALS, "imp_materials_grp"},
+    {IDC_CHK_IMPORT_MATERIALS, "imp_import_materials_chk"},
+    {IDC_CHK_IMPORT_TEXTURES, "imp_import_textures_chk"},
+
+    {IDC_GRP_OBJECTS, "imp_objects_grp"},
+    {IDC_CHK_IMPORT_OBJECTS, "imp_import_objects_chk"},
+    {IDC_CHK_BONES, "imp_bones_chk"},
+    {IDC_CHK_HELPERS, "imp_helpers_chk"},
+    {IDC_CHK_LIGHTS, "imp_lights_chk"},
+    {IDC_CHK_ATTACHMENTS, "imp_attachments_chk"},
+    {IDC_CHK_PE1, "imp_particle_emitters_1_chk"},
+    {IDC_CHK_PE2, "imp_particle_emitters_2_chk"},
+    {IDC_CHK_EVENT_OBJECTS, "imp_event_objects_chk"},
+    {IDC_CHK_RIBBON_EMITTERS, "imp_ribbon_emitters_chk"},
+    {IDC_CHK_COLLISION_SHAPES, "imp_collision_shapes_chk"},
+    {IDC_CHK_CAMERAS, "imp_cameras_chk"},
+    {IDC_CHK_CORN_EMITTERS, "imp_corn_emitters_chk"},
+    {IDC_CHK_FACEFX, "imp_facefx_chk"},
+
+    {IDC_GRP_ANIMATIONS, "imp_animations_grp"},
+    {IDC_CHK_IMPORT_ANIMATIONS, "imp_import_animations_chk"},
+    {IDC_CHK_TRANSLATION, "imp_translation_chk"},
+    {IDC_CHK_ROTATIONS, "imp_rotations_chk"},
+    {IDC_CHK_SCALE, "imp_scale_chk"},
+    {IDC_CHK_PARAMETER, "imp_parameter_chk"},
+    {IDC_CHK_UNWRAP_ANIMS, "imp_unwrap_animations_chk"},
+    {IDC_CHK_TEXTURE_ANIMS, "imp_texture_animations_chk"},
+    {IDC_CHK_VISIBILITY, "imp_visibility_chk"},
+    {IDC_CHK_COLOR, "imp_color_chk"},
+
+    {IDC_GRP_SETTINGS, "imp_settings_grp"},
+    {IDC_LBL_FAST_SETTINGS, "imp_fast_settings_lbl"},
+    {IDC_LBL_MODE, "imp_mode_lbl"},
+
+    {IDC_GRP_HELPER_OPTIONS, "imp_helper_options_grp"},
+    {IDC_CHK_POINT_HELPERS, "imp_import_helpers_as_point_helpers_chk"},
+
+    {IDC_GRP_OPTIMIZER, "imp_optimizer_grp"},
+    {IDC_CHK_OPT_GEOMETRY, "imp_optimize_geometry_chk"},
+    {IDC_CHK_OPT_BONES, "imp_optimize_bones_and_helpers_chk"},
+
+    {IDC_GRP_PROGRESS, "imp_progress_grp"},
+    {IDC_LBL_STATUS, "imp_idle_lbl"},
+
+    {IDOK, "imp_import_btn"},
+    {IDCANCEL, "common_cancel_btn"},
+};
+
+// The two radio groups share their catalog entries with the MaxScript UI, which
+// reads the same pipe-joined strings through WdxL.tList.
+constexpr int kFastSettingsIds[] = {
+    IDC_RDO_CUSTOM, IDC_RDO_STATIC_NO_MAT, IDC_RDO_STATIC_MAT,
+    IDC_RDO_ANIM_NO_SKIN, IDC_RDO_ANIM_NO_OBJ, IDC_RDO_ALL,
+};
+constexpr int kModeIds[] = {IDC_RDO_NEW_SCENE, IDC_RDO_MERGE};
+
+void localizeDialog(HWND hDlg) {
+    wdx::l10n::LocalizeDialog(hDlg, kImportStrings);
+    wdx::l10n::LocalizeRadioGroup(hDlg, "imp_fast_settings_labels", kFastSettingsIds);
+    wdx::l10n::LocalizeRadioGroup(hDlg, "imp_mode_labels", kModeIds);
+}
+
 // ── v1200 control visibility ───────────────────────────────
 
-void setupReforgedVisibility(HWND hDlg, bool isReforged) {
-    showCtrl(hDlg, IDC_CHK_CORN_EMITTERS, isReforged);
+void setupReforgedVisibility(HWND hDlg, bool isReforged, bool hasCornEmitters) {
+    // Corn Emitters checkbox is shown when EITHER the header is Reforged OR
+    // the file actually has CORN chunks (legacy header + Reforged chunks does
+    // happen in the wild). FaceFX stays Reforged-only.
+    const bool showCorn = isReforged || hasCornEmitters;
+    showCtrl(hDlg, IDC_CHK_CORN_EMITTERS, showCorn);
     showCtrl(hDlg, IDC_CHK_FACEFX, isReforged);
 
-    // Update group title for texture search
+    // Update group title for texture search. Localized here rather than in
+    // kImportStrings because which string is right depends on the header we
+    // just read; LocalizeDialog has already run, so these overwrite it.
     if (isReforged) {
+        const wdx::l10n::DialogString reforged[] = {
+            {IDC_GRP_TEXTURES, "imp_casc_textures_grp"},
+            {IDC_CHK_SEARCH_TEXTURES, "imp_search_casc_chk"},
+            {0, "imp_whiteoutdex_importer_reforged_title"},
+        };
         SetDlgItemTextW(hDlg, IDC_GRP_TEXTURES, L"CASC Textures");
         SetDlgItemTextW(hDlg, IDC_CHK_SEARCH_TEXTURES, L"Search CASC Archives for Textures");
         SetWindowTextW(hDlg, L"WhiteoutDex MDX Importer (Reforged)");
+        wdx::l10n::LocalizeDialog(hDlg, reforged);
     } else {
+        const wdx::l10n::DialogString classic[] = {
+            {IDC_GRP_TEXTURES, "imp_mpq_textures_grp"},
+            {IDC_CHK_SEARCH_TEXTURES, "imp_search_mpq_chk"},
+        };
         SetDlgItemTextW(hDlg, IDC_GRP_TEXTURES, L"MPQ Textures");
         SetDlgItemTextW(hDlg, IDC_CHK_SEARCH_TEXTURES, L"Search MPQ Archives for Textures");
+        wdx::l10n::LocalizeDialog(hDlg, classic);
     }
 
-    // If v800, shrink the Objects group slightly (hide the corn/facefx row)
-    if (!isReforged) {
+    // If neither the corn nor FaceFX row is shown, shrink the Objects group
+    // slightly so the empty row doesn't leave a gap.
+    if (!showCorn && !isReforged) {
         HWND hGrp = GetDlgItem(hDlg, IDC_GRP_OBJECTS);
         RECT rc;
         GetWindowRect(hGrp, &rc);
         MapWindowPoints(HWND_DESKTOP, hDlg, reinterpret_cast<LPPOINT>(&rc), 2);
-        // Shrink height by ~12 DLU (approx 20 pixels for the hidden row)
         MoveWindow(hGrp, rc.left, rc.top, rc.right - rc.left, (rc.bottom - rc.top) - 20, TRUE);
     }
 }
@@ -464,11 +558,16 @@ static INT_PTR CALLBACK ImportDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPA
         ds = reinterpret_cast<DialogState*>(lParam);
         SetWindowLongPtr(hDlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
 
+        wdx::ApplyWindowIcon(hDlg, IDI_WHITEOUTDEX_ICON);
+
+        // Relabel from the catalog before anything reads a caption back.
+        localizeDialog(hDlg);
+
         // Populate controls from current options
         optionsToDialog(hDlg, *ds->opts, ds->isReforged);
 
-        // Show/hide reforged-specific controls
-        setupReforgedVisibility(hDlg, ds->isReforged);
+        // Show/hide reforged-specific controls.
+        setupReforgedVisibility(hDlg, ds->isReforged, ds->hasCornEmitters);
 
         // Apply enable/disable cascading
         applyEnabledState(hDlg);
@@ -562,11 +661,13 @@ static INT_PTR CALLBACK ImportDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPA
 // ============================================================================
 
 bool showImportDialog(HINSTANCE hInstance, HWND hWndParent,
-                      MdlxImportOptions& opts, bool isReforged)
+                      MdlxImportOptions& opts, bool isReforged,
+                      bool hasCornEmitters)
 {
     DialogState ds{};
     ds.opts = &opts;
     ds.isReforged = isReforged;
+    ds.hasCornEmitters = hasCornEmitters;
     ds.confirmed = false;
     ds.onControlSet = true;
 

@@ -28,13 +28,19 @@ plugin simpleManipulator Wdx_Wc3Event
                 selection[1].pos	 = obj.pos
                 selection[1].parent	 = obj
                 Temp_adsorption.text = obj.name
-                btn_adsorption.text	 = "Parent: " + Temp_adsorption.text
+                btn_adsorption.text	 = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
             )catch()
         )
         on General open do
         (
             if ::WdxL != undefined then
+            (
                 General.title = ::WdxL.t "event_general_functions_title"
+                -- Only reset the caption while nothing is adsorbed; once a
+                -- parent is picked the button shows that name instead.
+                if Temp_adsorption.text == "" do
+                    btn_adsorption.text = ::WdxL.t "common_adsorb_btn"
+            )
         )
     )
     rollout params "Event Object"
@@ -841,7 +847,7 @@ plugin simpleManipulator Wdx_Wc3Event
             lvNotes.View = (dotNetClass "System.Windows.Forms.View").Details
             lvNotes.FullRowSelect = true
             lvNotes.HideSelection = false
-            lvNotes.Columns.Add "Execution time" -2
+            lvNotes.Columns.Add (::WdxL.t "event_execution_time_col") -2
             lvNotes.Sorting = (dotNetClass "System.Windows.Forms.SortOrder").None
             lvNotes.BackColor = (dotNetClass "System.Drawing.Color").FromArgb 240 240 240
             lvNotes.HeaderStyle = (dotNetClass "System.Windows.Forms.ColumnHeaderStyle").Nonclickable
@@ -907,6 +913,8 @@ plugin simpleManipulator Wdx_Wc3Event
                 btnRemAllNote.text = ::WdxL.t "event_clear_all_btn"
                 l1.text = ::WdxL.t "event__type_lbl"
                 l2.text = ::WdxL.t "event__data_lbl"
+                l3.text = ::WdxL.t "event__custom_data_lbl"
+                try (edtCustomData.tooltip = ::WdxL.t "event_custom_data_tip") catch ()
                 btnConfirmRename.text = ::WdxL.t "event_confirm_btn"
             )
         )

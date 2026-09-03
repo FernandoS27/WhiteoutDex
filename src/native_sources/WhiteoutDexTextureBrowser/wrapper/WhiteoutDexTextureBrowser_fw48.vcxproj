@@ -3,7 +3,7 @@
   WhiteoutDexTextureBrowser — C++/CLI Managed Wrapper
   Target: .NET Framework 4.8 (3ds Max 2022, 2023, 2024, 2025)
   
-  Compiles ManagedWrapper.cpp + TextureBrowserForm.cpp with /clr
+  Compiles ManagedWrapper.cpp with /clr
   and links against the native static lib (WhiteoutDexTextureBrowser_native.lib)
   from the CMake build.
   
@@ -87,7 +87,7 @@
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>$(NativeBuildDir)\Release\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Release\zlibstatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;shell32.lib;ole32.lib;uuid.lib;$(NativeBuildDir)\Release\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Release\zlibstatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -107,7 +107,7 @@
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>$(NativeBuildDir)\Debug\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Debug\zlibstaticd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;shell32.lib;ole32.lib;uuid.lib;$(NativeBuildDir)\Debug\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Debug\zlibstaticd.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -122,11 +122,9 @@
   <!-- Source Files -->
   <ItemGroup>
     <ClCompile Include="$(SourceDir)\ManagedWrapper.cpp" />
-    <ClCompile Include="$(SourceDir)\TextureBrowserForm.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="$(SourceDir)\ManagedWrapper.h" />
-    <ClInclude Include="$(SourceDir)\TextureBrowserForm.h" />
     <ClInclude Include="$(SourceDir)\ImageDecode.h" />
     <ClInclude Include="$(SourceDir)\ThumbnailEngine.h" />
   </ItemGroup>

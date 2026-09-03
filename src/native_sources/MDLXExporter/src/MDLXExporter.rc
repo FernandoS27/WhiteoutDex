@@ -151,7 +151,7 @@ CAPTION "Scene Problems"
 FONT 8, "MS Sans Serif"
 BEGIN
     LTEXT           "Problems (double-click a row to select the node):",
-                    -1, 7, 5, 266, 8
+                    IDC_LBL_PROBLEM_PROMPT, 7, 5, 266, 8
 
     CONTROL         "", IDC_LV_PROBLEMS, "SysListView32",
                     LVS_REPORT | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
@@ -164,3 +164,10 @@ BEGIN
     PUSHBUTTON      "Fix All",       IDC_BTN_FIX_ALL,      127, 178, 50, 14
     DEFPUSHBUTTON   "Close",         IDOK,                 223, 178, 50, 14
 END
+
+// ============================================================================
+// Window icon - the shared 16-64 px WhiteoutDex icon, put on the dialog from
+// WM_INITDIALOG (see common/wdx_window_icon.h). rc.exe anchors a relative name
+// at the first /I entry, which is this plug-in's own src/ directory.
+// ============================================================================
+IDI_WHITEOUTDEX_ICON ICON "../../../../whiteoutdex_icons/whiteoutdex.ico"

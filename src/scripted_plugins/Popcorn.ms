@@ -1,4 +1,3 @@
-
 plugin simpleManipulator Wdx_Wc3Popcorn
 name:"Wc3 Popcorn"
 classID:#(0x7A1B2C09, 0x3D4E5F09)
@@ -22,30 +21,47 @@ category:"Warcraft III Plugins"
 
 parameters main rollout:params2
 	(
-		flagAlways		type:#boolean	ui:flagAlways		animatable:false	default:false
-		flagBirth		type:#boolean	ui:flagBirth		animatable:false	default:false
-		flagDeath		type:#boolean	ui:flagDeath		animatable:false	default:false
-		flagDissipate	type:#boolean	ui:flagDissipate	animatable:false	default:false
-		flagPortrait	type:#boolean	ui:flagPortrait		animatable:false	default:false
+		-- Always = default visibility state. rawFlags carries the
+		-- whole guide string (e.g. "Always=On, Stand 1=Off, Death=Off")
+		-- — it's the round-trip ground truth; flagAlways and the
+		-- exceptions listbox are derived from it on rollout open
+		-- and re-emitted into it on any UI change.
+		flagAlways		type:#boolean	ui:flagAlways		animatable:false	default:true
 		rawFlags		type:#string						animatable:false	default:""
 	)
 
 	parameters main rollout:params3
 	(
+		-- alpha / emissionRate / lifeSpan / speed carry MDX KPPA / KPPE /
+		-- KPPL / KPPS. All four must stay animatable: the importer assigns
+		-- bezier_float controllers to them and the renderer samples every
+		-- one at the current time.
 		alpha			type:#float		ui:alpha			default:1.0
 		emissionRate	type:#float		ui:emissionRate		default:0.0
-		lifeSpan		type:#float		ui:lifeSpan			default:0.0			animatable:false
+		lifeSpan		type:#float		ui:lifeSpan			default:0.0
 		speed			type:#float		ui:speed			default:0.0
-		replaceableId	type:#integer	ui:replaceableId	default:0			animatable:false
 	)
 
 	parameters main rollout:params4
 	(
-		baseColor		type:#color		ui:baseColor		default:[255,255,255]	animatable:false
+		-- baseColor carries KPPC and is animated the same way. YS_baseColor
+		-- is only the rollout's hidden mirror, so it stays static.
+		baseColor		type:#color		ui:baseColor		default:[255,255,255]
 		YS_baseColor	type:#color		ui:YS_baseColor		default:[255,255,255]	animatable:false
 		colorMultiplier	type:#float		ui:colorMultiplier	default:1.0				animatable:false
-		teamColor		type:#color		ui:teamColor		default:[255,0,0]		animatable:false
-		teamColorAlpha	type:#float		ui:teamColorAlpha	default:0.0				animatable:false
+	)
+
+	-- Render flags map to MDX Node bits 0x8000 (Unshaded), 0x20000
+	-- (PopcornUnfogged) and 0x40000 (PopcornScaling). Engine semantics:
+	--   * Unshaded — particles ignore the scene light, full albedo.
+	--   * Unfogged — particles are not faded by world fog.
+	--   * Scaling  — corn-fx particle scale follows the host actor's
+	--                uniform world-scale (off = world-fixed size).
+	parameters main rollout:params5
+	(
+		flagUnshaded	type:#boolean	ui:flagUnshaded		animatable:false	default:false
+		flagUnfogged	type:#boolean	ui:flagUnfogged		animatable:false	default:false
+		flagScaling		type:#boolean	ui:flagScaling		animatable:false	default:false
 	)
 
 	------------------------------------- Utility Functions -------------------------------------
@@ -64,31 +80,23 @@ parameters main rollout:params2
 		----------------------------------------------------------------------------------------------------------------------
 		local d01 = getINISetting input_file "Popcorn" "Path"
 		local d02 = getINISetting input_file "Popcorn" "Always"
-		local d03 = getINISetting input_file "Popcorn" "Birth"
-		local d04 = getINISetting input_file "Popcorn" "Death"
-		local d05 = getINISetting input_file "Popcorn" "Dissipate"
-		local d06 = getINISetting input_file "Popcorn" "Portrait"
 		local d07 = getINISetting input_file "Popcorn" "Alpha"
 		local d08 = getINISetting input_file "Popcorn" "EmissionRate"
 		local d09 = getINISetting input_file "Popcorn" "LifeSpan"
 		local d10 = getINISetting input_file "Popcorn" "Speed"
-		local d11 = getINISetting input_file "Popcorn" "ReplaceableId"
 		local d12 = getINISetting input_file "Popcorn" "BaseColor"
 		local d13 = getINISetting input_file "Popcorn" "ColorMultiplier"
-		local d14 = getINISetting input_file "Popcorn" "TeamColor"
-		local d15 = getINISetting input_file "Popcorn" "TeamColorAlpha"
+		local d16 = getINISetting input_file "Popcorn" "Unshaded"
+		local d17 = getINISetting input_file "Popcorn" "Unfogged"
+		local d18 = getINISetting input_file "Popcorn" "Scaling"
+		local d19 = getINISetting input_file "Popcorn" "Guide"
 		----------------------------------------------------------------------------------------------------------------------
 		if (d01 != undefined and d01 != "") do (obj.popcornPath = d01)
 		if (d02 != undefined) do (obj.flagAlways    = (d02 == "True"))
-		if (d03 != undefined) do (obj.flagBirth     = (d03 == "True"))
-		if (d04 != undefined) do (obj.flagDeath     = (d04 == "True"))
-		if (d05 != undefined) do (obj.flagDissipate = (d05 == "True"))
-		if (d06 != undefined) do (obj.flagPortrait  = (d06 == "True"))
 		if (d07 != undefined and d07 != "") do (obj.alpha         = d07 as float)
 		if (d08 != undefined and d08 != "") do (obj.emissionRate  = d08 as float)
 		if (d09 != undefined and d09 != "") do (obj.lifeSpan      = d09 as float)
 		if (d10 != undefined and d10 != "") do (obj.speed         = d10 as float)
-		if (d11 != undefined and d11 != "") do (obj.replaceableId = d11 as integer)
 		if d12 != undefined and d12 != "" do
 		(
 			local ci = findString d12 ")"
@@ -98,16 +106,15 @@ parameters main rollout:params2
 			obj.params4.YS_baseColor.color = obj.params4.baseColor.color
 		)
 		if (d13 != undefined and d13 != "") do (obj.colorMultiplier = d13 as float)
-		if d14 != undefined and d14 != "" do
-		(
-			local ci = findString d14 ")"
-			local cs = substring d14 1 (ci-1)
-			local cz = filterString cs " "
-			obj.params4.teamColor.color = color (cz[2] as float) (cz[3] as float) (cz[4] as float)
-		)
-		if (d15 != undefined and d15 != "") do (obj.teamColorAlpha = d15 as float)
+		if (d16 != undefined) do (obj.flagUnshaded = (d16 == "True"))
+		if (d17 != undefined) do (obj.flagUnfogged = (d17 == "True"))
+		if (d18 != undefined) do (obj.flagScaling  = (d18 == "True"))
+		-- "Guide" holds the entire animVisibilityGuide string. When present
+		-- it wins over the legacy Always/Birth/Death/Dissipate/Portrait
+		-- booleans (which we no longer expose individually).
+		if (d19 != undefined) do (obj.rawFlags = d19)
 		----------------------------------------------------------------------------------------------------------------------
-		messagebox "Import Complete!"
+		messagebox (::WdxL.t "common_import_complete_msg")
 	)
 
 	-----------------------------------Export Popcorn configuration parameters-----------------------------------
@@ -119,21 +126,20 @@ parameters main rollout:params2
 		----------------------------------------------------------------------------------------------------------------------
 		setINISetting output_file "Popcorn" "Path"				obj.popcornPath
 		setINISetting output_file "Popcorn" "Always"			(obj.flagAlways    as string)
-		setINISetting output_file "Popcorn" "Birth"				(obj.flagBirth     as string)
-		setINISetting output_file "Popcorn" "Death"				(obj.flagDeath     as string)
-		setINISetting output_file "Popcorn" "Dissipate"			(obj.flagDissipate as string)
-		setINISetting output_file "Popcorn" "Portrait"			(obj.flagPortrait  as string)
 		setINISetting output_file "Popcorn" "Alpha"				(obj.alpha         as string)
 		setINISetting output_file "Popcorn" "EmissionRate"		(obj.emissionRate  as string)
 		setINISetting output_file "Popcorn" "LifeSpan"			(obj.lifeSpan      as string)
 		setINISetting output_file "Popcorn" "Speed"				(obj.speed         as string)
-		setINISetting output_file "Popcorn" "ReplaceableId"		(obj.replaceableId as string)
 		setINISetting output_file "Popcorn" "BaseColor"			(obj.baseColor     as string)
 		setINISetting output_file "Popcorn" "ColorMultiplier"	(obj.colorMultiplier as string)
-		setINISetting output_file "Popcorn" "TeamColor"			(obj.teamColor     as string)
-		setINISetting output_file "Popcorn" "TeamColorAlpha"	(obj.teamColorAlpha as string)
+		setINISetting output_file "Popcorn" "Unshaded"			(obj.flagUnshaded  as string)
+		setINISetting output_file "Popcorn" "Unfogged"			(obj.flagUnfogged  as string)
+		setINISetting output_file "Popcorn" "Scaling"			(obj.flagScaling   as string)
+		-- Whole guide string (e.g. "Always=On, Stand 1=Off") — the
+		-- single source of truth for animation-state visibility.
+		setINISetting output_file "Popcorn" "Guide"				obj.rawFlags
 		----------------------------------------------------------------------------------------------------------------------
-		messagebox "Export Complete!"
+		messagebox (::WdxL.t "common_export_complete_msg")
 	)
 
 	------------------------------------- Rollout Definitions -------------------------------------
@@ -149,7 +155,7 @@ parameters main rollout:params2
 				selection[1].pos = obj.pos
 				selection[1].parent = obj
 				Temp_adsorption.text = obj.name
-				btn_adsorption.text = "Parent: " + Temp_adsorption.text
+				btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
 			)catch()
 		)
 		on General open do
@@ -157,6 +163,10 @@ parameters main rollout:params2
 			if ::WdxL != undefined then
 			(
 				General.title = ::WdxL.t "popcorn_general_functions_title"
+				-- Only reset the caption while nothing is adsorbed; once a
+				-- parent is picked the button shows that name instead.
+				if Temp_adsorption.text == "" do
+					btn_adsorption.text = ::WdxL.t "common_adsorb_btn"
 			)
 		)
 	)
@@ -182,8 +192,24 @@ parameters main rollout:params2
 	(
 		label l1 "- Popcorn FX Path -" pos:[29,7] align:#center
 		edittext popcornPath pos:[8,25] height:20 width:142
-		button btnBrowse "Browse Popcorn FX File" pos:[12,53] height:24 width:138
-		button btnInfo "Popcorn FX Explanation" pos:[12,82] height:24 width:138
+		button btnBrowseArchive "Browse Game Archives" pos:[12,53] height:24 width:138 tooltip:"Pick a .pkb / .pkfx straight out of the CASC or MPQ archives"
+		button btnBrowse "Browse Popcorn FX File" pos:[12,82] height:24 width:138
+		button btnInfo "Popcorn FX Explanation" pos:[12,111] height:24 width:138
+
+		-- Archive-relative pick. This is the form MDX stores and the renderer's
+		-- content provider resolves ("effects\...\foo.pkb"); the disk path the
+		-- file dialog below produces only works while that file stays put.
+		on btnBrowseArchive pressed do
+		(
+			local picked = undefined
+			try (
+				picked = ::WhiteoutDexModelBrowser.pickEffect initial:popcornPath.text \
+					caption:(::WdxL.t "popcorn_select_effect_cap")
+			) catch (
+				messageBox (::WdxL.t "common_asset_browser_unavailable_msg") title:"WhiteoutDex" beep:false
+			)
+			if picked != undefined and picked != "" do popcornPath.text = picked
+		)
 
 		on btnBrowse pressed do
 		(
@@ -200,45 +226,187 @@ parameters main rollout:params2
 			(
 				params1.title = ::WdxL.t "popcorn_popcorn_fx_file_title"
 				l1.text = ::WdxL.t "popcorn__popcorn_fx_path_lbl"
+				btnBrowseArchive.text = ::WdxL.t "popcorn_browse_game_archives_btn"
+				btnBrowseArchive.tooltip = ::WdxL.t "popcorn_browse_archives_tip"
 				btnBrowse.text = ::WdxL.t "popcorn_browse_popcorn_fx_file_btn"
 				btnInfo.text = ::WdxL.t "popcorn_popcorn_fx_explanation_btn"
 			)
 		)
 	)
 
-	rollout params2 "Event Flags"
+	rollout params2 "Animation Visibility Guide"
 	(
-		label l2 "Always On ......................." height:16 pos:[12,8]  align:#left width:124
-		checkbox flagAlways    height:16 pos:[137,8]  tooltip:"Effect is always active"
-		label l3 "Birth .............................." height:16 pos:[12,29] align:#left width:124
-		checkbox flagBirth     height:16 pos:[137,29] tooltip:"Effect plays on unit birth"
-		label l4 "Death ............................" height:16 pos:[12,50] align:#left width:124
-		checkbox flagDeath     height:16 pos:[137,50] tooltip:"Effect plays on unit death"
-		label l5 "Dissipate ......................." height:16 pos:[12,71] align:#left width:124
-		checkbox flagDissipate height:16 pos:[137,71] tooltip:"Effect plays on unit dissipate"
-		label l6 "Portrait .........................." height:16 pos:[12,92] align:#left width:124
-		checkbox flagPortrait  height:16 pos:[137,92] tooltip:"Effect plays in portrait view"
-		-- Checkbox-Aenderung loescht rawFlags damit Export aus Booleans neu baut
-		on flagAlways    changed state do rawFlags = ""
-		on flagBirth     changed state do rawFlags = ""
-		on flagDeath     changed state do rawFlags = ""
-		on flagDissipate changed state do rawFlags = ""
-		on flagPortrait  changed state do rawFlags = ""
+		-- ── UI ──────────────────────────────────────────────
+		label        lblDefault   "Default Visibility:"  pos:[12,8]   align:#left width:124
+		checkbox     flagAlways   "Always On"             pos:[110,8]  tooltip:"When checked, Always=On. Exceptions below take the opposite state."
+
+		label        lblExc       "Exceptions:"           pos:[12,32]  align:#left width:120
+		listbox      exceptionsLB ""                      pos:[12,48]  width:190 height:7
+		button       btnDelExc    "Remove selected"       pos:[12,160] width:190 height:22 tooltip:"Remove the highlighted exception"
+
+		label        lblPick      "Add scene animation:"  pos:[12,194] align:#left width:200
+		dropDownList ddAvailable  ""                      pos:[12,210] width:190
+		button       btnAddExc    "Add as exception"      pos:[12,238] width:190 height:22 tooltip:"Add the dropdown's animation as an exception"
+
+		-- ── State (mirror of rawFlags, kept in sync) ────────
+		local localExceptions = #()
+		-- Suppress `on flagAlways changed` while we restore UI from rawFlags
+		-- on rollout open. Without it, programmatically setting the
+		-- checkbox's .checked would re-fire encodeGuide and rewrite
+		-- rawFlags before localExceptions is in sync.
+		local suppressEvents = false
+
+		-- ── Decode/encode helpers ────────────────────────────
+		-- Decode rawFlags into (alwaysOn, exceptions[]).
+		-- Drops any exception whose state matches the default — they're
+		-- redundant in the engine's evaluation and clutter the UI.
+		fn decodeGuide guide =
+		(
+			local always = true
+			local pairs = #()
+			if guide != undefined and guide != "" do
+			(
+				local tokens = filterString guide ","
+				for tok in tokens do
+				(
+					local s = trimLeft (trimRight tok " \t") " \t"
+					if s != "" do
+					(
+						local eqPos = findString s "="
+						local name = s
+						local stateOn = true
+						if eqPos != undefined do
+						(
+							name = trimRight (substring s 1 (eqPos - 1)) " \t"
+							local val = trimLeft (substring s (eqPos + 1) -1) " \t"
+							stateOn = (toLower val == "on")
+						)
+						if toLower name == "always" then always = stateOn
+						else append pairs #(name, stateOn)
+					)
+				)
+			)
+			local exc = for p in pairs where p[2] != always collect p[1]
+			#(always, exc)
+		)
+
+		-- Rebuild rawFlags from current UI state. Exceptions are
+		-- emitted with the opposite of `flagAlways`, which is what
+		-- makes them "exceptions" in the first place.
+		-- We must read the checkbox via `.checked` because the param and
+		-- the control share the name `flagAlways`; bare reads inside the
+		-- rollout resolve to the control object (always truthy).
+		fn encodeGuide =
+		(
+			local always = flagAlways.checked
+			local s = "Always=" + (if always then "On" else "Off")
+			local excState = if always then "Off" else "On"
+			for nm in localExceptions do
+				s += ", " + nm + "=" + excState
+			s
+		)
+
+		fn refreshListbox = exceptionsLB.items = localExceptions
+
+		-- Pull the current scene's animation/sequence names from the
+		-- WdxSequenceManager. FORCE a LoadSequences() so the dropdown is
+		-- correct even when the user hasn't opened the Sequence Manager
+		-- UI in this session — `sequences` stays empty until that first
+		-- scan otherwise, and LoadSequences reads the rootNode CA that
+		-- the importer populates so this is safe to call ad hoc.
+		fn getSceneAnimNames =
+		(
+			local names = #()
+			try (
+				if ::WdxSequenceManager != undefined do
+				(
+					try (::WdxSequenceManager.sequences = ::WdxSequenceManager.LoadSequences()) catch ()
+					for seq in ::WdxSequenceManager.sequences do
+					(
+						local nm = try (seq.name) catch ("")
+						if nm != undefined and nm != "" do append names nm
+					)
+				)
+			) catch ()
+			names
+		)
+
+		fn refreshAvailable =
+		(
+			local all = getSceneAnimNames()
+			local available = for nm in all where (findItem localExceptions nm) == 0 collect nm
+			ddAvailable.items = available
+		)
+
+		-- ── Events ──────────────────────────────────────────
+		on flagAlways changed state do
+		(
+			-- Default flipped → every exception's effective state flips
+			-- as well; rawFlags re-emits with the new opposite-of-default.
+			if not suppressEvents do rawFlags = encodeGuide()
+		)
+
+		on btnAddExc pressed do
+		(
+			-- Inline dropdown + Add. Earlier revisions opened a separate
+			-- picker dialog and passed an fn closure as a global callback,
+			-- but MaxScript fn references lose their rollout-local scope
+			-- when invoked from a foreign rollout, so localExceptions /
+			-- refreshListbox / encodeGuide silently no-op'd from the
+			-- callback. Keeping the handler inline avoids the cross-
+			-- rollout fn-reference problem entirely.
+			if ddAvailable.items.count > 0 then
+			(
+				local idx = ddAvailable.selection
+				if idx > 0 and idx <= ddAvailable.items.count then
+				(
+					local nm = ddAvailable.items[idx]
+					if findItem localExceptions nm == 0 do
+						append localExceptions nm
+					refreshListbox()
+					refreshAvailable()
+					rawFlags = encodeGuide()
+				)
+			)
+			else
+				messageBox (::WdxL.t "popcorn_no_more_animations_msg")
+		)
+
+		on btnDelExc pressed do
+		(
+			local sel = exceptionsLB.selection
+			if sel != 0 and sel <= localExceptions.count do
+			(
+				deleteItem localExceptions sel
+				refreshListbox()
+				refreshAvailable()
+				rawFlags = encodeGuide()
+			)
+		)
+
 		on params2 open do
 		(
+			-- `flagAlways` is both the parameter name and the checkbox
+			-- control name — direct assignment to a control reference is
+			-- illegal in MaxScript, so we restore the state via the
+			-- control's `.checked` property. The ui: binding propagates
+			-- the change back to the parameter automatically.
+			suppressEvents = true
+			local decoded   = decodeGuide rawFlags
+			localExceptions = decoded[2]
+			flagAlways.checked = decoded[1]
+			suppressEvents = false
+			refreshListbox()
+			refreshAvailable()
 			if ::WdxL != undefined then
 			(
-				params2.title = ::WdxL.t "popcorn_event_flags_title"
-				l2.text = ::WdxL.t "popcorn_always_on_lbl"
-				flagAlways.tooltip = ::WdxL.t "popcorn_effect_is_always_active_tip"
-				l3.text = ::WdxL.t "popcorn_birth_lbl"
-				flagBirth.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_birth_tip"
-				l4.text = ::WdxL.t "popcorn_death_lbl"
-				flagDeath.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_death_tip"
-				l5.text = ::WdxL.t "popcorn_dissipate_lbl"
-				flagDissipate.tooltip = ::WdxL.t "popcorn_effect_plays_on_unit_dissipate_tip"
-				l6.text = ::WdxL.t "popcorn_portrait_lbl"
-				flagPortrait.tooltip = ::WdxL.t "popcorn_effect_plays_in_portrait_view_tip"
+				try (params2.title       = ::WdxL.t "popcorn_anim_guide_title")  catch ()
+				try (lblDefault.text     = ::WdxL.t "popcorn_default_visibility_lbl") catch ()
+				try (flagAlways.tooltip  = ::WdxL.t "popcorn_default_visibility_tip") catch ()
+				try (lblExc.text         = ::WdxL.t "popcorn_exceptions_lbl")    catch ()
+				try (btnAddExc.tooltip   = ::WdxL.t "popcorn_add_exception_tip") catch ()
+				try (btnDelExc.tooltip   = ::WdxL.t "popcorn_remove_exception_tip") catch ()
+				try (lblPick.text        = ::WdxL.t "popcorn_pick_animation_lbl") catch ()
 			)
 		)
 	)
@@ -253,22 +421,19 @@ parameters main rollout:params2
 		spinner lifeSpan      height:16 pos:[94,53] range:[0,99999,0]       scale:0.1   fieldwidth:44 tooltip:"Particle lifetime in seconds"
 		label l10 "Speed .................." height:16 pos:[12,77] align:#left width:85
 		spinner speed         height:16 pos:[94,76] range:[-99999,99999,0]  scale:0.1   fieldwidth:44 tooltip:"Particle emission speed"
-		label l11 "- Replaceable Texture -" pos:[29,101] align:#center
-		dropdownList replaceableId "" items:#("Not Used", "Team Color", "Team Glow") selection:1 width:138 pos:[12,119]
 		on params3 open do
 		(
 			if ::WdxL != undefined then
 			(
 				params3.title = ::WdxL.t "popcorn_emission_settings_title"
 				l7.text = ::WdxL.t "popcorn_alpha_lbl"
-				alpha.tooltip = ::WdxL.t "popcorn_particle_alpha_opacity_tip"
+				try (alpha.tooltip = ::WdxL.t "popcorn_particle_alpha_opacity_tip") catch ()
 				l8.text = ::WdxL.t "popcorn_emission_rate_lbl"
-				emissionRate.tooltip = ::WdxL.t "popcorn_particles_emitted_per_second_tip"
+				try (emissionRate.tooltip = ::WdxL.t "popcorn_particles_emitted_per_second_tip") catch ()
 				l9.text = ::WdxL.t "popcorn_life_span_lbl"
-				lifeSpan.tooltip = ::WdxL.t "popcorn_particle_lifetime_in_seconds_tip"
+				try (lifeSpan.tooltip = ::WdxL.t "popcorn_particle_lifetime_in_seconds_tip") catch ()
 				l10.text = ::WdxL.t "popcorn_speed_lbl"
-				speed.tooltip = ::WdxL.t "popcorn_particle_emission_speed_tip"
-				l11.text = ::WdxL.t "popcorn__replaceable_texture_lbl"
+				try (speed.tooltip = ::WdxL.t "popcorn_particle_emission_speed_tip") catch ()
 			)
 		)
 	)
@@ -281,11 +446,6 @@ parameters main rollout:params2
 		button      btn_baseColor   "..."                       height:32 width:32   pos:[118,25] tooltip:"Change Color"
 		label       l13             "Color Multiplier ........"  width:85             pos:[12,64]  align:#left
 		spinner     colorMultiplier                              height:16 scale:0.1  pos:[94,64]  range:[0,100,1.0]    fieldwidth:44
-		label       l14             "—— - Team Color - ——"      align:#center offset:[0,6]
-		colorPicker teamColor                                   height:32 width:89   pos:[8,103]  enabled:false color:(color 255 0 0)
-		button      btn_teamColor   "..."                       height:32 width:32   pos:[118,103] tooltip:"Change Team Color"
-		label       l15             "Team Color Alpha ...."      width:85             pos:[12,142]  align:#left
-		spinner     teamColorAlpha                               height:16 scale:0.01 pos:[94,142]  range:[0,1,0.0]     fieldwidth:44
 
 		on btn_baseColor pressed do
 		(
@@ -299,28 +459,37 @@ parameters main rollout:params2
 				YS_baseColor.color = baseColor.color
 			)
 		)
-		on btn_teamColor pressed do
-		(
-			local c = (dotNetClass "System.Windows.Forms.ColorDialog")
-			local dlg = dotNetObject "System.Windows.Forms.ColorDialog"
-			dlg.color = (dotNetObject "System.Drawing.Color").FromArgb (teamColor.color.r as integer) (teamColor.color.g as integer) (teamColor.color.b as integer)
-			dlg.FullOpen = true
-			if (dlg.ShowDialog() == (dotNetClass "System.Windows.Forms.DialogResult").OK) then
-			(
-				teamColor.color = color dlg.Color.R dlg.Color.G dlg.Color.B
-			)
-		)
 		on params4 open do
 		(
 			if ::WdxL != undefined then
 			(
 				params4.title = ::WdxL.t "popcorn_color_settings_title"
 				l12.text = ::WdxL.t "popcorn__base_color_lbl"
-				btn_baseColor.tooltip = ::WdxL.t "popcorn_change_color_tip"
+				try (btn_baseColor.tooltip = ::WdxL.t "popcorn_change_color_tip") catch ()
 				l13.text = ::WdxL.t "popcorn_color_multiplier_lbl"
-				l14.text = ::WdxL.t "popcorn__team_color_lbl"
-				btn_teamColor.tooltip = ::WdxL.t "popcorn_change_team_color_tip"
-				l15.text = ::WdxL.t "popcorn_team_color_alpha_lbl"
+			)
+		)
+	)
+
+	rollout params5 "Render Flags"
+	(
+		label    lu1 "Unshaded ........................" height:16 pos:[12,8]  align:#left width:124
+		checkbox flagUnshaded height:16 pos:[137,8]  tooltip:"Ignore scene lighting (NodeFlag 0x8000)"
+		label    lu2 "Unfogged ........................." height:16 pos:[12,29] align:#left width:124
+		checkbox flagUnfogged height:16 pos:[137,29] tooltip:"Particles not faded by world fog (NodeFlag 0x20000)"
+		label    lu3 "Scaling ............................" height:16 pos:[12,50] align:#left width:124
+		checkbox flagScaling  height:16 pos:[137,50] tooltip:"Particle scale follows host actor's world scale (NodeFlag 0x40000)"
+		on params5 open do
+		(
+			if ::WdxL != undefined then
+			(
+				try (params5.title       = ::WdxL.t "popcorn_render_flags_title")       catch ()
+				try (lu1.text            = ::WdxL.t "popcorn_unshaded_lbl")             catch ()
+				try (flagUnshaded.tooltip= ::WdxL.t "popcorn_unshaded_tip")             catch ()
+				try (lu2.text            = ::WdxL.t "popcorn_unfogged_lbl")             catch ()
+				try (flagUnfogged.tooltip= ::WdxL.t "popcorn_unfogged_tip")             catch ()
+				try (lu3.text            = ::WdxL.t "popcorn_scaling_lbl")              catch ()
+				try (flagScaling.tooltip = ::WdxL.t "popcorn_scaling_tip")              catch ()
 			)
 		)
 	)

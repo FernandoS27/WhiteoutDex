@@ -10,6 +10,11 @@
 #include <string>
 #include <cstdio>
 
+// After max.h: that header has opinions about windows.h, which this one
+// includes.
+#include "wdx_localization.h" // wdx::l10n::LocalizeDialog
+#include "wdx_window_icon.h"  // wdx::ApplyWindowIcon
+
 // Provided by dllmain.cpp — we need this to launch the Problem Details dialog
 extern HINSTANCE GetDllInstance();
 
@@ -571,23 +576,106 @@ void applyTabAndFormatVisibility(HWND hDlg) {
     showSet(hDlg, kDdsControls, textureActive &&  isReforged);
 }
 
+// ── Localization ───────────────────────────────────────────
+//
+// The .rc gives every control an English caption; this replaces them from the
+// shared catalog (src/pre_startup_scripts/WhiteoutDexLocalization.ms) in one
+// MaxScript round trip. A key the catalog does not carry leaves its control
+// English, so the table may list controls whose translations are still pending.
+//
+// Not in the table: IDC_LBL_SCENE_STATUS and IDC_LBL_STATUS, whose text the
+// scene monitor and the export loop rewrite as they run; those two are
+// localized where they are set. Combo entries are handled by their own init
+// functions below for the same reason.
+
+constexpr wdx::l10n::DialogString kExportStrings[] = {
+    {0, "exp_export_settings_title"},
+
+    {IDC_GRP_MODEL_NAME, "exp_model_name_grp"},
+    {IDC_GRP_FORMAT_VERSION, "exp_format_version_grp"},
+
+    // Tab 0 — Options
+    {IDC_CHK_AUTO_INCREMENT, "exp_autoincrement_filename_chk"},
+    {IDC_CHK_MERGE_SIMILAR, "exp_merge_similar_meshes_chk"},
+    {IDC_CHK_FIX_SHARED_NORMALS, "exp_fix_shared_normals_chk"},
+    {IDC_CHK_KEEP_UNUSED_BH, "exp_keep_unused_boneshelpers_chk"},
+    {IDC_CHK_DISABLE_SKINQUANT, "exp_disable_skin_quantize_chk"},
+    {IDC_CHK_OPEN_FOLDER, "exp_open_folder_after_export_chk"},
+
+    // Tab 1 — Material Fix
+    {IDC_GRP_MAT_BASIC, "exp_basic_parameters_grp"},
+    {IDC_CHK_MAT_UNSHADED, "exp_unshaded_chk"},
+    {IDC_CHK_MAT_UNFOGGED, "exp_unfogged_chk"},
+    {IDC_CHK_MAT_TWOSIDED, "exp_two_sided_chk"},
+    {IDC_GRP_MAT_FILTER, "exp_filter_mode_grp"},
+    {IDC_GRP_MAT_TEXPARAMS, "exp_texture_parameters_grp"},
+    {IDC_LBL_MAT_PREFIX, "exp_prefix_lbl"},
+    {IDC_CHK_MAT_UTILE, "exp_utile_chk"},
+    {IDC_CHK_MAT_VTILE, "exp_vtile_chk"},
+
+    // Tab 2 — Texture Conversion
+    {IDC_CHK_TEX_CONVERT, "exp_convert_textures_chk"},
+    {IDC_LBL_BLP_COMPRESSION, "exp_compression_lbl"},
+    {IDC_LBL_BLP_JPEG_QUALITY, "exp_jpeg_quality_lbl"},
+    {IDC_CHK_BLP_DITHERING, "exp_dithering_chk"},
+    {IDC_LBL_DDS_FORMAT, "exp_dds_format_lbl"},
+    {IDC_CHK_TEX_MIPMAPS, "exp_regenerate_mipmaps_chk"},
+    {IDC_CHK_TEX_OVERWRITE, "exp_overwrite_existing_chk"},
+
+    {IDC_GRP_EXTENTS, "exp_extents_grp"},
+    {IDC_LBL_EXTENTS_PREC, "exp_precision_lbl"},
+
+    {IDC_GRP_SCENE_STATUS, "exp_scene_status_grp"},
+    {IDC_BTN_SCENE_FIX_ALL, "exp_fix_all_btn"},
+    {IDC_BTN_SCENE_DETAILS, "exp_details_btn"},
+
+    {IDC_GRP_PROGRESS, "exp_progress_grp"},
+
+    {IDOK, "exp_export_btn"},
+    {IDCANCEL, "common_cancel_btn"},
+};
+
+// Shares its catalog entry with the MaxScript material UI, which reads the same
+// pipe-joined string through WdxL.tList.
+constexpr int kVersionIds[] = {IDC_RDO_CLASSIC, IDC_RDO_REFORGED};
+constexpr int kFilterIds[] = {
+    IDC_RDO_MAT_FILTER_NONE,  IDC_RDO_MAT_FILTER_TRANSP, IDC_RDO_MAT_FILTER_BLEND,
+    IDC_RDO_MAT_FILTER_ADD,   IDC_RDO_MAT_FILTER_ADD2X,  IDC_RDO_MAT_FILTER_MOD,
+    IDC_RDO_MAT_FILTER_MOD2X,
+};
+
+void localizeDialog(HWND hDlg) {
+    wdx::l10n::LocalizeDialog(hDlg, kExportStrings);
+    wdx::l10n::LocalizeRadioGroup(hDlg, "exp_version_labels", kVersionIds);
+    wdx::l10n::LocalizeRadioGroup(hDlg, "exp_filter_mode_labels", kFilterIds);
+}
+
 void initTabControl(HWND hDlg) {
     HWND hTab = GetDlgItem(hDlg, IDC_TAB_CONTROL);
     TCITEMW tie = {};
     tie.mask = TCIF_TEXT;
-    tie.pszText = const_cast<LPWSTR>(L"Options");
-    TabCtrl_InsertItem(hTab, 0, &tie);
-    tie.pszText = const_cast<LPWSTR>(L"Material Fix");
-    TabCtrl_InsertItem(hTab, 1, &tie);
-    tie.pszText = const_cast<LPWSTR>(L"Texture Conversion");
-    TabCtrl_InsertItem(hTab, 2, &tie);
+    // TCITEM.pszText is not copied until InsertItem runs, so the strings
+    // have to outlive each call — hence named locals rather than temporaries.
+    const std::wstring tabs[] = {
+        wdx::l10n::Tr("exp_options_tab"),
+        wdx::l10n::Tr("exp_material_fix_tab"),
+        wdx::l10n::Tr("exp_texture_conversion_tab"),
+    };
+    const wchar_t* fallback[] = {L"Options", L"Material Fix", L"Texture Conversion"};
+    for (int i = 0; i < 3; ++i) {
+        tie.pszText = const_cast<LPWSTR>(tabs[i].empty() ? fallback[i] : tabs[i].c_str());
+        TabCtrl_InsertItem(hTab, i, &tie);
+    }
     TabCtrl_SetCurSel(hTab, 0);
 }
 
 void initBlpCompressionCombo(HWND hDlg) {
     HWND hCmb = GetDlgItem(hDlg, IDC_CMB_BLP_COMPRESSION);
     SendMessageW(hCmb, CB_RESETCONTENT, 0, 0);
-    SendMessageW(hCmb, CB_ADDSTRING, 0, (LPARAM)L"Paletted (256 colors)");
+    // "JPEG" is a format name and stays; only the paletted entry has prose.
+    const std::wstring paletted = wdx::l10n::Tr("exp_blp_paletted_item");
+    SendMessageW(hCmb, CB_ADDSTRING, 0,
+                 (LPARAM)(paletted.empty() ? L"Paletted (256 colors)" : paletted.c_str()));
     SendMessageW(hCmb, CB_ADDSTRING, 0, (LPARAM)L"JPEG");
     SendMessageW(hCmb, CB_SETCURSEL, 0, 0);
 }
@@ -627,12 +715,22 @@ void updateSceneStatusUI(HWND hDlg, DialogState* ds) {
     HWND hLbl = GetDlgItem(hDlg, IDC_LBL_SCENE_STATUS);
     if (hLbl) {
         if (!hasProblems) {
-            SetWindowTextW(hLbl, L"All Clear!");
+            const std::wstring clear = wdx::l10n::Tr("exp_all_clear_lbl");
+            SetWindowTextW(hLbl, clear.empty() ? L"All Clear!" : clear.c_str());
         } else {
-            wchar_t buf[64];
-            swprintf_s(buf, 64, L"%d problem%s found",
-                       result.count(),
-                       result.count() == 1 ? L"" : L"s");
+            // Separate singular and plural entries rather than an English "%s"
+            // suffix: most of the languages here do not pluralise with a
+            // trailing letter, and several do not pluralise the noun at all.
+            const std::wstring fmt =
+                wdx::l10n::Tr(result.count() == 1 ? "exp_one_problem_fmt"
+                                                  : "exp_n_problems_fmt");
+            // A translation that lost its %d would read a garbage argument.
+            const bool usable = fmt.find(L"%d") != std::wstring::npos;
+            wchar_t buf[128];
+            swprintf_s(buf, 128,
+                       usable ? fmt.c_str()
+                              : (result.count() == 1 ? L"%d problem found" : L"%d problems found"),
+                       result.count());
             SetWindowTextW(hLbl, buf);
         }
     }
@@ -662,6 +760,11 @@ static INT_PTR CALLBACK ExportDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPA
     case WM_INITDIALOG: {
         ds = reinterpret_cast<DialogState*>(lParam);
         SetWindowLongPtr(hDlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
+
+        wdx::ApplyWindowIcon(hDlg, IDI_WHITEOUTDEX_ICON);
+
+        // Relabel from the catalog before anything reads a caption back.
+        localizeDialog(hDlg);
 
         // Set up spinners
         HWND hSpinPrec = GetDlgItem(hDlg, IDC_SPIN_EXTENTS_PREC);

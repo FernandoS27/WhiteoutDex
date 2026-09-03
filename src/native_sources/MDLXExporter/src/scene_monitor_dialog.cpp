@@ -20,7 +20,13 @@
 #include <max.h>
 #include <commctrl.h>
 #include <string>
+#include <vector>
 #include <unordered_set>
+
+// After max.h: that header has opinions about windows.h, which this one
+// includes.
+#include "wdx_localization.h" // wdx::l10n::LocalizeDialog
+#include "wdx_window_icon.h"  // wdx::ApplyWindowIcon
 
 namespace scene_monitor {
 
@@ -32,16 +38,38 @@ struct DialogState {
     ScanResult  result;
 };
 
+// The list view holds a pointer per row, so the translated names have to
+// outlive populateListView. One static table, filled on first use: the
+// language cannot change while a modal dialog is up.
 const wchar_t* problemTypeName(ProblemType t) {
-    switch (t) {
-    case ProblemType::DuplicateName:        return L"Duplicate Name";
-    case ProblemType::EmptyMesh:             return L"Empty Mesh";
-    case ProblemType::EditablePoly:          return L"Editable Poly";
-    case ProblemType::EditMeshAboveSkin:     return L"Edit_Mesh ↑ Skin";
-    case ProblemType::InvalidController:     return L"Invalid Controller";
-    case ProblemType::UnsupportedMaterial:   return L"Unsupported Material";
+    static const wchar_t* kFallback[] = {
+        L"Duplicate Name",     L"Empty Mesh",          L"Editable Poly",
+        L"Edit_Mesh ↑ Skin",   L"Invalid Controller",  L"Unsupported Material",
+    };
+    static std::wstring cached[6];
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        const std::vector<std::wstring> v = wdx::l10n::TranslateMany({
+            "exp_problem_duplicate_name", "exp_problem_empty_mesh",
+            "exp_problem_editable_poly",  "exp_problem_editmesh_above_skin",
+            "exp_problem_invalid_controller", "exp_problem_unsupported_material",
+        });
+        for (size_t i = 0; i < 6 && i < v.size(); ++i)
+            cached[i] = v[i];
     }
-    return L"?";
+    int idx = -1;
+    switch (t) {
+    case ProblemType::DuplicateName:        idx = 0; break;
+    case ProblemType::EmptyMesh:            idx = 1; break;
+    case ProblemType::EditablePoly:         idx = 2; break;
+    case ProblemType::EditMeshAboveSkin:    idx = 3; break;
+    case ProblemType::InvalidController:    idx = 4; break;
+    case ProblemType::UnsupportedMaterial:  idx = 5; break;
+    }
+    if (idx < 0)
+        return L"?";
+    return cached[idx].empty() ? kFallback[idx] : cached[idx].c_str();
 }
 
 void setupListView(HWND hList) {
@@ -51,11 +79,16 @@ void setupListView(HWND hList) {
     LVCOLUMNW col = {};
     col.mask = LVCF_TEXT | LVCF_WIDTH;
 
-    col.pszText = const_cast<LPWSTR>(L"Problem Type");
+    // Named locals: InsertColumn reads pszText during the call, but keeping
+    // the strings alive across both is simpler than reasoning about it.
+    const std::wstring typeCol = wdx::l10n::Tr("exp_problem_type_col");
+    const std::wstring nameCol = wdx::l10n::Tr("exp_object_name_col");
+
+    col.pszText = const_cast<LPWSTR>(typeCol.empty() ? L"Problem Type" : typeCol.c_str());
     col.cx = 130;
     ListView_InsertColumn(hList, 0, &col);
 
-    col.pszText = const_cast<LPWSTR>(L"Object / Name");
+    col.pszText = const_cast<LPWSTR>(nameCol.empty() ? L"Object / Name" : nameCol.c_str());
     col.cx = 240;
     ListView_InsertColumn(hList, 1, &col);
 }
@@ -85,7 +118,8 @@ void updateStatusLabel(HWND hDlg, const ScanResult& result) {
     if (!hLbl) return;
 
     if (result.empty()) {
-        SetWindowTextW(hLbl, L"No problems found");
+        const std::wstring none = wdx::l10n::Tr("exp_no_problems_found");
+        SetWindowTextW(hLbl, none.empty() ? L"No problems found" : none.c_str());
         return;
     }
 
@@ -97,8 +131,16 @@ void updateStatusLabel(HWND hDlg, const ScanResult& result) {
     int ic  = result.countByType(ProblemType::InvalidController);
     int um  = result.countByType(ProblemType::UnsupportedMaterial);
 
-    swprintf_s(buf, 256,
-        L"%d total: %d names, %d meshes, %d controllers, %d materials",
+    // The catalog value keeps all five %d in the same order; a translation
+    // that reorders or drops one would corrupt the stack, so a value whose
+    // specifier count does not match is rejected in favour of the English.
+    const std::wstring fmt = wdx::l10n::Tr("exp_problem_summary_fmt");
+    const wchar_t* kDefault = L"%d total: %d names, %d meshes, %d controllers, %d materials";
+    int specifiers = 0;
+    for (size_t i = 0; i + 1 < fmt.size(); ++i)
+        if (fmt[i] == L'%' && fmt[i + 1] == L'd')
+            ++specifiers;
+    swprintf_s(buf, 256, specifiers == 5 ? fmt.c_str() : kDefault,
         result.count(), dup, (em + ep + es), ic, um);
     SetWindowTextW(hLbl, buf);
 }
@@ -150,6 +192,18 @@ INT_PTR CALLBACK ProblemDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
     case WM_INITDIALOG: {
         ds = reinterpret_cast<DialogState*>(lParam);
         SetWindowLongPtr(hDlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
+        wdx::ApplyWindowIcon(hDlg, IDI_WHITEOUTDEX_ICON);
+        {
+            constexpr wdx::l10n::DialogString kStrings[] = {
+                {0, "exp_scene_problems_title"},
+                {IDC_LBL_PROBLEM_PROMPT, "exp_problem_prompt_lbl"},
+                {IDC_BTN_RESCAN, "exp_rescan_btn"},
+                {IDC_BTN_FIX_SELECTED, "exp_fix_selected_btn"},
+                {IDC_BTN_FIX_ALL, "exp_fix_all_btn"},
+                {IDOK, "exp_close_btn"},
+            };
+            wdx::l10n::LocalizeDialog(hDlg, kStrings);
+        }
         setupListView(GetDlgItem(hDlg, IDC_LV_PROBLEMS));
         rescanAndRefresh(hDlg, ds);
         CenterWindow(hDlg, GetParent(hDlg));

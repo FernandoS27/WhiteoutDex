@@ -7,6 +7,8 @@
  */
 
 #include "Particles.h"
+#include "wdx_localization.h" // wdx::l10n — relabels the rollouts from the catalog
+#include <string>
 
 /// @name Module globals
 /// @{
@@ -241,7 +243,72 @@ int Emitter1CreateCallback::proc(ViewExp* vpt, int msg, int point, int flags,
 // Controller type utilities (shared with Wc3Particles2 pattern)
 // ============================================================================
 
-static const MCHAR* s_ctrlTypeNames[] = { _M("None"), _M("Linear"), _M("Bezier"), _M("Hermite") };
+// The four interpolation types, translated once per session. Static because the
+// combo is repopulated on every rollout open and the language cannot change
+// while Max is running. Shares the material plug-in's catalog entry: same four
+// choices, same words.
+static const MCHAR* CtrlTypeName(int i)
+{
+    static const MCHAR* kFallback[] = {_M("None"), _M("Linear"), _M("Bezier"), _M("Hermite")};
+    static std::wstring cached[4];
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        const std::wstring joined = wdx::l10n::Tr("mat_controller_items");
+        if (!joined.empty() && joined != L"mat_controller_items") {
+            size_t start = 0;
+            int n = 0;
+            for (; n < 4; ++n) {
+                const size_t bar = joined.find(L'|', start);
+                cached[n] = joined.substr(start, bar == std::wstring::npos ? bar : bar - start);
+                if (bar == std::wstring::npos) { ++n; break; }
+                start = bar + 1;
+            }
+            // A list that did not split into exactly four is discarded: a short
+            // one would leave a combo entry blank.
+            if (n != 4)
+                for (auto& c : cached) c.clear();
+        }
+    }
+    if (i < 0 || i >= 4) return _M("");
+    return cached[i].empty() ? kFallback[i] : cached[i].c_str();
+}
+// The "- Xxx -" banner labels keep their dashes; only the words come from the
+// catalog, so a translator cannot lose the decoration.
+static void SetBannerText(HWND hWnd, int id, const char* key)
+{
+    const std::wstring text = wdx::l10n::Tr(key);
+    if (text.empty()) return;
+    const std::wstring decorated = L"- " + text + L" -";
+    SetDlgItemTextW(hWnd, id, decorated.c_str());
+}
+// Rollout captions come out of Wc3Particles1.rc, which is compiled English.
+// This table replaces them at WM_INITDIALOG from the shared catalog in
+// src/pre_startup_scripts/WhiteoutDexLocalization.ms, so one language setting
+// drives the whole toolkit. A key the catalog lacks leaves its label alone.
+static constexpr wdx::l10n::DialogString kP1Strings[] = {
+    {WDXP1_LBL_COUNT,          "bp1_count_lbl"},
+    {WDXP1_LBL_SPEED,          "bp1_speed_lbl"},
+    {WDXP1_LBL_CONTROL,        "bp1_control_lbl"},
+    {WDXP1_LBL_LATITUDE,       "bp1_latitude_lbl"},
+    {WDXP1_LBL_CONTROL_2,      "bp1_control_lbl"},
+    {WDXP1_LBL_LONGITUDE,      "bp1_longitude_lbl"},
+    {WDXP1_LBL_CONTROL_3,      "bp1_control_lbl"},
+    {WDXP1_LBL_GRAVITY,        "bp1_gravity_lbl"},
+    {WDXP1_LBL_CONTROL_4,      "bp1_control_lbl"},
+    {WDXP1_LBL_LIFESPAN,       "bp1_lifespan_lbl"},
+    {WDXP1_LBL_EMISSION_RATE,  "bp1_emission_rate_lbl"},
+    {WDXP1_LBL_CONTROL_5,      "bp1_control_lbl"},
+    {WDXP1_LBL_PARTICLE_SCALE, "bp1_particle_scale_lbl"},
+    {IDC_P1_BUTTON_BROWSE_CASC, "attach_browse_archives_btn"},
+    {IDC_P1_BUTTON_BROWSE,      "bp1_import_model_btn"},
+};
+
+static constexpr wdx::l10n::DialogString kP1ConfigStrings[] = {
+    {IDC_P1_BUTTON_IMPORT,       "popcorn_import_btn"},
+    {IDC_P1_BUTTON_EXPORT,       "popcorn_export_btn"},
+    {IDC_P1_CHECK_LOAD_DYNAMIC,  "bp1_load_dynamic_chk"},
+};
 static const int    s_ctrlTypeCount = 4;
 
 static int DetectControllerType(IParamBlock2* pb, ParamID pid)
@@ -262,7 +329,7 @@ static void SetupCtrlCombo(HWND hWnd, int comboID, IParamBlock2* pb, ParamID pid
     if (!hCombo) return;
     SendMessage(hCombo, CB_RESETCONTENT, 0, 0);
     for (int i = 0; i < s_ctrlTypeCount; i++)
-        SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)s_ctrlTypeNames[i]);
+        SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)CtrlTypeName(i));
     SendMessage(hCombo, CB_SETCURSEL, DetectControllerType(pb, pid), 0);
 }
 
@@ -355,12 +422,117 @@ void Wc3Particles1DlgProc::BrowseForModelFile(HWND hWnd)
     }
 }
 
+void Wc3Particles1DlgProc::ApplyModelPath(HWND hWnd, const MCHAR* relPath)
+{
+    if (!relPath)
+        return;
+
+    // The exporter writes prefix + file verbatim (wc3_particle1_extractor.cpp),
+    // so a picked path splits at its last separator: everything through it is
+    // the prefix, the rest is the file name.
+    std::wstring full(relPath);
+    const size_t sep = full.find_last_of(L"\\/");
+    const std::wstring prefix = (sep == std::wstring::npos) ? std::wstring()
+                                                            : full.substr(0, sep + 1);
+    const std::wstring name = (sep == std::wstring::npos) ? full : full.substr(sep + 1);
+
+    po->m_modelPrefix = prefix.c_str();
+    po->m_modelPath   = name.c_str();
+
+    ICustEdit* cePrefix = GetICustEdit(GetDlgItem(hWnd, IDC_P1_EDIT_PATH_PREFIX));
+    if (cePrefix) {
+        cePrefix->SetText(const_cast<MCHAR*>(prefix.c_str()));
+        ReleaseICustEdit(cePrefix);
+    }
+    ICustEdit* ceName = GetICustEdit(GetDlgItem(hWnd, IDC_P1_CUSTOMEDIT_PATH));
+    if (ceName) {
+        ceName->SetText(const_cast<MCHAR*>(name.c_str()));
+        ReleaseICustEdit(ceName);
+    }
+}
+
+void Wc3Particles1DlgProc::BrowseModelFromArchives(HWND hWnd)
+{
+    // The browser lives in MaxScript (WhiteoutDexModelBrowser.ms) because it
+    // drives the storage-browser primitives registered by WhiteoutDexRenderer
+    // .dlx; this .dlo links neither, so we go through the scripter. The script
+    // answers with a one-character tag so "not installed" and "user cancelled"
+    // stay distinguishable — both come back as no path otherwise.
+    //
+    //   "N"        the browser script isn't loaded
+    //   "C"        cancelled
+    //   "P<path>"  picked; <path> is the archive-relative path MDX stores
+    std::wstring initial;
+    if (po->m_modelPrefix.length() > 0)
+        initial += po->m_modelPrefix.data();
+    if (po->m_modelPath.length() > 0)
+        initial += po->m_modelPath.data();
+
+    // MaxScript string literals take backslash escapes, and asset paths are all
+    // backslash — without this "units\nightelf\..." reaches the parser as
+    // "units<newline>ightelf".
+    std::wstring initialEsc;
+    initialEsc.reserve(initial.size() * 2);
+    for (wchar_t c : initial) {
+        if (c == L'\\' || c == L'"')
+            initialEsc.push_back(L'\\');
+        initialEsc.push_back(c);
+    }
+
+    // Both locals declared up front, at the head of the outer block — the shape
+    // MaxScript wants for an executed expression (same as the event extractor's
+    // script in MDLXExporter).
+    const std::wstring script =
+        L"(local r = \"N\"; local p = undefined;"
+        L" if ::WhiteoutDexModelBrowser != undefined do ("
+        L"   p = ::WhiteoutDexModelBrowser.pickModel initial:\"" + initialEsc +
+        L"\" caption:\"Select a Particle Model\";"
+        L"   r = if p == undefined then \"C\" else (\"P\" + p)"
+        L" );"
+        L" r)";
+
+    FPValue result;
+    result.type = TYPE_VOID;
+    BOOL ok = FALSE;
+    try {
+        ok = ExecuteMAXScriptScript(
+            const_cast<wchar_t*>(script.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE,   // quietErrors: a failure here is reported below, not by a listener pop-up
+            &result);
+    } catch (...) {
+        ok = FALSE;
+    }
+
+    if (!ok || result.type != TYPE_STRING || !result.s || !result.s[0] ||
+        result.s[0] == _M('N')) {
+        MessageBox(hWnd,
+                   _T("The WhiteoutDex asset browser is not available.\n\n")
+                   _T("It ships as WhiteoutDexModelBrowser.ms and needs ")
+                   _T("WhiteoutDexRenderer.dlx loaded. Use \"Import Model File\" ")
+                   _T("to pick a file off disk instead."),
+                   _T("WhiteoutDex"), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    if (result.s[0] != _M('P'))
+        return; // cancelled
+
+    ApplyModelPath(hWnd, result.s + 1);
+}
+
 INT_PTR Wc3Particles1DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
                                        UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg) {
     case WM_INITDIALOG:
     {
+        wdx::l10n::LocalizeDialog(hWnd, kP1Strings);
+        SetBannerText(hWnd, WDXP1_LBL_MODEL_PATH_PREFIX, "bp1_model_path_prefix_lbl");
+        SetBannerText(hWnd, WDXP1_LBL_PARTICLE_MODEL_FILE, "bp1_particle_model_file_lbl");
+
         IParamBlock2* pb = map->GetParamBlock();
         SetupMaxRate(hWnd, pb, t);
 
@@ -409,6 +581,8 @@ INT_PTR Wc3Particles1DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
         if (hiWord == BN_CLICKED || hiWord == 0) {
             if (LOWORD(wParam) == IDC_P1_BUTTON_BROWSE)
                 BrowseForModelFile(hWnd);
+            else if (LOWORD(wParam) == IDC_P1_BUTTON_BROWSE_CASC)
+                BrowseModelFromArchives(hWnd);
             return TRUE;
         }
         if (hiWord == CBN_SELCHANGE) {
@@ -729,6 +903,7 @@ INT_PTR Config1DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
 {
     switch (msg) {
     case WM_INITDIALOG:
+        wdx::l10n::LocalizeDialog(hWnd, kP1ConfigStrings);
         CheckDlgButton(hWnd, IDC_P1_CHECK_LOAD_DYNAMIC, loadDynamic ? BST_CHECKED : BST_UNCHECKED);
         return TRUE;
     case WM_COMMAND:

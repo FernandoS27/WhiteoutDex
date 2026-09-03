@@ -359,8 +359,8 @@ struct WhiteoutDexUtilityStruct
     fn IsCollisionShape o = ((classof o) as string == "Wc3CollisionBox") or ((classof o) as string == "Wc3CollisionSphere"),
     fn IsAttachment o = (classOf o == Wc3_AttachPoint),
     fn IsEventObject o = ((substring o.name 1 4) == "Obj:"),
-    fn IsParticleEmitter o = (classOf o == BlizzParticle1),
-    fn IsParticleEmitter2 o = (classOf o == BlizzParticle2),
+    fn IsParticleEmitter o = (classOf o == Wc3Particles1),
+    fn IsParticleEmitter2 o = (classOf o == Wc3Particles2),
     fn IsRibbonEmitter o = (classOf o == BlizRibbon),
     fn IsPopcornEmitter o = (try (classOf o == BlizzPopcorn) catch false),
     fn IsFaceFX o = (try (classOf o == BlizzFaceFX) catch false),
@@ -669,3 +669,132 @@ fn WdxIsCollisionShape obj = WdxUtils.IsCollisionShape obj
 fn WdxIsPopcornEmitter obj = WdxUtils.IsPopcornEmitter obj
 fn WdxIsFaceFX obj = WdxUtils.IsFaceFX obj
 fn WdxIsCamera obj = WdxUtils.IsCamera obj
+
+-- ============================================================================
+-- WINDOW ICON
+-- Every WhiteoutDex tool window wears the toolkit icon. MaxScript rollouts have
+-- no icon parameter, so the icon is pushed onto the hosting window with
+-- WM_SETICON instead. Call WdxSetDialogIcon from a rollout's `open` handler
+-- (the dialog exists by then) or WdxSetFormIcon for a .NET form.
+--
+-- The System.Drawing.Icon object is parked in a global on purpose: its
+-- finalizer calls DestroyIcon, and the windows below are still drawing from
+-- that handle.
+-- ============================================================================
+
+global WdxWindowIcon = undefined        -- System.Drawing.Icon, kept alive
+global WdxWindowIconPath = undefined
+global WdxWindowIconHandle = 0          -- HICON, as an int sendMessage can carry
+global WdxWindowIconResolved = false
+
+fn WdxFindWindowIconFile =
+(
+    local dirs = #()
+    try (
+        if ::WhiteoutDexInstallRoot != undefined and ::WhiteoutDexInstallRoot != "" then
+            append dirs (::WhiteoutDexInstallRoot + "\\whiteoutdex_icons\\")
+    ) catch ()
+    try (
+        append dirs ((systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\whiteoutdex_icons\\")
+        append dirs ((systemTools.getEnvVariable "ALLUSERSPROFILE") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\whiteoutdex_icons\\")
+    ) catch ()
+    append dirs ((getDir #userScripts) + "\\whiteoutdex_icons\\")
+    append dirs ((getDir #scripts) + "\\whiteoutdex_icons\\")
+
+    for d in dirs do
+    (
+        local p = d + "whiteoutdex.ico"
+        if doesFileExist p then return p
+    )
+    undefined
+)
+
+-- Loads the icon once. Returns true when a usable HICON is available.
+fn WdxEnsureWindowIcon =
+(
+    if not ::WdxWindowIconResolved then
+    (
+        ::WdxWindowIconResolved = true
+        try
+        (
+            local p = WdxFindWindowIconFile()
+            if p != undefined then
+            (
+                ::WdxWindowIconPath = p
+                ::WdxWindowIcon = dotNetObject "System.Drawing.Icon" p
+                -- USER handles are guaranteed to fit in 32 bits, which is what
+                -- windows.sendMessage can pass through. IntPtr normally comes
+                -- back as a dotNetObject; older builds hand over a plain int.
+                local h = ::WdxWindowIcon.Handle
+                try ( ::WdxWindowIconHandle = h.ToInt32() )
+                catch ( try ( ::WdxWindowIconHandle = h as integer ) catch ( ::WdxWindowIconHandle = 0 ) )
+            )
+            else
+                format "WhiteoutDex: whiteoutdex.ico not found; dialogs keep the default icon\n"
+        )
+        catch
+        (
+            ::WdxWindowIcon = undefined
+            ::WdxWindowIconHandle = 0
+        )
+    )
+    ::WdxWindowIconHandle != 0
+)
+
+-- Applies the icon to a raw window handle.
+fn WdxSetWindowIcon hwnd =
+(
+    if hwnd == undefined or hwnd == 0 then return false
+    if not (WdxEnsureWindowIcon()) then return false
+    try
+    (
+        -- WM_SETICON = 0x0080. wParam 0 = small (title bar), 1 = big (Alt-Tab).
+        windows.sendMessage hwnd 0x0080 0 ::WdxWindowIconHandle
+        windows.sendMessage hwnd 0x0080 1 ::WdxWindowIconHandle
+        true
+    )
+    catch ( false )
+)
+
+-- Applies the icon to the dialog or floater hosting a rollout. `ro.hwnd[1]` is
+-- the rollout panel, not the window with the title bar, so walk up from there.
+--
+-- Every ancestor short of Max's main window gets the message rather than just
+-- the top one: a child window ignores WM_SETICON, and the chain is not always
+-- one hop. `createDialog ro parent:<other rollout>.hwnd` makes the other
+-- rollout the owner, so the walk passes through a second WhiteoutDex dialog
+-- that wants the icon too.
+fn WdxSetDialogIcon ro =
+(
+    local h = undefined
+    try ( h = ro.hwnd[1] ) catch ( h = undefined )
+    if h == undefined or h == 0 then return false
+
+    local maxHwnd = 0
+    try ( maxHwnd = windows.getMAXHWND() ) catch ()
+
+    -- Four hops covers the deepest real chain: rollout panel, its dialog, the
+    -- owner rollout's panel, the owner's dialog. Stopping there keeps the walk
+    -- from wandering into Max's own window tree.
+    local applied = false
+    local cur = h
+    local guard = 0
+    while guard < 4 do
+    (
+        local p = 0
+        try ( p = UIAccessor.GetParentWindow cur ) catch ( p = 0 )
+        if p == undefined or p == 0 or p == maxHwnd then exit
+        if WdxSetWindowIcon p then applied = true
+        cur = p
+        guard += 1
+    )
+    applied
+)
+
+-- Same, for a dotNet System.Windows.Forms.Form.
+fn WdxSetFormIcon form =
+(
+    if form == undefined then return false
+    if not (WdxEnsureWindowIcon()) then return false
+    try ( form.Icon = ::WdxWindowIcon; true ) catch ( false )
+)

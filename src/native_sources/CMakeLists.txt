@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(WhiteoutDexPlugins LANGUAGES C CXX RC)
 
+# Included by path rather than inherited from the root: this directory is also
+# the SOURCE_DIR of every per-version ExternalProject, which configures it as a
+# top level with no CMAKE_MODULE_PATH of its own.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/../../cmake")
+include(WdxMaxSdk)
+
 # ===========================================================================
 # Options
 #   -DMAX_VERSION=<year>         (required unless BUILD_COMMON_ONLY)
@@ -24,14 +30,28 @@ if(NOT DEFINED MAX_VERSION)
         "Example: cmake -DMAX_VERSION=2025 ..")
 endif()
 
-if(NOT DEFINED MAXSDK_PATH)
-    set(MAXSDK_PATH "C:/Program Files/Autodesk/3ds Max ${MAX_VERSION} SDK/maxsdk")
+if(NOT MAXSDK_PATH)
+    wdx_find_max_sdk(${MAX_VERSION} MAXSDK_PATH)
 endif()
 
 if(NOT EXISTS "${MAXSDK_PATH}/include/max.h")
+    # Name the product install when there is one: "SDK not found" alongside a
+    # perfectly good 3ds Max reads as a broken build system rather than a
+    # missing optional download.
+    wdx_max_install_dir(${MAX_VERSION} _wdx_max_install)
+    if(_wdx_max_install)
+        set(_wdx_sdk_hint
+            "3ds Max ${MAX_VERSION} is installed at ${_wdx_max_install}, but its "
+            "SDK is a separate Autodesk download and isn't on this machine.\n")
+    else()
+        set(_wdx_sdk_hint "3ds Max ${MAX_VERSION} SDK not found.\n")
+    endif()
     message(FATAL_ERROR
-        "3ds Max ${MAX_VERSION} SDK not found at: ${MAXSDK_PATH}\n"
-        "Override with -DMAXSDK_PATH=<path-to-maxsdk>")
+        "${_wdx_sdk_hint}"
+        "Searched: ${WDX_MAX_SDK_ROOTS};$ENV{ProgramFiles}/Autodesk;"
+        "C:/Program Files/Autodesk (each for '3ds Max ${MAX_VERSION} SDK/maxsdk').\n"
+        "Override with -DMAXSDK_PATH=<path-to-maxsdk>, or add a search root "
+        "with -DWDX_MAX_SDK_ROOTS=<dir>.")
 endif()
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -80,6 +100,16 @@ if(PREBUILT_COMMON_DIR)
             INTERFACE_INCLUDE_DIRECTORIES "${WHITEOUT_DIR}/include"
             INTERFACE_LINK_LIBRARIES whiteout_lib
             INTERFACE_COMPILE_DEFINITIONS "WHITEOUT_HAS_CASC=1"
+        )
+    endif()
+
+    if(EXISTS "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_database.lib")
+        add_library(whiteout_database STATIC IMPORTED GLOBAL)
+        set_target_properties(whiteout_database PROPERTIES
+            IMPORTED_LOCATION "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_database.lib"
+            INTERFACE_INCLUDE_DIRECTORIES "${WHITEOUT_DIR}/include"
+            INTERFACE_LINK_LIBRARIES whiteout_lib
+            INTERFACE_COMPILE_DEFINITIONS "WHITEOUT_HAS_DATABASE=1"
         )
     endif()
 
@@ -152,10 +182,15 @@ if(PREBUILT_COMMON_DIR)
     endif()
 
 else()
-    set(WHITEOUT_ENABLE_CASC    ON  CACHE BOOL "" FORCE)
-    set(WHITEOUT_ENABLE_MPQ     ON  CACHE BOOL "" FORCE)
-    set(WHITEOUT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(WHITEOUT_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    set(WHITEOUT_ENABLE_CASC     ON  CACHE BOOL "" FORCE)
+    set(WHITEOUT_ENABLE_MPQ      ON  CACHE BOOL "" FORCE)
+    # WhiteoutFlakes forces WHITEOUT_ENABLE_DATABASE=ON for its own WDX_ENABLE_M2
+    # path, but it does that *after* we've already added WhiteoutLib here, so the
+    # FORCE lands too late to create the whiteout_database target. Turn it on at
+    # the point WhiteoutLib is actually configured.
+    set(WHITEOUT_ENABLE_DATABASE ON  CACHE BOOL "" FORCE)
+    set(WHITEOUT_BUILD_EXAMPLES  OFF CACHE BOOL "" FORCE)
+    set(WHITEOUT_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
     add_subdirectory("${WHITEOUT_DIR}" "${CMAKE_BINARY_DIR}/WhiteoutLib" EXCLUDE_FROM_ALL)
 
     # zlib (for MPQ decompression in WhiteoutDexTextureBrowser)
@@ -179,14 +214,32 @@ else()
 endif()
 
 # ===========================================================================
-# WhiteoutFlakes — self-contained renderer + 3ds Max plugin.
-# Pulled in BEFORE the rest of the Max plugins so the WhiteoutFlakes
-# max_plugin subdir creates the shared MaxSDK INTERFACE target; the
-# other plugins (MaxCore, MDLXExporter, …) reuse it.
+# MaxSDK INTERFACE library — central definition so every local Max plug-in
+# (and the WhiteoutDexRenderer .dlx) shares one consistent set of include
+# paths, link dirs and Win32 preprocessor flags. Previously the WhiteoutFlakes
+# submodule's tools/max_plugin/CMakeLists owned this, but we now build the
+# renderer plug-in from this repo (see WhiteoutDexRenderer/) so the target
+# lives here.
 # ===========================================================================
 if(NOT BUILD_COMMON_ONLY)
-    set(WDX_BUILD_MAX_PLUGIN ON CACHE BOOL "" FORCE)
-    # MAX_VERSION / MAXSDK_PATH are forwarded via the cache (already set above).
+    add_library(MaxSDK INTERFACE)
+    target_include_directories(MaxSDK INTERFACE "${MAXSDK_PATH}/include")
+    target_link_directories(MaxSDK INTERFACE "${MAXSDK_PATH}/lib/x64/Release")
+    target_compile_definitions(MaxSDK INTERFACE
+        WIN32 _WIN64 _WINDOWS _USRDLL
+        UNICODE _UNICODE
+        NOMINMAX WIN32_LEAN_AND_MEAN
+        _CRT_SECURE_NO_WARNINGS
+    )
+endif()
+
+# ===========================================================================
+# WhiteoutFlakes — renderer library consumed by WhiteoutDexRenderer below.
+# WDX_BUILD_MAX_PLUGIN=OFF: we build the .dlx ourselves so the plug-in source
+# lives in this repo (see src/native_sources/WhiteoutDexRenderer/).
+# ===========================================================================
+if(NOT BUILD_COMMON_ONLY)
+    set(WDX_BUILD_MAX_PLUGIN OFF CACHE BOOL "" FORCE)
 
     set(WHITEOUTFLAKES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../external/WhiteoutFlakes"
         CACHE PATH "WhiteoutFlakes root")
@@ -200,8 +253,9 @@ if(NOT BUILD_COMMON_ONLY)
 endif()
 
 # ===========================================================================
-# Max SDK plugins (skip in common-only builds). MaxSDK target is now
-# defined by WhiteoutFlakes/tools/max_plugin above.
+# Max SDK plug-ins (skip in common-only builds).
+# WhiteoutDexRenderer must come AFTER WhiteoutFlakes (consumes WhiteoutFlakesLib
+# + cubeb from there); the others only depend on MaxSDK + whiteout_lib.
 # ===========================================================================
 if(NOT BUILD_COMMON_ONLY)
     add_subdirectory(MaxCore)
@@ -211,6 +265,7 @@ if(NOT BUILD_COMMON_ONLY)
     add_subdirectory(Wc3Particles1)
     add_subdirectory(Wc3Particles2)
     add_subdirectory(Wc3Ribbon)
+    add_subdirectory(WhiteoutDexRenderer)
 endif()
 
 # ===========================================================================
@@ -237,14 +292,20 @@ if(NOT BUILD_COMMON_ONLY)
     install(TARGETS
         MDLXExporter MDLXImporter
         blp Wc3Particles1 Wc3Particles2 Wc3Ribbon
+        WhiteoutDexRenderer
         RUNTIME     DESTINATION "${WDX_PLUGIN_DEST}" COMPONENT plugins
         LIBRARY     DESTINATION "${WDX_PLUGIN_DEST}" COMPONENT plugins
     )
 
-    if(TARGET WhiteoutFlakesMaxPlugin)
-        install(TARGETS WhiteoutFlakesMaxPlugin
-            RUNTIME DESTINATION "${WDX_PLUGIN_DEST}" COMPONENT plugins
-            LIBRARY DESTINATION "${WDX_PLUGIN_DEST}" COMPONENT plugins
+    # Ship the prebuilt BLS shader bundles next to the .dlx so the renderer's
+    # FileContentProvider — with the install path overridden to the .dlx
+    # directory in ndxStart() — finds them. Without this, ndxStart hits
+    # "shader bundle not found" the moment it tries to compile a permute.
+    set(_wdx_prebuilt_shaders "${WHITEOUTFLAKES_DIR}/prebuilt/shaders")
+    if(EXISTS "${_wdx_prebuilt_shaders}")
+        install(DIRECTORY "${_wdx_prebuilt_shaders}/"
+            DESTINATION "${WDX_PLUGIN_DEST}/shaders"
+            COMPONENT plugins
         )
     endif()
 
@@ -279,7 +340,7 @@ if(NOT BUILD_COMMON_ONLY)
         FILES_MATCHING PATTERN "*.ms"
     )
 
-    install(FILES "${WDX_REPO_ROOT}/PackageContents.xml"
-        DESTINATION "." COMPONENT manifest
-    )
+    # PackageContents.xml is generated by the root CMakeLists (per
+    # WDX_MAX_VERSIONS) and consumed directly by the installer .iss — no
+    # sub-build install rule needed here.
 endif()

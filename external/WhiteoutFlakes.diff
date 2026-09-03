@@ -1,0 +1,13 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ca9bfe5..047adf7 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1540,7 +1540,7 @@ endif()
+ # Needs nothing but whiteout_casc, so it builds on any host that configured
+ # with CASC support. tools/d3_shader_atlas/atlas.py does the analysis on the
+ # folder it writes.
+-if(TARGET whiteout_casc)
++if(TARGET whiteout_casc AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/d3_shader_atlas/d3_shader_atlas.cpp")
+   add_executable(D3ShaderAtlas tools/d3_shader_atlas/d3_shader_atlas.cpp)
+   set_target_properties(D3ShaderAtlas PROPERTIES
+       CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON

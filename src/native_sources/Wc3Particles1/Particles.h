@@ -32,6 +32,11 @@
 #include <iparamm2.h>
 #include <custcont.h>
 #include <maxscript/maxscript.h>
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+// ExecuteMAXScriptScript gained a required MAXScript::ScriptSource argument in
+// Max 2022; BrowseModelFromArchives passes it under the same guard.
+#include <maxscript/ScriptSource.h>
+#endif
 /// Permutation table lookup, exported from core.dll.
 CoreExport int Perm(int v);
 
@@ -280,6 +285,13 @@ public:
     void    DeleteThis() override { delete this; }
     void    SetupMaxRate(HWND hWnd, IParamBlock2* pb, TimeValue t);
     void    BrowseForModelFile(HWND hWnd);
+    /// Pick the particle model out of the game archives rather than off disk.
+    /// Drives the MaxScript asset browser (WhiteoutDexModelBrowser.ms), which
+    /// hands back the CASC-relative path MDX actually stores.
+    void    BrowseModelFromArchives(HWND hWnd);
+    /// Split @p relPath at its last separator into the prefix and file-name
+    /// fields and push both to the object and the dialog.
+    void    ApplyModelPath(HWND hWnd, const MCHAR* relPath);
 };
 
 /**

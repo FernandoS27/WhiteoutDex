@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   WhiteoutDexTextureBrowser — C++/CLI Managed Wrapper
-  Target: .NET 8.0 (3ds Max 2026, 2027+)
+  Target: .NET 8.0 (3ds Max 2026)
   
-  Compiles ManagedWrapper.cpp + TextureBrowserForm.cpp with /clr:netcore
+  Compiles ManagedWrapper.cpp with /clr:netcore
   and links against the native static lib (WhiteoutDexTextureBrowser_native.lib)
   from the CMake build.
   
@@ -69,7 +69,7 @@
 
   <!-- Output -->
   <PropertyGroup>
-    <OutDir>$(ProjectDir)..\output\Max2026-2027\</OutDir>
+    <OutDir>$(ProjectDir)..\output\Max2026\</OutDir>
     <IntDir>$(ProjectDir)..\build\managed_net8\</IntDir>
     <TargetName>WhiteoutDexTextureBrowser</TargetName>
     <TargetExt>.dll</TargetExt>
@@ -79,7 +79,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
-      <PreprocessorDefinitions>NEODEX_NETCORE;_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;NOMINMAX;WHITEOUT_HAS_CASC=1;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WHITEOUTDEX_NETCORE;_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;NOMINMAX;WHITEOUT_HAS_CASC=1;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(SourceDir);$(WhiteoutDir)\include;$(NativeBuildDir)\_deps\zlib-src;$(NativeBuildDir)\_deps\zlib-build;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalUsingDirectories>$(DOTNET_WINFORMS_REF);$(DOTNET_NETCORE_REF);%(AdditionalUsingDirectories)</AdditionalUsingDirectories>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
@@ -90,7 +90,7 @@
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>$(NativeBuildDir)\Release\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Release\zlibstatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;shell32.lib;ole32.lib;uuid.lib;$(NativeBuildDir)\Release\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Release\zlibstatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -100,7 +100,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>NEODEX_NETCORE;_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;NOMINMAX;WHITEOUT_HAS_CASC=1;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WHITEOUTDEX_NETCORE;_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;NOMINMAX;WHITEOUT_HAS_CASC=1;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(SourceDir);$(WhiteoutDir)\include;$(NativeBuildDir)\_deps\zlib-src;$(NativeBuildDir)\_deps\zlib-build;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalUsingDirectories>$(DOTNET_WINFORMS_REF);$(DOTNET_NETCORE_REF);%(AdditionalUsingDirectories)</AdditionalUsingDirectories>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -111,7 +111,7 @@
       <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>$(NativeBuildDir)\Debug\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Debug\zlibstaticd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>advapi32.lib;shell32.lib;ole32.lib;uuid.lib;$(NativeBuildDir)\Debug\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Debug\zlibstaticd.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
@@ -127,11 +127,9 @@
   <!-- Source Files -->
   <ItemGroup>
     <ClCompile Include="$(SourceDir)\ManagedWrapper.cpp" />
-    <ClCompile Include="$(SourceDir)\TextureBrowserForm.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="$(SourceDir)\ManagedWrapper.h" />
-    <ClInclude Include="$(SourceDir)\TextureBrowserForm.h" />
     <ClInclude Include="$(SourceDir)\ImageDecode.h" />
     <ClInclude Include="$(SourceDir)\ThumbnailEngine.h" />
   </ItemGroup>

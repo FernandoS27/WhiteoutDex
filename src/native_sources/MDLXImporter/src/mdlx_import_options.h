@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace ir {
 
@@ -66,10 +67,18 @@ struct MdlxImportOptions {
     uint32_t detectedVersion = 0;
 
     // ── Texture Search ──
-    bool searchMPQ = false;
-    bool searchCASC = false;
+    // No on/off flags: the resolver always tries to open whichever paths
+    // are non-empty. CASC + MPQ open calls log their own failures and the
+    // resolver moves on, matching WhiteoutFlakes' FileContentProvider.
     std::wstring mpqDirectory;
     std::wstring cascDirectory;
+    // The user's MPQ load order from WhiteoutDex Settings, already resolved to
+    // absolute paths and in priority order. When non-empty it REPLACES the
+    // scan of `mpqDirectory` — that is what lets an archive living outside the
+    // game folder be searched at all, and what makes an archive the user took
+    // out of the order actually stay out. Empty means "never customised", and
+    // the resolver scans `mpqDirectory` the way it always did.
+    std::vector<std::wstring> mpqArchives;
 
     // ── Reforged v1200 Objects ──
     bool importCornEmitters = true;

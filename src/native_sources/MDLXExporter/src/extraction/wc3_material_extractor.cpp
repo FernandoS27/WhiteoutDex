@@ -68,9 +68,6 @@ static bool readStringFB(ReferenceTarget* ref, const wchar_t* primary,
     if (fallback && core::ParamBlockReader::readStringByName(ref, fallback, t, val)) return true;
     return false;
 }
-// Try primary name first, then NeoDex alternative for controller lookup
-static Control* getParamCtrlFB(ReferenceTarget* ref, const wchar_t* primary,
-                               const wchar_t* fallback);  // forward decl, defined after getParamController
 // NeoDex fallback for texmap lookup
 static bool readTexmapFB(ReferenceTarget* ref, const wchar_t* primary,
                          const wchar_t* fallback, Texmap*& val) {
@@ -297,13 +294,18 @@ BitmapProperties extractBitmapProperties(Texmap* tex) {
 
 // ── UV animation extraction (TXAN) ──────────────────────────────────
 // WC3 Texture Animations are animated UV Translation / Rotation / Scaling
-// tracks. They live as Controllers on the Wc3Material's ParamBlock2 params
-// `anim_UOffset`, `anim_VOffset`, `anim_WAngle`, `anim_UTiling`, `anim_VTiling`.
+// tracks. They live on the TEXTURE — the Wc3Bitmap plugin's ParamBlock2
+// params `anim_UOffset`, `anim_VOffset`, `anim_WOffset`, `anim_WAngle`,
+// `anim_UTiling`, `anim_VTiling` (shared with the delegate BitmapTex's
+// own StdUVGen coords, so viewport and export always agree).
 //
-// The Importer writes controllers on BOTH the BitmapTex's StdUVGen (for
-// viewport playback) and on these Wc3Material params (for export roundtrip).
-// Both are shared — the Wc3Material plugin's handlers route access to the
-// delegate's coords. We read from the ParamBlock side.
+// Per-channel controller resolution order (see resolveUVAnimControllers):
+//   1. Wc3Bitmap anim_* params on the diffuse texmap        (current scheme)
+//   2. the diffuse BitmapTex's StdUVGen tracks              (plain BitmapTex /
+//      legacy scenes whose material params were dropped on load)
+//   3. Wc3Material-level anim_* params                      (legacy scenes
+//      saved with the old plugin definition still loaded)
+//   4. NeoDex material params (Wc3_U_Offset, ...)           (NeoDex scenes)
 
 // Find a named parameter in any IParamBlock2 on the target.
 static bool findAnimParam(ReferenceTarget* ref, const wchar_t* name,
@@ -342,13 +344,86 @@ static Control* getParamController(ReferenceTarget* ref, const wchar_t* name) {
     return GetControlInterface(anim);
 }
 
-// NeoDex fallback for controller lookup
-static Control* getParamCtrlFB(ReferenceTarget* ref, const wchar_t* primary,
-                               const wchar_t* fallback) {
-    Control* c = getParamController(ref, primary);
-    if (c) return c;
-    if (fallback) c = getParamController(ref, fallback);
-    return c;
+// Unwrap a Texmap to its native BitmapTex: the texmap itself when it is one,
+// the BitmapTex delegate when it's a Wc3Bitmap wrapper, else nullptr.
+static BitmapTex* unwrapBitmapTex(Texmap* tex) {
+    if (!tex) return nullptr;
+    if (tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+        return static_cast<BitmapTex*>(tex);
+    if (tex->ClassID() == mdx_ids::WC3_BITMAP) {
+        for (int i = 0; i < tex->NumRefs(); i++) {
+            ReferenceTarget* ref = tex->GetReference(i);
+            if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0))
+                return static_cast<BitmapTex*>(ref);
+        }
+    }
+    return nullptr;
+}
+
+// Controller on a StdUVGen track, looked up by PB2 internal name with a
+// sub-anim index fallback for older Max versions. Sub-anim indices (stable
+// across Max versions): 0=U_Offset, 1=V_Offset, 2=U_Tiling, 3=V_Tiling,
+// 4=U_Angle, 5=V_Angle, 6=W_Angle.
+static Control* getUVGenController(StdUVGen* uvGen, const wchar_t* name,
+                                   int subAnimIdx) {
+    if (!uvGen) return nullptr;
+    if (Control* c = getParamController(uvGen, name)) return c;
+    if (subAnimIdx >= 0 && subAnimIdx < uvGen->NumSubs()) {
+        Animatable* anim = uvGen->SubAnim(subAnimIdx);
+        if (anim) return GetControlInterface(anim);
+    }
+    return nullptr;
+}
+
+// Resolved per-channel UV-animation controllers for one material layer.
+struct UVAnimControllers {
+    Control* uOffset = nullptr;
+    Control* vOffset = nullptr;
+    Control* wOffset = nullptr;   // param-only channel (StdUVGen has no W offset)
+    Control* wAngle  = nullptr;
+    Control* uTiling = nullptr;
+    Control* vTiling = nullptr;
+    bool any() const {
+        return uOffset || vOffset || wOffset || wAngle || uTiling || vTiling;
+    }
+};
+
+// Resolve the UV-animation controllers for a layer. The authoritative home
+// is the diffuse texmap (Wc3Bitmap anim_* params / BitmapTex StdUVGen);
+// material-level params are read only as a legacy / NeoDex fallback.
+static UVAnimControllers resolveUVAnimControllers(ReferenceTarget* mtlRef,
+                                                  Texmap* diffuseTex) {
+    UVAnimControllers uv;
+
+    ReferenceTarget* bmpRef = nullptr;
+    if (diffuseTex && diffuseTex->ClassID() == mdx_ids::WC3_BITMAP)
+        bmpRef = dynamic_cast<ReferenceTarget*>(diffuseTex);
+
+    StdUVGen* uvGen = nullptr;
+    if (BitmapTex* bmt = unwrapBitmapTex(diffuseTex))
+        uvGen = dynamic_cast<StdUVGen*>(bmt->GetTheUVGen());
+
+    auto pick = [&](const wchar_t* animName, const wchar_t* uvGenName,
+                    int subAnimIdx, const wchar_t* neoDexName) -> Control* {
+        if (bmpRef)
+            if (Control* c = getParamController(bmpRef, animName)) return c;
+        if (uvGenName && uvGen)
+            if (Control* c = getUVGenController(uvGen, uvGenName, subAnimIdx))
+                return c;
+        if (mtlRef)
+            if (Control* c = getParamController(mtlRef, animName)) return c;
+        if (mtlRef && neoDexName)
+            if (Control* c = getParamController(mtlRef, neoDexName)) return c;
+        return nullptr;
+    };
+
+    uv.uOffset = pick(L"anim_UOffset", L"U_Offset", 0, L"Wc3_U_Offset");
+    uv.vOffset = pick(L"anim_VOffset", L"V_Offset", 1, L"Wc3_V_Offset");
+    uv.wOffset = pick(L"anim_WOffset", nullptr,    -1, nullptr);
+    uv.wAngle  = pick(L"anim_WAngle",  L"W_Angle",  6, L"Wc3_W_Angle");
+    uv.uTiling = pick(L"anim_UTiling", L"U_Tiling", 2, L"Wc3_U_Tiling");
+    uv.vTiling = pick(L"anim_VTiling", L"V_Tiling", 3, L"Wc3_V_Tiling");
+    return uv;
 }
 
 // Evaluate a float controller at a specific time.
@@ -398,6 +473,28 @@ static ir::InterpolationType detectInterpFromController(Control* ctrl) {
     if (cidA == HYBRIDINTERP_FLOAT_CLASS_ID) return ir::InterpolationType::Bezier;
     if (cidA == TCBINTERP_FLOAT_CLASS_ID)    return ir::InterpolationType::Hermite;
     return ir::InterpolationType::None;
+}
+
+// A bezier_float controller whose keys all hold with STEP out-tangents is a
+// DontInterp track: the importer stores MDX DontInterp alpha tracks exactly
+// this way (BEZKEY_STEP on both sides of every key). Detecting it here lets
+// the exporter round-trip DontInterp instead of writing a Bezier track whose
+// reconstructed tangents overshoot (negative alpha) and crossfade a form
+// switch that should be instant.
+static bool isStepBezierController(Control* ctrl) {
+    if (!ctrl || ctrl->ClassID().PartA() != HYBRIDINTERP_FLOAT_CLASS_ID)
+        return false;
+    IKeyControl* ikc = GetKeyControlInterface(ctrl);
+    if (!ikc) return false;
+    int n = ikc->GetNumKeys();
+    if (n == 0) return false;
+    for (int i = 0; i < n; i++) {
+        IBezFloatKey k;
+        ikc->GetKey(i, &k);
+        if (GetOutTanType(k.flags) != BEZKEY_STEP)
+            return false;
+    }
+    return true;
 }
 
 // Read a float controller's keys into parallel vectors: time, value, in-tangent,
@@ -546,29 +643,16 @@ static void readFloatKeys(Control* ctrl,
     }
 }
 
-// Extract a Vec3 track from two float params (U, V). The third component
-// gets `defaultW`. negateFactor is applied to the U component (use -1.0f
-// to match importer convention where MDX X = -U_Offset).
-static int32_t extractVec3FromTwoFloats(ReferenceTarget* mtlRef,
-                                        const wchar_t* uParamName,
-                                        const wchar_t* vParamName,
-                                        float defaultU, float defaultV,
-                                        float defaultW,
-                                        ir::InterpolationType interp,
-                                        ir::IRModel& model,
-                                        float negateFactor = 1.0f)
+// Extract a Vec3 track from two float controllers (U, V). The third
+// component gets `defaultW`. negateFactor is applied to the U component
+// (use -1.0f to match importer convention where MDX X = -U_Offset).
+static int32_t extractVec3FromTwoCtrls(Control* ctrlU, Control* ctrlV,
+                                       float defaultU, float defaultV,
+                                       float defaultW,
+                                       ir::InterpolationType interp,
+                                       ir::IRModel& model,
+                                       float negateFactor = 1.0f)
 {
-    // NeoDex fallback map
-    static const std::unordered_map<std::wstring, const wchar_t*> fbMap = {
-        {L"anim_UOffset", L"Wc3_U_Offset"},
-        {L"anim_VOffset", L"Wc3_V_Offset"},
-        {L"anim_UTiling", L"Wc3_U_Tiling"},
-        {L"anim_VTiling", L"Wc3_V_Tiling"},
-    };
-    auto fbU = fbMap.find(uParamName);
-    auto fbV = fbMap.find(vParamName);
-    Control* ctrlU = getParamCtrlFB(mtlRef, uParamName, fbU != fbMap.end() ? fbU->second : nullptr);
-    Control* ctrlV = getParamCtrlFB(mtlRef, vParamName, fbV != fbMap.end() ? fbV->second : nullptr);
     if (!ctrlU && !ctrlV) return -1;
 
     // Read per-controller keys with tangents
@@ -632,12 +716,11 @@ static int32_t extractVec3FromTwoFloats(ReferenceTarget* mtlRef,
     return idx;
 }
 
-// Extract UV rotation from "anim_WAngle" (degrees → quaternion around Z).
-// Always uses Linear interpolation; Bezier tangent→quat conversion is
-// non-trivial and rarely needed for UV rotation.
-static int32_t extractQuatFromAngle(ReferenceTarget* mtlRef, ir::IRModel& model)
+// Extract UV rotation from the W-angle controller (degrees → quaternion
+// around Z). Always uses Linear interpolation; Bezier tangent→quat
+// conversion is non-trivial and rarely needed for UV rotation.
+static int32_t extractQuatFromAngleCtrl(Control* ctrl, ir::IRModel& model)
 {
-    Control* ctrl = getParamCtrlFB(mtlRef, L"anim_WAngle", L"Wc3_W_Angle");
     if (!ctrl) return -1;
     auto keyTimes = collectKeyTimes(ctrl);
     if (keyTimes.empty()) return -1;
@@ -774,31 +857,16 @@ static int32_t detectGlobalSeqAny(ir::IRModel& model,
 
 // ── Three-float Vec3 extractor (U, V, W) ──────────────────────────
 // Used for UV translation where MDX's 3rd component is a real
-// animatable W_Offset stored on the Wc3Material as `anim_WOffset`.
+// animatable W_Offset stored on the Wc3Bitmap as `anim_WOffset`.
 // (Max's StdUVGen has no W_Offset — this param is MDX round-trip only.)
 // signA is applied to the first (U) component — MDX X = -U_Offset.
-static int32_t extractVec3FromThreeFloats(ReferenceTarget* mtlRef,
-                                          const wchar_t* paramA,
-                                          const wchar_t* paramB,
-                                          const wchar_t* paramC,
-                                          float defaultA, float defaultB, float defaultC,
-                                          ir::InterpolationType interp,
-                                          ir::IRModel& model,
-                                          float signA = 1.0f)
+static int32_t extractVec3FromThreeCtrls(Control* ctrlA, Control* ctrlB,
+                                         Control* ctrlC,
+                                         float defaultA, float defaultB, float defaultC,
+                                         ir::InterpolationType interp,
+                                         ir::IRModel& model,
+                                         float signA = 1.0f)
 {
-    // NeoDex fallback: Wc3_U_Offset, Wc3_V_Offset (paramC = WOffset, no NeoDex equivalent)
-    static const std::unordered_map<std::wstring, const wchar_t*> fbMap = {
-        {L"anim_UOffset", L"Wc3_U_Offset"},
-        {L"anim_VOffset", L"Wc3_V_Offset"},
-        {L"anim_UTiling", L"Wc3_U_Tiling"},
-        {L"anim_VTiling", L"Wc3_V_Tiling"},
-    };
-    auto fbA = fbMap.find(paramA);
-    auto fbB = fbMap.find(paramB);
-    auto fbC = fbMap.find(paramC);
-    Control* ctrlA = getParamCtrlFB(mtlRef, paramA, fbA != fbMap.end() ? fbA->second : nullptr);
-    Control* ctrlB = getParamCtrlFB(mtlRef, paramB, fbB != fbMap.end() ? fbB->second : nullptr);
-    Control* ctrlC = getParamCtrlFB(mtlRef, paramC, fbC != fbMap.end() ? fbC->second : nullptr);
     if (!ctrlA && !ctrlB && !ctrlC) return -1;
 
     // Read per-controller keys with tangents
@@ -875,38 +943,34 @@ static int32_t extractVec3FromThreeFloats(ReferenceTarget* mtlRef,
 
 // Per-export dedup cache, keyed by diffuseMap pointer.
 //
-// When multiple material layers share the same Bitmaptexture (composite
+// When multiple material layers share the same texture instance (composite
 // materials), they share the same UV-animation semantics because the
-// controllers live on the bitmap's coords, not per-layer. Dedup by the
-// bitmap pointer rather than controller pointers — Material-level
-// controllers can diverge (Layer 1+2 may share one controller, Layer 3
-// may have its own) but the underlying bitmap is the source of truth.
+// controllers live on the texture (Wc3Bitmap params / bitmap coords), not
+// per-layer. Dedup by the texmap pointer — the texture is the source of
+// truth, and the importer clones bitmaps for layers whose MDX texture
+// animations actually differ.
 //
 // Reset at the start of each top-level extractMaterials() call.
 static std::unordered_map<Texmap*, int32_t> g_texAnimCache;
 
-// Extract TextureAnimation for a Wc3Material. Returns the TextureAnimation
-// index, or -1 if no UV animation controllers are present. Uses g_texAnimCache
-// (keyed by the material's diffuseMap pointer) to deduplicate across
-// composite-material layers that share the same bitmap.
+// Extract TextureAnimation for a Wc3Material layer. The controllers are
+// resolved from the layer's diffuse texmap (Wc3Bitmap anim_* params, with
+// StdUVGen / legacy-material fallbacks — see resolveUVAnimControllers).
+// Returns the TextureAnimation index, or -1 if no UV animation controllers
+// are present. Uses g_texAnimCache (keyed by the diffuse texmap pointer) to
+// deduplicate across composite-material layers that share the same bitmap.
 static int32_t extractTextureAnimationFromMaterial(ReferenceTarget* mtlRef,
                                                    ir::IRModel& model)
 {
     if (!mtlRef) return -1;
-    using PBR = core::ParamBlockReader;
 
-    Control* ctrlU    = getParamCtrlFB(mtlRef, L"anim_UOffset", L"Wc3_U_Offset");
-    Control* ctrlV    = getParamCtrlFB(mtlRef, L"anim_VOffset", L"Wc3_V_Offset");
-    Control* ctrlWOff = getParamController(mtlRef, L"anim_WOffset");  // Z-component (no NeoDex equivalent)
-    Control* ctrlW    = getParamCtrlFB(mtlRef, L"anim_WAngle",  L"Wc3_W_Angle");   // rotation
-    Control* ctrlUT   = getParamCtrlFB(mtlRef, L"anim_UTiling", L"Wc3_U_Tiling");
-    Control* ctrlVT   = getParamCtrlFB(mtlRef, L"anim_VTiling", L"Wc3_V_Tiling");
-
-    if (!ctrlU && !ctrlV && !ctrlWOff && !ctrlW && !ctrlUT && !ctrlVT) return -1;
-
-    // Cache lookup by diffuseMap pointer
     Texmap* diffuseTexForAnim = nullptr;
     readTexmapFB(mtlRef, L"diffuseMap", L"texture", diffuseTexForAnim);
+
+    UVAnimControllers uv = resolveUVAnimControllers(mtlRef, diffuseTexForAnim);
+    if (!uv.any()) return -1;
+
+    // Cache lookup by diffuseMap pointer
     if (diffuseTexForAnim) {
         auto cached = g_texAnimCache.find(diffuseTexForAnim);
         if (cached != g_texAnimCache.end())
@@ -915,54 +979,53 @@ static int32_t extractTextureAnimationFromMaterial(ReferenceTarget* mtlRef,
 
     ir::TextureAnimation ta;
 
-    // Translation: anim_UOffset + anim_VOffset + anim_WOffset → Vec3(U, V, W), U negated
-    if (ctrlU || ctrlV || ctrlWOff) {
+    // Translation: U offset + V offset + W offset → Vec3(U, V, W), U negated
+    if (uv.uOffset || uv.vOffset || uv.wOffset) {
         ir::InterpolationType interp =
-            ctrlU    ? detectInterpFromController(ctrlU)
-          : ctrlV    ? detectInterpFromController(ctrlV)
-                     : detectInterpFromController(ctrlWOff);
+            uv.uOffset ? detectInterpFromController(uv.uOffset)
+          : uv.vOffset ? detectInterpFromController(uv.vOffset)
+                       : detectInterpFromController(uv.wOffset);
         if (interp == ir::InterpolationType::None)
             interp = ir::InterpolationType::Linear;
 
-        ta.translationTrackIndex = extractVec3FromThreeFloats(
-            mtlRef,
-            L"anim_UOffset", L"anim_VOffset", L"anim_WOffset",
+        ta.translationTrackIndex = extractVec3FromThreeCtrls(
+            uv.uOffset, uv.vOffset, uv.wOffset,
             0.0f, 0.0f, 0.0f,
             interp, model,
             -1.0f);  // negate U: MDX X = -U_Offset (matches importer)
 
         if (ta.translationTrackIndex >= 0) {
-            int32_t gsIdx = detectGlobalSeqAny(model, {ctrlU, ctrlV, ctrlWOff});
+            int32_t gsIdx = detectGlobalSeqAny(model, {uv.uOffset, uv.vOffset, uv.wOffset});
             if (gsIdx >= 0)
                 model.vec3Tracks[ta.translationTrackIndex].globalSequenceIndex = gsIdx;
         }
     }
 
-    // Rotation: anim_WAngle → Quat (Linear)
-    if (ctrlW) {
-        ta.rotationTrackIndex = extractQuatFromAngle(mtlRef, model);
+    // Rotation: W angle → Quat (Linear)
+    if (uv.wAngle) {
+        ta.rotationTrackIndex = extractQuatFromAngleCtrl(uv.wAngle, model);
         if (ta.rotationTrackIndex >= 0) {
-            int32_t gsIdx = detectAndRegisterGlobalSeq(ctrlW, model);
+            int32_t gsIdx = detectAndRegisterGlobalSeq(uv.wAngle, model);
             if (gsIdx >= 0)
                 model.quatTracks[ta.rotationTrackIndex].globalSequenceIndex = gsIdx;
         }
     }
 
-    // Scale: anim_UTiling + anim_VTiling → Vec3(U, V, 1)
-    if (ctrlUT || ctrlVT) {
+    // Scale: U tiling + V tiling → Vec3(U, V, 1)
+    if (uv.uTiling || uv.vTiling) {
         ir::InterpolationType interp =
-            ctrlUT ? detectInterpFromController(ctrlUT)
-                   : detectInterpFromController(ctrlVT);
+            uv.uTiling ? detectInterpFromController(uv.uTiling)
+                       : detectInterpFromController(uv.vTiling);
         if (interp == ir::InterpolationType::None)
             interp = ir::InterpolationType::Linear;
 
-        ta.scaleTrackIndex = extractVec3FromTwoFloats(
-            mtlRef, L"anim_UTiling", L"anim_VTiling",
+        ta.scaleTrackIndex = extractVec3FromTwoCtrls(
+            uv.uTiling, uv.vTiling,
             1.0f, 1.0f, 1.0f,
             interp, model);
 
         if (ta.scaleTrackIndex >= 0) {
-            int32_t gsIdx = detectGlobalSeqAny(model, {ctrlUT, ctrlVT});
+            int32_t gsIdx = detectGlobalSeqAny(model, {uv.uTiling, uv.vTiling});
             if (gsIdx >= 0)
                 model.vec3Tracks[ta.scaleTrackIndex].globalSequenceIndex = gsIdx;
         }
@@ -1408,7 +1471,10 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         Control* opacCtrl = getParamController(mtlRef, L"opacity");
         if (opacCtrl) {
             ir::InterpolationType interp = detectInterpFromController(opacCtrl);
-            if (interp == ir::InterpolationType::None)
+            if (interp == ir::InterpolationType::Bezier &&
+                isStepBezierController(opacCtrl))
+                interp = ir::InterpolationType::None; // DontInterp round-trip
+            else if (interp == ir::InterpolationType::None)
                 interp = ir::InterpolationType::Linear;
             int32_t trackIdx = extractOpacityTrack(mtlRef, interp, model);
             if (trackIdx >= 0) {

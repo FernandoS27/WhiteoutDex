@@ -17,6 +17,19 @@
     -- True if running on Max 2026+ (.NET 8 where WebClient is obsolete)
     local _useHttpClient = ((maxVersion())[1] >= 28000)
 
+    -- Max 2016 ships .NET 4.5 with SSL3/TLS 1.0 selected by the default
+    -- ServicePointManager.SecurityProtocol. GitHub disabled TLS < 1.2 in
+    -- early 2018, so every WebClient/HttpClient call fails with
+    -- "Could not create SSL/TLS secure channel" until we opt in. The
+    -- numeric value of SecurityProtocolType.Tls12 is 3072 (0xC00); we
+    -- use the int directly because the symbolic enum member doesn't
+    -- exist on .NET versions earlier than 4.5.
+    try (
+        local spm = dotNetClass "System.Net.ServicePointManager"
+        local current = spm.SecurityProtocol.value__
+        spm.SecurityProtocol = (current as integer + 3072) as integer
+    ) catch ()
+
     fn _ndxGetInstallPath = (
         local p = undefined
         try (
@@ -81,18 +94,27 @@
         (
             -- .NET 8: use HttpClient
             local httpClient = dotNetObject "System.Net.Http.HttpClient"
+            local _ex = undefined
+            local result = undefined
             try (
                 httpClient.DefaultRequestHeaders.Add "User-Agent" "WhiteoutDex-Updater"
                 httpClient.DefaultRequestHeaders.Add "Accept" "application/vnd.github.v3+json"
                 local task = httpClient.GetStringAsync url
                 task.Wait()
-                local result = task.Result
+                result = task.Result
                 httpClient.Dispose()
-                result
             ) catch (
+                _ex = getCurrentException()
                 try (httpClient.Dispose()) catch ()
-                throw
             )
+            -- Rethrow outside the catch. No form of `throw` compiles on every
+            -- Max inside one: 2027 rejects `throw <value>` there ("only throws
+            -- without arguments are permitted in catch expressions") and 2016
+            -- rejects the bare `throw` that would satisfy it. Carrying the
+            -- exception out in a local sidesteps the restriction entirely,
+            -- since it only applies inside the catch.
+            if _ex != undefined do throw _ex
+            result
         )
         else
         (
@@ -112,6 +134,7 @@
         (
             -- .NET 8: use HttpClient
             local httpClient = dotNetObject "System.Net.Http.HttpClient"
+            local _ex = undefined
             try (
                 httpClient.DefaultRequestHeaders.Add "User-Agent" "WhiteoutDex-Updater"
                 local task = httpClient.GetByteArrayAsync url
@@ -120,9 +143,11 @@
                 (dotNetClass "System.IO.File").WriteAllBytes destPath bytes
                 httpClient.Dispose()
             ) catch (
+                _ex = getCurrentException()
                 try (httpClient.Dispose()) catch ()
-                throw
             )
+            -- Rethrown out here rather than in the catch; see _ndxDownloadString.
+            if _ex != undefined do throw _ex
         )
         else
         (

@@ -14,6 +14,33 @@
 */
 
 /* ============================================================================
+   SECTION -1: INSTALL ROOT
+   The package can land in either %APPDATA%\Autodesk\ApplicationPlugins
+   (per-user, for Max ≥ 2019) or %ALLUSERSPROFILE%\Autodesk\ApplicationPlugins
+   (system, required for Max ≤ 2018). Probe both and expose the live one
+   as a global so every other script — icon loaders, settings reads,
+   InitDir lookups, etc. — finds the right directory without hardcoding
+   APPDATA. Set once at autoload; consumers reference ::WhiteoutDexInstallRoot.
+   ============================================================================ */
+
+global WhiteoutDexInstallRoot = undefined
+(
+    local user   = (systemTools.getEnvVariable "APPDATA")          + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
+    local common = (systemTools.getEnvVariable "ALLUSERSPROFILE") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
+    -- Prefer whichever has PackageContents.xml; if both do, prefer user
+    -- (matches Inno Setup's UsePreviousAppDir behaviour). Fall back to
+    -- user path even when nothing exists yet so consumers don't crash
+    -- on a fresh-uninstall state.
+    if doesFileExist (user + "\\PackageContents.xml") then
+        WhiteoutDexInstallRoot = user
+    else if doesFileExist (common + "\\PackageContents.xml") then
+        WhiteoutDexInstallRoot = common
+    else
+        WhiteoutDexInstallRoot = user
+    format "WhiteoutDex: install root = %\n" WhiteoutDexInstallRoot
+)
+
+/* ============================================================================
    SECTION 0: ERROR REPORTER STUB
    Lightweight fallback if ErrorReporter.ms is not loaded.
    Provides ::ErrorReporter.logError/logWarning/logInfo used by
@@ -45,8 +72,10 @@ global whiteoutdexSkinToolsApply = 2
 -- When true, Max can open/save .blp files directly without WhiteoutTexCLI conversion.
 global WhiteoutDexHasNativeBLP = false
 (
-    local bundleRoot = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
-    local maxYear = (maxVersion())[8]
+    local bundleRoot = (::WhiteoutDexInstallRoot)
+    -- (maxVersion())[8] is only populated on Max 2017+; derive year from
+    -- the build number for cross-version compatibility (Max 2016+).
+    local maxYear = ((maxVersion())[1] / 1000) + 1998
     local bmiPath = bundleRoot + "\\native plugins\\Max" + (maxYear as string) + "\\blp.bmi"
     local bmiPath2 = (systemTools.getEnvVariable "ALLUSERSPROFILE") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\native plugins\\Max" + (maxYear as string) + "\\blp.bmi"
     WhiteoutDexHasNativeBLP = (doesFileExist bmiPath) or (doesFileExist bmiPath2)
@@ -61,7 +90,7 @@ global WhiteoutDexHasNativeBLP = false
    ============================================================================ */
 
 -- ============================================================================
--- DATA STRUCTS (used by SequenceManager, TeamColorManager etc.)
+-- DATA STRUCTS (used by SequenceManager etc.)
 -- ============================================================================
 struct Wc3Extent (
 	minExtent,
@@ -360,34 +389,15 @@ fn WdxGetMaxLanguageIsChina = ::WhiteoutDexUtils.GetMaxLanguageIsChina()
 
 /* ============================================================================
    SECTION 3: MATERIAL MANAGER
-   Team colors, team glow textures, material lifecycle callbacks.
+   Team glow texture loading (MPQ / CASC / local bundle fallback) and the
+   lifecycle hook that wires the glows once Max finishes booting.
    ============================================================================ */
 
 struct WhiteoutDexMaterialManagerStruct
 (
-	public bundleRoot = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex",
+	public bundleRoot = (::WhiteoutDexInstallRoot),
 	public teamGlowTextures = #(),
-	public teamColors = #(
-		color 255 3 3,      -- 1: Red
-		color 0 66 255,     -- 2: Blue
-		color 28 230 185,   -- 3: Teal
-		color 84 0 129,     -- 4: Purple
-		color 255 252 0,    -- 5: Yellow
-		color 254 138 14,   -- 6: Orange
-		color 32 192 0,     -- 7: Green
-		color 229 91 176,   -- 8: Pink
-		color 149 150 151,  -- 9: Grey
-		color 126 191 241,  -- 10: Light Blue
-		color 16 98 70,     -- 11: Dark Green
-		color 78 42 4,      -- 12: Brown
-		color 40 40 40,     -- 13: Maroon
-		color 40 40 40,     -- 14: Navy
-		color 40 40 40,     -- 15: Turquoise
-		color 40 40 40      -- 16: Violet
-	),
-	public activeTeamColor = 1,
-	public materials = #(),
-	
+
 	fn getTeamGlowFiles =
 	(
 		-- Priority: 1) MPQ archives (Classic v800)  2) CASC storage (Reforged v1200)  3) Local bundled TGAs
@@ -470,49 +480,19 @@ struct WhiteoutDexMaterialManagerStruct
 		
 		::WhiteoutDexWc3MaterialTeamGlowTextures = this.teamGlowTextures
 	),
-	
-	fn updateTeamColor teamColor =
-	(
-		if (teamColor > 0 and teamColor < 17) then
-		(
-			this.activeTeamColor = teamColor
-			::WhiteoutDexTeamColor = teamColor
-			for m in this.materials do
-				m.retexture = m.retexture
-		)
-	),
-	
-	fn resetMaterials =
-	(
-		this.materials = #()
-		::WhiteoutDexMaterials = this.materials
-	),
-	
+
 	fn registerCallbacks =
 	(
 		callbacks.removeScripts #postSystemStartup id:#WhiteoutDexMaterials
 		callbacks.addScript #postSystemStartup "::WdxMaterialManager.generateTeamGlows()" id:#WhiteoutDexMaterials
-		
-		callbacks.removeScripts #systemPreNew id:#WhiteoutDexMaterials
-		callbacks.removeScripts #systemPreReset id:#WhiteoutDexMaterials
-		callbacks.removeScripts #filePreOpen id:#WhiteoutDexMaterials
-		callbacks.addScript #systemPreNew "::WdxMaterialManager.resetMaterials()" id:#WhiteoutDexMaterials
-		callbacks.addScript #systemPreReset "::WdxMaterialManager.resetMaterials()" id:#WhiteoutDexMaterials
-		callbacks.addScript #filePreOpen "::WdxMaterialManager.resetMaterials()" id:#WhiteoutDexMaterials
 	)
 )
 
 global WdxMaterialManager = WhiteoutDexMaterialManagerStruct()
 ::WdxMaterialManager.registerCallbacks()
 
--- REQUIRED globals: referenced directly by Wc3Material.ms and TeamColorManager.ms
+-- Referenced by Wc3Material.ms for the TC glow texture array.
 global WhiteoutDexWc3MaterialTeamGlowTextures = ::WdxMaterialManager.teamGlowTextures
-global WhiteoutDexWc3MaterialTeamColors = ::WdxMaterialManager.teamColors
-global WhiteoutDexTeamColor = ::WdxMaterialManager.activeTeamColor
-global WhiteoutDexMaterials = ::WdxMaterialManager.materials
-
--- REQUIRED wrapper: called by TeamColorManager.ms
-fn WhiteoutDexUpdateTeamColor teamColor = ::WdxMaterialManager.updateTeamColor teamColor
 
 
 /* ============================================================================
@@ -644,7 +624,7 @@ struct WhiteoutDexRendererStruct
 	(
 		local result = #()
 		for h in helpers do
-			if (not h.isHidden) and (classof h) == BlizzParticle2 then
+			if (not h.isHidden) and (classof h) == Wc3Particles2 then
 				append result h
 		result
 	),

@@ -36,13 +36,19 @@ category:"Warcraft III Plugins"
 				selection[1].pos     = obj.pos
 				selection[1].parent  = obj
 				Temp_adsorption.text = obj.name
-				btn_adsorption.text  = "Parent: " + Temp_adsorption.text
+				btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
 			)catch()
 		)
 		on General open do
 		(
 			if ::WdxL != undefined then
+			(
 				General.title = ::WdxL.t "attach_general_functions_title"
+				-- Only reset the caption while nothing is adsorbed; once a
+				-- parent is picked the button shows that name instead.
+				if Temp_adsorption.text == "" do
+					btn_adsorption.text = ::WdxL.t "common_adsorb_btn"
+			)
 		)
 	)
 	rollout modelMapParams "Model Map Parameters"
@@ -52,7 +58,7 @@ category:"Warcraft III Plugins"
 		label mlbl2 "- Model File -" pos:[40,50] align:#center
 		edittext mdxFile pos:[8,68] height:20 width:142
 		button btnImportMDX "Import MDX Model" pos:[12,96] height:24 width:138
-		button btnBrowseMPQ "Browse MPQ / CASC" pos:[12,124] height:24 width:138 tooltip:"Browse models from MPQ/CASC archives"
+		button btnBrowseMPQ "Browse Game Archives" pos:[12,124] height:24 width:138 tooltip:"Pick an .mdx / .mdl straight out of the CASC or MPQ archives"
 
 		fn updateModelPath =
 		(
@@ -98,7 +104,11 @@ category:"Warcraft III Plugins"
 		on btnImportMDX pressed do
 		(
 			mdxFile.enabled = false
-			local f = getOpenFileName caption:"Select MDX Model" types:"MDX Files (*.mdx)|*.mdx|MDL Files (*.mdl)|*.mdl|All Files (*.*)|*.*|" historyCategory:"AttachPointModel"
+			-- Only the filter group names are translated; the extension masks
+			-- after each '|' are parsed by Max and stay verbatim.
+			local f = getOpenFileName caption:(::WdxL.t "attach_select_mdx_cap") \
+				types:((::WdxL.t "attach_mdx_filter") + " (*.mdx)|*.mdx|" + (::WdxL.t "attach_mdl_filter") + " (*.mdl)|*.mdl|" + (::WdxL.t "bmp_all_files_filter") + " (*.*)|*.*|") \
+				historyCategory:"AttachPointModel"
 			if f != undefined then
 			(
 				mdxFile.text = filenameFromPath f
@@ -108,40 +118,60 @@ category:"Warcraft III Plugins"
 			mdxFile.enabled = true
 		)
 
+		-- Browse the game's own archives. What comes back is the CASC-relative
+		-- path ("units\nightelf\druid\druid.mdx") - the form MDX stores and the
+		-- exporter round-trips - so it splits straight into prefix + file. The
+		-- texture browser used to be wired here, which was the wrong tool: it
+		-- lists .blp/.dds, not models.
 		on btnBrowseMPQ pressed do
 		(
-			try
+			local picked = undefined
+			try (
+				picked = ::WhiteoutDexModelBrowser.pickModel initial:this.externalModelPath \
+					caption:(::WdxL.t "attach_select_model_cap")
+			) catch (
+				messageBox (::WdxL.t "common_asset_browser_unavailable_msg") title:"WhiteoutDex" beep:false
+			)
+			if picked != undefined and picked != "" do
 			(
-				-- Use WhiteoutDex archive browser if available
-				local result = undefined
-				try
+				local lastSlash = 0
+				for i = 1 to picked.count do
+					if picked[i] == "\\" or picked[i] == "/" do lastSlash = i
+				if lastSlash > 0 then
 				(
-					::WhiteoutDexTexBrowserTarget = #(this, "attachment_model")
-					::WhiteoutDexTexBrowserInitCategory = 0
-					::WhiteoutDexTexBrowser.show()
-				) catch ( messageBox "Archive Browser not available." )
-			) catch ()
+					mdxPrefix.text = substring picked 1 lastSlash
+					mdxFile.text = substring picked (lastSlash + 1) -1
+				)
+				else
+				(
+					mdxPrefix.text = ""
+					mdxFile.text = picked
+				)
+				updateModelPath()
+			)
 		)
 
 		on modelMapParams open do
 		(
 			splitModelPath()
 
-			-- Enable/disable browse button
+			-- Enable/disable browse button. Only the renderer .dlx matters here:
+			-- the browser dialog picks its own source and can be pointed at an
+			-- install by hand, so gating on a configured MPQ/CASC path would
+			-- disable the one control that tells the user to configure one.
 			local browserAvailable = false
-			try
-			(
-				if ::WhiteoutDexMPQ != undefined and ::WhiteoutDexMPQ.getDirectory() != "" and ::WhiteoutDexMPQ.validateDirectory() then
-					browserAvailable = true
-				if not browserAvailable then
-				(
-					local cascIni = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
-					local cascDir = getINISetting cascIni "CASC" "W3Path"
-					if cascDir != "" and doesFileExist (cascDir + "\\.build.info") then
-						browserAvailable = true
-				)
-			) catch()
+			try ( browserAvailable = ::WhiteoutDexModelBrowser.isAvailable() ) catch ( browserAvailable = false )
 			btnBrowseMPQ.enabled = browserAvailable
+
+			if ::WdxL != undefined then
+			(
+				modelMapParams.title	= ::WdxL.t "attach_model_map_params_title"
+				mlbl1.text				= ::WdxL.t "attach_model_path_prefix_lbl"
+				mlbl2.text				= ::WdxL.t "attach_model_file_lbl"
+				btnImportMDX.text		= ::WdxL.t "attach_import_mdx_btn"
+				btnBrowseMPQ.text		= ::WdxL.t "attach_browse_archives_btn"
+				try (btnBrowseMPQ.tooltip = ::WdxL.t "attach_browse_archives_tip") catch ()
+			)
 		)
 	)
 	rollout params "Attachment Parameters"

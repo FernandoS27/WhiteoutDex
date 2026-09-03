@@ -1,0 +1,728 @@
+; ============================================================================
+; WhiteoutDex Toolkit - Inno Setup Installer Script
+; Warcraft III MDX/MDL Modeling Toolkit for 3ds Max 2016-2027
+;
+; Configured by CMake from packaging/Whiteout_Setup.iss.in — do not edit the
+; generated copy under <build>/packaging/. See the root CMakeLists.txt for the
+; substitution list (version, paths, per-version [Files] block).
+; ============================================================================
+
+#define MyAppName      "WhiteoutDex Toolkit"
+#define MyAppVersion   "@WDX_VERSION@"
+#define MyAppPublisher "Whiteout Contributors"
+#define MyAppURL       "https://www.whiteout.de"
+
+; --- GitHub Update Config ---
+#define GitHubUser     "FernandoS27"
+#define GitHubRepo     "WhiteoutDex"
+
+[Setup]
+AppId={{C508AF39-A032-496D-AC08-EE5B20E69FDB}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppURL}
+AppUpdatesURL=https://github.com/{#GitHubUser}/{#GitHubRepo}/releases
+VersionInfoVersion={#MyAppVersion}
+
+; Install location (GetDefaultDir): always
+;   %ALLUSERSPROFILE%\Autodesk\ApplicationPlugins\WhiteoutDex
+; Every Max version scans that root — it is where Autodesk's own bundles go —
+; and it is the only choice that means the same thing under elevation. See
+; GetDefaultDir() for why the old per-user branch had to go.
+DefaultDirName={code:GetDefaultDir}
+DirExistsWarning=no
+DisableProgramGroupPage=yes
+DisableDirPage=yes
+
+; Output
+OutputDir=@WDX_INSTALLER_OUTPUT_DIR@
+OutputBaseFilename=WhiteoutDex_Setup_v{#MyAppVersion}
+
+; Compression
+Compression=lzma2/ultra64
+SolidCompression=yes
+LZMANumBlockThreads=4
+
+; Misc
+; Admin required: the package goes under ProgramData, and the bundled VC++
+; redistributable is a machine-wide install. Note that under elevation the
+; user-area constants ({userappdata} and friends) refer to whoever answered
+; the UAC prompt, not to whoever runs Max — nothing installed here may depend
+; on them.
+PrivilegesRequired=admin
+ArchitecturesInstallIn64BitMode=x64compatible
+MinVersion=10.0
+LicenseFile=@WDX_REPO_ROOT@\LICENSE.md
+WizardStyle=modern
+WizardSizePercent=120
+ShowLanguageDialog=no
+LanguageDetectionMethod=uilanguage
+
+; Allow update over existing installation
+UsePreviousAppDir=yes
+CloseApplications=no
+
+[Languages]
+; The ten languages the toolkit itself ships (see
+; src/pre_startup_scripts/WhiteoutDexLocalization.ms) — the installer speaks the
+; same set, picked from the Windows UI language by LanguageDetectionMethod above.
+;
+; Nine come from a stock Inno Setup 6 install. Simplified Chinese does not ship
+; with Inno Setup, so it is bundled here: ChineseSimplified.isl is layered ON TOP
+; of Default.isl (that is what the comma means — later files win), and it
+; translates the messages this particular installer actually shows. Anything a
+; streamlined installer never reaches — the components page, the Start Menu
+; page, the download and archive errors — falls through to the English in
+; Default.isl rather than being half-translated by us. Replacing it with the
+; full community translation from https://jrsoftware.org/files/istrans/ is a
+; drop-in swap: keep the file name and drop the ",compiler:Default.isl" prefix.
+;
+; Portuguese: the toolkit translates pt-BR only, so the wizard uses Inno's
+; BrazilianPortuguese.isl. European Portuguese resolves here too, the same way
+; detectMaxLanguage() maps a bare "pt" onto the Brazilian catalog.
+Name: "english";   MessagesFile: "compiler:Default.isl"
+Name: "german";    MessagesFile: "compiler:Languages\German.isl"
+Name: "japanese";  MessagesFile: "compiler:Languages\Japanese.isl"
+Name: "russian";   MessagesFile: "compiler:Languages\Russian.isl"
+Name: "korean";    MessagesFile: "compiler:Languages\Korean.isl"
+Name: "french";    MessagesFile: "compiler:Languages\French.isl"
+Name: "spanish";   MessagesFile: "compiler:Languages\Spanish.isl"
+Name: "italian";   MessagesFile: "compiler:Languages\Italian.isl"
+Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
+Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl,@WDX_REPO_ROOT@\packaging\ChineseSimplified.isl"
+
+; ============================================================================
+; CUSTOM MESSAGES
+;
+; Everything the [Code] section below puts in a MsgBox. Pascal reads them with
+; CustomMessage('Name'), which resolves against the language the wizard is
+; running in — so these have to stay in step with [Languages] above: a name
+; missing for the active language is a run-time error, not a compile one.
+;
+; %n is a line break. Inno's own wizard text is not here; that comes from the
+; .isl files.
+; ============================================================================
+[CustomMessages]
+english.NoAutodesk=The Autodesk AppData folder was not found.%nIs 3ds Max installed?%n%nInstall anyway?
+german.NoAutodesk=Der Autodesk-AppData-Ordner wurde nicht gefunden.%nIst 3ds Max installiert?%n%nTrotzdem installieren?
+japanese.NoAutodesk=Autodesk の AppData フォルダーが見つかりませんでした。%n3ds Max はインストールされていますか?%n%nこのままインストールしますか?
+russian.NoAutodesk=Папка Autodesk AppData не найдена.%nУстановлен ли 3ds Max?%n%nВсё равно установить?
+korean.NoAutodesk=Autodesk AppData 폴더를 찾을 수 없습니다.%n3ds Max가 설치되어 있습니까?%n%n그래도 설치할까요?
+chinesesimplified.NoAutodesk=未找到 Autodesk AppData 文件夹。%n是否已安装 3ds Max？%n%n仍要继续安装吗？
+french.NoAutodesk=Le dossier AppData d'Autodesk est introuvable.%n3ds Max est-il installé ?%n%nInstaller quand même ?
+spanish.NoAutodesk=No se ha encontrado la carpeta AppData de Autodesk.%n¿Está instalado 3ds Max?%n%n¿Instalar de todos modos?
+italian.NoAutodesk=Cartella AppData di Autodesk non trovata.%n3ds Max è installato?%n%nInstallare comunque?
+brazilianportuguese.NoAutodesk=A pasta AppData da Autodesk não foi encontrada.%nO 3ds Max está instalado?%n%nInstalar mesmo assim?
+
+english.OldVersionFound=WhiteoutDex Toolkit v%1 is already installed.
+german.OldVersionFound=WhiteoutDex Toolkit v%1 ist bereits installiert.
+japanese.OldVersionFound=WhiteoutDex Toolkit v%1 は既にインストールされています。
+russian.OldVersionFound=WhiteoutDex Toolkit v%1 уже установлен.
+korean.OldVersionFound=WhiteoutDex Toolkit v%1이(가) 이미 설치되어 있습니다.
+chinesesimplified.OldVersionFound=已安装 WhiteoutDex Toolkit v%1。
+french.OldVersionFound=WhiteoutDex Toolkit v%1 est déjà installé.
+spanish.OldVersionFound=WhiteoutDex Toolkit v%1 ya está instalado.
+italian.OldVersionFound=WhiteoutDex Toolkit v%1 è già installato.
+brazilianportuguese.OldVersionFound=O WhiteoutDex Toolkit v%1 já está instalado.
+
+english.OldVersionUnknown=A previous version of WhiteoutDex Toolkit is installed.
+german.OldVersionUnknown=Eine frühere Version des WhiteoutDex Toolkit ist installiert.
+japanese.OldVersionUnknown=WhiteoutDex Toolkit の以前のバージョンがインストールされています。
+russian.OldVersionUnknown=Установлена предыдущая версия WhiteoutDex Toolkit.
+korean.OldVersionUnknown=이전 버전의 WhiteoutDex Toolkit이 설치되어 있습니다.
+chinesesimplified.OldVersionUnknown=已安装旧版本的 WhiteoutDex Toolkit。
+french.OldVersionUnknown=Une version antérieure du WhiteoutDex Toolkit est installée.
+spanish.OldVersionUnknown=Hay instalada una versión anterior de WhiteoutDex Toolkit.
+italian.OldVersionUnknown=È installata una versione precedente di WhiteoutDex Toolkit.
+brazilianportuguese.OldVersionUnknown=Há uma versão anterior do WhiteoutDex Toolkit instalada.
+
+english.UpgradePrompt=The old version will be uninstalled automatically before updating.%nYour maps folder and settings will be preserved.%n%nContinue?
+german.UpgradePrompt=Die alte Version wird vor dem Update automatisch deinstalliert.%nIhr maps-Ordner und Ihre Einstellungen bleiben erhalten.%n%nFortfahren?
+japanese.UpgradePrompt=更新の前に、古いバージョンが自動的にアンインストールされます。%nmaps フォルダーと設定は保持されます。%n%n続行しますか?
+russian.UpgradePrompt=Перед обновлением старая версия будет удалена автоматически.%nПапка maps и настройки будут сохранены.%n%nПродолжить?
+korean.UpgradePrompt=업데이트 전에 이전 버전이 자동으로 제거됩니다.%nmaps 폴더와 설정은 유지됩니다.%n%n계속할까요?
+chinesesimplified.UpgradePrompt=更新前将自动卸载旧版本。%n你的 maps 文件夹和设置将被保留。%n%n是否继续？
+french.UpgradePrompt=L'ancienne version sera désinstallée automatiquement avant la mise à jour.%nVotre dossier maps et vos paramètres seront conservés.%n%nContinuer ?
+spanish.UpgradePrompt=La versión anterior se desinstalará automáticamente antes de actualizar.%nSe conservarán tu carpeta maps y tus ajustes.%n%n¿Continuar?
+italian.UpgradePrompt=La versione precedente verrà disinstallata automaticamente prima dell'aggiornamento.%nLa cartella maps e le impostazioni verranno mantenute.%n%nContinuare?
+brazilianportuguese.UpgradePrompt=A versão antiga será desinstalada automaticamente antes da atualização.%nSua pasta maps e suas configurações serão preservadas.%n%nContinuar?
+
+english.OldBatVersionFound=WhiteoutDex Toolkit v%1 was found (installed via batch file).
+german.OldBatVersionFound=WhiteoutDex Toolkit v%1 wurde gefunden (per Batchdatei installiert).
+japanese.OldBatVersionFound=WhiteoutDex Toolkit v%1 が見つかりました (バッチファイルでインストール済み)。
+russian.OldBatVersionFound=Обнаружен WhiteoutDex Toolkit v%1 (установлен через пакетный файл).
+korean.OldBatVersionFound=WhiteoutDex Toolkit v%1을(를) 찾았습니다(배치 파일로 설치됨).
+chinesesimplified.OldBatVersionFound=发现 WhiteoutDex Toolkit v%1（通过批处理文件安装）。
+french.OldBatVersionFound=WhiteoutDex Toolkit v%1 a été trouvé (installé via un fichier de commandes).
+spanish.OldBatVersionFound=Se ha encontrado WhiteoutDex Toolkit v%1 (instalado con un archivo por lotes).
+italian.OldBatVersionFound=È stato trovato WhiteoutDex Toolkit v%1 (installato tramite file batch).
+brazilianportuguese.OldBatVersionFound=O WhiteoutDex Toolkit v%1 foi encontrado (instalado por arquivo em lote).
+
+english.OldBatVersionUnknown=A previous WhiteoutDex installation was found (installed via batch file).
+german.OldBatVersionUnknown=Eine frühere WhiteoutDex-Installation wurde gefunden (per Batchdatei installiert).
+japanese.OldBatVersionUnknown=以前の WhiteoutDex のインストールが見つかりました (バッチファイルでインストール済み)。
+russian.OldBatVersionUnknown=Обнаружена предыдущая установка WhiteoutDex (через пакетный файл).
+korean.OldBatVersionUnknown=이전 WhiteoutDex 설치를 찾았습니다(배치 파일로 설치됨).
+chinesesimplified.OldBatVersionUnknown=发现旧的 WhiteoutDex 安装（通过批处理文件安装）。
+french.OldBatVersionUnknown=Une installation antérieure de WhiteoutDex a été trouvée (installée via un fichier de commandes).
+spanish.OldBatVersionUnknown=Se ha encontrado una instalación anterior de WhiteoutDex (instalada con un archivo por lotes).
+italian.OldBatVersionUnknown=È stata trovata un'installazione precedente di WhiteoutDex (installata tramite file batch).
+brazilianportuguese.OldBatVersionUnknown=Foi encontrada uma instalação anterior do WhiteoutDex (instalada por arquivo em lote).
+
+english.ReplaceBatPrompt=The old installation will be cleaned up and replaced.%nYour maps folder and settings will be preserved.%n%nContinue?
+german.ReplaceBatPrompt=Die alte Installation wird bereinigt und ersetzt.%nIhr maps-Ordner und Ihre Einstellungen bleiben erhalten.%n%nFortfahren?
+japanese.ReplaceBatPrompt=古いインストールを整理して置き換えます。%nmaps フォルダーと設定は保持されます。%n%n続行しますか?
+russian.ReplaceBatPrompt=Старая установка будет очищена и заменена.%nПапка maps и настройки будут сохранены.%n%nПродолжить?
+korean.ReplaceBatPrompt=이전 설치를 정리하고 교체합니다.%nmaps 폴더와 설정은 유지됩니다.%n%n계속할까요?
+chinesesimplified.ReplaceBatPrompt=将清理并替换旧的安装。%n你的 maps 文件夹和设置将被保留。%n%n是否继续？
+french.ReplaceBatPrompt=L'ancienne installation sera nettoyée et remplacée.%nVotre dossier maps et vos paramètres seront conservés.%n%nContinuer ?
+spanish.ReplaceBatPrompt=La instalación anterior se limpiará y se sustituirá.%nSe conservarán tu carpeta maps y tus ajustes.%n%n¿Continuar?
+italian.ReplaceBatPrompt=L'installazione precedente verrà ripulita e sostituita.%nLa cartella maps e le impostazioni verranno mantenute.%n%nContinuare?
+brazilianportuguese.ReplaceBatPrompt=A instalação antiga será limpa e substituída.%nSua pasta maps e suas configurações serão preservadas.%n%nContinuar?
+
+english.DotNetMissing=Note: .NET 8.0 Desktop Runtime was not detected.%n%nWhiteoutDex Native features for Max 2026+ require it.%nDownload: https://dotnet.microsoft.com/download/dotnet/8.0%n%nThe installation will continue. You can install .NET 8.0 later.
+german.DotNetMissing=Hinweis: Die .NET 8.0 Desktop Runtime wurde nicht gefunden.%n%nDie nativen WhiteoutDex-Funktionen für Max 2026+ benötigen sie.%nDownload: https://dotnet.microsoft.com/download/dotnet/8.0%n%nDie Installation wird fortgesetzt. Sie können .NET 8.0 später installieren.
+japanese.DotNetMissing=注意: .NET 8.0 デスクトップ ランタイムが検出されませんでした。%n%nMax 2026 以降の WhiteoutDex ネイティブ機能にはこれが必要です。%nダウンロード: https://dotnet.microsoft.com/download/dotnet/8.0%n%nインストールは続行します。.NET 8.0 は後からインストールできます。
+russian.DotNetMissing=Примечание: среда .NET 8.0 Desktop Runtime не обнаружена.%n%nОна нужна для нативных возможностей WhiteoutDex в Max 2026+.%nЗагрузка: https://dotnet.microsoft.com/download/dotnet/8.0%n%nУстановка продолжится. .NET 8.0 можно установить позже.
+korean.DotNetMissing=참고: .NET 8.0 데스크톱 런타임이 감지되지 않았습니다.%n%nMax 2026 이상의 WhiteoutDex 네이티브 기능에 필요합니다.%n다운로드: https://dotnet.microsoft.com/download/dotnet/8.0%n%n설치는 계속됩니다. .NET 8.0은 나중에 설치할 수 있습니다.
+chinesesimplified.DotNetMissing=注意：未检测到 .NET 8.0 桌面运行时。%n%nMax 2026 及更高版本的 WhiteoutDex 原生功能需要它。%n下载：https://dotnet.microsoft.com/download/dotnet/8.0%n%n安装将继续进行。你可以稍后再安装 .NET 8.0。
+french.DotNetMissing=Remarque : le .NET 8.0 Desktop Runtime n'a pas été détecté.%n%nLes fonctions natives de WhiteoutDex pour Max 2026+ en ont besoin.%nTéléchargement : https://dotnet.microsoft.com/download/dotnet/8.0%n%nL'installation va continuer. Vous pourrez installer .NET 8.0 plus tard.
+spanish.DotNetMissing=Nota: no se ha detectado .NET 8.0 Desktop Runtime.%n%nLas funciones nativas de WhiteoutDex para Max 2026+ lo necesitan.%nDescarga: https://dotnet.microsoft.com/download/dotnet/8.0%n%nLa instalación continuará. Puedes instalar .NET 8.0 más adelante.
+italian.DotNetMissing=Nota: .NET 8.0 Desktop Runtime non è stato rilevato.%n%nLe funzionalità native di WhiteoutDex per Max 2026+ lo richiedono.%nDownload: https://dotnet.microsoft.com/download/dotnet/8.0%n%nL'installazione proseguirà. Puoi installare .NET 8.0 in un secondo momento.
+brazilianportuguese.DotNetMissing=Observação: o .NET 8.0 Desktop Runtime não foi detectado.%n%nOs recursos nativos do WhiteoutDex para o Max 2026+ precisam dele.%nDownload: https://dotnet.microsoft.com/download/dotnet/8.0%n%nA instalação vai continuar. Você pode instalar o .NET 8.0 depois.
+
+; Shown on the progress page while the bundled vc_redist.x64.exe runs. Only
+; appears on machines that actually need it — see NeedsVCRedist().
+english.InstallingVCRedist=Installing the Microsoft Visual C++ runtime...
+german.InstallingVCRedist=Microsoft Visual C++-Laufzeitumgebung wird installiert...
+japanese.InstallingVCRedist=Microsoft Visual C++ ランタイムをインストールしています...
+russian.InstallingVCRedist=Установка среды выполнения Microsoft Visual C++...
+korean.InstallingVCRedist=Microsoft Visual C++ 런타임을 설치하는 중...
+chinesesimplified.InstallingVCRedist=正在安装 Microsoft Visual C++ 运行时...
+french.InstallingVCRedist=Installation du runtime Microsoft Visual C++...
+spanish.InstallingVCRedist=Instalando el runtime de Microsoft Visual C++...
+italian.InstallingVCRedist=Installazione del runtime Microsoft Visual C++...
+brazilianportuguese.InstallingVCRedist=Instalando o runtime do Microsoft Visual C++...
+
+; ============================================================================
+; FILES
+; ============================================================================
+[Files]
+
+; === ROOT FILES ===
+; PackageContents.xml comes from the CMake-generated copy under <build>/packaging/
+; so SeriesMin/SeriesMax and the per-version <Components> blocks track WDX_MAX_VERSIONS.
+Source: "@WDX_PACKAGE_CONTENTS_XML@";           DestDir: "{app}"; DestName: "PackageContents.xml"; Flags: ignoreversion
+Source: "@WDX_REPO_ROOT@\LICENSE.md";           DestDir: "{app}"; Flags: ignoreversion
+Source: "@WDX_REPO_ROOT@\THIRD_PARTY.md";       DestDir: "{app}"; Flags: ignoreversion
+Source: "@WDX_REPO_ROOT@\version.txt";          DestDir: "{app}"; Flags: ignoreversion
+
+; Settings file: only install if not already present (preserves user customisations)
+Source: "@WDX_REPO_ROOT@\WhiteoutDex_Settings.ini"; DestDir: "{app}"; Flags: onlyifdoesntexist
+
+; === WhiteoutDex icons (UI assets) ===
+Source: "@WDX_REPO_ROOT@\whiteoutdex_icons\*"; DestDir: "{app}\whiteoutdex_icons"; \
+    Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+
+; === UI language catalogs ===
+; Merged from the WhiteoutFlakes catalogs plus resources/lang/wdx_*.ini by the
+; `lang_catalogs` CMake target. The renderer .dlx resolves this folder relative
+; to itself (see wdx_ui_language.h), so it has to stay at the install root.
+; The MaxScript UI does NOT read these — its catalog is compiled into
+; scripts\pre_startup_scripts\WhiteoutDexLocalization.ms.
+Source: "@WDX_STAGE_DIR@\lang\*"; DestDir: "{app}\lang"; \
+    Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+
+; === NATIVE PLUGINS — one block per Max version, generated by CMake from WDX_MAX_VERSIONS.
+;     Each entry uses skipifsourcedoesntexist so partial stage trees still pack cleanly. ===
+@WDX_NATIVE_PLUGINS_BLOCK@
+
+; === MaxScript assets — staged under <build>/stage/scripts/ ===
+Source: "@WDX_STAGE_DIR@\scripts\macroscripts\*.mcr";          \
+    DestDir: "{app}\scripts\macroscripts";          Flags: ignoreversion
+Source: "@WDX_STAGE_DIR@\scripts\pre_startup_scripts\*.ms";    \
+    DestDir: "{app}\scripts\pre_startup_scripts";   Flags: ignoreversion
+Source: "@WDX_STAGE_DIR@\scripts\post_startup_scripts\*.ms";   \
+    DestDir: "{app}\scripts\post_startup_scripts";  Flags: ignoreversion
+Source: "@WDX_STAGE_DIR@\scripts\scripted_plugins\*.ms";       \
+    DestDir: "{app}\scripts\scripted_plugins";      Flags: ignoreversion
+
+; === MAPS (TeamGlow textures etc.) ===
+Source: "@WDX_REPO_ROOT@\resources\maps\*"; DestDir: "{app}\maps"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+
+; === Microsoft VC++ runtime ===
+; Every plug-in links /MD, so the machine needs a runtime at least as new as
+; the toolset that built them. Off by default — 3ds Max installs the
+; redistributable as a prerequisite, so a machine with Max already has one.
+; When WDX_BUNDLE_VCREDIST is ON, the line below extracts vc_redist.x64.exe to
+; {tmp}, the [Run] entry installs it if NeedsVCRedist() says so, and
+; deleteafterinstall clears it up again.
+@WDX_VCREDIST_FILES_BLOCK@
+
+; ============================================================================
+; RUN — post-install payloads.
+; ============================================================================
+[Run]
+@WDX_VCREDIST_RUN_BLOCK@
+
+; ============================================================================
+; REGISTRY — track version + install path so the Pascal upgrade check
+; can find a previous Inno Setup install. HKLM because the installer runs
+; elevated and we want the marker visible to every user of the machine.
+; ============================================================================
+[Registry]
+Root: HKLM; Subkey: "Software\WhiteoutDex"; ValueType: string; \
+    ValueName: "InstallPath"; ValueData: "{app}";          Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\WhiteoutDex"; ValueType: string; \
+    ValueName: "Version";     ValueData: "{#MyAppVersion}"; Flags: uninsdeletekey
+
+; ============================================================================
+; FOLDERS REMOVED ON UNINSTALL
+; (maps/ is preserved — user data)
+; ============================================================================
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\whiteoutdex_icons"
+Type: filesandordirs; Name: "{app}\lang"
+Type: filesandordirs; Name: "{app}\native plugins"
+Type: filesandordirs; Name: "{app}\scripts"
+Type: files;          Name: "{app}\PackageContents.xml"
+Type: files;          Name: "{app}\LICENSE.md"
+Type: files;          Name: "{app}\THIRD_PARTY.md"
+Type: files;          Name: "{app}\WhiteoutDex_Settings.ini"
+Type: files;          Name: "{app}\version.txt"
+
+; ============================================================================
+; PASCAL SCRIPT
+; ============================================================================
+[Code]
+
+// -------------------------------------------------------
+// 3ds Max install-path detection.
+//
+// Product version = (year - 1998). Max 2016 = 18.0, Max 2017 = 19.0, …
+// Max writes HKLM\SOFTWARE\Autodesk\3dsMax\<major>.0\Installdir on install,
+// but Express/EDU/etc. installs sometimes skip it — also probe the default
+// install dir as a fallback.
+// -------------------------------------------------------
+function IsMaxYearInstalled(Year: Integer): Boolean;
+var
+  MajorStr: String;
+  Dummy: String;
+  ExePath: String;
+begin
+  MajorStr := IntToStr(Year - 1998) + '.0';
+  Result := RegQueryStringValue(HKLM,
+              'SOFTWARE\Autodesk\3dsMax\' + MajorStr, 'Installdir', Dummy);
+  if Result then Exit;
+  ExePath := ExpandConstant('{pf}\Autodesk\3ds Max ' + IntToStr(Year) + '\3dsmax.exe');
+  Result := FileExists(ExePath);
+end;
+
+// -------------------------------------------------------
+// Default-install-dir selector, wired to DefaultDirName via {code:GetDefaultDir}.
+// -------------------------------------------------------
+// Always ProgramData. This used to hand Max 2019+ {userappdata} instead, which
+// is wrong for an installer that runs elevated: with PrivilegesRequired=admin,
+// {userappdata} is the profile of whoever answered the UAC prompt, not the
+// person who will run Max. On a machine where the signed-in user is a standard
+// account, every file lands in the administrator's AppData and Max — scanning
+// its own user's %APPDATA% — finds nothing at all. The symptom is that the
+// installer reports success and no WhiteoutDex menu ever appears.
+//
+// It never showed up here because this machine has Max 2016 installed, which
+// sent NeedsProgramDataInstall() down the ProgramData branch every single time;
+// the {userappdata} branch has never once run on a developer machine.
+//
+// ProgramData is the correct target regardless: every Max version scans
+// %ALLUSERSPROFILE%\Autodesk\ApplicationPlugins, and it is where Autodesk's own
+// 2025/2027 bundles (MAXtoA, USD for 3ds Max, Substance, Retopology) install.
+// It is also machine-wide, which is what an admin install should produce.
+function GetDefaultDir(Param: String): String;
+begin
+  Result := ExpandConstant('{commonappdata}\Autodesk\ApplicationPlugins\WhiteoutDex');
+end;
+
+// The pre-1.0 layout for Max 2019+. Left behind, it would load a second,
+// stale copy of every plug-in alongside the ProgramData one.
+function GetLegacyUserDir(): String;
+begin
+  Result := ExpandConstant('{userappdata}\Autodesk\ApplicationPlugins\WhiteoutDex');
+end;
+
+// -------------------------------------------------------
+// Detect .NET 8.0 Desktop Runtime (required for Max 2026+ managed wrappers).
+// -------------------------------------------------------
+function IsDotNet8Installed(): Boolean;
+var
+  FindRec: TFindRec;
+begin
+  Result := FindFirst(ExpandConstant('{pf}\dotnet\shared\Microsoft.WindowsDesktop.App\8.*'), FindRec);
+  if Result then
+    FindClose(FindRec);
+end;
+
+// -------------------------------------------------------
+// Should the bundled VC++ redistributable actually run?
+//
+// The plug-ins link /MD, so the machine needs a Microsoft VC++ runtime at
+// least as new as the toolset that built them. The redistributable is
+// cumulative and refuses to downgrade, but running it unconditionally costs
+// time on every install and can ask for a reboot, so skip it whenever the
+// installed runtime is already equal or newer.
+//
+// Version lives at HKLM\...\VC\Runtimes\X64 as Major/Minor DWORDs (the
+// string 'Version' value is prefixed with 'v', hence the numeric ones).
+// A missing key means no runtime at all — install.
+// -------------------------------------------------------
+function NeedsVCRedist(): Boolean;
+var
+  Major, Minor: Cardinal;
+  Key: String;
+begin
+  // No redistributable was bundled — nothing to run.
+  if (@WDX_VCREDIST_MAJOR@ = 0) then
+  begin
+    Result := False;
+    Exit;
+  end;
+
+  Key := 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64';
+
+  if not RegQueryDWordValue(HKLM, Key, 'Major', Major) then
+  begin
+    Result := True;
+    Exit;
+  end;
+  if not RegQueryDWordValue(HKLM, Key, 'Minor', Minor) then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  Result := (Major < @WDX_VCREDIST_MAJOR@) or
+            ((Major = @WDX_VCREDIST_MAJOR@) and (Minor < @WDX_VCREDIST_MINOR@));
+
+  // Built by concatenation rather than Format(): ISCC looks for section tags
+  // after trimming a line, so a wrapped Format() whose argument array lands at
+  // the start of the next line reads as "[Major, Minor]" — an invalid section
+  // tag, and a compile error a long way from its cause.
+  if Result then
+    Log('VC++ runtime ' + IntToStr(Major) + '.' + IntToStr(Minor) +
+        ' is older than bundled @WDX_VCREDIST_VERSION@ — installing.')
+  else
+    Log('VC++ runtime ' + IntToStr(Major) + '.' + IntToStr(Minor) +
+        ' already covers @WDX_VCREDIST_VERSION@ — skipping.');
+end;
+
+// -------------------------------------------------------
+// Sanity check — is 3ds Max installed at all?
+//
+// This used to test {userappdata}\Autodesk, which under elevation is the
+// administrator's profile rather than the profile Max runs in: on a machine
+// whose admin account has never launched an Autodesk product, a perfectly
+// good install got the "Is 3ds Max installed?" prompt. Ask the registry
+// instead, and only fall back to the machine-wide AppData root.
+// -------------------------------------------------------
+function IsAutodeskInstalled(): Boolean;
+var
+  Year: Integer;
+begin
+  Result := True;
+  for Year := 2016 to 2030 do
+    if IsMaxYearInstalled(Year) then Exit;
+
+  Result := DirExists(ExpandConstant('{commonappdata}\Autodesk')) or
+            DirExists(ExpandConstant('{userappdata}\Autodesk'));
+end;
+
+// -------------------------------------------------------
+// Read previous version from version.txt in the install dir.
+// -------------------------------------------------------
+function GetOldVersion(InstallDir: String): String;
+var
+  VersionFile: String;
+  Lines: TArrayOfString;
+begin
+  Result := '';
+  VersionFile := InstallDir + '\version.txt';
+  if FileExists(VersionFile) then
+  begin
+    if LoadStringsFromFile(VersionFile, Lines) and (GetArrayLength(Lines) > 0) then
+      Result := Trim(Lines[0]);
+  end;
+end;
+
+// -------------------------------------------------------
+// Read previous Inno Setup uninstall string (if a prior install exists).
+// -------------------------------------------------------
+function GetPreviousInnoUninstallString(): String;
+var
+  UninstallKey: String;
+begin
+  Result := '';
+  UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1';
+  // Admin installs land in HKLM; older HKCU-installed copies are still
+  // checked as a fallback for users upgrading from the lowest-privileges
+  // version of the installer.
+  if not RegQueryStringValue(HKLM, UninstallKey, 'UninstallString', Result) then
+    if not RegQueryStringValue(HKCU, UninstallKey, 'UninstallString', Result) then
+      Result := '';
+end;
+
+// -------------------------------------------------------
+// Silently uninstall the previous Inno Setup version.
+// -------------------------------------------------------
+function UninstallPreviousInnoSetup(): Boolean;
+var
+  UninstallString: String;
+  ResultCode: Integer;
+begin
+  Result := True;
+  UninstallString := GetPreviousInnoUninstallString();
+
+  if UninstallString <> '' then
+  begin
+    Log('Previous Inno Setup installation found. Uninstalling...');
+
+    // Strip surrounding quotes
+    if (Length(UninstallString) > 1) and (UninstallString[1] = '"') then
+      UninstallString := Copy(UninstallString, 2, Length(UninstallString) - 2);
+
+    if Exec(UninstallString, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      Log('Previous version successfully uninstalled.');
+      // Brief pause so the OS releases file handles
+      Sleep(1000);
+    end else
+    begin
+      Log('Uninstall failed (code: ' + IntToStr(ResultCode) + ')');
+    end;
+  end;
+end;
+
+// -------------------------------------------------------
+// Clean up an older batch-file installation (`install.bat`).
+// Removes everything we are about to reinstall but preserves
+// user-owned maps/ and WhiteoutDex_Settings.ini.
+// -------------------------------------------------------
+procedure CleanOldBatInstallation();
+var
+  AppDir: String;
+begin
+  AppDir := ExpandConstant('{app}');
+
+  if DirExists(AppDir) then
+  begin
+    Log('Old installation found — cleaning up...');
+
+    DelTree(AppDir + '\scripts', True, True, True);
+    DelTree(AppDir + '\native plugins', True, True, True);
+    DelTree(AppDir + '\whiteoutdex_icons', True, True, True);
+    DelTree(AppDir + '\lang', True, True, True);
+
+    DeleteFile(AppDir + '\PackageContents.xml');
+    DeleteFile(AppDir + '\LICENSE.md');
+    DeleteFile(AppDir + '\THIRD_PARTY.md');
+
+    DeleteFile(AppDir + '\install.bat');
+    DeleteFile(AppDir + '\uninstall.bat');
+
+    Log('Cleanup complete. maps/ and Settings preserved.');
+  end;
+end;
+
+// -------------------------------------------------------
+// Setup initialisation — detect existing installs and prompt the user.
+// -------------------------------------------------------
+function InitializeSetup(): Boolean;
+var
+  AppDir: String;
+  OldVersion: String;
+  HasOldInno: Boolean;
+  HasOldBat: Boolean;
+  Msg: String;
+begin
+  Result := True;
+  AppDir := GetDefaultDir('');
+
+  if not IsAutodeskInstalled() then
+  begin
+    if MsgBox(CustomMessage('NoAutodesk'), mbConfirmation, MB_YESNO) = IDNO then
+    begin
+      Result := False;
+      Exit;
+    end;
+  end;
+
+  HasOldInno := (GetPreviousInnoUninstallString() <> '');
+  HasOldBat  := (not HasOldInno) and DirExists(AppDir) and FileExists(AppDir + '\PackageContents.xml');
+
+  if HasOldInno then
+  begin
+    OldVersion := GetOldVersion(AppDir);
+    if OldVersion <> '' then
+      Msg := FmtMessage(CustomMessage('OldVersionFound'), [OldVersion])
+    else
+      Msg := CustomMessage('OldVersionUnknown');
+
+    Msg := Msg + #13#10#13#10 + CustomMessage('UpgradePrompt');
+
+    if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO then
+    begin
+      Result := False;
+      Exit;
+    end;
+
+    UninstallPreviousInnoSetup();
+
+  end else if HasOldBat then
+  begin
+    OldVersion := GetOldVersion(AppDir);
+    if OldVersion <> '' then
+      Msg := FmtMessage(CustomMessage('OldBatVersionFound'), [OldVersion])
+    else
+      Msg := CustomMessage('OldBatVersionUnknown');
+
+    Msg := Msg + #13#10#13#10 + CustomMessage('ReplaceBatPrompt');
+
+    if MsgBox(Msg, mbConfirmation, MB_YESNO) = IDNO then
+    begin
+      Result := False;
+      Exit;
+    end;
+  end;
+
+  // Non-blocking .NET 8 advisory.
+  if not IsDotNet8Installed() then
+  begin
+    MsgBox(CustomMessage('DotNetMissing'), mbInformation, MB_OK);
+  end;
+end;
+
+// -------------------------------------------------------
+// Patch PackageContents.xml post-install:
+//   - AppVersion → current installer version
+//   - ProductCode → fresh GUID (UpgradeCode is never touched)
+// -------------------------------------------------------
+procedure UpdatePackageContentsXml();
+var
+  XmlFile: String;
+  Content: AnsiString;
+  NewProductCode: String;
+  PosStart, PosEnd: Integer;
+  Before, After: String;
+begin
+  XmlFile := ExpandConstant('{app}\PackageContents.xml');
+  if not FileExists(XmlFile) then Exit;
+
+  if not LoadStringFromFile(XmlFile, Content) then Exit;
+
+  // --- AppVersion ---
+  PosStart := Pos('AppVersion="', Content);
+  if PosStart > 0 then
+  begin
+    PosStart := PosStart + Length('AppVersion="');
+    PosEnd := PosStart;
+    while (PosEnd <= Length(Content)) and (Content[PosEnd] <> '"') do
+      PosEnd := PosEnd + 1;
+
+    Before := Copy(Content, 1, PosStart - 1);
+    After := Copy(Content, PosEnd, Length(Content) - PosEnd + 1);
+    Content := Before + '{#MyAppVersion}' + After;
+
+    Log('PackageContents.xml: AppVersion set to {#MyAppVersion}.');
+  end;
+
+  // --- ProductCode (date+time-derived; deterministic per install) ---
+  NewProductCode := '{' + GetDateTimeString('yyyy', #0, #0)
+    + GetDateTimeString('mmdd', #0, #0)
+    + '-' + GetDateTimeString('hhmm', #0, #0)
+    + '-' + '{#MyAppVersion}'
+    + '-0000-NEODEXTOOL}';
+
+  PosStart := Pos('ProductCode="', Content);
+  if PosStart > 0 then
+  begin
+    PosStart := PosStart + Length('ProductCode="');
+    PosEnd := PosStart;
+    while (PosEnd <= Length(Content)) and (Content[PosEnd] <> '"') do
+      PosEnd := PosEnd + 1;
+
+    Before := Copy(Content, 1, PosStart - 1);
+    After := Copy(Content, PosEnd, Length(Content) - PosEnd + 1);
+    Content := Before + NewProductCode + After;
+
+    Log('PackageContents.xml: ProductCode set to ' + NewProductCode + '.');
+  end;
+
+  // UpgradeCode is left untouched — it must stay stable.
+  SaveStringToFile(XmlFile, Content, False);
+  Log('PackageContents.xml updated.');
+end;
+
+// -------------------------------------------------------
+// Install lifecycle hooks.
+// -------------------------------------------------------
+// -------------------------------------------------------
+// Retire a pre-1.0 per-user install now that everything lives in ProgramData.
+//
+// Max reads every ApplicationPlugins root it knows about, so leaving the old
+// copy in place would load two WhiteoutDex bundles at once — duplicate menu
+// entries, and stale plug-ins shadowing the ones just installed. maps/ and
+// WhiteoutDex_Settings.ini are left alone: they are the user's, and the
+// folder is theirs to keep once the plug-in payload is gone.
+// -------------------------------------------------------
+procedure RemoveLegacyUserInstall();
+var
+  Dir: String;
+begin
+  Dir := GetLegacyUserDir();
+
+  // Guard against the case where the two are the same folder: an installer
+  // run by a user whose {userappdata} somehow resolves into ProgramData
+  // would otherwise delete what it just wrote.
+  if CompareText(Dir, ExpandConstant('{app}')) = 0 then Exit;
+  if not DirExists(Dir) then Exit;
+
+  Log('Removing legacy per-user install at ' + Dir);
+
+  DelTree(Dir + '\scripts', True, True, True);
+  DelTree(Dir + '\native plugins', True, True, True);
+  DelTree(Dir + '\whiteoutdex_icons', True, True, True);
+  DelTree(Dir + '\lang', True, True, True);
+
+  // PackageContents.xml is the file that makes Max load the bundle at all;
+  // once it is gone the leftover folder is inert even if something remains.
+  DeleteFile(Dir + '\PackageContents.xml');
+  DeleteFile(Dir + '\version.txt');
+  DeleteFile(Dir + '\LICENSE.md');
+  DeleteFile(Dir + '\THIRD_PARTY.md');
+  DeleteFile(Dir + '\install.bat');
+  DeleteFile(Dir + '\uninstall.bat');
+
+  Log('Legacy per-user install retired.');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+  begin
+    CleanOldBatInstallation();
+  end;
+
+  if CurStep = ssPostInstall then
+  begin
+    SaveStringToFile(
+      ExpandConstant('{app}\version.txt'),
+      '{#MyAppVersion}',
+      False
+    );
+
+    UpdatePackageContentsXml();
+    RemoveLegacyUserInstall();
+  end;
+end;

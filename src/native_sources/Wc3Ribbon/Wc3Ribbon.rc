@@ -13,83 +13,83 @@ IDD_ROLLOUT_PROPERTIES DIALOG 0, 0, 108, 268
 STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
 FONT 8, "MS Sans Serif"
 BEGIN
-    CTEXT           "\227\227\227 - Ribbon Color - \227\227\227",  -1,  4, 4, 100, 8
+    CTEXT           "\227\227\227 - Ribbon Color - \227\227\227",  WDXRB_LBL_RIBBON_COLOR,  4, 4, 100, 8
     CONTROL         "", IDC_COLORSWATCH, "ColorSwatch",
                     WS_TABSTOP | WS_CHILD | WS_VISIBLE,                 8, 16,  92, 18
 
-    RTEXT           "Controller:",  -1,                                  5, 40,  52,  8
+    RTEXT           "Controller:",  WDXRB_LBL_CONTROLLER,                                  5, 40,  52,  8
     COMBOBOX        IDC_CTRL_COLOR,                                     60, 38,  41, 60,
                     CBS_DROPDOWNLIST | WS_TABSTOP | WS_CHILD | WS_VISIBLE
 
     CONTROL         "", -1, "Static", SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,  8, 56, 92, 1
 
-    RTEXT           "Above Length:",  -1,                                5, 62,  52,  8
+    RTEXT           "Above Length:",  WDXRB_LBL_ABOVE_LENGTH,                                5, 62,  52,  8
     CONTROL         "", IDC_EDIT_HEIGHTABOVE, "CustEdit",
                     WS_TABSTOP | WS_CHILD | WS_VISIBLE,                60, 62,  31, 10
     CONTROL         "", IDC_SPIN_HEIGHTABOVE, "SpinnerControl",
                     WS_CHILD | WS_VISIBLE,                             93, 62,   7, 10
 
-    RTEXT           "Controller:",  -1,                                  5, 76,  52,  8
+    RTEXT           "Controller:",  WDXRB_LBL_CONTROLLER_2,                                  5, 76,  52,  8
     COMBOBOX        IDC_CTRL_ABOVE,                                     60, 74,  41, 60,
                     CBS_DROPDOWNLIST | WS_TABSTOP | WS_CHILD | WS_VISIBLE
 
     CONTROL         "", -1, "Static", SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,  8, 92, 92, 1
 
-    RTEXT           "Below Length:",  -1,                                5, 98,  52,  8
+    RTEXT           "Below Length:",  WDXRB_LBL_BELOW_LENGTH,                                5, 98,  52,  8
     CONTROL         "", IDC_EDIT_HEIGHTBELOW, "CustEdit",
                     WS_TABSTOP | WS_CHILD | WS_VISIBLE,                60, 98,  31, 10
     CONTROL         "", IDC_SPIN_HEIGHTBELOW, "SpinnerControl",
                     WS_CHILD | WS_VISIBLE,                             93, 98,   7, 10
 
-    RTEXT           "Controller:",  -1,                                  5,112,  52,  8
+    RTEXT           "Controller:",  WDXRB_LBL_CONTROLLER_3,                                  5,112,  52,  8
     COMBOBOX        IDC_CTRL_BELOW,                                     60,110,  41, 60,
                     CBS_DROPDOWNLIST | WS_TABSTOP | WS_CHILD | WS_VISIBLE
 
     CONTROL         "", -1, "Static", SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,  8,128, 92, 1
 
-    RTEXT           "Alpha:",  -1,                                       5,134,  52,  8
+    RTEXT           "Alpha:",  WDXRB_LBL_ALPHA,                                       5,134,  52,  8
     CONTROL         "", IDC_EDIT_ALPHA, "CustEdit",
                     WS_TABSTOP | WS_CHILD | WS_VISIBLE,                60,134,  31, 10
     CONTROL         "", IDC_SPIN_ALPHA, "SpinnerControl",
                     WS_CHILD | WS_VISIBLE,                             93,134,   7, 10
 
-    RTEXT           "Controller:",  -1,                                  5,148,  52,  8
+    RTEXT           "Controller:",  WDXRB_LBL_CONTROLLER_4,                                  5,148,  52,  8
     COMBOBOX        IDC_CTRL_ALPHA,                                     60,146,  41, 60,
                     CBS_DROPDOWNLIST | WS_TABSTOP | WS_CHILD | WS_VISIBLE
 
     CONTROL         "", -1, "Static", SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,  8,164, 92, 1
 
-    RTEXT           "Emission Rate:",  -1,                               5,172,  52,  8
+    RTEXT           "Emission Rate:",  WDXRB_LBL_EMISSION_RATE,                               5,172,  52,  8
     CONTROL         "", IDC_EDIT_EDGESPERSEC, "CustEdit",
                     WS_TABSTOP | WS_CHILD | WS_VISIBLE,                60,172,  31, 10
     CONTROL         "", IDC_SPIN_EDGESPERSEC, "SpinnerControl",
                     WS_CHILD | WS_VISIBLE,                             93,172,   7, 10
 
-    RTEXT           "Controller:",  -1,                                  5,186,  52,  8
+    RTEXT           "Controller:",  WDXRB_LBL_CONTROLLER_5,                                  5,186,  52,  8
     COMBOBOX        IDC_CTRL_EMISSION,                                  60,184,  41, 60,
                     CBS_DROPDOWNLIST | WS_TABSTOP | WS_CHILD | WS_VISIBLE
 
     CONTROL         "", -1, "Static", SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,  8,200, 92, 1
 
-    RTEXT           "Life Span:",  -1,                                   5,206,  52,  8
+    RTEXT           "Life Span:",  WDXRB_LBL_LIFE_SPAN,                                   5,206,  52,  8
     CONTROL         "", IDC_EDIT_EDGELIFETIME, "CustEdit",
                     WS_TABSTOP | WS_CHILD | WS_VISIBLE,                60,206,  31, 10
     CONTROL         "", IDC_SPIN_EDGELIFETIME, "SpinnerControl",
                     WS_CHILD | WS_VISIBLE,                             93,206,   7, 10
 
-    RTEXT           "Controller:",  -1,                                  5,220,  52,  8
+    RTEXT           "Controller:",  WDXRB_LBL_CONTROLLER_6,                                  5,220,  52,  8
     COMBOBOX        IDC_CTRL_LIFESPAN,                                  60,218,  41, 60,
                     CBS_DROPDOWNLIST | WS_TABSTOP | WS_CHILD | WS_VISIBLE
 
     CONTROL         "", -1, "Static", SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,  8,234, 92, 1
 
-    RTEXT           "Gravity:",  -1,                                     5,240,  52,  8
+    RTEXT           "Gravity:",  WDXRB_LBL_GRAVITY,                                     5,240,  52,  8
     CONTROL         "", IDC_EDIT_GRAVITY, "CustEdit",
                     WS_TABSTOP | WS_CHILD | WS_VISIBLE,                60,240,  31, 10
     CONTROL         "", IDC_SPIN_GRAVITY, "SpinnerControl",
                     WS_CHILD | WS_VISIBLE,                             93,240,   7, 10
 
-    RTEXT           "Controller:",  -1,                                  5,254,  52,  8
+    RTEXT           "Controller:",  WDXRB_LBL_CONTROLLER_7,                                  5,254,  52,  8
     COMBOBOX        IDC_CTRL_GRAVITY,                                   60,252,  41, 60,
                     CBS_DROPDOWNLIST | WS_TABSTOP | WS_CHILD | WS_VISIBLE
 END
@@ -102,33 +102,33 @@ IDD_ROLLOUT_MATERIAL DIALOG 0, 0, 108, 114
 STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
 FONT 8, "MS Sans Serif"
 BEGIN
-    CTEXT           "\227\227\227 - Material - \227\227\227",  -1,      4, 4, 100, 8
+    CTEXT           "\227\227\227 - Material - \227\227\227",  WDXRB_LBL_MATERIAL,      4, 4, 100, 8
     CONTROL         "None", IDC_MTLBUTTON, "CustButton",
                     WS_TABSTOP | WS_CHILD | WS_VISIBLE,                 8, 16,  92, 14
 
     CONTROL         "", -1, "Static", SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,  8, 36, 92, 1
 
-    GROUPBOX        "Sequence Mode",  -1,                                4, 42, 100, 48
+    GROUPBOX        "Sequence Mode",  WDXRB_LBL_SEQUENCE_MODE,                                4, 42, 100, 48
 
-    RTEXT           "Rows:",  -1,                                        8, 56,  22,  8
+    RTEXT           "Rows:",  WDXRB_LBL_ROWS,                                        8, 56,  22,  8
     CONTROL         "", IDC_EDIT_TEXROWS, "CustEdit",
                     WS_TABSTOP | WS_CHILD | WS_VISIBLE,                32, 56,  12, 10
     CONTROL         "", IDC_SPIN_TEXROWS, "SpinnerControl",
                     WS_CHILD | WS_VISIBLE,                             46, 56,   7, 10
 
-    RTEXT           "Cols:",  -1,                                       56, 56,  16,  8
+    RTEXT           "Cols:",  WDXRB_LBL_COLS,                                       56, 56,  16,  8
     CONTROL         "", IDC_EDIT_TEXCOLS, "CustEdit",
                     WS_TABSTOP | WS_CHILD | WS_VISIBLE,                74, 56,  12, 10
     CONTROL         "", IDC_SPIN_TEXCOLS, "SpinnerControl",
                     WS_CHILD | WS_VISIBLE,                             88, 56,   7, 10
 
-    LTEXT           "Sequence Position",  -1,                           10, 72,  56,  8
+    LTEXT           "Sequence Position",  WDXRB_LBL_SEQUENCE_POSITION,                           10, 72,  56,  8
     CONTROL         "", IDC_EDIT_TEXSLOT, "CustEdit",
                     WS_TABSTOP | WS_CHILD | WS_VISIBLE,                72, 72,  14, 10
     CONTROL         "", IDC_SPIN_TEXSLOT, "SpinnerControl",
                     WS_CHILD | WS_VISIBLE,                             88, 72,   7, 10
 
-    RTEXT           "Controller:",  -1,                                  5, 86,  52,  8
+    RTEXT           "Controller:",  WDXRB_LBL_CONTROLLER_8,                                  5, 86,  52,  8
     COMBOBOX        IDC_CTRL_TEXSLOT,                                   60, 84,  41, 60,
                     CBS_DROPDOWNLIST | WS_TABSTOP | WS_CHILD | WS_VISIBLE
 END

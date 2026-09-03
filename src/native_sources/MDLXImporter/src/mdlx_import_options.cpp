@@ -3,6 +3,8 @@
 
 #include <max.h>
 #include <MaxDirectories.h>
+// After max.h (which has already pulled in <windows.h>).
+#include "wdx_mpq_settings.h"
 #include <string>
 
 namespace {
@@ -39,7 +41,6 @@ void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts) {
     auto& c = opts.core;
 
     // Importer-private values are read only if the file exists.
-    std::wstring mpq, casc;
     if (haveImporterIni) {
 
     // ── Mode ──
@@ -132,11 +133,8 @@ void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts) {
     if (!optBone.empty()) c.optimizeBonesAndHelpers = iniBool(optBone);
 
     // ── MDX-specific (Importer-private INI keys, lowest priority) ──
-    mpq = iniGetString(iniPath.c_str(), sec, L"SearchMPQ");
-    if (!mpq.empty()) opts.searchMPQ = iniBool(mpq);
-
-    casc = iniGetString(iniPath.c_str(), sec, L"SearchCASC");
-    if (!casc.empty()) opts.searchCASC = iniBool(casc);
+    // SearchMPQ / SearchCASC keys are intentionally not read anymore —
+    // the resolver always tries to open whichever directory is configured.
 
     auto mpqDir = iniGetString(iniPath.c_str(), sec, L"MPQDirectory");
     if (!mpqDir.empty()) opts.mpqDirectory = mpqDir;
@@ -177,20 +175,33 @@ void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts) {
         }
     }
 
-    // Auto-enable searches if a valid path is now available and the user
-    // hasn't explicitly turned them off in WhiteoutDexImporter.ini.
-    //   - CASC valid iff cascDirectory contains .build.info
-    //   - MPQ  valid iff mpqDirectory exists as a directory
-    if (casc.empty() && !opts.cascDirectory.empty()) {
-        std::wstring buildInfo = opts.cascDirectory + L"\\.build.info";
-        if (GetFileAttributesW(buildInfo.c_str()) != INVALID_FILE_ATTRIBUTES)
-            opts.searchCASC = true;
-    }
-    if (mpq.empty() && !opts.mpqDirectory.empty()) {
-        DWORD attr = GetFileAttributesW(opts.mpqDirectory.c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
-            opts.searchMPQ = true;
-    }
+    // For Classic v800 installs the user typically configures only the
+    // WC3 root once (via the CASC W3Path field in the Settings dialog) and
+    // expects MPQ extraction to "just work" from there — Classic ships its
+    // MPQs in the install root, not in a separate dir. Mirror what
+    // WhiteoutFlakes' FileContentProvider does (one installPath drives both
+    // backends): if mpqDirectory is still empty after the INI lookups but
+    // cascDirectory is set, fall mpqDirectory back to it. And the reverse —
+    // if MPQ is set but CASC isn't (Reforged user with classic-style
+    // settings), let CASC try the same path. The open calls handle wrong-
+    // type failures themselves; no pre-check from us.
+    if (opts.mpqDirectory.empty() && !opts.cascDirectory.empty())
+        opts.mpqDirectory = opts.cascDirectory;
+    if (opts.cascDirectory.empty() && !opts.mpqDirectory.empty())
+        opts.cascDirectory = opts.mpqDirectory;
+
+    // ────────────────────────────────────────────────────────────────────
+    // The MPQ load order, shared with the renderer and the asset browser.
+    //
+    //   WhiteoutDex_Settings.ini -> [MPQ] List
+    //
+    // Read last and deliberately NOT overridable from WhiteoutDexImporter.ini:
+    // an archive set that differs between the preview and the import is a bug
+    // report nobody can read, so there is exactly one list. Resolution of the
+    // relative entries in it happens against the same two directories settled
+    // just above — see wdx_mpq_settings.h.
+    // ────────────────────────────────────────────────────────────────────
+    opts.mpqArchives = wdx::mpq::ResolvedArchives(std::wstring(dir.data()));
 }
 
 void applyFastPreset(MdlxImportOptions& opts) {

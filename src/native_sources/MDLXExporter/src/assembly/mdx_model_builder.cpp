@@ -10,6 +10,7 @@
 
 #include <cstring>
 #include <map>
+#include <set>
 #include <algorithm>
 #include <fstream>
 #include <windows.h>
@@ -207,6 +208,52 @@ Node buildNode(const ir::IRModel& ir, int32_t irNodeIndex,
     }
 
     return node;
+}
+
+// Content hash of one IR GeosetAnim — two meshes may share a merged geoset
+// only when their geoset animation is byte-for-byte interchangeable, so the
+// single surviving GeosetAnimation entry is valid for all merged vertices.
+// Returns a non-zero value; 0 is reserved for "mesh has no GeosetAnim".
+uint64_t geosetAnimSignature(const ir::IRModel& ir,
+                             const ir::IRModel::GeosetAnim& ga)
+{
+    uint64_t h = 1469598103934665603ull; // FNV-1a
+    auto mix = [&h](uint64_t v) { h ^= v; h *= 1099511628211ull; };
+    auto mixf = [&](float f) {
+        uint32_t bits;
+        std::memcpy(&bits, &f, sizeof(bits));
+        mix(bits);
+    };
+
+    mixf(ga.alpha);
+    mixf(ga.color.r); mixf(ga.color.g); mixf(ga.color.b);
+    mix(ga.usesColor ? 1u : 0u);
+    mix(ga.dropShadow ? 2u : 0u);
+
+    if (ga.alphaTrackIndex >= 0 &&
+        ga.alphaTrackIndex < static_cast<int32_t>(ir.floatTracks.size())) {
+        const auto& t = ir.floatTracks[ga.alphaTrackIndex];
+        mix(0xA1FAu);
+        mix(static_cast<uint64_t>(t.interpolation));
+        mix(static_cast<uint64_t>(t.globalSequenceIndex + 1));
+        for (const auto& k : t.keys) {
+            mix(static_cast<uint32_t>(k.time));
+            mixf(k.value);
+        }
+    }
+    if (ga.colorTrackIndex >= 0 &&
+        ga.colorTrackIndex < static_cast<int32_t>(ir.colorTracks.size())) {
+        const auto& t = ir.colorTracks[ga.colorTrackIndex];
+        mix(0xC0102u);
+        mix(static_cast<uint64_t>(t.interpolation));
+        mix(static_cast<uint64_t>(t.globalSequenceIndex + 1));
+        for (const auto& k : t.keys) {
+            mix(static_cast<uint32_t>(k.time));
+            mixf(k.value.r); mixf(k.value.g); mixf(k.value.b);
+        }
+    }
+
+    return h ? h : 1u;
 }
 
 // Get float track from IR
@@ -550,10 +597,21 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         model.geosets.push_back(std::move(geo));
     }
 
-    // Merge geosets if enabled
+    // Merge geosets if enabled. Meshes only merge when their GeosetAnim
+    // content is identical (signature match) — otherwise per-geoset
+    // visibility/color animation would collapse onto one merged geoset
+    // (e.g. four sword geosets sharing a material but carrying different
+    // KGAO tracks). The remap rebinds GeosetAnimation.geosetId below.
+    std::vector<uint32_t> geosetRemap;
     if (opts.mergeGeosets) {
+        std::vector<uint64_t> animSigs(model.geosets.size(), 0);
+        for (auto& irGa : ir.geosetAnims) {
+            if (irGa.meshIndex >= 0 &&
+                irGa.meshIndex < static_cast<int32_t>(animSigs.size()))
+                animSigs[irGa.meshIndex] = geosetAnimSignature(ir, irGa);
+        }
         MdxGeosetMerger merger;
-        merger.merge(model.geosets);
+        merger.merge(model.geosets, animSigs, &geosetRemap);
     }
 
     // ── Bone ↔ Geoset back-reference fix ────────────────────────────────
@@ -732,9 +790,29 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             corn.speed = irPe.speed;
             corn.replaceableId = irPe.replaceableId;
             corn.path = irPe.modelPath;
+            corn.animVisibilityGuide = irPe.animVisibilityGuide;
+            // OR-merge popcorn render flags (Unshaded / PopcornUnfogged /
+            // PopcornScaling) onto the node bits. buildNode left those
+            // bits at 0 — DontInherit / billboard etc. already live on
+            // irNode.nodeFlags. Mask to just the three popcorn bits so we
+            // can't accidentally smuggle PE2-only flags through.
+            corn.node.flags = static_cast<whiteout::mdx::Node::NodeFlag>(
+                static_cast<uint32_t>(corn.node.flags) | (irPe.flags & 0x68000u));
             corn.color = Vector3f(irPe.segmentColors[0].r, irPe.segmentColors[0].g,
                                   irPe.segmentColors[0].b);
             corn.alpha = irPe.segmentAlpha[0];
+
+            // KPPL / KPPE / KPPS / KPPC / KPPA / KPPV. Field names on
+            // CornEmitter match their chunks — `lifeSpanTracks` really is
+            // KPPL and `alphaTracks` really is KPPA (an earlier WhiteoutLib
+            // revision had those two crossed, so map by chunk, not by name).
+            corn.lifeSpanTracks     = getFloatTrack(ir, irPe.lifespanTrackIndex);
+            corn.emissionRateTracks = getFloatTrack(ir, irPe.emissionRateTrackIndex);
+            corn.speedTracks        = getFloatTrack(ir, irPe.speedTrackIndex);
+            corn.colorTracks        = getColorTrack(ir, irPe.colorTrackIndex);
+            corn.alphaTracks        = getFloatTrack(ir, irPe.alphaTrackIndex);
+            corn.visibilityTracks   = getFloatTrack(ir, irPe.visibilityTrackIndex);
+
             model.cornEmitters.push_back(std::move(corn));
         }
     }
@@ -948,10 +1026,20 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
 
     // 16. Geoset animations (visibility per geoset)
     if (!ir.geosetAnims.empty()) {
+        // Mesh index → final geoset index (identity when merging is off).
+        // Merged meshes carry identical anim content (the merger only fuses
+        // equal signatures), so keep exactly one GeosetAnimation per geoset.
+        std::set<uint32_t> geosetAnimEmitted;
         for (auto& irGa : ir.geosetAnims) {
+            uint32_t gid = (irGa.meshIndex >= 0) ? static_cast<uint32_t>(irGa.meshIndex) : 0;
+            if (!geosetRemap.empty() && gid < geosetRemap.size())
+                gid = geosetRemap[gid];
+            if (geosetAnimEmitted.count(gid)) continue;
+            geosetAnimEmitted.insert(gid);
+
             GeosetAnimation ga;
             ga.alpha = irGa.alpha;
-            ga.geosetId = (irGa.meshIndex >= 0) ? static_cast<uint32_t>(irGa.meshIndex) : 0;
+            ga.geosetId = gid;
             ga.color = {irGa.color.r, irGa.color.g, irGa.color.b};
             ga.alphaTracks = getFloatTrack(ir, irGa.alphaTrackIndex);
             ga.colorTracks = getColorTrack(ir, irGa.colorTrackIndex);

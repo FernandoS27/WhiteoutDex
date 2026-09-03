@@ -680,6 +680,8 @@ struct WdxObjectManipulationTools
 		   ========================================= */
 		on mainRollout open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon mainRollout) catch()
 			self = WdxObjectManipulationTools
 			updatePolyInfo()
 			if g_ppt_vertPositions.count > 0 do
@@ -699,39 +701,44 @@ struct WdxObjectManipulationTools
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "omt_object_manipulation_tools_title"
+				grpTools.text = ::WdxL.t "omt_tools_grp"
+				grpOptions.text = ::WdxL.t "omt_paste_options_grp"
+				grpPoly.text = ::WdxL.t "omt_poly_tools_grp"
+				grpPolyOpts.text = ::WdxL.t "omt_poly_options_grp"
+				grpPasteMode.text = ::WdxL.t "omt_poly_paste_mode_grp"
 				-- Object Tools
 				lblHierarchy.text = ::WdxL.t "omt_hierarchy_lbl"
 				lblPosition.text = ::WdxL.t "omt_position_lbl"
 				lblStructure.text = ::WdxL.t "omt_structure_lx2194r_lbl"
 				btnCopyHierarchy.text = ::WdxL.t "omt_copy_btn"
-				btnCopyHierarchy.tooltip = ::WdxL.t "omt_store_parentchild_relationshi_tip"
+				try (btnCopyHierarchy.tooltip = ::WdxL.t "omt_store_parentchild_relationshi_tip") catch ()
 				btnPasteHierarchy.text = ::WdxL.t "omt_paste_btn"
-				btnPasteHierarchy.tooltip = ::WdxL.t "omt_restore_parentchild_relations_tip"
+				try (btnPasteHierarchy.tooltip = ::WdxL.t "omt_restore_parentchild_relations_tip") catch ()
 				btnCopyPos.text = ::WdxL.t "omt_copy_btn_2"
-				btnCopyPos.tooltip = ::WdxL.t "omt_copy_position_of_first_selecte_tip"
+				try (btnCopyPos.tooltip = ::WdxL.t "omt_copy_position_of_first_selecte_tip") catch ()
 				btnPastePos.text = ::WdxL.t "omt_paste_btn_2"
-				btnPastePos.tooltip = ::WdxL.t "omt_paste_stored_position_to_selec_tip"
+				try (btnPastePos.tooltip = ::WdxL.t "omt_paste_stored_position_to_selec_tip") catch ()
 				btnCopyStruct.text = ::WdxL.t "omt_copy_btn_3"
-				btnCopyStruct.tooltip = ::WdxL.t "omt_copy_positions_of_all_selected_tip"
+				try (btnCopyStruct.tooltip = ::WdxL.t "omt_copy_positions_of_all_selected_tip") catch ()
 				btnPasteStruct.text = ::WdxL.t "omt_paste_btn_3"
-				btnPasteStruct.tooltip = ::WdxL.t "omt_paste_to_mirrored_lr_named_ob_tip"
+				try (btnPasteStruct.tooltip = ::WdxL.t "omt_paste_to_mirrored_lr_named_ob_tip") catch ()
 				-- Paste Options
 				chkHierarchy.text = ::WdxL.t "omt_hierarchy_lbl"
-				chkHierarchy.tooltip = ::WdxL.t "omt_temporarily_unlinkrelink_duri_tip"
-				chkMirror.tooltip = ::WdxL.t "omt_enable_position_mirroring_on_p_tip"
-				chkMirrorX.tooltip = ::WdxL.t "omt_mirror_along_x_axis_tip"
-				chkMirrorY.tooltip = ::WdxL.t "omt_mirror_along_y_axis_tip"
-				chkMirrorZ.tooltip = ::WdxL.t "omt_mirror_along_z_axis_tip"
+				try (chkHierarchy.tooltip = ::WdxL.t "omt_temporarily_unlinkrelink_duri_tip") catch ()
+				try (chkMirror.tooltip = ::WdxL.t "omt_enable_position_mirroring_on_p_tip") catch ()
+				try (chkMirrorX.tooltip = ::WdxL.t "omt_mirror_along_x_axis_tip") catch ()
+				try (chkMirrorY.tooltip = ::WdxL.t "omt_mirror_along_y_axis_tip") catch ()
+				try (chkMirrorZ.tooltip = ::WdxL.t "omt_mirror_along_z_axis_tip") catch ()
 				-- Poly Tools
 				btnPolyCopy.text = ::WdxL.t "omt_copy_btn_4"
-				btnPolyCopy.tooltip = ::WdxL.t "omt_copy_vertex_positions_from_sub_tip"
+				try (btnPolyCopy.tooltip = ::WdxL.t "omt_copy_vertex_positions_from_sub_tip") catch ()
 				btnPolyPaste.text = ::WdxL.t "omt_paste_btn_4"
-				btnPolyPaste.tooltip = ::WdxL.t "omt_paste_vertex_positions_tip"
+				try (btnPolyPaste.tooltip = ::WdxL.t "omt_paste_vertex_positions_tip") catch ()
 				lblPolyBuf.text = ::WdxL.t "omt_buffer_empty_lbl"
 				-- Poly Options
-				chkPolyMirX.tooltip = ::WdxL.t "omt_mirror_vertex_x_on_paste_tip"
-				chkPolyMirY.tooltip = ::WdxL.t "omt_mirror_vertex_y_on_paste_tip"
-				chkPolyMirZ.tooltip = ::WdxL.t "omt_mirror_vertex_z_on_paste_tip"
+				try (chkPolyMirX.tooltip = ::WdxL.t "omt_mirror_vertex_x_on_paste_tip") catch ()
+				try (chkPolyMirY.tooltip = ::WdxL.t "omt_mirror_vertex_y_on_paste_tip") catch ()
+				try (chkPolyMirZ.tooltip = ::WdxL.t "omt_mirror_vertex_z_on_paste_tip") catch ()
 			)
 		)
 

@@ -120,7 +120,10 @@ struct WdxGlobalSequenceManager
 		type == "Bone" or type == "Flow"
 	),
 	
-	fn collectController ctrl description ctrlType &entriesMap =
+	-- srcObj: Node, zu dem der Controller gehört (undefined für Material-Tracks).
+	-- Wird als 5. Element im ctrlPair mitgeführt, damit später NIE über den
+	-- Namen aufgelöst werden muss — Node-Namen sind nicht eindeutig.
+	fn collectController ctrl description ctrlType &entriesMap srcObj:undefined =
 	(
 		try
 		(
@@ -128,17 +131,17 @@ struct WdxGlobalSequenceManager
 			if not (isProperty ctrl #keys) then return()
 			if ctrl.keys == undefined or ctrl.keys.count == 0 then return()
 			if getAfterORT ctrl != #cycle then return()
-			
+
 			local lastKeyTime = ctrl.keys[ctrl.keys.count].time
 			if lastKeyTime <= 0f then return()
-			
+
 			local editable = this.isTypeEditable ctrlType
 			local sourceStr = description + "  [" + ctrlType + "]"
-			
+
 			local found = false
 			for entry in entriesMap where entry[1] == lastKeyTime do
 			(
-				append entry[2] #(ctrl, description, ctrlType, editable)
+				append entry[2] #(ctrl, description, ctrlType, editable, srcObj)
 				appendIfUnique entry[4] sourceStr
 				if editable then entry[5] = true
 				found = true
@@ -146,7 +149,7 @@ struct WdxGlobalSequenceManager
 			)
 			if not found then
 			(
-				append entriesMap #(lastKeyTime, #(#(ctrl, description, ctrlType, editable)), false, #(sourceStr), editable, ctrlType)
+				append entriesMap #(lastKeyTime, #(#(ctrl, description, ctrlType, editable, srcObj)), false, #(sourceStr), editable, ctrlType)
 			)
 		)
 		catch()
@@ -213,41 +216,51 @@ struct WdxGlobalSequenceManager
 		
 		-- Legacy StandardMaterial alpha-Slot (meist undefined bei Wc3Material)
 		try (this.collectController mat.alpha.controller (matName + ".Alpha") "Alpha" &entriesMap) catch()
-		
-		-- Wc3Material-Properties direkt: opacity + anim_UOffset/VOffset/WAngle.
-		-- W_Angle liegt NUR am Material (Bitmap hat kein entsprechendes Feld).
-		-- U/V-Offset werden auch am Material synchron gehalten (siehe Wc3Material.ms).
-		try (this.collectController mat.opacity.controller      (matName + ".Opacity")     "Alpha" &entriesMap) catch()
-		try (this.collectController mat.anim_UOffset.controller (matName + ".UV.U_Offset") "Flow"  &entriesMap) catch()
-		try (this.collectController mat.anim_VOffset.controller (matName + ".UV.V_Offset") "Flow"  &entriesMap) catch()
-		try (this.collectController mat.anim_WAngle.controller  (matName + ".UV.Rotation") "Flow"  &entriesMap) catch()
-		
-		-- Bitmap-Slot auflösen: erst StandardMaterial.texture, dann Wc3Material.diffuseMap
-		local bmp = undefined
-		try (if mat.texture != undefined and classOf mat.texture == BitmapTexture then bmp = mat.texture) catch()
-		if bmp == undefined do (
-			try (if mat.diffuseMap != undefined and classOf mat.diffuseMap == BitmapTexture then bmp = mat.diffuseMap) catch()
+
+		-- Wc3Material-Properties direkt: nur noch opacity (KMTA).
+		-- UV-Animation (TXAN) lebt jetzt auf der Wc3Bitmap-Textur und wird
+		-- unten ueber den Bitmap-Slot gescannt.
+		try (this.collectController mat.opacity.controller (matName + ".Opacity") "Alpha" &entriesMap) catch()
+
+		-- Bitmap-Slot auflösen: erst StandardMaterial.texture, dann
+		-- Wc3Material.diffuseMap. Akzeptiert BitmapTexture UND Wc3Bitmap —
+		-- Property-Zugriffe (coords etc.) delegieren beim Scripted-Plugin
+		-- transparent an die Bitmaptexture darunter.
+		fn isUVBitmap tex = (
+			local cn = try ((classOf tex) as string) catch("")
+			cn == "BitmapTexture" or cn == "Wc3Bitmap"
 		)
-		
-		-- Bitmap-UV-Controller scannen
+		local bmp = undefined
+		try (if mat.texture != undefined and isUVBitmap mat.texture then bmp = mat.texture) catch()
+		if bmp == undefined do (
+			try (if mat.diffuseMap != undefined and isUVBitmap mat.diffuseMap then bmp = mat.diffuseMap) catch()
+		)
+
+		-- Bitmap-UV-Controller scannen (bei Wc3Bitmap sind die anim_*-Params
+		-- mit den coords-Controllern geteilt — coords genügt; anim_WOffset
+		-- hat kein coords-Pendant und kommt separat dazu).
+		-- ACHTUNG: Scripted Plugins delegieren unbekannte Properties NICHT —
+		-- coords/playbackrate einer Wc3Bitmap sind nur über .delegate erreichbar.
 		if bmp != undefined do
 		(
+			local uvBmp = bmp
+			try (if bmp.delegate != undefined and classOf bmp.delegate == BitmapTexture do uvBmp = bmp.delegate) catch()
 			try
 			(
-				local coords = bmp.coords
+				local coords = uvBmp.coords
 				local cU  = coords.U_offset.controller
 				local cV  = coords.V_offset.controller
 				local cW  = coords.W_angle.controller
 				local cSU = coords.U_tiling.controller
 				local cSV = coords.V_tiling.controller
-				
+
 				local uvType = "Flow"
 				for c in #(cU, cV, cW, cSU, cSV) where c != undefined do
 				(
 					uvType = this.classifyUVController c
 					exit
 				)
-				
+
 				this.collectController cU  (matName + ".UV.U_Offset")  uvType &entriesMap
 				this.collectController cV  (matName + ".UV.V_Offset")  uvType &entriesMap
 				this.collectController cW  (matName + ".UV.Rotation")  uvType &entriesMap
@@ -255,8 +268,9 @@ struct WdxGlobalSequenceManager
 				this.collectController cSV (matName + ".UV.V_Scale")   uvType &entriesMap
 			)
 			catch()
-			
-			try (this.collectIFL bmp matName &entriesMap) catch()
+			try (this.collectController bmp.anim_WOffset.controller (matName + ".UV.W_Offset") "Flow" &entriesMap) catch()
+
+			try (this.collectIFL uvBmp matName &entriesMap) catch()
 		)
 		
 		-- REKURSION: Multi/Sub-Object
@@ -297,10 +311,10 @@ struct WdxGlobalSequenceManager
 		(
 			local objName = obj.name
 			
-			try (this.collectController obj.pos.controller        (objName + ".Position")   "Bone" &entriesMap) catch()
-			try (this.collectController obj.rotation.controller   (objName + ".Rotation")   "Bone" &entriesMap) catch()
-			try (this.collectController obj.scale.controller      (objName + ".Scale")      "Bone" &entriesMap) catch()
-			try (this.collectController obj.visibility.controller (objName + ".Visibility") "Vis"  &entriesMap) catch()
+			try (this.collectController obj.pos.controller        (objName + ".Position")   "Bone" &entriesMap srcObj:obj) catch()
+			try (this.collectController obj.rotation.controller   (objName + ".Rotation")   "Bone" &entriesMap srcObj:obj) catch()
+			try (this.collectController obj.scale.controller      (objName + ".Scale")      "Bone" &entriesMap srcObj:obj) catch()
+			try (this.collectController obj.visibility.controller (objName + ".Visibility") "Vis"  &entriesMap srcObj:obj) catch()
 			
 			-- Scan Modifier-Stack: Wc3VertexMod.VertexColor (KGAC-Tracks) und
 			-- andere potenziell animierte Modifier-Parameter.
@@ -314,7 +328,7 @@ struct WdxGlobalSequenceManager
 						try
 						(
 							local vc = m.VertexColor.controller
-							this.collectController vc (objName + ".VertexColor") "Color" &entriesMap
+							this.collectController vc (objName + ".VertexColor") "Color" &entriesMap srcObj:obj
 						) catch()
 					)
 				)
@@ -491,10 +505,12 @@ struct WdxGlobalSequenceManager
 				local dotIdx = findString desc "."
 				if dotIdx != undefined then
 				(
-					local oName = substring desc 1 (dotIdx - 1)
 					local channel = substring desc (dotIdx + 1) -1
-					local obj = getNodeByName oName
-					if obj != undefined then
+					-- Node aus dem ctrlPair (Element 5) — Namen sind nicht
+					-- eindeutig, getNodeByName träfe ggf. den falschen Node.
+					local obj = if ctrlPair.count >= 5 then ctrlPair[5] else undefined
+					if obj == undefined then obj = getNodeByName (substring desc 1 (dotIdx - 1))
+					if obj != undefined and isValidNode obj then
 					(
 						local freshCtrl = case channel of
 						(
@@ -1489,34 +1505,42 @@ struct WdxGlobalSequenceManager
 				return()
 			)
 			
-			-- Objekte und Channels aus Entry ermitteln
+			-- Objekte und Channels aus Entry ermitteln — Nodes direkt aus dem
+			-- ctrlPair (Element 5), NICHT über den Namen (Namen sind nicht
+			-- eindeutig; getNodeByName träfe ggf. den falschen Node).
+			local objs = #()
 			local objNames = #()
 			local hasPos = false
 			local hasRot = false
 			local hasScl = false
-			
+
 			for cInfo in entry[2] do
 			(
+				if cInfo.count >= 5 and cInfo[5] != undefined and isValidNode cInfo[5] then
+					appendIfUnique objs cInfo[5]
+
 				local desc = cInfo[2]
 				local dotIdx = findString desc "."
 				if dotIdx != undefined then
 				(
 					local oName = substring desc 1 (dotIdx - 1)
 					appendIfUnique objNames oName
-					
+
 					local channel = substring desc (dotIdx + 1) -1
 					if channel == "Position" then hasPos = true
 					else if channel == "Rotation" then hasRot = true
 					else if channel == "Scale" then hasScl = true
 				)
 			)
-			
-			-- Objekte in Szene finden und selektieren
-			local objs = #()
-			for n in objNames do
+
+			-- Fallback nur, wenn kein Entry einen Node mitführt (alte Einträge)
+			if objs.count == 0 then
 			(
-				local o = getNodeByName n
-				if o != undefined then append objs o
+				for n in objNames do
+				(
+					local o = getNodeByName n
+					if o != undefined then append objs o
+				)
 			)
 			
 			if objs.count == 0 then
@@ -1659,6 +1683,8 @@ struct WdxGlobalSequenceManager
 		-- ===== INIT =====
 		on mainRollout open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon mainRollout) catch()
 			self = WdxGlobalSequenceManager
 			
 			-- ListView Setup
@@ -1702,6 +1728,15 @@ struct WdxGlobalSequenceManager
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "gseq_global_sequence_manager_title"
+				createGrp.text = ::WdxL.t "gseq_create_edit_grp"
+				-- durUnit is the frame-count unit and posChk/rotChk/sclChk are
+				-- the Position/Rotation/Scale channel initials; both are one
+				-- glyph wide by design, so they carry their own catalog entries
+				-- rather than reusing the long channel names.
+				durUnit.text = ::WdxL.t "gseq_frames_unit_lbl"
+				posChk.text = ::WdxL.t "gseq_channel_pos_chk"
+				rotChk.text = ::WdxL.t "gseq_channel_rot_chk"
+				sclChk.text = ::WdxL.t "gseq_channel_scl_chk"
 				endFrameLbl.text = ::WdxL.t "gseq_end_frame_lbl"
 				refreshBtn.text = ::WdxL.t "gseq_refresh_btn"
 				removeBtn.text = ::WdxL.t "gseq_remove_btn"

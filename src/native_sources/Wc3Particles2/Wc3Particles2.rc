@@ -30,32 +30,32 @@ IDD_ROLLOUT_EMITTER DIALOG 0, 0, 110, 134
 STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
 FONT 8, "MS Sans Serif"
 BEGIN
-    LTEXT           "Count:", -1, 7, 6, 50, 8
+    LTEXT           "Count:", WDXP2_LBL_COUNT, 7, 6, 50, 8
     CONTROL         "", IDC_EDIT_COUNT, "CustEdit", WS_TABSTOP, 60, 5, 34, 10
     CONTROL         "", IDC_SPIN_COUNT, "SpinnerControl", 0, 95, 5, 7, 10
 
-    LTEXT           "Speed ...............", -1, 7, 22, 52, 8
+    LTEXT           "Speed ...............", WDXP2_LBL_SPEED, 7, 22, 52, 8
     CONTROL         "", IDC_EDIT_SPEED, "CustEdit", WS_TABSTOP, 60, 21, 34, 10
     CONTROL         "", IDC_SPIN_SPEED, "SpinnerControl", 0, 95, 21, 7, 10
-    LTEXT           "Control:", -1, 7, 35, 28, 8
+    LTEXT           "Control:", WDXP2_LBL_CONTROL, 7, 35, 28, 8
     COMBOBOX        IDC_CTRL_SPEED, 60, 34, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
 
-    LTEXT           "Variation ..........", -1, 7, 50, 52, 8
+    LTEXT           "Variation ..........", WDXP2_LBL_VARIATION, 7, 50, 52, 8
     CONTROL         "", IDC_EDIT_VARIATION, "CustEdit", WS_TABSTOP, 60, 49, 34, 10
     CONTROL         "", IDC_SPIN_VARIATION, "SpinnerControl", 0, 95, 49, 7, 10
-    LTEXT           "Control:", -1, 7, 63, 28, 8
+    LTEXT           "Control:", WDXP2_LBL_CONTROL_2, 7, 63, 28, 8
     COMBOBOX        IDC_CTRL_VARIATION, 60, 62, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
 
-    LTEXT           "Cone Angle .....", -1, 7, 78, 52, 8
+    LTEXT           "Cone Angle .....", WDXP2_LBL_CONE_ANGLE, 7, 78, 52, 8
     CONTROL         "", IDC_EDIT_ANGLE_Y, "CustEdit", WS_TABSTOP, 60, 77, 34, 10
     CONTROL         "", IDC_SPIN_ANGLE_Y, "SpinnerControl", 0, 95, 77, 7, 10
-    LTEXT           "Control:", -1, 7, 91, 28, 8
+    LTEXT           "Control:", WDXP2_LBL_CONTROL_3, 7, 91, 28, 8
     COMBOBOX        IDC_CTRL_ANGLE_Y, 60, 90, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
 
-    LTEXT           "Gravity ............", -1, 7, 106, 52, 8
+    LTEXT           "Gravity ............", WDXP2_LBL_GRAVITY, 7, 106, 52, 8
     CONTROL         "", IDC_EDIT_GRAVITY, "CustEdit", WS_TABSTOP, 60, 105, 34, 10
     CONTROL         "", IDC_SPIN_GRAVITY, "SpinnerControl", 0, 95, 105, 7, 10
-    LTEXT           "Control:", -1, 7, 119, 28, 8
+    LTEXT           "Control:", WDXP2_LBL_CONTROL_4, 7, 119, 28, 8
     COMBOBOX        IDC_CTRL_GRAVITY, 60, 118, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
 END
 
@@ -64,14 +64,14 @@ IDD_ROLLOUT_TIMING DIALOG 0, 0, 110, 58
 STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
 FONT 8, "MS Sans Serif"
 BEGIN
-    LTEXT           "Lifespan:", -1, 7, 6, 48, 8
+    LTEXT           "Lifespan:", WDXP2_LBL_LIFESPAN, 7, 6, 48, 8
     CONTROL         "", IDC_EDIT_LIFE, "CustEdit", WS_TABSTOP, 60, 5, 34, 10
     CONTROL         "", IDC_SPIN_LIFE, "SpinnerControl", 0, 95, 5, 7, 10
 
-    LTEXT           "Emission Rate:", -1, 7, 21, 52, 8
+    LTEXT           "Emission Rate:", WDXP2_LBL_EMISSION_RATE, 7, 21, 52, 8
     CONTROL         "", IDC_EDIT_INITVEL, "CustEdit", WS_TABSTOP, 60, 20, 34, 10
     CONTROL         "", IDC_SPIN_INITVEL, "SpinnerControl", 0, 95, 20, 7, 10
-    LTEXT           "Control:", -1, 7, 34, 28, 8
+    LTEXT           "Control:", WDXP2_LBL_CONTROL_5, 7, 34, 28, 8
     COMBOBOX        IDC_CTRL_INITVEL, 60, 33, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
 
     CONTROL         "Squirt Particles", IDC_CHECKBOX_SQUIRT, "Button",
@@ -83,16 +83,16 @@ IDD_ROLLOUT_SIZE DIALOG 0, 0, 110, 78
 STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
 FONT 8, "MS Sans Serif"
 BEGIN
-    LTEXT           "Width ...............", -1, 7, 6, 48, 8
+    LTEXT           "Width ...............", WDXP2_LBL_WIDTH, 7, 6, 48, 8
     CONTROL         "", IDC_EDIT_WIDTH, "CustEdit", WS_TABSTOP, 60, 5, 34, 10
     CONTROL         "", IDC_SPIN_WIDTH, "SpinnerControl", 0, 95, 5, 7, 10
-    LTEXT           "Control:", -1, 7, 19, 28, 8
+    LTEXT           "Control:", WDXP2_LBL_CONTROL_6, 7, 19, 28, 8
     COMBOBOX        IDC_CTRL_WIDTH, 60, 18, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
 
-    LTEXT           "Length ..............", -1, 7, 34, 48, 8
+    LTEXT           "Length ..............", WDXP2_LBL_LENGTH, 7, 34, 48, 8
     CONTROL         "", IDC_EDIT_HEIGHT, "CustEdit", WS_TABSTOP, 60, 33, 34, 10
     CONTROL         "", IDC_SPIN_HEIGHT, "SpinnerControl", 0, 95, 33, 7, 10
-    LTEXT           "Control:", -1, 7, 47, 28, 8
+    LTEXT           "Control:", WDXP2_LBL_CONTROL_7, 7, 47, 28, 8
     COMBOBOX        IDC_CTRL_HEIGHT, 60, 46, 42, 50, CBS_DROPDOWNLIST | WS_TABSTOP
 
     CONTROL         "Line Emitter", IDC_CHECKBOX_LINE_EMITTER, "Button",
@@ -104,42 +104,42 @@ IDD_ROLLOUT_TEXTURE DIALOG 0, 0, 110, 248
 STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
 FONT 8, "MS Sans Serif"
 BEGIN
-    LTEXT           "- Texture Path Prefix -", -1, 18, 5, 74, 8
+    LTEXT           "- Texture Path Prefix -", WDXP2_LBL_TEXTURE_PATH_PREFIX, 18, 5, 74, 8
     CONTROL         "", IDC_EDIT_PATH_PREFIX, "CustEdit",
                     WS_TABSTOP, 7, 16, 95, 11
 
-    LTEXT           "- Particle Texture File -", -1, 17, 33, 76, 8
+    LTEXT           "- Particle Texture File -", WDXP2_LBL_PARTICLE_TEXTURE_FILE, 17, 33, 76, 8
     CONTROL         "", IDC_CUSTOMEDIT_PATH, "CustEdit",
                     WS_TABSTOP, 7, 44, 95, 11
 
     PUSHBUTTON      "Import Particle Texture", IDC_BUTTON_IMPORT_TEX, 7, 60, 95, 14
     PUSHBUTTON      "Browse MPQ / CASC", IDC_BUTTON_BROWSE_CASC, 7, 77, 95, 14
 
-    LTEXT           "- Texture Blend Mode -", -1, 20, 98, 74, 8
+    LTEXT           "- Texture Blend Mode -", WDXP2_LBL_TEXTURE_BLEND_MODE, 20, 98, 74, 8
     COMBOBOX        IDC_COMBO_BLEND, 7, 109, 95, 74,
                     CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    LTEXT           "Unshaded .......................", -1, 7, 128, 82, 8
+    LTEXT           "Unshaded .......................", WDXP2_LBL_UNSHADED, 7, 128, 82, 8
     CONTROL         "", IDC_CHECKBOX_UNSHADED, "Button",
                     BS_AUTOCHECKBOX | WS_TABSTOP, 93, 127, 10, 10
 
-    LTEXT           "Unfogged .......................", -1, 7, 142, 82, 8
+    LTEXT           "Unfogged .......................", WDXP2_LBL_UNFOGGED, 7, 142, 82, 8
     CONTROL         "", IDC_CHECKBOX_UNFOGGED, "Button",
                     BS_AUTOCHECKBOX | WS_TABSTOP, 93, 141, 10, 10
 
-    LTEXT           "Sort Z-Axis Geometry .....", -1, 7, 156, 82, 8
+    LTEXT           "Sort Z-Axis Geometry .....", WDXP2_LBL_SORT_Z_AXIS_GEOMETRY, 7, 156, 82, 8
     CONTROL         "", IDC_CHECKBOX_SORT, "Button",
                     BS_AUTOCHECKBOX | WS_TABSTOP, 93, 155, 10, 10
 
-    LTEXT           "- Replaceable Texture -", -1, 17, 173, 76, 8
+    LTEXT           "- Replaceable Texture -", WDXP2_LBL_REPLACEABLE_TEXTURE, 17, 173, 76, 8
     COMBOBOX        IDC_COMBO_TEXTURE_CAT, 7, 184, 95, 74,
                     CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    GROUPBOX        "Sequence", -1, 4, 203, 102, 32
-    LTEXT           "Rows:", -1, 9, 218, 20, 8
+    GROUPBOX        "Sequence", WDXP2_LBL_SEQUENCE, 4, 203, 102, 32
+    LTEXT           "Rows:", WDXP2_LBL_ROWS, 9, 218, 20, 8
     CONTROL         "", IDC_EDIT_ROWS, "CustEdit", WS_TABSTOP, 30, 217, 18, 10
     CONTROL         "", IDC_SPIN_ROWS, "SpinnerControl", 0, 49, 217, 7, 10
-    LTEXT           "Cols:", -1, 59, 218, 16, 8
+    LTEXT           "Cols:", WDXP2_LBL_COLS, 59, 218, 16, 8
     CONTROL         "", IDC_EDIT_COLS, "CustEdit", WS_TABSTOP, 76, 217, 18, 10
     CONTROL         "", IDC_SPIN_COLS, "SpinnerControl", 0, 95, 217, 7, 10
 END
@@ -157,34 +157,34 @@ BEGIN
     CONTROL         "Both", IDC_RADIO_TYPE_BOTH, "Button",
                     BS_AUTORADIOBUTTON, 72, 4, 29, 10
 
-    LTEXT           "Tail Length:", -1, 11, 19, 38, 8
+    LTEXT           "Tail Length:", WDXP2_LBL_TAIL_LENGTH, 11, 19, 38, 8
     CONTROL         "", IDC_EDIT_TAILLEN, "CustEdit", WS_TABSTOP, 51, 18, 28, 10
     CONTROL         "", IDC_SPIN_TAILLEN, "SpinnerControl", 0, 81, 18, 7, 10
 
     /* Time (Parametric) */
-    GROUPBOX        "Time (Parametric)", -1, 4, 32, 102, 36
-    LTEXT           "Start", -1, 11, 43, 16, 8
-    LTEXT           "Middle", -1, 44, 43, 22, 8
-    LTEXT           "End", -1, 82, 43, 14, 8
-    LTEXT           "0", -1, 14, 53, 8, 10
+    GROUPBOX        "Time (Parametric)", WDXP2_LBL_TIME_PARAMETRIC, 4, 32, 102, 36
+    LTEXT           "Start", WDXP2_LBL_START, 11, 43, 16, 8
+    LTEXT           "Middle", WDXP2_LBL_MIDDLE, 44, 43, 22, 8
+    LTEXT           "End", WDXP2_LBL_END, 82, 43, 14, 8
+    LTEXT           "0", WDXP2_LBL_0, 14, 53, 8, 10
     CONTROL         "", IDC_EDIT_MIDTIME, "CustEdit", WS_TABSTOP, 40, 53, 21, 10
     CONTROL         "", IDC_SPIN_MIDTIME, "SpinnerControl", 0, 63, 53, 7, 10
-    LTEXT           "1", -1, 85, 53, 8, 10
+    LTEXT           "1", WDXP2_LBL_1, 85, 53, 8, 10
 
     /* Color */
-    GROUPBOX        "Color", -1, 4, 68, 102, 37
-    LTEXT           "Start", -1, 11, 79, 16, 8
-    LTEXT           "Middle", -1, 42, 79, 22, 8
-    LTEXT           "End", -1, 82, 79, 14, 8
+    GROUPBOX        "Color", WDXP2_LBL_COLOR, 4, 68, 102, 37
+    LTEXT           "Start", WDXP2_LBL_START_2, 11, 79, 16, 8
+    LTEXT           "Middle", WDXP2_LBL_MIDDLE_2, 42, 79, 22, 8
+    LTEXT           "End", WDXP2_LBL_END_2, 82, 79, 14, 8
     CONTROL         "Custom1", IDC_COLOR_START, "ColorSwatch", WS_TABSTOP, 10, 89, 21, 12
     CONTROL         "Custom1", IDC_COLOR_MID, "ColorSwatch", WS_TABSTOP, 41, 89, 21, 12
     CONTROL         "Custom1", IDC_COLOR_END, "ColorSwatch", WS_TABSTOP, 74, 89, 21, 12
 
     /* Alpha */
-    GROUPBOX        "Alpha", -1, 4, 109, 102, 35
-    LTEXT           "Start", -1, 11, 120, 16, 8
-    LTEXT           "Middle", -1, 42, 120, 22, 8
-    LTEXT           "End", -1, 82, 120, 14, 8
+    GROUPBOX        "Alpha", WDXP2_LBL_ALPHA, 4, 109, 102, 35
+    LTEXT           "Start", WDXP2_LBL_START_3, 11, 120, 16, 8
+    LTEXT           "Middle", WDXP2_LBL_MIDDLE_3, 42, 120, 22, 8
+    LTEXT           "End", WDXP2_LBL_END_3, 82, 120, 14, 8
     CONTROL         "", IDC_EDIT_START_COLOR_R, "CustEdit", WS_TABSTOP, 6, 130, 21, 10
     CONTROL         "", IDC_SPIN_START_COLOR_R, "SpinnerControl", 0, 29, 130, 7, 10
     CONTROL         "", IDC_EDIT_START_COLOR_G, "CustEdit", WS_TABSTOP, 40, 130, 21, 10
@@ -193,10 +193,10 @@ BEGIN
     CONTROL         "", IDC_SPIN_START_COLOR_B, "SpinnerControl", 0, 96, 130, 7, 10
 
     /* Scale */
-    GROUPBOX        "Scale", -1, 4, 148, 102, 35
-    LTEXT           "Start", -1, 11, 159, 16, 8
-    LTEXT           "Middle", -1, 42, 159, 22, 8
-    LTEXT           "End", -1, 82, 159, 14, 8
+    GROUPBOX        "Scale", WDXP2_LBL_SCALE, 4, 148, 102, 35
+    LTEXT           "Start", WDXP2_LBL_START_4, 11, 159, 16, 8
+    LTEXT           "Middle", WDXP2_LBL_MIDDLE_4, 42, 159, 22, 8
+    LTEXT           "End", WDXP2_LBL_END_4, 82, 159, 14, 8
     CONTROL         "", IDC_EDIT_STARTSIZE, "CustEdit", WS_TABSTOP, 6, 169, 24, 10
     CONTROL         "", IDC_SPIN_STARTSIZE, "SpinnerControl", 0, 31, 169, 7, 10
     CONTROL         "", IDC_EDIT_MIDSIZE, "CustEdit", WS_TABSTOP, 40, 169, 23, 10
@@ -205,10 +205,10 @@ BEGIN
     CONTROL         "", IDC_SPIN_ENDSIZE, "SpinnerControl", 0, 97, 169, 7, 10
 
     /* Lifespan Head UV Anim */
-    GROUPBOX        "Lifespan Head UV Anim", -1, 4, 187, 102, 35
-    LTEXT           "Start:", -1, 9, 198, 18, 8
-    LTEXT           "End:", -1, 44, 198, 16, 8
-    LTEXT           "Repeat:", -1, 75, 198, 26, 8
+    GROUPBOX        "Lifespan Head UV Anim", WDXP2_LBL_LIFESPAN_HEAD_UV_ANIM, 4, 187, 102, 35
+    LTEXT           "Start:", WDXP2_LBL_START_5, 9, 198, 18, 8
+    LTEXT           "End:", WDXP2_LBL_END_5, 44, 198, 16, 8
+    LTEXT           "Repeat:", WDXP2_LBL_REPEAT, 75, 198, 26, 8
     CONTROL         "", IDC_EDIT_START_ALPHA, "CustEdit", WS_TABSTOP, 6, 208, 21, 10
     CONTROL         "", IDC_SPIN_START_ALPHA, "SpinnerControl", 0, 29, 208, 7, 10
     CONTROL         "", IDC_EDIT_END_ALPHA, "CustEdit", WS_TABSTOP, 41, 208, 21, 10
@@ -217,10 +217,10 @@ BEGIN
     CONTROL         "", IDC_SPIN_MID_ALPHA, "SpinnerControl", 0, 96, 208, 7, 10
 
     /* Decay Head UV Anim */
-    GROUPBOX        "Decay Head UV Anim", -1, 4, 226, 102, 35
-    LTEXT           "Start:", -1, 9, 237, 18, 8
-    LTEXT           "End:", -1, 44, 237, 16, 8
-    LTEXT           "Repeat:", -1, 75, 237, 26, 8
+    GROUPBOX        "Decay Head UV Anim", WDXP2_LBL_DECAY_HEAD_UV_ANIM, 4, 226, 102, 35
+    LTEXT           "Start:", WDXP2_LBL_START_6, 9, 237, 18, 8
+    LTEXT           "End:", WDXP2_LBL_END_6, 44, 237, 16, 8
+    LTEXT           "Repeat:", WDXP2_LBL_REPEAT_2, 75, 237, 26, 8
     CONTROL         "", IDC_EDIT_START_SCALE_X, "CustEdit", WS_TABSTOP, 6, 247, 21, 10
     CONTROL         "", IDC_SPIN_START_SCALE_X, "SpinnerControl", 0, 29, 247, 7, 10
     CONTROL         "", IDC_EDIT_START_SCALE_Y, "CustEdit", WS_TABSTOP, 40, 247, 22, 10
@@ -229,10 +229,10 @@ BEGIN
     CONTROL         "", IDC_SPIN_END_SCALE_X, "SpinnerControl", 0, 96, 247, 7, 10
 
     /* Lifespan Tail UV Anim */
-    GROUPBOX        "Lifespan Tail UV Anim", -1, 4, 265, 102, 35
-    LTEXT           "Start:", -1, 9, 276, 18, 8
-    LTEXT           "End:", -1, 44, 276, 16, 8
-    LTEXT           "Repeat:", -1, 75, 276, 26, 8
+    GROUPBOX        "Lifespan Tail UV Anim", WDXP2_LBL_LIFESPAN_TAIL_UV_ANIM, 4, 265, 102, 35
+    LTEXT           "Start:", WDXP2_LBL_START_7, 9, 276, 18, 8
+    LTEXT           "End:", WDXP2_LBL_END_7, 44, 276, 16, 8
+    LTEXT           "Repeat:", WDXP2_LBL_REPEAT_3, 75, 276, 26, 8
     CONTROL         "", IDC_EDIT_END_COLOR_R, "CustEdit", WS_TABSTOP, 6, 286, 21, 10
     CONTROL         "", IDC_SPIN_END_COLOR_R, "SpinnerControl", 0, 29, 286, 7, 10
     CONTROL         "", IDC_EDIT_MID_COLOR_R, "CustEdit", WS_TABSTOP, 41, 286, 21, 10
@@ -241,10 +241,10 @@ BEGIN
     CONTROL         "", IDC_SPIN_END_COLOR_G, "SpinnerControl", 0, 96, 286, 7, 10
 
     /* Decay Tail UV Anim */
-    GROUPBOX        "Decay Tail UV Anim", -1, 4, 304, 102, 35
-    LTEXT           "Start:", -1, 9, 315, 18, 8
-    LTEXT           "End:", -1, 44, 315, 16, 8
-    LTEXT           "Repeat:", -1, 75, 315, 26, 8
+    GROUPBOX        "Decay Tail UV Anim", WDXP2_LBL_DECAY_TAIL_UV_ANIM, 4, 304, 102, 35
+    LTEXT           "Start:", WDXP2_LBL_START_8, 9, 315, 18, 8
+    LTEXT           "End:", WDXP2_LBL_END_8, 44, 315, 16, 8
+    LTEXT           "Repeat:", WDXP2_LBL_REPEAT_4, 75, 315, 26, 8
     CONTROL         "", IDC_EDIT_MID_COLOR_G, "CustEdit", WS_TABSTOP, 6, 325, 21, 10
     CONTROL         "", IDC_SPIN_MID_COLOR_G, "SpinnerControl", 0, 29, 325, 7, 10
     CONTROL         "", IDC_EDIT_MID_COLOR_B, "CustEdit", WS_TABSTOP, 41, 325, 21, 10
@@ -258,7 +258,7 @@ IDD_ROLLOUT_OTHER DIALOG 0, 0, 110, 42
 STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE
 FONT 8, "MS Sans Serif"
 BEGIN
-    LTEXT           "Priority Plane:", -1, 9, 6, 47, 8
+    LTEXT           "Priority Plane:", WDXP2_LBL_PRIORITY_PLANE, 9, 6, 47, 8
     CONTROL         "", IDC_EDIT_PRIORITY, "CustEdit",
                     WS_TABSTOP, 61, 5, 28, 10
     CONTROL         "", IDC_SPIN_PRIORITY, "SpinnerControl",

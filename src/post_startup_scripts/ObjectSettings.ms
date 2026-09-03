@@ -145,28 +145,32 @@ struct WdxObjectSettings
 		-- Localization + initial value load
 		on mainRollout open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon mainRollout) catch()
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "obj_settings_title"
+				grpFlags.text = ::WdxL.t "obj_flags_grp"
+				grpMesh.text = ::WdxL.t "obj_mesh_grp"
 				dontInhTransChk.text = ::WdxL.t "obj_dont_inherit_translation_chk"
-				dontInhTransChk.tooltip = ::WdxL.t "obj_ignore_parent_translation_tip"
+				try (dontInhTransChk.tooltip = ::WdxL.t "obj_ignore_parent_translation_tip") catch ()
 				dontInhRotChk.text = ::WdxL.t "obj_dont_inherit_rotation_chk"
-				dontInhRotChk.tooltip = ::WdxL.t "obj_ignore_parent_rotation_tip"
+				try (dontInhRotChk.tooltip = ::WdxL.t "obj_ignore_parent_rotation_tip") catch ()
 				dontInhScaleChk.text = ::WdxL.t "obj_dont_inherit_scaling_chk"
-				dontInhScaleChk.tooltip = ::WdxL.t "obj_ignore_parent_scaling_tip"
+				try (dontInhScaleChk.tooltip = ::WdxL.t "obj_ignore_parent_scaling_tip") catch ()
 				bbFullChk.text = ::WdxL.t "obj_billboarded_chk"
-				bbFullChk.tooltip = ::WdxL.t "obj_object_always_faces_the_camera_tip"
+				try (bbFullChk.tooltip = ::WdxL.t "obj_object_always_faces_the_camera_tip") catch ()
 				bbLockXChk.text = ::WdxL.t "obj_billboarded_lock_x_chk"
-				bbLockXChk.tooltip = ::WdxL.t "obj_lock_billboard_rotation_around_tip"
+				try (bbLockXChk.tooltip = ::WdxL.t "obj_lock_billboard_rotation_around_tip") catch ()
 				bbLockYChk.text = ::WdxL.t "obj_billboarded_lock_y_chk"
-				bbLockYChk.tooltip = ::WdxL.t "obj_lock_billboard_rotation_around_tip_2"
+				try (bbLockYChk.tooltip = ::WdxL.t "obj_lock_billboard_rotation_around_tip_2") catch ()
 				bbLockZChk.text = ::WdxL.t "obj_billboarded_lock_z_chk"
-				bbLockZChk.tooltip = ::WdxL.t "obj_lock_billboard_rotation_around_tip_3"
+				try (bbLockZChk.tooltip = ::WdxL.t "obj_lock_billboard_rotation_around_tip_3") catch ()
 				cameraChk.text = ::WdxL.t "obj_camera_anchored_chk"
-				cameraChk.tooltip = ::WdxL.t "obj_makes_the_object_stay_in_place_tip"
-				skinRdo.tooltip = ::WdxL.t "obj_normal_skinning_uses_any_skin_tip"
+				try (cameraChk.tooltip = ::WdxL.t "obj_makes_the_object_stay_in_place_tip") catch ()
+				try (skinRdo.tooltip = ::WdxL.t "obj_normal_skinning_uses_any_skin_tip") catch ()
 				selectChk.text = ::WdxL.t "obj_unselectable_chk"
-				selectChk.tooltip = ::WdxL.t "obj_makes_the_object_nonselectabl_tip"
+				try (selectChk.tooltip = ::WdxL.t "obj_makes_the_object_nonselectabl_tip") catch ()
 			)
 			-- Refresh checkbox state from the current selection on every open.
 			-- Without this, the dialog only updates on #selectionSetChanged,

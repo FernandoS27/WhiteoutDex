@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WhiteoutDexTextureBrowser — C++/CLI Managed Wrapper
+  Target: .NET 10.0 (3ds Max 2027+)
+  
+  Compiles ManagedWrapper.cpp with /clr:netcore
+  and links against the native static lib (WhiteoutDexTextureBrowser_native.lib)
+  from the CMake build.
+  
+  IMPORTANT: Requires Visual Studio 2022 17.4+ with C++/CLI for .NET Core.
+  
+  Build: msbuild WhiteoutDexTextureBrowser_net10.vcxproj /p:Configuration=Release
+-->
+<Project DefaultTargets="Build" ToolsVersion="Current"
+         xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A1B2C3D4-5555-6666-7777-888899990010}</ProjectGuid>
+    <RootNamespace>WhiteoutDex</RootNamespace>
+    <ProjectName>WhiteoutDexTextureBrowser_net10</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <Keyword>ManagedCProj</Keyword>
+    <!-- .NET 10 targeting -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <!-- Release x64 -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CLRSupport>NetCore</CLRSupport>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+
+  <!-- Debug x64 -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CLRSupport>NetCore</CLRSupport>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <!-- ================================================================== -->
+  <!--  Pfade                                                             -->
+  <!-- ================================================================== -->
+  <PropertyGroup>
+    <NativeBuildDir Condition="'$(NativeBuildDir)'==''">$(ProjectDir)..\build</NativeBuildDir>
+    <SourceDir>$(ProjectDir)..\Source</SourceDir>
+    <WhiteoutDir>$(ProjectDir)..\..\..\..\external\WhiteoutLib</WhiteoutDir>
+  </PropertyGroup>
+
+  <!-- Output -->
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)..\output\Max2027\</OutDir>
+    <IntDir>$(ProjectDir)..\build\managed_net10\</IntDir>
+    <TargetName>WhiteoutDexTextureBrowser</TargetName>
+    <TargetExt>.dll</TargetExt>
+  </PropertyGroup>
+
+  <!-- Compiler -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>WHITEOUTDEX_NETCORE;_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;NOMINMAX;WHITEOUT_HAS_CASC=1;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SourceDir);$(WhiteoutDir)\include;$(NativeBuildDir)\_deps\zlib-src;$(NativeBuildDir)\_deps\zlib-build;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalUsingDirectories>$(DOTNET_WINFORMS_REF);$(DOTNET_NETCORE_REF);%(AdditionalUsingDirectories)</AdditionalUsingDirectories>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <ExceptionHandling>Async</ExceptionHandling>
+      <StructMemberAlignment>8Bytes</StructMemberAlignment>
+      <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>advapi32.lib;shell32.lib;ole32.lib;uuid.lib;$(NativeBuildDir)\Release\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Release\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Release\zlibstatic.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>WHITEOUTDEX_NETCORE;_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;NOMINMAX;WHITEOUT_HAS_CASC=1;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(SourceDir);$(WhiteoutDir)\include;$(NativeBuildDir)\_deps\zlib-src;$(NativeBuildDir)\_deps\zlib-build;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalUsingDirectories>$(DOTNET_WINFORMS_REF);$(DOTNET_NETCORE_REF);%(AdditionalUsingDirectories)</AdditionalUsingDirectories>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <ExceptionHandling>Async</ExceptionHandling>
+      <StructMemberAlignment>8Bytes</StructMemberAlignment>
+      <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>advapi32.lib;shell32.lib;ole32.lib;uuid.lib;$(NativeBuildDir)\Debug\WhiteoutDexTextureBrowser_native.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_lib.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_casc.lib;$(NativeBuildDir)\WhiteoutLib\Debug\whiteout_mpq.lib;$(NativeBuildDir)\_deps\zlib-build\Debug\zlibstaticd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <!-- .NET 10 References -->
+  <!-- FrameworkReference statt PackageReference — C++/CLI vcxproj
+       unterstuetzt keine NuGet PackageReferences direkt.
+       WindowsForms inkludiert WinForms + System.Drawing -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+  </ItemGroup>
+
+  <!-- Source Files -->
+  <ItemGroup>
+    <ClCompile Include="$(SourceDir)\ManagedWrapper.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="$(SourceDir)\ManagedWrapper.h" />
+    <ClInclude Include="$(SourceDir)\ImageDecode.h" />
+    <ClInclude Include="$(SourceDir)\ThumbnailEngine.h" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

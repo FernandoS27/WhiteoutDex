@@ -91,3 +91,9 @@
 #define IDC_BTN_FIX_SELECTED         2002
 #define IDC_BTN_FIX_ALL              2003
 #define IDC_BTN_RESCAN               2004
+// The prompt above the list. It was -1 (unaddressable) until the dialog
+// started relabelling itself from the translation catalog, which needs an id.
+#define IDC_LBL_PROBLEM_PROMPT       2005
+
+// ── Window icon ──
+#define IDI_WHITEOUTDEX_ICON        200

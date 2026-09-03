@@ -7,13 +7,13 @@ struct WdxNodeManager
 	(
 		-- Detection functions
 		fn isGeometry o = classof o == Editable_Mesh
-		fn isAttachmentPoint o = ((classof o) as string == "Wdx_AttachPoint")
+		fn isAttachmentPoint o = ((classof o) as string == "Wdx_Wc3AttachPoint")
 		fn isCollisionShape o = ((classof o) as string == "Wdx_CollisionBox") or ((classof o) as string == "Wdx_CollisionSphere")
-		fn isEventObject o = ((classof o) as string == "Wdx_Event")
-		fn isParticle1 o = ((classof o) as string == "BlizzParticle1")
-		fn isParticle2 o = ((classof o) as string == "BlizzParticle2")
+		fn isEventObject o = ((classof o) as string == "Wdx_Wc3Event")
+		fn isParticle1 o = ((classof o) as string == "Wc3Particles1")
+		fn isParticle2 o = ((classof o) as string == "Wc3Particles2")
 		fn isRibbon o = ((classof o) as string == "BlizRibbon")
-		fn isPopcorn o = ((classof o) as string == "Wdx_Popcorn")
+		fn isPopcorn o = ((classof o) as string == "Wdx_Wc3Popcorn")
 		fn isFaceFX o = ((classof o) as string == "Wdx_FaceFX")
 		fn isBipedBone o = classof o == Biped_Object
 		fn isCATBone o =
@@ -35,7 +35,7 @@ struct WdxNodeManager
 				and not (isRibbon o) \
 				and not (isPopcorn o) \
 				and not (isFaceFX o) \
-				and not (((classof o) as string) == "Wdx_Light") \
+				and not (((classof o) as string) == "Wdx_Wc3Light") \
 			then return true
 			false
 		)
@@ -98,7 +98,7 @@ struct WdxNodeManager
 			if eventsCheck.checked then
 				join result (for o in objects where isEventObject o collect o)
 			if lightsCheck.checked then
-				join result (for o in objects where ((classof o) as string == "Wdx_Light") collect o)
+				join result (for o in objects where ((classof o) as string == "Wdx_Wc3Light") collect o)
 			if camerasCheck.checked then
 				join result (for o in objects where isCamera o collect o)
 			if particle1Check.checked then
@@ -228,13 +228,32 @@ struct WdxNodeManager
 		-- Localization
 		on mainRollout open do
 		(
+			-- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+			try (WdxSetDialogIcon mainRollout) catch()
 			if ::WdxL != undefined then
 			(
 				mainRollout.title = ::WdxL.t "node_node_manager_title"
+				typesGrp.text = ::WdxL.t "node_types_grp"
+				actionsGrp.text = ::WdxL.t "node_actions_grp"
+				quickGrp.text = ::WdxL.t "node_quick_select_grp"
 				geoCheck.text = ::WdxL.t "node_geometry_chk"
 				bonesCheck.text = ::WdxL.t "node_maxbones_chk"
+				bipedCheck.text = ::WdxL.t "node_biped_bones_chk"
+				catCheck.text = ::WdxL.t "node_cat_bones_chk"
+				helpersCheck.text = ::WdxL.t "node_helpers_chk"
+				attachmentsCheck.text = ::WdxL.t "node_attachments_chk"
+				eventsCheck.text = ::WdxL.t "node_event_objects_chk"
 				lightsCheck.text = ::WdxL.t "node_lights_chk"
+				camerasCheck.text = ::WdxL.t "node_cameras_chk"
+				particle1Check.text = ::WdxL.t "node_particle1_chk"
+				particle2Check.text = ::WdxL.t "node_particle2_chk"
+				ribbonCheck.text = ::WdxL.t "node_ribbon_chk"
+				popcornCheck.text = ::WdxL.t "node_popcorn_chk"
+				facefxCheck.text = ::WdxL.t "node_facefx_chk"
 				colShapesCheck.text = ::WdxL.t "node_collision_shapes_chk"
+				selectAllBtn.text = ::WdxL.t "node_check_all_btn"
+				selectNoneBtn.text = ::WdxL.t "node_uncheck_all_btn"
+				selectInvertBtn.text = ::WdxL.t "node_invert_btn"
 				showSet.text = ::WdxL.t "node_show_btn"
 				showUnset.text = ::WdxL.t "node_hide_btn"
 				freezeSet.text = ::WdxL.t "node_freeze_btn"

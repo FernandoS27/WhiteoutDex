@@ -1,0 +1,13 @@
+#include "resource.h"
+
+// whiteoutdex_icons/whiteoutdex.ico is the shared window icon: 16-64 px, which
+// is all a title bar, taskbar button or Alt-Tab entry ever asks for.
+// resources/icon.ico stays the full-size brand icon for installers and shell
+// entries.
+//
+// rc.exe resolves a relative name against its /I list, and the first entry is
+// this target's own source directory, so the path is anchored at
+// src/native_sources/WhiteoutDexRenderer. (The old "../../resources/..." looked
+// like it pointed here but actually fell through to the WhiteoutFlakes
+// submodule's own resources folder further down that list.)
+IDI_WHITEOUTDEX_ICON ICON "../../../whiteoutdex_icons/whiteoutdex.ico"

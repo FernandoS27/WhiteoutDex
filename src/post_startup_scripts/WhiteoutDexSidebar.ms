@@ -13,10 +13,10 @@
 try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
 try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
 
-rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
+rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:560
 (
-    local iniFile = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\WhiteoutDex_Settings.ini"
-    local iconPath = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\whiteoutdex_icons\\"
+    local iniFile = (::WhiteoutDexInstallRoot) + "\\WhiteoutDex_Settings.ini"
+    local iconPath = (::WhiteoutDexInstallRoot) + "\\whiteoutdex_icons\\"
     local btnSize = 28
     local btnW = 32
     local xOfs = 3
@@ -58,16 +58,15 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
     dotNetControl btn_griddummy   "System.Windows.Forms.Button" pos:[xOfs, yStart + 9*step+4] width:btnW height:btnSize
     dotNetControl btn_objtools    "System.Windows.Forms.Button" pos:[xOfs, yStart + 10*step+4] width:btnW height:btnSize
     dotNetControl btn_nodemgr     "System.Windows.Forms.Button" pos:[xOfs, yStart + 11*step+4] width:btnW height:btnSize
-    dotNetControl btn_teamcolor   "System.Windows.Forms.Button" pos:[xOfs, yStart + 12*step+4] width:btnW height:btnSize
-    dotNetControl btn_kfoptimizer "System.Windows.Forms.Button" pos:[xOfs, yStart + 13*step+4] width:btnW height:btnSize
-    dotNetControl btn_cellshade   "System.Windows.Forms.Button" pos:[xOfs, yStart + 14*step+4] width:btnW height:btnSize
-    dotNetControl btn_objsettings "System.Windows.Forms.Button" pos:[xOfs, yStart + 15*step+4] width:btnW height:btnSize
-    dotNetControl btn_renderer    "System.Windows.Forms.Button" pos:[xOfs, yStart + 16*step+4] width:btnW height:btnSize
-    
-    dotNetControl lbl_sep2 "System.Windows.Forms.Panel" pos:[5, yStart + 17*step+4] width:28 height:1
-    
-    dotNetControl btn_settings    "System.Windows.Forms.Button" pos:[xOfs, yStart + 17*step+8] width:btnW height:btnSize
-    dotNetControl btn_about       "System.Windows.Forms.Button" pos:[xOfs, yStart + 18*step+8] width:btnW height:btnSize
+    dotNetControl btn_kfoptimizer "System.Windows.Forms.Button" pos:[xOfs, yStart + 12*step+4] width:btnW height:btnSize
+    dotNetControl btn_cellshade   "System.Windows.Forms.Button" pos:[xOfs, yStart + 13*step+4] width:btnW height:btnSize
+    dotNetControl btn_objsettings "System.Windows.Forms.Button" pos:[xOfs, yStart + 14*step+4] width:btnW height:btnSize
+    dotNetControl btn_renderer    "System.Windows.Forms.Button" pos:[xOfs, yStart + 15*step+4] width:btnW height:btnSize
+
+    dotNetControl lbl_sep2 "System.Windows.Forms.Panel" pos:[5, yStart + 16*step+4] width:28 height:1
+
+    dotNetControl btn_settings    "System.Windows.Forms.Button" pos:[xOfs, yStart + 16*step+8] width:btnW height:btnSize
+    dotNetControl btn_about       "System.Windows.Forms.Button" pos:[xOfs, yStart + 17*step+8] width:btnW height:btnSize
     
     -- ── Setup button appearance ──
     fn setupButton btn iconFileName fallbackText tooltipText =
@@ -114,7 +113,6 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
     on btn_griddummy Click do   macros.run "WhiteoutDex Toolkit" "WhiteoutDex_GridDummy"
     on btn_objtools Click do    macros.run "WhiteoutDex Toolkit" "WhiteoutDex_ObjectTools"
     on btn_nodemgr Click do     macros.run "WhiteoutDex Toolkit" "WhiteoutDex_NodeManager"
-    on btn_teamcolor Click do   macros.run "WhiteoutDex Toolkit" "WhiteoutDex_TeamColor"
     on btn_kfoptimizer Click do macros.run "WhiteoutDex Toolkit" "WhiteoutDex_KeyframeOptimizer"
     on btn_cellshade Click do   macros.run "WhiteoutDex Toolkit" "WhiteoutDex_CellShadeCreator"
     on btn_objsettings Click do macros.run "WhiteoutDex Toolkit" "WhiteoutDex_ObjectSettings"
@@ -125,29 +123,32 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
     -- ── Rollout Open: Setup icons + dock ──
     on WhiteoutDexSidebarRollout open do
     (
+        -- Toolkit icon on the dialog frame (WhiteoutDexUtility.ms).
+        try (WdxSetDialogIcon WhiteoutDexSidebarRollout) catch()
+        if ::WdxL != undefined do
+            try (WhiteoutDexSidebarRollout.title = ::WdxL.t "mgr_whiteoutdex_manager_macbtn") catch ()
         -- Separator lines
         lbl_sep1.BackColor = lbl_sep1.BackColor.FromArgb 80 80 80
         lbl_sep2.BackColor = lbl_sep2.BackColor.FromArgb 80 80 80
         -- Setup all buttons with icons
-        setupButton btn_import      "wdx_sb_import.png"      "IMP" "Import MDX/MDL"
-        setupButton btn_export      "wdx_sb_export.png"      "EXP" "Export MDX/MDL"
-        setupButton btn_seqmgr      "wdx_sb_sequence.png"    "SEQ" "Sequence Manager"
-        setupButton btn_viskey      "wdx_sb_visibility.png"  "VIS" "Visibility Keyer"
-        setupButton btn_animgeneral "wdx_sb_animgeneral.png" "GEN" "Anim: General Tools"
-        setupButton btn_animctrl    "wdx_sb_animctrl.png"    "CTR" "Anim: Controllers"
-        setupButton btn_animskin    "wdx_sb_animskin.png"    "SKI" "Anim: Skinning"
-        setupButton btn_animscaler  "wdx_sb_animscaler.png"  "SCL" "Anim: Model Scaler"
-        setupButton btn_skinchg     "wdx_sb_skinchanger.png" "SKN" "Skin Changer"
-        setupButton btn_griddummy   "wdx_sb_griddummy.png"   "GRD" "Grid & Dummy Creator"
-        setupButton btn_objtools    "wdx_sb_objtools.png"    "OBJ" "Object Tools"
-        setupButton btn_nodemgr     "wdx_sb_nodemanager.png" "NOD" "Node Manager"
-        setupButton btn_teamcolor   "wdx_sb_teamcolor.png"    "TC"  "Team Color Manager"
-        setupButton btn_kfoptimizer "wdx_sb_kfoptimizer.png"  "KFO" "Keyframe Optimizer"
-        setupButton btn_cellshade   "wdx_sb_cellshade.png"    "CSH" "Cell Shade Creator"
-        setupButton btn_objsettings "wdx_sb_objsettings.png"  "SET" "Object Settings"
-        setupButton btn_renderer   "wdx_sb_renderer.png"   "RND" "Wc3 Renderer"
-        setupButton btn_settings    "wdx_sb_settings.png"    "CFG" "WhiteoutDex Settings"
-        setupButton btn_about       "wdx_sb_about.png"       "(?)" "About WhiteoutDex"
+        setupButton btn_import      "wdx_sb_import.png" "IMP" (::WdxL.t "menu_importer")
+        setupButton btn_export      "wdx_sb_export.png" "EXP" (::WdxL.t "menu_exporter")
+        setupButton btn_seqmgr      "wdx_sb_sequence.png" "SEQ" (::WdxL.t "menu_sequence_manager")
+        setupButton btn_viskey      "wdx_sb_visibility.png" "VIS" (::WdxL.t "menu_visibility_keyer")
+        setupButton btn_animgeneral "wdx_sb_animgeneral.png" "GEN" (::WdxL.t "menu_anim_general")
+        setupButton btn_animctrl    "wdx_sb_animctrl.png" "CTR" (::WdxL.t "menu_anim_controllers")
+        setupButton btn_animskin    "wdx_sb_animskin.png" "SKI" (::WdxL.t "menu_anim_skin")
+        setupButton btn_animscaler  "wdx_sb_animscaler.png" "SCL" (::WdxL.t "menu_anim_scaler")
+        setupButton btn_skinchg     "wdx_sb_skinchanger.png" "SKN" (::WdxL.t "menu_skin_changer")
+        setupButton btn_griddummy   "wdx_sb_griddummy.png" "GRD" (::WdxL.t "menu_grid_dummy")
+        setupButton btn_objtools    "wdx_sb_objtools.png" "OBJ" (::WdxL.t "menu_object_tools")
+        setupButton btn_nodemgr     "wdx_sb_nodemanager.png" "NOD" (::WdxL.t "menu_node_manager")
+        setupButton btn_kfoptimizer "wdx_sb_kfoptimizer.png" "KFO" (::WdxL.t "menu_keyframe_optimizer")
+        setupButton btn_cellshade   "wdx_sb_cellshade.png" "CSH" (::WdxL.t "menu_cell_shade")
+        setupButton btn_objsettings "wdx_sb_objsettings.png" "SET" (::WdxL.t "menu_object_settings")
+        setupButton btn_renderer    "wdx_sb_renderer.png" "RND" (::WdxL.t "menu_renderer")
+        setupButton btn_settings    "wdx_sb_settings.png" "CFG" (::WdxL.t "set_settings_title")
+        setupButton btn_about       "wdx_sb_about.png" "(?)" (::WdxL.t "about_title")
         
         -- Dock
         local dockState = getINISetting iniFile "Sidebar" "DockState"
@@ -187,31 +188,35 @@ struct WhiteoutDexSidebarStruct
     
     fn show =
     (
+        -- Max 2016 doesn't expose `this` inside struct methods AND can't
+        -- resolve bare `member = value` either ("Struct member access
+        -- requires instance"). Route every member touch through the
+        -- global instance so it works on every Max version.
         try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
         try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
         createDialog ::WhiteoutDexSidebarRollout width:38 height:590 \
             style:#(#style_titlebar, #style_border, #style_sysmenu)
-        this.isOpen = true
+        ::WhiteoutDexSidebar.isOpen = true
     ),
-    
+
     fn hide =
     (
         try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
         try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
-        this.isOpen = false
+        ::WhiteoutDexSidebar.isOpen = false
     ),
-    
+
     fn toggle =
     (
-        if this.isOpen then this.hide()
-        else this.show()
+        if ::WhiteoutDexSidebar.isOpen then ::WhiteoutDexSidebar.hide()
+        else ::WhiteoutDexSidebar.show()
     )
 )
 WhiteoutDexSidebar = WhiteoutDexSidebarStruct()
 
 -- Auto-show if enabled in settings
 (
-    local iniFile = (systemTools.getEnvVariable "APPDATA") + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex\\WhiteoutDex_Settings.ini"
+    local iniFile = (::WhiteoutDexInstallRoot) + "\\WhiteoutDex_Settings.ini"
     local enabled = getINISetting iniFile "Sidebar" "Enabled"
     if enabled != "0" then WhiteoutDexSidebar.show()
 )

@@ -1,0 +1,431 @@
+#pragma once
+// ============================================================================
+// WhiteoutDex Max Scene Adapter — Implements IModelSource for 3ds Max scenes
+// Refactored from WhiteoutDexExtractor (extract.h)
+// All Max SDK dependencies are isolated here.
+// ============================================================================
+
+#include <MeshNormalSpec.h>
+#include <bitmap.h>
+#include <bmmlib.h>
+#include <genlight.h>
+#include <icustattribcontainer.h>
+#include <inode.h>
+#include <iparamb2.h>
+#include <iskin.h>
+#include <max.h>
+#include <maxversion.h>
+#include <modstack.h>
+#include <stdmat.h>
+#include <triobj.h>
+
+#include <functional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "io/file_content_provider.h"
+#include "whiteout/flakes/model_source.h"
+#include "whiteout/flakes/model_types.h"
+#include "whiteout/flakes/types.h"
+
+// ============================================================================
+// Known ClassIDs for WhiteoutDex custom MaxScript plugins
+// ============================================================================
+#define WARCRAFT3_MAT_CLASS_ID Class_ID(0x4b8e20a3, 0x1f6c3d57)
+#define WC3_BITMAP_CLASS_ID Class_ID(0x3a7c10f1, 0x5e2d4b08)
+#define WC3PARTICLES2_CLASS_ID Class_ID(0xD9F33BC9, 0x7A0DA37A)
+#define WC3RIBBON_CLASS_ID Class_ID(0x937AA064, 0x9EFFA3DA)
+// Wc3VertexMod is a MaxScript scripted plugin — its declared classID is NOT
+// what `Modifier::ClassID()` returns at the C++ layer (Max wraps scripted-
+// plugin ids opaquely). Use FindModifierByClassName with the plugin name
+// instead. This define is kept for symmetry with the other WC3*_CLASS_ID
+// macros but no production code path should resolve a scripted plugin
+// through it.
+#define WC3VERTEXMOD_CLASS_ID Class_ID(0x7A1B2C07, 0x3D4E5F07)
+#define WC3PARTICLES1_CLASS_ID Class_ID(0x12E4F5A6, 0x3B7C8D9E)
+#define WC3ATTACHPOINT_CLASS_ID Class_ID(0x1136ac20, 0x6f9cfeb7)
+// Wc3Light — the LITE-authoring scripted plugin, plus NeoDex's equivalent.
+// Same pair the exporter registers (MDLXExporter/src/mdx_class_ids.h).
+#define WC3LIGHT_CLASS_ID Class_ID(0x7A1B2C04, 0x3D4E5F04)
+#define NEODEX_LIGHT_CLASS_ID Class_ID(0x456E2573, 0x2A456757)
+// BlizzPopcorn — Reforged v1200 PopcornFX corn emitter scripted plugin.
+#define BLIZZ_POPCORN_CLASS_ID Class_ID(0x7A1B2C09, 0x3D4E5F09)
+
+// Cross-DLL interface IDs
+#define WC3P2_TEXTURE_PATH_IID 0x7B3C8D10
+#define WC3P2_TEXTURE_PREFIX_IID 0x7B3C8D11
+#define WC3P1_MODEL_PATH_IID 0x7B3C8D01
+
+// ============================================================================
+// Collected data structures (Max-specific; not exposed to renderer)
+// ============================================================================
+namespace whiteout::flakes {
+
+// Inside this namespace, `renderer` and `io` already resolve to
+// `::whiteout::flakes::renderer` and `::whiteout::flakes::io` via parent
+// lookup — used directly below.
+
+struct BoneInfo {
+    INode* node = nullptr;
+    Matrix3 inverseBind;
+    i32 index = 0;
+};
+
+struct GeosetInfo {
+    i32 geosetId = 0;
+    INode* node = nullptr;
+    i32 materialId = -1;
+    std::vector<i32> faceVertMap; // expanded vertex → original vertex
+    i32 expandedVertCount = 0;
+};
+
+struct MaterialLayerInfo {
+    i32 filterMode = 0;
+    i32 textureId = -1;
+    f32 alpha = 1.0f;
+    i32 replaceableTexture = 0;
+    i32 flags = 0;
+    // Shader type: 0=SD, 1=HD, 2=SDOnHD, 24=Crystal (from Wc3Material shaderType dropdown)
+    i32 shaderId = 0;
+    // HD subtexture slot IDs (-1 = not present)
+    i32 normalMapId = -1;
+    i32 ormMapId = -1;
+    i32 emissiveMapId = -1;
+    i32 teamColorMapId = -1;
+    // Reforged PBR knobs (from Wc3Material reforged rollout)
+    f32 emissiveGain = 0.0f;
+    f32 fresnelOpacity = 0.0f;
+    f32 fresnelTeamColor = 0.0f;
+    Vector3f fresnelColor = {0.0f, 0.0f, 0.0f};
+    // Index into uvAnimSources_ / the renderer's texAnimPalette, -1 = none.
+    i32 textureAnimationId = -1;
+};
+
+struct MaterialInfo {
+    i32 materialId = 0;
+    Mtl* mtl = nullptr;
+    std::vector<MaterialLayerInfo> layers; // one per layer (composite sub-materials)
+    i32 priorityPlane = 0;
+    i32 sortOrder = 0;
+};
+
+struct TextureEntry {
+    i32 textureId = 0;
+    i32 replaceableId = 0;
+    std::wstring filePath;
+};
+
+struct ParticleEmitterInfo {
+    i32 emitterId = 0;
+    INode* node = nullptr;
+    i32 textureId = -1;
+    i32 replaceableId = 0;
+};
+
+struct PE1EmitterInfo {
+    i32 emitterId = 0;
+    INode* node = nullptr;
+    std::string modelPath;
+};
+
+// Max-side mirror of WdxSequenceManager's per-sequence range. Pushed in
+// from MaxScript after WhiteoutFlakesStart so the adapter can answer
+// "what sequence is the timeline currently on" — Max owns the timeline,
+// the renderer doesn't, so without this the popcorn animVisibilityGuide
+// has no current-animation name to gate on.
+struct SequenceRange {
+    std::string name;
+    i32 startMs = 0;
+    i32 endMs   = 0;
+};
+
+struct PopcornEmitterInfo {
+    i32 emitterId = 0;
+    INode* node = nullptr;
+    // Static `.pkb` / `.pkfx` path and animation-state gate string read from
+    // the BlizzPopcorn paramblock at collect time. Per-frame multipliers
+    // (lifeSpan / emissionRate / speed / color) flow through Evaluate's
+    // FrameState::cornStates each tick.
+    std::string pkbPath;
+    std::string animVisibilityGuide;
+    i32 replaceableId = 0;
+    // Mirrors MDX NodeFlag 0x40000 (PopcornScaling). When true, particle
+    // scale follows the host actor's uniform world scale.
+    bool cornEffectsScaling = false;
+};
+
+struct AttachmentInfo {
+    i32 index = 0;
+    INode* node = nullptr;
+    i32 attachmentId = 0;
+    std::string modelPath;
+};
+
+struct RibbonEmitterInfo {
+    i32 emitterId = 0;
+    INode* node = nullptr;
+    i32 textureId = -1;
+};
+
+struct CollisionShapeInfo {
+    i32 type = 0;
+    INode* node = nullptr;
+};
+
+// One scene light, feeding FrameState::lights each frame.
+//
+// `wc3` marks the Wc3Light scripted plugin — the only kind that survives an
+// MDX export, and the only one carrying the LITE ambient pair. A stock Max
+// Omni / Spot / Direct light previews as a plain diffuse light and writes no
+// LITE chunk, which is why the two are told apart here rather than normalised
+// into one shape at collect time.
+struct LightInfo {
+    INode* node = nullptr;
+    bool wc3 = false;
+};
+
+// ============================================================================
+// MaxSceneAdapter — implements IModelSource
+// ============================================================================
+
+class MaxSceneAdapter : public renderer::model::IModelSource {
+public:
+    MaxSceneAdapter();
+    ~MaxSceneAdapter() override;
+
+    // Collect scene data (call once on main thread before Get*() calls)
+    void CollectScene();
+
+    // Re-read material properties and textures from the scene.
+    // Returns true if anything changed and the renderer should be updated.
+    struct MaterialRefreshResult {
+        std::vector<renderer::model::MaterialData> materials;
+        std::vector<renderer::model::TextureData> textures;
+        bool changed = false;
+    };
+    MaterialRefreshResult RefreshMaterials();
+
+    // IModelSource interface
+    std::vector<renderer::model::MeshData> GetMeshes() override;
+    std::vector<renderer::model::TextureData> GetTextures() override;
+    std::vector<renderer::model::MaterialData> GetMaterials() override;
+    renderer::model::SkeletonData GetSkeleton() override;
+    std::vector<renderer::model::SkinWeightData> GetSkinWeights() override;
+    std::vector<renderer::ParticleEmitterConfig> GetParticleConfigs() override;
+    std::vector<renderer::effects::RibbonEmitterConfig> GetRibbonConfigs() override;
+    std::vector<renderer::model::CollisionShapeData> GetCollisionShapes() override;
+    std::vector<renderer::model::AttachmentConfig> GetAttachmentConfigs() override;
+    std::vector<renderer::model::PE1EmitterConfig> GetPE1Configs() override;
+    std::vector<renderer::model::CornEmitterInit> GetCornEmitterInits() override;
+
+    // Push the WdxSequenceManager's per-sequence ranges so Evaluate can
+    // gate popcorn animVisibilityGuide-driven emitters on Max's timeline.
+    // Safe to call multiple times; the latest list wins.
+    void SetSequenceRanges(std::vector<SequenceRange> ranges) {
+        sequenceRanges_ = std::move(ranges);
+    }
+
+    // ---- IAnimationSource ----
+    renderer::model::FrameState Evaluate(const PoseRequest& req) const override;
+    std::vector<renderer::model::SequenceInfo> GetSequences() const override;
+
+    // Camera presets from scene (Max cameras + "Active Viewport")
+    std::vector<whiteout::flakes::renderer::model::CameraPreset> GetCameraPresets();
+
+    // Adapter-local FileContentProvider, used during CollectScene for texture
+    // reads off CASC/MPQ. Exposed so the orchestration layer can apply the
+    // user's Settings > IO overrides at plugin start (the SceneManager owns a
+    // separate provider used by the runtime renderer; both need the same
+    // overrides).
+    io::FileContentProvider& GetContentProvider() {
+        return contentProvider_;
+    }
+
+private:
+    // Collection phases
+    void CollectGeometry();
+    void CollectMaterials();
+    // `skipMaxBitmapManager` short-circuits the Max bitmap-manager attempt
+    // and goes straight to the direct-decode disk path. Used for normal
+    // maps because Max's bitmap manager produces flat-grey rather than
+    // raw RGB for DXT5n / BC5-style normal maps, which the HD shader
+    // then samples as a wrong normal and the lighting goes haywire.
+    i32 LoadTexture(const std::wstring& filePath, i32 replaceableId, u32 wrapFlags = 0x3,
+                    bool skipMaxBitmapManager = false);
+    i32 LoadTextureFromContentProvider(const std::string& archivePath, i32 replaceableId,
+                                       u32 wrapFlags = 0x3);
+    // SD TEAMCOLOR / TEAMGLOW slots are reserved through LoadTexture(L"", 1|2)
+    // — pixel bake lives in ReplaceableTextureManager renderer-side.
+    void CollectBones();
+    void CollectAttachments();
+    void CollectParticleEmitters();
+    void CollectRibbonEmitters();
+    void CollectCollisionShapes();
+    void CollectLights();
+
+    // Helpers
+    static Matrix44f PackMatrix(const Matrix3& tm);
+    static bool PB2Float(Animatable* a, const wchar_t* name, TimeValue t, f32& out);
+    static bool PB2Int(Animatable* a, const wchar_t* name, TimeValue t, i32& out);
+    static bool PB2Bool(Animatable* a, const wchar_t* name, TimeValue t, BOOL& out);
+    static bool PB2Color(Animatable* a, const wchar_t* name, TimeValue t, Color& out);
+    static bool PB2Texmap(Animatable* a, const wchar_t* name, Texmap*& out);
+    // PB2 reads with an in-place fallback default — return `def` when the param
+    // is absent or the scan fails, otherwise the read value.
+    static i32 PB2IntOr(Animatable* a, const wchar_t* name, TimeValue t, i32 def = 0);
+    static f32 PB2FloatOr(Animatable* a, const wchar_t* name, TimeValue t, f32 def = 0.0f);
+    static bool PB2BoolOr(Animatable* a, const wchar_t* name, TimeValue t, bool def = false);
+    // Lift WrapWidth/WrapHeight from a texmap into the renderer's wrapFlags
+    // (bit0 = repeat U, bit1 = repeat V). Wc3Bitmap exposes them as the PB2
+    // booleans `wrapU` / `wrapV`; a plain BitmapTex carries them on its
+    // StdUVGen as U_WRAP / V_WRAP. Defaults to 0x3 when unknown.
+    static u32 ReadWrapFlagsFromTexmap(Texmap* tex);
+    static Object* GetBaseObject(INode* node);
+    static Modifier* FindSkinModifier(INode* node);
+    static Modifier* FindModifierByClassID(INode* node, Class_ID cid);
+    // Name-based modifier lookup. Required for scripted-plugin modifiers
+    // (Wc3VertexMod etc.) — Max's MaxScript-defined plugins do NOT expose
+    // their declared classID through Modifier::ClassID(), so the ClassID
+    // path silently misses every scripted plugin. The exporter takes the
+    // same approach in geoset_anim_extractor.cpp's findVertexMod().
+    static Modifier* FindModifierByClassName(INode* node, const wchar_t* const* nameSubstrings);
+    // Wc3Material reading helpers — shared between CollectMaterials, CollectScene,
+    // ExtractWc3MaterialLayer, and RefreshMaterials.
+    static i32 ReadWc3MaterialFlags(Mtl* mtl);
+    std::wstring ResolveBitmapPath(Mtl* mtl, const wchar_t* paramName);
+    MaterialLayerInfo ExtractWc3MaterialLayer(Mtl* mtl);
+    // Texture registration: push (rgba, w, h) into the loaded-texture table and
+    // return its new texId. Used by every loader path. `displayPath` is the
+    // filePath stored on TextureEntry for diagnostics; when empty, the cache
+    // key is reused (the common case — TeamColor-composited textures override
+    // it so the entry shows the original texture path, not the "__TC__" key).
+    i32 RegisterTexture(const std::wstring& key, i32 replaceableId, std::vector<u8>&& pixels,
+                        i32 width, i32 height, const std::wstring& displayPath = L"",
+                        std::string sharedKey = {}, u32 wrapFlags = 0x3);
+    // HD-sentinel allocation removed — adapters set teamColorMapId to
+    // kHdTeamColorActive directly when the HD layer flags its team-colour
+    // slot as live-driven. The HD draw binds the per-actor HD swatch at t4.
+    std::wstring GetMaxFilePath();
+
+    // Loaded texture pixel data (kept for GetTextures()).
+    // `sharedKey` carries the cross-model dedup key (normalised path) so
+    // GetTextures can stamp it onto TextureData without an extra lookup.
+    // Empty for procedural / sentinel textures and for cache-borrow
+    // entries where rgba is empty (the renderer's shared cache already
+    // owns the GPU resource — we just record the borrow).
+    struct LoadedTexture {
+        i32 textureId;
+        i32 replaceableId;
+        std::vector<u8> rgba;
+        i32 width, height;
+        std::string sharedKey;
+        u32 wrapFlags = 0x3; // bit0 = WrapWidth (repeat U), bit1 = WrapHeight (repeat V)
+    };
+    std::vector<LoadedTexture> loadedTextures_;
+
+    std::vector<BoneInfo> bones_;
+    // Keyed by INode* — duplicate node names are routine in community models,
+    // so a name key would collapse same-named bones onto one index.
+    std::unordered_map<INode*, i32> boneNodeToIdx_;
+    std::vector<GeosetInfo> geosets_;
+    std::vector<MaterialInfo> materials_;
+    std::vector<TextureEntry> texEntries_;
+    std::vector<ParticleEmitterInfo> particles_;
+    std::vector<PE1EmitterInfo> pe1Emitters_;
+    std::vector<PopcornEmitterInfo> popcornEmitters_;
+    std::vector<SequenceRange> sequenceRanges_;
+    std::vector<AttachmentInfo> attachments_;
+    std::vector<RibbonEmitterInfo> ribbons_;
+    std::vector<CollisionShapeInfo> collisions_;
+    std::vector<LightInfo> lights_;
+
+    std::unordered_map<std::wstring, i32> texPathToId_;
+    std::unordered_map<Mtl*, i32> mtlToId_;
+    i32 nextTexId_ = 0;
+    i32 nextMatId_ = 0;
+
+    // Animated texture (KMTF flipbook) state for one Wc3Material layer.
+    // The MDLXImporter materialises a KMTF track as a BitmapTex whose
+    // filename is a generated .ifl list; the frames are pre-loaded as
+    // individual textures at collect time and swapped per frame in
+    // Evaluate() through FrameState::layerTextureIds — the same mechanism
+    // the MDX adapter uses for native KMTF tracks. Keyed by the
+    // (sub-)material the diffuse bitmap belongs to; rebuilt whenever
+    // CollectMaterials runs.
+    struct IflAnim {
+        std::vector<i32> frameTexIds;
+        TimeValue startTime = 0;
+        TimeValue intervalTicks = 0;
+        i32 endCondition = 0; // BitmapTex end condition: 0 loop, 1 pingpong, 2 hold
+    };
+    std::unordered_map<Mtl*, IflAnim> iflAnims_;
+
+    // UV animation (TXAN) sources, one per palette id. A layer's
+    // textureAnimationId indexes this vector; Evaluate() composes
+    // FrameState::texAnimMatrices from it every frame — that palette is
+    // the channel the WC3 geoset passes actually read
+    // (FrameState::texAnims → RenderModel::matTexAnim has no readers).
+    struct UvAnimSource {
+        Texmap* texmap = nullptr; // Wc3Bitmap (anim_* PB2) or plain BitmapTex (StdUVGen)
+        Mtl* legacyMtl = nullptr; // pre-TXAN-refactor material-level anim_* params
+        bool any() const { return texmap || legacyMtl; }
+    };
+    std::vector<UvAnimSource> uvAnimSources_;
+    // Dedup: layers sharing one bitmap instance share the animation (the
+    // importer pre-clones bitmaps when two layers need different TXANs).
+    std::unordered_map<void*, i32> uvAnimSrcToId_;
+    // Resolve where a layer's UV animation lives, empty when no channel is
+    // animated. Shared by RegisterUvAnimSource and SnapshotMaterial.
+    UvAnimSource FindUvAnimSource(Mtl* mtl, Texmap* diffuseTex);
+    // Register the layer's UV-anim source (if any channel is animated) and
+    // return its palette id, or -1.
+    i32 RegisterUvAnimSource(Mtl* mtl, Texmap* diffuseTex);
+
+    io::FileContentProvider contentProvider_;
+
+    // Material change detection: snapshot of per-material properties
+    struct MaterialSnapshot {
+        i32 filterMode = 0;
+        i32 flags = 0;
+        i32 priorityPlane = 0;
+        i32 sortOrder = 0;
+        i32 replaceableTexture = 0;
+        i32 shaderId = 0;
+        std::wstring texturePath;
+        std::wstring normalTexPath;
+        std::wstring ormTexPath;
+        std::wstring emissiveTexPath;
+        std::wstring teamColorTexPath;
+        bool hasUvAnim = false;
+    };
+    std::unordered_map<i32, MaterialSnapshot> matSnapshots_; // materialId → snapshot
+
+    // Capture the subset of Wc3Material properties used for change detection.
+    MaterialSnapshot SnapshotMaterial(Mtl* mtl);
+    // Rebuild matSnapshots_ from the current materials_ list.
+    void UpdateMaterialSnapshots();
+};
+
+// ============================================================================
+// Active-viewport camera read
+// ============================================================================
+
+// One 3ds Max viewport's view, already lifted into renderer-native space.
+// Feeds RenderWindow::SetExternalCameraPose, which is why the FOV is the
+// horizontal one: the preview window has its own aspect ratio and converts to
+// the camera's diagonal FOV itself.
+struct ViewportCameraPose {
+    Vector3f position{};
+    Vector3f target{};
+    f32 roll = 0.0f;          // radians, about the view axis
+    f32 fovHorizontal = 0.0f; // radians, across the viewport's width
+};
+
+// Sample whichever viewport 3ds Max currently has active — including the case
+// where the user switched viewports or moved a camera since the last call, so
+// a caller polling this tracks both for free. Max UI thread only: ViewExp is
+// not safe to touch from the render thread. False when no viewport is live.
+bool ReadActiveViewportCamera(ViewportCameraPose& out);
+
+} // namespace whiteout::flakes

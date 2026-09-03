@@ -5,7 +5,19 @@
 #include <util/error_reporter.h>
 #include <max.h>
 #include <iparamb2.h>
+#include <string>
 #include <vector>
+
+namespace mdx_scene {
+// Crash-safe diagnostic log helper. Appends to %TEMP%\mdlx_import_debug.log
+// AND echoes to the MAXScript Listener. Used by the popcorn / corn-emitter
+// path because that's where Max has been observed to crash mid-import.
+void PopcornDiagLog(const std::string& msg);
+} // namespace mdx_scene
+
+namespace mdx_scene {
+class TextureResolver;
+}
 
 namespace mdx_scene {
 
@@ -48,8 +60,7 @@ public:
         const ir::IRModel& irModel,
         std::vector<INode*>& nodeMap,
         const std::wstring& modelDir,
-        void* cascStorage,
-        void* mpqStorage,
+        TextureResolver* resolver,
         Interface* gi,
         core::ExportErrorReporter& reporter);
 };
@@ -101,6 +112,8 @@ public:
     void buildPopcorn(
         const ir::IRModel& irModel,
         std::vector<INode*>& nodeMap,
+        const std::wstring& modelDir,
+        TextureResolver* resolver,
         Interface* gi,
         core::ExportErrorReporter& reporter);
 };
