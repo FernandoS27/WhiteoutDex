@@ -1269,9 +1269,29 @@ void insertScaleKeys(INode* node, const ir::Vec3Track& track,
     }
 
     if (isGlobalSeq) {
-        scaleCtrl->SetORT(ORT_CONSTANT, ORT_BEFORE);
-        scaleCtrl->SetORT(ORT_CYCLE,    ORT_AFTER);
-        scaleCtrl->EnableORTs(TRUE);
+        // The first SetValue on a still-unkeyed controller makes Max seed an
+        // extra Frame-0 key holding the previous (bind-pose) value — the same
+        // thing Auto Key does in the UI. Position and rotation never see it
+        // because they write through IKeyControl::AppendKey; scale writes
+        // through SetValue, so the phantom has to be deleted here.
+        //
+        // On a sequence-driven track it is harmless (the Frame-0 stub lands on
+        // it anyway), but on a global-sequence track it becomes the first key
+        // of the ORT_CYCLE range. fm-zhaoyundg's head bone 'tou223' carries a
+        // single KGSC key of 0.333 at 333 ms; the phantom turned that into a
+        // 1.0 -> 0.333 cycle repeating every 10 frames, so the head pulsed
+        // between its correct size and 3x while the engine holds it at 0.333.
+        if (track.keys[0].time > 0)
+            scaleCtrl->DeleteKeyAtTime(0);
+
+        // A lone key is constant by definition, and its key range is
+        // zero-length — cycling over it is degenerate. Max's default
+        // (constant both ways) is already what the engine does.
+        if (numKeys > 1) {
+            scaleCtrl->SetORT(ORT_CONSTANT, ORT_BEFORE);
+            scaleCtrl->SetORT(ORT_CYCLE,    ORT_AFTER);
+            scaleCtrl->EnableORTs(TRUE);
+        }
     }
 }
 
