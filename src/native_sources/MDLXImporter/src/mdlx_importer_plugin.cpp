@@ -677,6 +677,37 @@ INode* createMeshNode(const ir::Mesh& irMesh, Interface* gi) {
 
 // ── Skin modifier application ───────────────────────────────
 
+// Max's Skin modifier ships with "Bone Affect Limit" (bone_Limit) = 5 and
+// silently discards every influence past it — AddWeights accepts an 8-bone
+// list and GetNumAssignedBones later reports 5. Classic MDX matrix groups do
+// reach 8 bones (Undead3D_Exp, the kroxigor family), so raise the limit to
+// whatever this mesh actually needs before any weights go in, or those bones
+// are gone before the exporter ever sees them.
+static void raiseSkinBoneLimit(Modifier* skinMod, int needed) {
+    if (!skinMod || needed <= 0) return;
+
+    for (int i = 0; i < skinMod->NumParamBlocks(); ++i) {
+        IParamBlock2* pb = skinMod->GetParamBlock(i);
+        if (!pb) continue;
+        ParamBlockDesc2* desc = pb->GetDesc();
+        if (!desc) continue;
+
+        for (int p = 0; p < desc->Count(); ++p) {
+            const ParamDef& pd = desc->paramdefs[p];
+            if (!pd.int_name || _tcsicmp(pd.int_name, _T("bone_Limit")) != 0)
+                continue;
+
+            int current = 0;
+            Interval valid = FOREVER;
+            pb->GetValue(pd.ID, 0, current, valid);
+            // 0 means "no limit" in Max — leave that alone.
+            if (current > 0 && current < needed)
+                pb->SetValue(pd.ID, 0, needed);
+            return;
+        }
+    }
+}
+
 bool applySkinModifier(INode* meshNode, const ir::Mesh& irMesh,
                        const std::vector<INode*>& boneNodes, Interface* gi)
 {
@@ -711,6 +742,15 @@ bool applySkinModifier(INode* meshNode, const ir::Mesh& irMesh,
     ISkinImportData* skinImport = static_cast<ISkinImportData*>(
         skinMod->GetInterface(I_SKINIMPORTDATA));
     if (!skinImport) return false;
+
+    // Widen the bone-affect limit before any AddWeights call, so wide matrix
+    // groups survive the import.
+    {
+        size_t maxInfluences = 0;
+        for (const auto& v : irMesh.vertices)
+            maxInfluences = std::max(maxInfluences, v.skinInfluences.size());
+        raiseSkinBoneLimit(skinMod, static_cast<int>(maxInfluences));
+    }
 
     // Collect all unique bones used
     std::set<int32_t> usedBones;

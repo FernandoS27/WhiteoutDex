@@ -9,6 +9,7 @@
 #include <triobj.h>
 #include <MeshNormalSpec.h>
 #include <iskin.h>
+#include <algorithm>
 #include <unordered_map>
 #include <fstream>
 #include <cmath>
@@ -385,26 +386,41 @@ void MeshExtractor::extractSkinWeights(INode* node, ir::Mesh& out,
     if (numBones > 5) MLOG << "      ... +" << (numBones - 5) << " more\n";
     MFLUSH;
 
-    // Build original vertex weights (up to 4 influences per vert)
-    struct OrigWeights {
-        int32_t boneIndices[4] = {0, 0, 0, 0};
-        float weights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    };
-    std::vector<OrigWeights> origWeights(origVertCount);
+    // Build original vertex weights — every influence Max reports, heaviest
+    // first. Don't truncate here: a v800 matrix group legitimately holds more
+    // than 4 bones (Blizzard's own assets go to 8 — Undead3D_Exp, the kroxigor
+    // family), so the writers are the ones that know what fits. The v800
+    // quantizer snaps to the nearest matrix group; the v1200 SKIN path takes
+    // the top 4.
+    //
+    // This used to keep the FIRST 4 bones ISkin happened to enumerate, which
+    // both dropped bones from 5-8 bone classic groups on re-export and, when it
+    // did drop them, kept an arbitrary 4 instead of the 4 heaviest.
+    std::vector<std::vector<ir::SkinInfluence>> origWeights(origVertCount);
 
     for (int v = 0; v < origVertCount; ++v) {
         int nw = ctx->GetNumAssignedBones(v);
         float totalW = 0.0f;
-        int maxInf = std::min(nw, 4);
-        for (int b = 0; b < maxInf; ++b) {
-            int boneIdx = ctx->GetAssignedBone(v, b);
-            origWeights[v].boneIndices[b] = boneIdx;
-            origWeights[v].weights[b] = ctx->GetBoneWeight(v, b);
-            totalW += origWeights[v].weights[b];
+        auto& ow = origWeights[v];
+        if (nw > 0) ow.reserve(static_cast<size_t>(nw));
+        for (int b = 0; b < nw; ++b) {
+            float w = ctx->GetBoneWeight(v, b);
+            if (w <= 0.0f) continue;
+            ir::SkinInfluence inf;
+            // boneIndex here is an ISkin bone index (0..numBones-1). It will be
+            // remapped to an ir::Bone index in a later pass by the backend.
+            inf.boneIndex = ctx->GetAssignedBone(v, b);
+            inf.weight = w;
+            ow.push_back(inf);
+            totalW += w;
         }
 
-        // Note: boneIndices here are ISkin bone indices (0..numBones-1)
-        // They will be remapped to ir::Bone indices in a later pass by the backend.
+        // Heaviest first, so any truncation downstream drops the least
+        // significant bones rather than whichever ones ISkin listed last.
+        std::sort(ow.begin(), ow.end(),
+                  [](const ir::SkinInfluence& a, const ir::SkinInfluence& b) {
+                      return a.weight > b.weight;
+                  });
 
         if (totalW < 0.001f) {
             const MCHAR* name = node->GetName();
@@ -419,16 +435,7 @@ void MeshExtractor::extractSkinWeights(INode* node, ir::Mesh& out,
         int origV = faceVertMap[i];
         if (origV < 0 || origV >= origVertCount) continue;
 
-        auto& ow = origWeights[origV];
-        auto& vert = out.vertices[i];
-        for (int b = 0; b < 4; ++b) {
-            if (ow.weights[b] > 0.0f) {
-                ir::SkinInfluence inf;
-                inf.boneIndex = ow.boneIndices[b];
-                inf.weight = ow.weights[b];
-                vert.skinInfluences.push_back(inf);
-            }
-        }
+        out.vertices[i].skinInfluences = origWeights[origV];
     }
 
     // Store the ISkin bone node pointers for later resolution

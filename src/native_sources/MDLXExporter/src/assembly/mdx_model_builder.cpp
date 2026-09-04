@@ -428,16 +428,46 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             // Skin weights (v1200 SKIN chunk)
             if (opts.version >= 1200 && !v.skinInfluences.empty()) {
                 // SKIN: 4 bone indices (u8) + 4 weights (u8) = 8 bytes per vertex
-                // boneIndex is an IR node index; convert to hierarchy objectId
+                // boneIndex is an IR node index; convert to hierarchy objectId.
+                //
+                // mesh_extractor hands us every influence, heaviest first, so
+                // the first 4 are the dominant bones. Renormalize over just
+                // those 4 and hand out the byte budget by largest remainder so
+                // the row sums to exactly 255 — a vertex with 5+ influences,
+                // or plain per-bone rounding, otherwise ends up under-weighted
+                // and drifts toward the origin.
                 uint8_t boneIds[4] = {0, 0, 0, 0};
                 uint8_t weights[4] = {0, 0, 0, 0};
                 size_t count = std::min(v.skinInfluences.size(), size_t(4));
+
+                float kept = 0.0f;
+                for (size_t si = 0; si < count; si++)
+                    kept += v.skinInfluences[si].weight;
+
+                int   assigned = 0;
+                float remainder[4] = {0.0f, 0.0f, 0.0f, 0.0f};
                 for (size_t si = 0; si < count; si++) {
                     uint32_t objId = hierarchy.getObjectId(v.skinInfluences[si].boneIndex);
                     boneIds[si] = (objId != Node::NO_PARENT)
                                       ? static_cast<uint8_t>(objId) : 0;
-                    weights[si] = static_cast<uint8_t>(
-                        v.skinInfluences[si].weight * 255.0f + 0.5f);
+                    float exact = (kept > 1e-7f)
+                        ? v.skinInfluences[si].weight / kept * 255.0f
+                        : 0.0f;
+                    int whole = static_cast<int>(exact);
+                    weights[si] = static_cast<uint8_t>(whole);
+                    remainder[si] = exact - static_cast<float>(whole);
+                    assigned += whole;
+                }
+                for (int leftover = 255 - assigned; leftover > 0; --leftover) {
+                    int best = -1;
+                    for (size_t si = 0; si < count; si++) {
+                        if (weights[si] == 255) continue;
+                        if (best < 0 || remainder[si] > remainder[best])
+                            best = static_cast<int>(si);
+                    }
+                    if (best < 0) break;
+                    weights[best]++;
+                    remainder[best] -= 1.0f;
                 }
                 for (int bi = 0; bi < 4; bi++) geo.skinData.push_back(boneIds[bi]);
                 for (int wi = 0; wi < 4; wi++) geo.skinData.push_back(weights[wi]);

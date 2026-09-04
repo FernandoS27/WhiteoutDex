@@ -1,12 +1,29 @@
 // MDLXExporter — v800 skin weight quantizer implementation
-// CHANGES: Added debug logging for weight extraction, relaxation, and group assignment
+//
+// A v800 matrix group is a *set* of bones whose transforms the runtime
+// averages with equal weight. A group of k bones can therefore represent
+// exactly one weight vector: (1/k, …, 1/k). Converting a float-weighted skin
+// into matrix groups is then nearest-neighbour quantization — pick the k whose
+// uniform vector sits closest to the vertex's actual weights.
+//
+// The previous implementation ran iterative neighbour relaxation plus a
+// softmax "sharpen" pass before assigning slots. Both are modelling
+// operations, not format conversion: they rewrote weights the user never
+// authored. On an already-quantized classic model (imported weights are exactly
+// 1/n per matrix group) this was destructive — round-tripping
+// saurus_warrior_unit_run moved 120/622 body vertices to different bone sets,
+// 8 of them to a *disjoint* set, and collapsed the sword's
+// Arm2+Hand blend down to Arm2 alone. Result: torn geometry.
+//
+// The rule below is exactly idempotent on already-quantized input, because a
+// uniform vector always quantizes back to itself.
 #include "mdx_skin_quantizer.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <map>
-#include <unordered_set>
+#include <numeric>
 
 #include <max.h>
 #ifndef MDX_DEBUG_PRINT
@@ -59,23 +76,6 @@ void MdxSkinQuantizer::prune(VertexWeights& w, float threshold) {
             w.end());
 }
 
-void MdxSkinQuantizer::sharpen(VertexWeights& w, float temperature) {
-    if (w.empty()) return;
-    float maxW = 0.0f;
-    for (auto& bw : w) maxW = std::max(maxW, bw.weight);
-
-    float invT = 1.0f / std::max(temperature, 1e-6f);
-    float sumExp = 0.0f;
-    for (auto& bw : w) {
-        bw.weight = std::exp((bw.weight - maxW) * invT);
-        sumExp += bw.weight;
-    }
-    if (sumExp > 1e-7f) {
-        float inv = 1.0f / sumExp;
-        for (auto& bw : w) bw.weight *= inv;
-    }
-}
-
 // ─────────────────────────────────────────────────────────────
 std::vector<MdxSkinQuantizer::VertexWeights>
 MdxSkinQuantizer::extractWeights(const ir::Mesh& mesh,
@@ -99,11 +99,19 @@ MdxSkinQuantizer::extractWeights(const ir::Mesh& mesh,
             mergeWeight(vw, objId, inf.weight);
         }
 
+        normalize(vw);
+        // Drop bleed weights before the snap. Even the smallest legal uniform
+        // share is 1/kMaxSlots, well above kMinWeight, so this can never
+        // discard a bone that an already-quantized model actually used.
+        prune(vw, kMinWeight);
+        normalize(vw);
+
+        // Descending weight — assignSlots relies on this ordering.
         std::sort(vw.begin(), vw.end(),
                   [](const BoneWeight& a, const BoneWeight& b) {
-                      return a.weight > b.weight;
+                      if (a.weight != b.weight) return a.weight > b.weight;
+                      return a.boneId < b.boneId;   // stable tie-break
                   });
-        normalize(vw);
     }
 
     MDX_LOG(_T("── SkinQuantizer::extractWeights ──\n"));
@@ -122,124 +130,21 @@ MdxSkinQuantizer::extractWeights(const ir::Mesh& mesh,
 }
 
 // ─────────────────────────────────────────────────────────────
-std::vector<std::vector<uint32_t>>
-MdxSkinQuantizer::buildAdjacency(const std::vector<uint32_t>& indices,
-                                  size_t vertexCount) const {
-    std::vector<std::unordered_set<uint32_t>> adj(vertexCount);
-
-    for (size_t i = 0; i + 2 < indices.size(); i += 3) {
-        uint32_t a = indices[i], b = indices[i + 1], c = indices[i + 2];
-        if (a < vertexCount && b < vertexCount && c < vertexCount) {
-            adj[a].insert(b); adj[a].insert(c);
-            adj[b].insert(a); adj[b].insert(c);
-            adj[c].insert(a); adj[c].insert(b);
-        }
-    }
-
-    std::vector<std::vector<uint32_t>> result(vertexCount);
-    for (size_t i = 0; i < vertexCount; ++i)
-        result[i].assign(adj[i].begin(), adj[i].end());
-
-    MDX_LOG(_T("  Adjacency: %d tris, avg %.1f neighbors/vert\n"),
-            (int)(indices.size() / 3),
-            vertexCount > 0 ? (float)indices.size() / vertexCount : 0.0f);
-
-    return result;
-}
-
-// ─────────────────────────────────────────────────────────────
-void MdxSkinQuantizer::relax(
-    std::vector<VertexWeights>& weights,
-    const std::vector<ir::Vertex>& vertices,
-    const std::vector<std::vector<uint32_t>>& adjacency) const
-{
-    const size_t N = weights.size();
-    if (N == 0) return;
-
-    MDX_LOG(_T("  Relaxation: %d iterations, temp %.2f→%.2f, alpha=%.2f\n"),
-            kRelaxIterations, kTempStart, kTempEnd, kRelaxAlpha);
-
-    std::vector<VertexWeights> next(N);
-
-    for (int iter = 0; iter < kRelaxIterations; ++iter) {
-        float t = (kRelaxIterations > 1)
-                      ? static_cast<float>(iter) / (kRelaxIterations - 1)
-                      : 1.0f;
-        float temperature = kTempStart * (1.0f - t) + kTempEnd * t;
-
-        for (size_t vi = 0; vi < N; ++vi) {
-            VertexWeights blended;
-            for (auto& bw : weights[vi])
-                mergeWeight(blended, bw.boneId, bw.weight * (1.0f - kRelaxAlpha));
-
-            float totalInvDist = 0.0f;
-            const auto& neighbors = adjacency[vi];
-            Point3 posV = vertices[vi].position;
-
-            for (uint32_t ni : neighbors) {
-                Point3 delta = posV - vertices[ni].position;
-                float dist = Length(delta);
-                float invDist = 1.0f / std::max(dist, 1e-6f);
-                totalInvDist += invDist;
-                for (auto& bw : weights[ni])
-                    mergeWeight(blended, bw.boneId, bw.weight * invDist);
-            }
-
-            if (totalInvDist > 1e-7f && !neighbors.empty()) {
-                float neighborSum = 0.0f;
-                float ownSum = 0.0f;
-                for (auto& bw : blended) neighborSum += bw.weight;
-                for (auto& bw : weights[vi]) ownSum += bw.weight;
-                ownSum *= (1.0f - kRelaxAlpha);
-                float rawNeighborSum = neighborSum - ownSum;
-                if (rawNeighborSum > 1e-7f) {
-                    VertexWeights corrected;
-                    for (auto& bw : weights[vi])
-                        mergeWeight(corrected, bw.boneId, bw.weight * (1.0f - kRelaxAlpha));
-                    for (uint32_t ni : neighbors) {
-                        Point3 d = posV - vertices[ni].position;
-                        float dist = Length(d);
-                        float invDist = 1.0f / std::max(dist, 1e-6f);
-                        float w = (invDist / totalInvDist) * kRelaxAlpha;
-                        for (auto& bw : weights[ni])
-                            mergeWeight(corrected, bw.boneId, bw.weight * w);
-                    }
-                    blended = std::move(corrected);
-                }
-            }
-
-            normalize(blended);
-            sharpen(blended, temperature);
-            prune(blended, kMinWeight);
-            normalize(blended);
-
-            std::sort(blended.begin(), blended.end(),
-                      [](const BoneWeight& a, const BoneWeight& b) {
-                          return a.weight > b.weight;
-                      });
-
-            if (blended.size() > kMaxSlots)
-                blended.resize(kMaxSlots);
-            normalize(blended);
-
-            next[vi] = std::move(blended);
-        }
-
-        weights.swap(next);
-
-        // Debug: after each iteration, count unique bone combos
-        std::map<std::vector<uint32_t>, int> combos;
-        for (auto& w : weights) {
-            std::vector<uint32_t> ids;
-            for (auto& bw : w) ids.push_back(bw.boneId);
-            combos[ids]++;
-        }
-        MDX_LOG(_T("    iter %d: temp=%.3f, %d unique bone combos\n"),
-                iter, temperature, (int)combos.size());
-    }
-}
-
-// ─────────────────────────────────────────────────────────────
+// Nearest-uniform snap.
+//
+// Keeping the top k bones costs, in squared error against the normalized
+// weight vector w (sorted descending, sum 1):
+//
+//   E(k) = Σ_{i<k} (w_i − 1/k)²  +  Σ_{i≥k} w_i²
+//        = Σ_i w_i²  +  (1 − 2·S_k) / k          where S_k = Σ_{i<k} w_i
+//
+// The Σ w_i² term is constant across k, so minimizing E(k) is minimizing
+// (1 − 2·S_k)/k. Ties resolve to the smaller k (fewer bones, smaller MATS).
+//
+// Sanity checks this reproduces: {1.0} → 1 bone; {0.5,0.5} → 2 bones;
+// {0.25×4} → 4 bones (all exact round-trips of classic data); {0.8,0.2} → 1
+// bone and {0.7,0.3} → 2 bones (crossover at 0.75, the midpoint between the
+// 1.0 and 0.5 lattice points); {0.97,0.03} → 1 bone.
 MdxSkinQuantizer::SlotAssignment
 MdxSkinQuantizer::assignSlots(const VertexWeights& weights) const {
     if (weights.empty()) {
@@ -249,11 +154,24 @@ MdxSkinQuantizer::assignSlots(const VertexWeights& weights) const {
         return sa;
     }
 
-    int numBones = static_cast<int>(std::min(weights.size(), size_t(kMaxSlots)));
+    const int maxK = static_cast<int>(std::min(weights.size(), size_t(kMaxSlots)));
+
+    int   bestK    = 1;
+    float bestCost = std::numeric_limits<float>::max();
+    float prefix   = 0.0f;
+
+    for (int k = 1; k <= maxK; ++k) {
+        prefix += weights[k - 1].weight;
+        float cost = (1.0f - 2.0f * prefix) / static_cast<float>(k);
+        if (cost < bestCost - 1e-6f) {   // strict: ties keep the smaller k
+            bestCost = cost;
+            bestK = k;
+        }
+    }
 
     SlotAssignment sa;
-    sa.count = numBones;
-    for (int i = 0; i < numBones; ++i)
+    sa.count = bestK;
+    for (int i = 0; i < bestK; ++i)
         sa.boneIds[i] = weights[i].boneId;
 
     std::sort(sa.boneIds, sa.boneIds + sa.count);
@@ -263,70 +181,102 @@ MdxSkinQuantizer::assignSlots(const VertexWeights& weights) const {
 // ─────────────────────────────────────────────────────────────
 MdxSkinQuantizer::Result
 MdxSkinQuantizer::buildResult(const std::vector<SlotAssignment>& assignments) const {
-    std::map<SlotAssignment, uint8_t> groupMap;
+    // Unique groups, in first-use order, with a usage count each.
+    std::map<SlotAssignment, uint32_t> groupMap;   // group -> slot in groupList
     std::vector<SlotAssignment> groupList;
+    std::vector<uint32_t>       usage;
 
     for (auto& sa : assignments) {
-        if (groupMap.find(sa) == groupMap.end()) {
-            uint8_t idx = static_cast<uint8_t>(groupList.size());
-            groupMap[sa] = idx;
+        auto [it, inserted] =
+            groupMap.emplace(sa, static_cast<uint32_t>(groupList.size()));
+        if (inserted) {
             groupList.push_back(sa);
+            usage.push_back(0);
         }
+        usage[it->second]++;
     }
 
     MDX_LOG(_T("  buildResult: %d unique matrix groups from %d vertices\n"),
             (int)groupList.size(), (int)assignments.size());
 
-    if (groupList.size() > kMaxGroups) {
+    // GNDX is u8, so at most 255 groups survive. Fold the least-used groups
+    // into their closest surviving neighbour (largest bone overlap, then
+    // smallest symmetric difference, then highest usage).
+    //
+    // `resolved` maps every original slot to the slot that now represents it;
+    // the compaction at the end derives the final u8 indices from it. The old
+    // code decremented indices in place while remapping, which shifted the
+    // merge *target* out from under the vertices that had just been pointed at
+    // it whenever the target sat above the victim — sending those vertices to
+    // an unrelated bone set.
+    std::vector<uint32_t> resolved(groupList.size());
+    std::iota(resolved.begin(), resolved.end(), 0u);
+    std::vector<bool> alive(groupList.size(), true);
+    size_t aliveCount = groupList.size();
+
+    if (aliveCount > kMaxGroups) {
         MDX_LOG(_T("  ⚠ Exceeds %d groups! Merging...\n"), kMaxGroups);
-        std::vector<int> usage(groupList.size(), 0);
-        for (auto& sa : assignments)
-            usage[groupMap[sa]]++;
 
-        while (groupList.size() > kMaxGroups) {
-            int minIdx = 0;
-            for (size_t i = 1; i < groupList.size(); ++i) {
-                if (usage[i] < usage[minIdx]) minIdx = static_cast<int>(i);
-            }
-
-            int bestMerge = (minIdx == 0) ? 1 : 0;
-            int bestOverlap = -1;
+        while (aliveCount > kMaxGroups) {
+            // Least-used surviving group is the victim.
+            int victim = -1;
             for (size_t i = 0; i < groupList.size(); ++i) {
-                if (static_cast<int>(i) == minIdx) continue;
+                if (!alive[i]) continue;
+                if (victim < 0 || usage[i] < usage[victim]) victim = static_cast<int>(i);
+            }
+            if (victim < 0) break;
+
+            const SlotAssignment& vg = groupList[victim];
+
+            int      target     = -1;
+            int      bestScore  = std::numeric_limits<int>::min();
+            uint32_t bestUsage  = 0;
+            for (size_t i = 0; i < groupList.size(); ++i) {
+                if (!alive[i] || static_cast<int>(i) == victim) continue;
+                const SlotAssignment& tg = groupList[i];
+
                 int overlap = 0;
-                for (int a = 0; a < groupList[minIdx].count; ++a)
-                    for (int b = 0; b < groupList[i].count; ++b)
-                        if (groupList[minIdx].boneIds[a] == groupList[i].boneIds[b])
-                            ++overlap;
-                if (overlap > bestOverlap) {
-                    bestOverlap = overlap;
-                    bestMerge = static_cast<int>(i);
+                for (int a = 0; a < vg.count; ++a)
+                    for (int b = 0; b < tg.count; ++b)
+                        if (vg.boneIds[a] == tg.boneIds[b]) { ++overlap; break; }
+
+                // 2*overlap - (|A| + |B|) == -(symmetric difference size).
+                int score = 2 * overlap - (vg.count + tg.count);
+                if (score > bestScore ||
+                    (score == bestScore && usage[i] > bestUsage)) {
+                    bestScore = score;
+                    bestUsage = usage[i];
+                    target = static_cast<int>(i);
                 }
             }
+            if (target < 0) break;
 
-            uint8_t oldIdx = static_cast<uint8_t>(minIdx);
-            uint8_t newIdx = static_cast<uint8_t>(bestMerge);
-            for (auto& [sa, idx] : groupMap) {
-                if (idx == oldIdx) idx = newIdx;
-                else if (idx > oldIdx) --idx;
-            }
-            usage[bestMerge] += usage[minIdx];
-            groupList.erase(groupList.begin() + minIdx);
-            usage.erase(usage.begin() + minIdx);
+            for (auto& r : resolved)
+                if (r == static_cast<uint32_t>(victim)) r = static_cast<uint32_t>(target);
+            usage[target] += usage[victim];
+            alive[victim] = false;
+            --aliveCount;
         }
-        MDX_LOG(_T("  → Merged down to %d groups\n"), (int)groupList.size());
+        MDX_LOG(_T("  → Merged down to %d groups\n"), (int)aliveCount);
     }
 
+    // Compact surviving slots to consecutive u8 indices.
+    std::vector<uint8_t> compact(groupList.size(), 0);
     Result result;
+    {
+        uint32_t next = 0;
+        for (size_t i = 0; i < groupList.size(); ++i) {
+            if (!alive[i]) continue;
+            compact[i] = static_cast<uint8_t>(next++);
+            result.matrixGroups.push_back(static_cast<uint32_t>(groupList[i].count));
+            for (int b = 0; b < groupList[i].count; ++b)
+                result.matrixIndices.push_back(groupList[i].boneIds[b]);
+        }
+    }
+
     result.vertexGroups.resize(assignments.size());
     for (size_t vi = 0; vi < assignments.size(); ++vi)
-        result.vertexGroups[vi] = groupMap[assignments[vi]];
-
-    for (auto& grp : groupList) {
-        result.matrixGroups.push_back(static_cast<uint32_t>(grp.count));
-        for (int i = 0; i < grp.count; ++i)
-            result.matrixIndices.push_back(grp.boneIds[i]);
-    }
+        result.vertexGroups[vi] = compact[resolved[groupMap[assignments[vi]]]];
 
     // Debug: dump first 10 matrix groups
     MDX_LOG(_T("  Matrix groups (first 10):\n"));
@@ -351,8 +301,6 @@ MdxSkinQuantizer::quantize(const ir::Mesh& mesh,
     MDX_LOG(_T("── SkinQuantizer::quantize \"%S\" ──\n"), mesh.name.c_str());
 
     auto weights = extractWeights(mesh, hierarchy);
-    auto adjacency = buildAdjacency(mesh.indices, mesh.vertices.size());
-    relax(weights, mesh.vertices, adjacency);
 
     std::vector<SlotAssignment> assignments(weights.size());
     for (size_t vi = 0; vi < weights.size(); ++vi)
