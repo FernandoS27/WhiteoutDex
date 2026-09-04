@@ -87,7 +87,11 @@ void loadOptionsFromINI(Interface* gi, MdxExportOptions& opts) {
     std::wstring iniPath = std::wstring(dir.data()) + L"\\MDLXExporter.ini";
     if (GetFileAttributesW(iniPath.c_str()) == INVALID_FILE_ATTRIBUTES) return;
     auto gs = [&](const wchar_t* k){ return iniGetString(iniPath.c_str(),L"Settings",k); };
-    auto mn=gs(L"ModelName"); if(!mn.empty()) opts.modelName=wcharToUtf8(mn.c_str());
+    // ModelName is deliberately NOT restored here. It is a per-scene value but
+    // the INI is per-user, so seeding it stamped the last exported model's name
+    // onto every later export — including headless ones, which never see the
+    // dialog. The dialog still prefills its field from the INI for an unsaved
+    // scene; a saved scene's name wins over both (see DoExport).
     auto ver=gs(L"ExportVersion"); if(!ver.empty()){int v=_wtoi(ver.c_str()); opts.version=(v==2||v==1200)?1200:800;}
     auto m=gs(L"MergeSimilarMeshes"); if(!m.empty()) opts.mergeGeosets=iniBool(m);
     auto fsn=gs(L"FixSharedNormals"); if(!fsn.empty()) opts.fixSharedNormals=iniBool(fsn);
@@ -843,14 +847,22 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         filePath = candidate;
     }
 
-    if (!opts.modelName.empty()) mdxModel.modelName = opts.modelName;
-    else {
+    // MODL name: an explicit name from the dialog wins; otherwise the saved
+    // scene's own name; and only for a never-saved scene does the export
+    // filename stand in. The dialog seeds its field from the scene too, so the
+    // scene name is what a normal interactive export ends up writing.
+    if (!opts.modelName.empty()) {
+        mdxModel.modelName = opts.modelName;
+    } else if (std::wstring sceneName = currentSceneModelName(); !sceneName.empty()) {
+        mdxModel.modelName = wcharToUtf8(sceneName.c_str());
+    } else {
         auto sl = filePath.find_last_of("/\\");
         auto st = (sl != std::string::npos) ? filePath.substr(sl + 1) : filePath;
         auto dt = st.rfind('.');
         if (dt != std::string::npos) st = st.substr(0, dt);
         mdxModel.modelName = st;
     }
+    ELOG << "MODL name: '" << mdxModel.modelName << "'\n";
 
     whiteout::mdx::Writer writer;
     writer.write(filePath, mdxModel);

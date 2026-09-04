@@ -30,6 +30,32 @@ struct DialogState {
 };
 
 // ============================================================================
+// Scene name (shared with mdx_exporter_plugin.cpp — see export_dialog.h)
+// ============================================================================
+
+std::wstring currentSceneModelName() {
+    auto* gi = GetCOREInterface();
+    if (!gi) return {};
+
+    // GetCurFilePath() is empty until the scene has been saved at least once.
+    MSTR filePathStr = gi->GetCurFilePath();
+    const MCHAR* filePath = filePathStr.data();
+    if (!filePath || !filePath[0]) return {};
+
+    std::wstring fp(filePath);
+
+    size_t lastSlash = fp.find_last_of(L"\\/");
+    if (lastSlash != std::wstring::npos)
+        fp = fp.substr(lastSlash + 1);
+
+    size_t dot = fp.rfind(L'.');
+    if (dot != std::wstring::npos)
+        fp = fp.substr(0, dot);
+
+    return fp;
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -782,32 +808,14 @@ static INT_PTR CALLBACK ExportDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPA
         optionsToDialog(hDlg, *ds->opts);
         loadDialogSettingsFromINI(hDlg);
 
-        // If Model Name is still empty, default to the scene filename
-        // (without path and .max extension). E.g. "arquebus_21.max" → "arquebus_21"
-        {
-            wchar_t curName[256]{};
-            GetDlgItemTextW(hDlg, IDC_EDT_MODEL_NAME, curName, 256);
-            if (curName[0] == L'\0') {
-                auto* gi = GetCOREInterface();
-                if (gi) {
-                    MSTR filePathStr = gi->GetCurFilePath();
-                    const MCHAR* filePath = filePathStr.data();
-                    if (filePath && filePath[0]) {
-                        std::wstring fp(filePath);
-                        // Strip directory
-                        size_t lastSlash = fp.find_last_of(L"\\/");
-                        std::wstring fname = (lastSlash != std::wstring::npos)
-                            ? fp.substr(lastSlash + 1) : fp;
-                        // Strip .max extension
-                        size_t dot = fname.rfind(L'.');
-                        if (dot != std::wstring::npos)
-                            fname = fname.substr(0, dot);
-                        if (!fname.empty())
-                            SetDlgItemTextW(hDlg, IDC_EDT_MODEL_NAME, fname.c_str());
-                    }
-                }
-            }
-        }
+        // Model Name follows the scene: a saved scene always seeds the field
+        // with its own name, overriding whatever the INI restored a moment ago.
+        // The persisted value is per-user, not per-scene, so leaving it in
+        // place stamped the previously exported model's name onto every later
+        // export. The user can still type over it for this one export.
+        // An unsaved scene keeps the INI value (there is nothing better).
+        if (std::wstring sceneName = currentSceneModelName(); !sceneName.empty())
+            SetDlgItemTextW(hDlg, IDC_EDT_MODEL_NAME, sceneName.c_str());
 
         // Apply initial visibility based on tab + format version,
         // then cascade enabled state (dithering depends on BLP compression).
