@@ -130,6 +130,49 @@ std::string makeWc3RelativePath(const std::wstring& absPath) {
     return wideToUtf8(absPath.c_str());
 }
 
+// Warcraft III addresses attachment points through the MDX `attachmentId`
+// field, NOT through the node name. Verified against the Reforged debug build
+// (Engine/Source/Model/MdlSgModel.cpp!ProcessAttachments):
+//
+//     attachIdToIndex.SetCount(attachments.back().attachmentId + 1);
+//     memset(attachIdToIndex, 0xFF, bytes);
+//     for (i = 0; i < count; ++i)
+//         attachIdToIndex[attachments[i].attachmentId] = i;
+//
+// The name only picks a *slot* — ModelEnumLinkPoints hands the tokenizer
+// `shared->attachId` as the index of the CLinkList property array, and
+// ModelAddLink turns the matched slot back into an attachment through
+// HasLinkPoint() -> attachIdToIndex[id].
+//
+// So the ids must satisfy two invariants or the model misbehaves in game:
+//
+//   * They must be unique. Duplicates collapse onto one slot and the LAST
+//     attachment written wins it — which is why a rig whose attachments all
+//     kept the plugin's default id of 0 puts every attached effect on its
+//     final attachment (usually "Overhead Ref").
+//   * The last attachment must carry the highest id, because that value alone
+//     sizes the lookup table; anything above it is silently dropped.
+//
+// Blizzard's own exporter writes id == index. Re-derive that whenever the
+// scene's ids don't already satisfy the invariants.
+bool attachmentIdsAreValid(const std::vector<ir::Attachment>& atts) {
+    if (atts.empty()) return true;
+
+    std::vector<int32_t> seen;
+    seen.reserve(atts.size());
+    int32_t maxId = -1;
+
+    for (const auto& a : atts) {
+        if (a.attachmentId < 0) return false;
+        if (std::find(seen.begin(), seen.end(), a.attachmentId) != seen.end())
+            return false;
+        seen.push_back(a.attachmentId);
+        if (a.attachmentId > maxId) maxId = a.attachmentId;
+    }
+
+    return atts.back().attachmentId == maxId;
+}
+
 } // anonymous namespace
 
 void extractAttachments(const std::vector<core::SceneNode>& nodes,
@@ -195,9 +238,11 @@ void extractAttachments(const std::vector<core::SceneNode>& nodes,
         }
 
         // ── Attachment ID ──
-        // Even when usesAttachmentId=false, write the stored value.
-        // The game defaults to 0 when the field isn't used, and the
-        // round-trip invariant needs the original ID preserved.
+        // Take the stored value even when usesAttachmentId=false, so a
+        // round-tripped model keeps the IDs the importer read out of the
+        // file. The set is validated (and renumbered when it can't work in
+        // game) after every attachment has been collected — see
+        // attachmentIdsAreValid().
         attach.attachmentId = static_cast<int32_t>(attachmentId);
 
         // ── Visibility track (KATV) ──
@@ -216,7 +261,28 @@ void extractAttachments(const std::vector<core::SceneNode>& nodes,
         model.attachments.push_back(std::move(attach));
     }
 
+    // ── Attachment ID invariants ──
+    // A scene authored in Max leaves every attachment on the plugin's default
+    // ID of 0, which makes Warcraft III resolve every attach point to the last
+    // attachment in the file. Renumber whenever the set can't work in game.
+    if (!attachmentIdsAreValid(model.attachments)) {
+        for (size_t i = 0; i < model.attachments.size(); ++i)
+            model.attachments[i].attachmentId = static_cast<int32_t>(i);
+
+        reporter.info(L"Attachment IDs were duplicated or out of order and have "
+                      L"been renumbered 0-N in export order. Warcraft III keys "
+                      L"attachment points by ID, so the original numbering would "
+                      L"have collapsed every attach point onto one attachment.");
+        ALOG_A << "  [FIX] attachment IDs renumbered sequentially 0.."
+               << (model.attachments.empty() ? 0 : model.attachments.size() - 1)
+               << "\n";
+    }
+
     ALOG_A << "\n  Total attachments extracted: " << model.attachments.size() << "\n";
+    for (size_t i = 0; i < model.attachments.size(); ++i) {
+        ALOG_A << "    [" << i << "] '" << model.attachments[i].name
+               << "' attachmentId=" << model.attachments[i].attachmentId << "\n";
+    }
     AFLUSH;
 }
 
