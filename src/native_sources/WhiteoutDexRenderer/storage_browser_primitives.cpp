@@ -340,19 +340,40 @@ const SharedCasc* AcquireForExtract(const std::string& root, std::string& error)
 
 // Read `archivePath` out of `casc`, accepting either spelling the rest of this
 // file deals in: the original archive path the browser hands back (mod chain
-// and all) or the stripped relative path a resource stores. The chain order
-// mirrors CascSource's — HD overrides win — so a bare path resolves to the
-// same file the renderer would draw.
+// and all) or the stripped relative path a resource stores.
+//
+// A fully qualified path is read verbatim and a miss is a miss — it names one
+// mod's copy and substituting another's would be answering a different
+// question.
+//
+// A bare path is ambiguous, and the order below is what resolves it: SD, then
+// HD, then the deprecated overlay. That is the order MDLXImporter's texture
+// resolver walks and the order FileContentProvider walks with HD mode off
+// (its default), so a relative path extracted here is the same file the
+// viewport draws and the same one the importer pulls textures from.
+//
+// Reading the path verbatim comes LAST rather than first, which is the fix for
+// "picked the SD model, got the HD one". Warcraft III's TVFS also lists every
+// file under a bare name that is the mod chain already resolved, and that name
+// reads the HD copy whenever one exists — so trying it first quietly turned
+// every relative read into an HD read. It still runs, because a handful of
+// stock textures are named nowhere else.
 bool ReadArchiveFile(const SharedCasc& casc, const std::string& archivePath,
                      std::vector<whiteout::u8>& out) {
-    if (auto data = casc.Storage().readFile(archivePath)) {
-        out = std::move(*data);
-        return true;
+    if (archivePath.find(':') != std::string::npos) {
+        if (auto data = casc.Storage().readFile(archivePath)) {
+            out = std::move(*data);
+            return true;
+        }
+        return false;
     }
-    if (archivePath.find(':') != std::string::npos)
-        return false; // already fully qualified; a miss is a miss
 
-    static const char* kPrefixes[] = {"war3.w3mod:_hd.w3mod:", "war3.w3mod:"};
+    static const char* kPrefixes[] = {
+        "war3.w3mod:",
+        "war3.w3mod:_hd.w3mod:",
+        "war3.w3mod:_deprecated.w3mod:",
+        "", // the resolved namespace, and any product that has no mod chain
+    };
     for (const char* prefix : kPrefixes) {
         if (auto data = casc.Storage().readFile(prefix + archivePath)) {
             out = std::move(*data);
@@ -817,8 +838,8 @@ Value* WdxPickAsset_cf(Value** arg_list, int count) {
 //
 // `archivePath` may be either spelling: the original ("war3.w3mod:_hd.w3mod:
 // units\...\druid.mdx") or the stripped relative path a resource stores. The
-// original is exact; a bare path is resolved HD-first, the way the renderer
-// would.
+// original is exact; a bare path is resolved SD first, then HD, then the
+// deprecated overlay — the order the renderer and the importer both use.
 // ============================================================================
 def_visible_primitive(WdxExtractAsset, "WdxExtractAsset");
 Value* WdxExtractAsset_cf(Value** arg_list, int count) {

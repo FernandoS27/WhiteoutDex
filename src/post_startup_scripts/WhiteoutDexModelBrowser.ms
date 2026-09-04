@@ -244,7 +244,8 @@ struct WhiteoutDexModelBrowserStruct
 
 	     relPath     the stored form, used to place the file under temp
 	     archivePath the original entry to read; pass relPath again if that is
-	                 all you have and HD-first resolution is acceptable */
+	                 all you have, and it resolves SD first, then HD, then the
+	                 deprecated overlay */
 	public fn extractToTemp relPath archivePath =
 	(
 		if not wdxMBPrimitivesAvailable() then return undefined
