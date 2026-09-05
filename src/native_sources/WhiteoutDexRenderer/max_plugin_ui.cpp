@@ -262,31 +262,58 @@ void MaxPluginUI::BuildToolbar() {
     RenderService& svc = win_.Service();
     model::Actor* focus = svc.Scene().Actors().Find(win_.FocusActor());
 
-    // ---- Animation sequence (driven by Max's timeline; the dropdown only
-    //      picks which range we're previewing) ----
+    // ---- Animation sequence ----
+    //
+    // Two-way with Max's timeline, and Max is the one holding the pen: the
+    // selection is whichever pushed sequence the *animation range* currently
+    // spans (RenderWindow::ActiveSequenceIdx, republished by the plugin's sync
+    // timer), so dragging the range in Max moves this combo on its own. A range
+    // that is nobody's sequence reads as "Free Range".
+    //
+    // Picking an entry only leaves a request behind - Interface::SetAnimRange
+    // is Max-UI-thread work - which the same timer applies a tick later.
     const auto seqs = win_.SequenceNamesSnapshot();
     if (!seqs.empty()) {
-        i32 sel = focus ? focus->animation.ActiveSequenceIndex() : 0;
-        sel = std::clamp(sel, 0, (i32)seqs.size() - 1);
+        const i32 active = win_.ActiveSequenceIdx();
+        const bool isFree = (active < 0 || active >= static_cast<i32>(seqs.size()));
+        const char* preview =
+            isFree ? i18n::tr("wdx.toolbar.animation.free") : seqs[active].c_str();
+
+        // Switching sequences invalidates whatever the old one splatted on the
+        // ground - except for the decay/dissipate pair, whose whole job is to
+        // play out over a corpse the previous sequence left behind.
+        const auto requestSequence = [&](i32 idx) {
+            if (idx == active)
+                return;
+            win_.RequestSequence(idx);
+            const bool keep = idx >= 0 && idx < static_cast<i32>(seqs.size()) &&
+                              (seqs[idx].find("decay") != std::string::npos ||
+                               seqs[idx].find("dissipate") != std::string::npos);
+            if (!keep)
+                svc.Splats().Clear();
+        };
+
         ImGui::SetNextItemWidth(220);
-        if (ImGui::BeginCombo(i18n::tr("toolbar.animation"), seqs[sel].c_str())) {
+        // Hover-test before the popup body: EndCombo closes a window, and the
+        // last-item state IsItemHovered reads would be whatever was drawn
+        // inside it rather than the combo itself.
+        const bool comboOpen = ImGui::BeginCombo(i18n::tr("toolbar.animation"), preview);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", i18n::tr("wdx.toolbar.animation.tip"));
+        if (comboOpen) {
+            if (ImGui::Selectable(i18n::tr("wdx.toolbar.animation.free"), isFree))
+                requestSequence(-1);
             for (i32 i = 0; i < static_cast<i32>(seqs.size()); ++i) {
-                const bool isSel = (i == sel);
-                if (ImGui::Selectable(seqs[i].c_str(), isSel)) {
-                    if (focus) {
-                        const i32 prev = focus->animation.ActiveSequenceIndex();
-                        focus->animation.SetActiveSequenceIndex(i);
-                        if (i != prev) {
-                            const std::string& name = seqs[i];
-                            const bool keep = (name.find("decay") != std::string::npos) ||
-                                              (name.find("dissipate") != std::string::npos);
-                            if (!keep)
-                                svc.Splats().Clear();
-                        }
-                    }
-                }
+                // Duplicate sequence names are routine in WC3 models and ImGui
+                // derives a Selectable's id from its label, so without the
+                // index push the second "Stand" would drive the first one.
+                ImGui::PushID(i);
+                const bool isSel = (i == active);
+                if (ImGui::Selectable(seqs[i].c_str(), isSel))
+                    requestSequence(i);
                 if (isSel)
                     ImGui::SetItemDefaultFocus();
+                ImGui::PopID();
             }
             ImGui::EndCombo();
         }

@@ -573,6 +573,18 @@ struct WdxSequenceManager
             )
             -- This dialog is now in sync with the scene again.
             this.caSignature = this.caSignatureNow()
+
+            -- ...and so is a running preview. Its Animation dropdown is a view
+            -- of these very ranges, so an edit made here has to reach it or the
+            -- combo keeps offering sequences the timeline no longer has. Silent
+            -- when the previewer is not up, which is the common case, and
+            -- silent too on a build whose .dlx predates WhiteoutFlakesIsRunning.
+            try
+            (
+                if (WhiteoutFlakesIsRunning()) do
+                    WdxPushRendererSequencesFrom this.sequences
+            )
+            catch()
         ) catch (format "** WDX saveSequences ERROR: %\n" (getCurrentException()))
     ),
 	
@@ -2404,6 +2416,41 @@ fn WdxSequenceManagerRefresh =
 )
 
 -- ============================================================================
+-- WdxPushRendererSequencesFrom <sequences>
+--
+-- The push itself, against a list already in hand. Split out of
+-- WdxPushRendererSequences below so an edit made in the Sequence Manager can
+-- reach a running preview without a LoadSequences round-trip: saveSequences
+-- calls this with the very array it just wrote, and reloading there would swap
+-- the sequence objects out from under the dialog's own rollout handlers.
+--
+-- Returns the number of ranges the previewer accepted.
+-- ============================================================================
+global WdxPushRendererSequencesFrom
+fn WdxPushRendererSequencesFrom seqs =
+(
+    if seqs == undefined then return 0
+    local namesArr  = #()
+    local startsArr = #()
+    local endsArr   = #()
+    for s in seqs do
+    (
+        try
+        (
+            append namesArr  (s.name as string)
+            append startsArr (s.startTime as integer)
+            append endsArr   (s.endTime   as integer)
+        )
+        catch
+        (
+            format "WDX Renderer:   skipped seq (decode failed): %\n" (getCurrentException())
+        )
+    )
+    format "WDX Renderer: pushing % sequences via WhiteoutFlakesPushSequences\n" namesArr.count
+    if namesArr.count > 0 then (WhiteoutFlakesPushSequences namesArr startsArr endsArr) else 0
+)
+
+-- ============================================================================
 -- WdxPushRendererSequences
 --
 -- Hand the running previewer the scene's current sequence ranges. Called by
@@ -2413,8 +2460,9 @@ fn WdxSequenceManagerRefresh =
 -- popcorn animVisibilityGuide gate has no current-animation name to match
 -- against so every emitter spawns on every sequence.
 --
--- Forces a LoadSequences() so it works even when the Sequence Manager UI has
--- never been opened this session. Returns the number of ranges pushed.
+-- Re-reads the scene first (through refreshFromScene, which also rebuilds the
+-- dialog's list) so it works even when the Sequence Manager UI has never been
+-- opened this session. Returns the number of ranges pushed.
 -- ============================================================================
 global WdxPushRendererSequences
 fn WdxPushRendererSequences =
@@ -2424,29 +2472,20 @@ fn WdxPushRendererSequences =
         format "WDX Renderer: WdxSequenceManager is undefined - no sequences pushed\n"
     else
     (
-        try (::WdxSequenceManager.sequences = ::WdxSequenceManager.LoadSequences()) catch
-            (format "WDX Renderer: LoadSequences threw: %\n" (getCurrentException()))
+        -- refreshFromScene, not a bare LoadSequences. The load mints brand new
+        -- Wc3Sequence objects, and an open Sequence Manager dialog is holding
+        -- the OLD ones in filteredSequences. Swapping this.sequences without
+        -- rebuilding the list left every row pointing at an orphan, so
+        -- `findItem self.sequences seq` returned 0: double-clicking a row
+        -- played nothing, and a rename edited an object no save would ever
+        -- write. That was the "open the Sequence Manager, then the renderer,
+        -- and the list goes dead" bug. refreshFromScene reloads AND calls
+        -- setListItems, and is harmless when the dialog was never shown.
+        try (::WdxSequenceManager.refreshFromScene()) catch
+            (format "WDX Renderer: refreshFromScene threw: %\n" (getCurrentException()))
         local seqs = ::WdxSequenceManager.sequences
         format "WDX Renderer: WdxSequenceManager has % sequences\n" seqs.count
-        local namesArr  = #()
-        local startsArr = #()
-        local endsArr   = #()
-        for s in seqs do
-        (
-            try
-            (
-                append namesArr  (s.name as string)
-                append startsArr (s.startTime as integer)
-                append endsArr   (s.endTime   as integer)
-            )
-            catch
-            (
-                format "WDX Renderer:   skipped seq (decode failed): %\n" (getCurrentException())
-            )
-        )
-        format "WDX Renderer: pushing % sequences via WhiteoutFlakesPushSequences\n" namesArr.count
-        if namesArr.count > 0 do
-            pushed = WhiteoutFlakesPushSequences namesArr startsArr endsArr
+        pushed = WdxPushRendererSequencesFrom seqs
     )
     pushed
 )

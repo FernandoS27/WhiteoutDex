@@ -12,6 +12,7 @@
 //   WhiteoutFlakesStop()              → Stop everything + close window
 //   WhiteoutFlakesResync()            → Re-extract the whole scene in place
 //   WhiteoutFlakesRefreshMaterials()  → Re-read material properties (hot reload)
+//   WhiteoutFlakesIsRunning()         → Is the preview window up?
 // ============================================================================
 
 #include "cubeb_sound_emitter.h"
@@ -28,6 +29,7 @@
 #include "whiteout/flakes/gfx_types.h"   // GfxApi
 #include "whiteout/flakes/types.h"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <memory>
@@ -75,6 +77,24 @@ static DWORD g_lastTimeChangedTick = 0;
 // after every rescan.
 static std::vector<whiteout::flakes::SequenceRange> g_sequenceRanges;
 
+// The same sequences again, this time carrying Max's own unit - ticks - which
+// is what Interface::Get/SetAnimRange speaks. Kept alongside the millisecond
+// copy above rather than converted back on demand: MaxTimeToMs rounds, and the
+// toolbar's "is the timeline sitting on a sequence?" test has to be exact.
+struct TimelineSequence {
+    std::string name;
+    TimeValue startTick = 0;
+    TimeValue endTick = 0;
+    i32 startMs = 0;
+    i32 endMs = 0;
+};
+static std::vector<TimelineSequence> g_timelineSequences;
+
+// Last index handed to the preview window, so the 20 ms sync tick only writes
+// on an actual change. -2 is "nothing published yet" and forces the next tick
+// to write whatever it finds, including -1.
+static i32 g_publishedSequenceIdx = -2;
+
 // Re-entrancy guard for the full rebuild: it parks the render thread and moves
 // Max's time cursor, and neither timer may re-enter it while that runs.
 static bool g_rebuilding = false;
@@ -97,6 +117,97 @@ static void EvalFromMax(i32 timeMs) {
     g_actor->animation.SetTimeMs(timeMs);
     g_scene->SetAnimationTime(timeMs);
     g_actor->EvaluateAndApply(g_renderer->MakeActorEvalContext());
+}
+
+// ============================================================================
+// Animation combo <-> Max timeline
+//
+// The preview's Animation dropdown does not play anything: Max drives the
+// clock, so the dropdown reflects which sequence Max's *animation range* spans
+// and, when the user picks a different one, asks Max to move that range. Both
+// halves are Max-UI-thread work and live on the sync timer; the render thread
+// only reads an atomic and raises a request.
+// ============================================================================
+
+// Hand the preview window the list its Animation combo draws. The names double
+// as the ImGui labels; the millisecond ranges ride along because RenderWindow
+// stores SequenceInfo.
+static void PublishTimelineSequencesToWindow() {
+    if (!g_renderWindow)
+        return;
+    std::vector<std::string> names;
+    std::vector<whiteout::flakes::renderer::model::SequenceInfo> infos;
+    names.reserve(g_timelineSequences.size());
+    infos.reserve(g_timelineSequences.size());
+    for (const auto& ts : g_timelineSequences) {
+        names.push_back(ts.name);
+        whiteout::flakes::renderer::model::SequenceInfo si;
+        si.name = ts.name;
+        si.startMs = ts.startMs;
+        si.endMs = ts.endMs;
+        infos.push_back(std::move(si));
+    }
+    g_renderWindow->SetSequences(std::move(names), std::move(infos));
+}
+
+// Which pushed sequence is Max's animation range sitting on? -1 when it is
+// nobody's. The match is exact on both ends because that is what setting one
+// does - the Sequence Manager (and ApplySequenceRequest below) plant the range
+// on precisely the sequence's bounds, so any other range really is one the
+// user dragged out by hand.
+static i32 MatchSequenceToAnimRange(const Interval& range) {
+    for (usize i = 0; i < g_timelineSequences.size(); ++i) {
+        if (g_timelineSequences[i].startTick == range.Start() &&
+            g_timelineSequences[i].endTick == range.End())
+            return static_cast<i32>(i);
+    }
+    return -1;
+}
+
+// Max timeline -> combo. Cheap enough to run every tick: a handful of integer
+// compares, and it only touches the atomic when the answer changes.
+static void PublishActiveSequence(Interface* ip) {
+    if (!ip || !g_renderWindow)
+        return;
+    const i32 idx = MatchSequenceToAnimRange(ip->GetAnimRange());
+    if (idx == g_publishedSequenceIdx)
+        return;
+    g_publishedSequenceIdx = idx;
+    g_renderWindow->SetActiveSequenceIdx(idx);
+}
+
+// Combo -> Max timeline. A negative `idx` is the "free range" entry, which
+// opens the timeline back up to the span every sequence lives in: the one
+// range that is deliberately not any single sequence and still shows the
+// whole model.
+static void ApplySequenceRequest(Interface* ip, i32 idx) {
+    if (!ip || g_timelineSequences.empty())
+        return;
+
+    TimeValue start = g_timelineSequences[0].startTick;
+    TimeValue end = g_timelineSequences[0].endTick;
+    if (idx >= 0 && idx < static_cast<i32>(g_timelineSequences.size())) {
+        start = g_timelineSequences[idx].startTick;
+        end = g_timelineSequences[idx].endTick;
+    } else {
+        for (const auto& ts : g_timelineSequences) {
+            start = std::min(start, ts.startTick);
+            end = std::max(end, ts.endTick);
+        }
+    }
+    // A zero-length or inverted sequence would leave Max with a timeline it
+    // cannot scrub; the Sequence Manager refuses to play those too.
+    if (start >= end)
+        return;
+
+    ip->SetAnimRange(Interval(start, end));
+    // Land on the first frame of what was just picked, the way the Sequence
+    // Manager's playSequence does: the old cursor is very likely outside the
+    // new range, and Max would otherwise leave it clamped at an end.
+    ip->SetTime(start);
+    // Publish straight away instead of waiting for the next tick, so the combo
+    // does not flash "free range" on its way to the sequence just chosen.
+    PublishActiveSequence(ip);
 }
 
 // ============================================================================
@@ -358,11 +469,19 @@ static bool BuildSceneAndSpawn(Interface* ip) {
     // through.
     {
         auto seqs = g_actor->animation.Sequences();
-        std::vector<std::string> names;
-        names.reserve(seqs.size());
-        for (auto& s : seqs)
-            names.push_back(s.name);
-        g_renderWindow->SetSequences(std::move(names), std::move(seqs));
+        if (seqs.empty()) {
+            // The normal case here: MaxSceneAdapter has no SEQS chunk to
+            // report, so the sequences arrive from the Sequence Manager through
+            // WhiteoutFlakesPushSequences instead. Re-publish that cache rather
+            // than blanking the combo for the rest of a Resync.
+            PublishTimelineSequencesToWindow();
+        } else {
+            std::vector<std::string> names;
+            names.reserve(seqs.size());
+            for (auto& s : seqs)
+                names.push_back(s.name);
+            g_renderWindow->SetSequences(std::move(names), std::move(seqs));
+        }
     }
 
     // Restore Max's time and run an eval so the model is visible before
@@ -465,6 +584,14 @@ static void CALLBACK ViewportSyncTimer(HWND, UINT, UINT_PTR, DWORD) {
         return;
     }
 
+    // Animation combo -> Max's timeline, then Max's timeline -> the combo.
+    // SetAnimRange and GetAnimRange are both Max-UI-thread work, which is why
+    // the render thread can only leave a request behind.
+    Interface* ip = GetCOREInterface();
+    if (i32 req = -1; g_renderWindow->ConsumeSequenceRequest(req))
+        ApplySequenceRequest(ip, req);
+    PublishActiveSequence(ip);
+
     if (!g_renderWindow->SyncCamera())
         return;
     // Re-read every tick rather than caching a ViewExp, which is what makes
@@ -522,6 +649,8 @@ static void WhiteoutFlakesCleanup() {
     // through here, so keeping them would hand the next model the previous
     // one's sequence gate. WhiteoutDex_Renderer re-pushes on every Start.
     g_sequenceRanges.clear();
+    g_timelineSequences.clear();
+    g_publishedSequenceIdx = -2;
     g_rebuilding = false;
     mprintf(_M("WhiteoutDex: === STOPPED ===\n"));
 }
@@ -826,6 +955,21 @@ Value* WhiteoutFlakesStop_cf(Value** /*arg_list*/, i32 count) {
 }
 
 // ============================================================================
+// WhiteoutFlakesIsRunning() -> true while the preview window is up.
+//
+// So MaxScript callers that want to keep the preview in step with an edit -
+// the Sequence Manager re-pushing its list after a save, say - can skip the
+// work, and the diagnostics that go with it, when nobody is watching.
+// ============================================================================
+
+def_visible_primitive(WhiteoutFlakesIsRunning, "WhiteoutFlakesIsRunning");
+Value* WhiteoutFlakesIsRunning_cf(Value** /*arg_list*/, i32 count) {
+    check_arg_count(WhiteoutFlakesIsRunning, 0, count);
+    const bool up = g_running && g_renderWindow && g_renderWindow->IsOpen();
+    return up ? &true_value : &false_value;
+}
+
+// ============================================================================
 // WhiteoutFlakesPushSequences(names, startTicks, endTicks)
 // Hand the adapter the per-sequence ranges from WdxSequenceManager so its
 // Evaluate can resolve "what sequence is the timeline on" — Max owns the
@@ -857,7 +1001,9 @@ Value* WhiteoutFlakesPushSequences_cf(Value** arg_list, i32 count) {
     }
 
     std::vector<whiteout::flakes::SequenceRange> ranges;
+    std::vector<TimelineSequence> timeline;
     ranges.reserve(static_cast<usize>(n));
+    timeline.reserve(static_cast<usize>(n));
     for (i32 i = 0; i < n; ++i) {
         whiteout::flakes::SequenceRange r;
         // MaxScript strings come back as wide; convert to UTF-8 narrow
@@ -882,12 +1028,30 @@ Value* WhiteoutFlakesPushSequences_cf(Value** arg_list, i32 count) {
         r.endMs   = MaxTimeToMs(eTv);
         mprintf(_M("WhiteoutDex:   seq[%d] '%hs' = [%d..%d ms]  (ticks %d..%d)\n"), i,
                 r.name.c_str(), r.startMs, r.endMs, (i32)sTv, (i32)eTv);
+
+        TimelineSequence ts;
+        ts.name = r.name;
+        ts.startTick = sTv;
+        ts.endTick = eTv;
+        ts.startMs = r.startMs;
+        ts.endMs = r.endMs;
+        timeline.push_back(std::move(ts));
+
         ranges.push_back(std::move(r));
     }
     // Cached as well as pushed: a Resync mints a fresh adapter, and this is the
     // only copy of the ranges on the C++ side.
     g_sequenceRanges = ranges;
     g_adapter->SetSequenceRanges(std::move(ranges));
+
+    // Same data, Max's units, for the toolbar's Animation combo. Republish the
+    // active index unconditionally - the list just changed underneath it, so
+    // the index it was showing means nothing now.
+    g_timelineSequences = std::move(timeline);
+    PublishTimelineSequencesToWindow();
+    g_publishedSequenceIdx = -2;
+    PublishActiveSequence(GetCOREInterface());
+
     mprintf(_M("WhiteoutDex: pushed %d sequence ranges\n"), n);
     return Integer::intern(n);
 }

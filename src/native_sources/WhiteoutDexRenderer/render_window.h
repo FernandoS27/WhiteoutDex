@@ -64,6 +64,34 @@ public:
     // hostMutex_ (or relaxed atomic for focusActor_).
     void SetCameraPresets(std::vector<CameraPreset> presets);
     void SetSequences(std::vector<std::string> names, std::vector<SequenceInfo> ranges);
+
+    // ---- Timeline sequence (Max thread <-> render thread) ----
+    //
+    // Max owns the timeline, so the toolbar's Animation combo is not a
+    // playback control: it is a *view* of Max's animation range, and a request
+    // to move it.
+    //
+    //  * Max thread: matches Interface::GetAnimRange() against the pushed
+    //    sequence ranges every sync tick and publishes the index here. -1 means
+    //    the range is nobody's sequence -- the combo calls that "free range".
+    //  * Render thread: raises a request the same tick drains, because
+    //    SetAnimRange is Max-UI-thread work the combo cannot do itself.
+    void SetActiveSequenceIdx(i32 idx) {
+        activeSequenceIdx_.store(idx, std::memory_order_relaxed);
+    }
+    i32 ActiveSequenceIdx() const {
+        return activeSequenceIdx_.load(std::memory_order_relaxed);
+    }
+    void RequestSequence(i32 idx) {
+        pendingSequenceReq_.store(idx, std::memory_order_relaxed);
+    }
+    bool ConsumeSequenceRequest(i32& idxOut) {
+        const i32 req = pendingSequenceReq_.exchange(kNoSequenceRequest, std::memory_order_relaxed);
+        if (req == kNoSequenceRequest)
+            return false;
+        idxOut = req;
+        return true;
+    }
     void SetFocusActor(ActorId h) {
         focusActor_.store(h, std::memory_order_relaxed);
     }
@@ -202,6 +230,13 @@ private:
 
     std::vector<std::string> sequenceNames_;
     std::vector<SequenceInfo> sequenceRanges_;
+
+    // Which of sequenceNames_ Max's animation range currently spans, -1 for
+    // none ("free range"), and the toolbar's pending request for a different
+    // one. -2 is the empty-mailbox sentinel: every real request is >= -1.
+    static constexpr i32 kNoSequenceRequest = -2;
+    std::atomic<i32> activeSequenceIdx_{-1};
+    std::atomic<i32> pendingSequenceReq_{kNoSequenceRequest};
 
     // Latest active-viewport pose, written by the Max thread under hostMutex_
     // and consumed by ApplyExternalCamera on the render thread. `extCamValid_`
