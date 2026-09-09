@@ -342,7 +342,7 @@ struct WhiteoutDexUtilityStruct
     -- TYPE CHECKING FUNCTIONS
     -- ============================================================================
     
-    fn IsWc3Material m = (classOf m == Warcraft3),
+    fn IsWc3Material m = (classOf m == Wdx_Wc3Material),
     
     fn IsMultiLayered m =
     (
@@ -356,14 +356,14 @@ struct WhiteoutDexUtilityStruct
     fn IsSkinned o = (o.modifiers[#Skin] != undefined),
     fn IsMesh o = (classOf o == Editable_mesh),
     fn IsCamera o = (classOf o == Targetcamera),
-    fn IsCollisionShape o = ((classof o) as string == "Wc3CollisionBox") or ((classof o) as string == "Wc3CollisionSphere"),
-    fn IsAttachment o = (classOf o == Wc3_AttachPoint),
+    fn IsCollisionShape o = ((classof o) as string == "Wdx_CollisionBox") or ((classof o) as string == "Wdx_Wc3CollisionSphere"),
+    fn IsAttachment o = (classOf o == Wdx_Wc3AttachPoint),
     fn IsEventObject o = ((substring o.name 1 4) == "Obj:"),
     fn IsParticleEmitter o = (classOf o == Wc3Particles1),
     fn IsParticleEmitter2 o = (classOf o == Wc3Particles2),
-    fn IsRibbonEmitter o = (classOf o == BlizRibbon),
-    fn IsPopcornEmitter o = (try (classOf o == BlizzPopcorn) catch false),
-    fn IsFaceFX o = (try (classOf o == BlizzFaceFX) catch false),
+    fn IsRibbonEmitter o = (classOf o == Wc3Ribbon),
+    fn IsPopcornEmitter o = (try (classOf o == Wdx_Wc3Popcorn) catch false),
+    fn IsFaceFX o = (try (classOf o == Wdx_FaceFX) catch false),
     
     fn IsLight o =
     (
@@ -371,7 +371,7 @@ struct WhiteoutDexUtilityStruct
         or classOf o == freeSpot \
         or classOf o == Directionallight \
         or classOf o == Skylight \
-        or classOf o == Wc3_Light
+        or classOf o == Wdx_Wc3Light
     ),
     
     -- ============================================================================

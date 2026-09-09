@@ -83,7 +83,7 @@ extends:dummy
 				2: radius = abs(gridDist.y)
 				3: 
 				(
-					for i in objects do (if (classof i == Wc3_CollisionSphere) do (i.wirecolor = color 40 126 255))
+					for i in objects do (if (classof i == Wdx_Wc3CollisionSphere) do (i.wirecolor = color 40 126 255))
 					#stop
 				)
 
@@ -206,7 +206,7 @@ extends:dummy
 				3: (height = abs(gridDist.z))
 				4: 
 				(
-					for i in objects do (if (classof i == Wc3_CollisionBox) do (i.wirecolor = color 40 126 255))
+					for i in objects do (if (classof i == Wdx_CollisionBox) do (i.wirecolor = color 40 126 255))
 					#stop
 				)
 			)

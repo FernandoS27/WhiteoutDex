@@ -96,6 +96,33 @@ struct WhiteoutDexBoneFinder
             if this.isWholeWord parts pw then
                 score -= 5
         )
+
+        -- Angehängte Suffixe erwischt isWholeWord nicht: Biped nennt seine
+        -- Endpunkte "Bip001 HeadNub", "Bip001 L Toe0Nub", "Bip001 L Finger0Nub".
+        -- filterString zerlegt das zu #("bip001","headnub") - "nub" ist dort
+        -- kein eigenes Wort, der Abzug oben griff also nie. Ergebnis: der Nub
+        -- gewann gegen den echten Bone, das One-Click-Werkzeug parentete
+        -- Attachment Points an Biped-Endpunkte, und die haben einen
+        -- BipDriven_Control, dessen transform.controller nicht lesbar ist.
+        -- Genau das brach den Export ab.
+        -- "end" bewusst NICHT in der Liste: ein Bone wie "Hand Bend" würde
+        -- sonst fälschlich bestraft. "nub"/"tip"/"effector" sind eindeutig.
+        for sfx in #("nub", "tip", "effector") do
+        (
+            for part in parts do
+            (
+                local pl = part.count
+                local sl = sfx.count
+                if pl > sl do
+                (
+                    if (substring part (pl - sl + 1) sl) == sfx do
+                    (
+                        score -= 5
+                        exit
+                    )
+                )
+            )
+        )
         
         -- Bonus für kürzere Namen (eher der eigentliche Bone als ein Hilfsobjekt)
         if parts.count <= 2 then score += 3
@@ -362,8 +389,11 @@ struct WdxAnimTools
         groupBox smoothRotationsGrpB "Smooth Rotations" pos:[296, 22] width:138 height:110
         button fixSquadbtn "Fix non-linear\nrotation problems\non selection" pos:[304,38] width:122 height:86 tooltip:"Non-linear rotation keys may animate improperly in wc3 if they go beyond 90\xC2\xB0. This tool will apply fixes to those keys by creating a new key between them. Note that you may have to run the tool more than once in some weird occasions where you created rotations of over 180\xC2\xB0"
 
-		groupBox boneToolsGrpB "Bone Tools" pos:[8, 136] width:426 height:46
-		button createAttachmentPointsBtn "Create Attachment Points" pos:[16, 152] width:410 height:22 tooltip:"Automatically create Attachment Points for Bones that have known names."
+		groupBox boneToolsGrpB "One Click Tools" pos:[8, 136] width:426 height:98
+		button createAttachmentPointsBtn "One Click Attachment Points" pos:[16, 152] width:410 height:22 tooltip:"Automatically create Attachment Points for Bones that have known names."
+		button createPortraitCamBtn "One Click Portrait Camera" pos:[16, 178] width:410 height:22 tooltip:"Creates a portrait camera framing the selected object. Without a selection the upper part of the model is used as the head."
+		button createCollSphereBtn "One Click Collision Spheres" pos:[16, 204] width:202 height:22 tooltip:"Creates two collision spheres sized from the model, as Blizzard does for units."
+		button createCollBoxBtn "One Click Collision Box" pos:[224, 204] width:202 height:22 tooltip:"Creates a collision box sized from the model, as Blizzard does for buildings."
 		
         -- Funktionen
         mapped fn setContinuityToZero o time &controllerFunc =
@@ -645,6 +675,194 @@ struct WdxAnimTools
         
         on fixSquadbtn pressed do fixSquadRotation selection
 			
+		-- Layer wie beim Import zuweisen. organizeNodesIntoLayers() in
+		-- mdlx_importer_plugin.cpp legt genau diese Namen an: "Cameras" und
+		-- "Collision Shapes". Andere Schreibweisen erzeugen einen zweiten Layer.
+		fn putInLayer objs layerName =
+		(
+			try
+			(
+				local ly = LayerManager.getLayerFromName layerName
+				if ly == undefined then ly = LayerManager.newLayerFromName layerName
+				if ly != undefined then for o in objs where isValidNode o do ly.addNode o
+			)
+			catch ()
+			ok
+		)
+
+		-- Bounding-Box über alle sichtbaren Geometrie-Objekte.
+		-- "at time 0" statt sliderTime: nodeGetBoundingBox wertet im aktuellen
+		-- Zeitkontext aus. Steht das Modell auf einem Animationsframe, käme
+		-- sonst die Größe der laufenden Animation heraus statt der Initial-Pose.
+		-- "at time" setzt den Kontext direkt und lässt den Slider in Ruhe.
+		fn getModelBounds =
+		(
+			local lo = undefined
+			local hi = undefined
+			at time 0
+			(
+				for obj in objects where superClassOf obj == GeometryClass and not obj.isHidden do
+				(
+					try
+					(
+						local bb = nodeGetBoundingBox obj (matrix3 1)
+						if lo == undefined then ( lo = bb[1] ; hi = bb[2] )
+						else
+						(
+							lo = [ amin lo.x bb[1].x, amin lo.y bb[1].y, amin lo.z bb[1].z ]
+							hi = [ amax hi.x bb[2].x, amax hi.y bb[2].y, amax hi.z bb[2].z ]
+						)
+					)
+					catch ()
+				)
+			)
+			if lo == undefined then #([-50,-50,0],[50,50,100]) else #(lo, hi)
+		)
+
+		on createPortraitCamBtn pressed do
+		(
+			-- Werte aus Blizzards eigenen Portrait-Modellen abgeleitet
+			-- (Footman, Knight, Arthas):
+			--   FoV        45 Grad  (3 von 4 Modellen)
+			--   Near/Far   8 / 1000 (in ALLEN vier identisch)
+			--   Blick      annähernd waagerecht (-2 bis -16 Grad)
+			--   Richtung   Kamera steht in +X vom Ziel
+			--   Bildbreite 23 bis 31 Einheiten - also etwa eine Kopfbreite,
+			--              unabhängig von der Modellhöhe (110 bis 238)
+			-- Daraus: nicht die Modellgröße bestimmt den Abstand, sondern die
+			-- Größe des gerahmten Ausschnitts.
+			undo "Create Portrait Camera" on
+			(
+				local fovDeg = 45.0
+				local headLo = undefined
+				local headHi = undefined
+
+				if selection.count > 0 then
+				(
+					-- Auswahl = Kopf, ebenfalls in der Initial-Pose gemessen
+					at time 0
+					(
+						for o in selection do
+						(
+							try
+							(
+								local bb = nodeGetBoundingBox o (matrix3 1)
+								if headLo == undefined then ( headLo = bb[1] ; headHi = bb[2] )
+								else
+								(
+									headLo = [ amin headLo.x bb[1].x, amin headLo.y bb[1].y, amin headLo.z bb[1].z ]
+									headHi = [ amax headHi.x bb[2].x, amax headHi.y bb[2].y, amax headHi.z bb[2].z ]
+								)
+							)
+							catch ()
+						)
+					)
+				)
+
+				if headLo == undefined then
+				(
+					-- Ohne Auswahl: oberste 20 % des Modells als Kopf annehmen
+					local b = getModelBounds()
+					local h = b[2].z - b[1].z
+					headLo = [b[1].x, b[1].y, b[2].z - h * 0.2]
+					headHi = [b[2].x, b[2].y, b[2].z]
+				)
+
+				local ctr = (headLo + headHi) / 2.0
+				local w = amax (headHi.x - headLo.x) (headHi.y - headLo.y)
+				local hh = headHi.z - headLo.z
+				local frame = amax w hh
+				if frame < 0.001 then frame = 10.0
+
+				-- Abstand so, dass der Ausschnitt formatfüllend ist, plus Rand
+				local dist = (frame * 0.5) / (tan (fovDeg * 0.5)) * 1.15
+
+				-- Blickrichtung: In den MDX-Portraits steht die Kamera bei +X.
+				-- mdx_coord_transform::position() bildet Max auf MDX als
+				-- (-y, x, z) ab, MDX +X entspricht in Max also -Y. Das ist zugleich
+				-- Max' Frontalsicht, dorthin schauen Charaktere üblicherweise.
+				local camPos = [ctr.x, ctr.y - dist, ctr.z]
+
+				local cam = TargetCamera name:(uniqueName "Portrait Camera") \
+				                         pos:camPos target:(TargetObject pos:ctr)
+				-- fov ist in MaxScript in Grad; GenCamera::GetFOV liefert dem
+				-- Exporter daraus Radiant, genau die Einheit von CAMS fieldOfView.
+				cam.fov = fovDeg
+				-- clipManually bleibt aus - der Importer speichert die Distanzen
+				-- ebenso, ohne manuelles Clipping einzuschalten.
+				cam.nearclip = 8
+				cam.farclip = 1000
+				cam.target.name = cam.name + ".Target"
+
+				putInLayer #(cam, cam.target) "Cameras"
+				select cam
+				format "WhiteoutDex: Portrait camera created - target %  distance %  fov %\n" \
+				       ctr (dist as integer) fovDeg
+				messageBox ((::WdxL.t "anim_portrait_camera_created_msg") + "\n\n" + \
+				            (::WdxL.t "anim_portrait_cam_distance_lbl") + " " + ((dist as integer) as string) + "\n" + \
+				            "FoV 45, near 8, far 1000\n\n" + \
+				            (::WdxL.t "anim_portrait_cam_front_hint_msg")) \
+				           title:(::WdxL.t "anim_portrait_camera_ptitle") beep:false
+			)
+		)
+
+		-- Collision Shapes. Maße aus Blizzards eigenen Modellen abgeleitet:
+		--   Footman  Sphären bei 61 % / 21 % der Höhe, Radius 0,37 / 0,37 x Höhe
+		--   Arthas   Sphären bei 74 % / 33 % der Höhe, Radius 0,39 / 0,49 x Höhe
+		--   Sanctum  eine Box, nur 17 bis 33 % der Modellmasse - sie umschließt
+		--            den Sockel, nicht die Auskragungen
+		-- Beide ohne Parent, auf der Mittelachse.
+		fn createCollisionShapes asBox =
+		(
+			local b = getModelBounds()
+			local lo = b[1]
+			local hi = b[2]
+			local h = hi.z - lo.z
+			if h < 0.001 then h = 100.0
+			local cx = (lo.x + hi.x) / 2.0
+			local cy = (lo.y + hi.y) / 2.0
+			local created = #()
+
+			if asBox then
+			(
+				-- Wdx_CollisionBox sitzt mit dem Pivot unten-mittig und trägt die
+				-- VOLLEN Ausdehnungen (wc3_collision_extractor.cpp baut daraus
+				-- min/max als pos ± width/2, pos.z .. pos.z + height). Die Box
+				-- steht deshalb auf lo.z, nicht auf halber Höhe.
+				local bx = Wdx_CollisionBox name:(uniqueName "Collision Box") \
+				                            pos:[cx, cy, lo.z]
+				bx.width  = (hi.x - lo.x) * 0.5
+				bx.length = (hi.y - lo.y) * 0.5
+				bx.height = h * 0.6
+				append created bx
+			)
+			else
+			(
+				local s1 = Wdx_Wc3CollisionSphere name:(uniqueName "Collision Sphere") \
+				                                  pos:[cx, cy, lo.z + h * 0.65]
+				s1.radius = h * 0.38
+				local s2 = Wdx_Wc3CollisionSphere name:(uniqueName "Collision Sphere") \
+				                                  pos:[cx, cy, lo.z + h * 0.27]
+				s2.radius = h * 0.43
+				append created s1
+				append created s2
+			)
+			putInLayer created "Collision Shapes"
+			select created
+			format "WhiteoutDex: % collision shape(s) created, model height %\n" created.count (h as integer)
+			ok
+		)
+
+		on createCollSphereBtn pressed do
+		(
+			undo "Create Collision Spheres" on ( createCollisionShapes false )
+		)
+
+		on createCollBoxBtn pressed do
+		(
+			undo "Create Collision Box" on ( createCollisionShapes true )
+		)
+
 		on createAttachmentPointsBtn pressed do
 		(
 			undo "Create Attachment Points" on
@@ -722,7 +940,7 @@ struct WdxAnimTools
 			)
 			
 			::WdxAnimTools.isGeneralPoppedOut = true
-			createDialog generalRoll width:440 height:202 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
+			createDialog generalRoll width:440 height:254 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 		)
 		
 		on generalRoll close do
@@ -768,7 +986,7 @@ struct WdxAnimTools
 				animationGrpB.text = ::WdxL.t "anim_animation_grp"
 				tcbToolsGrpB.text = ::WdxL.t "anim_tcb_tools_grp"
 				smoothRotationsGrpB.text = ::WdxL.t "anim_smooth_rotations_grp"
-				boneToolsGrpB.text = ::WdxL.t "anim_bone_tools_grp"
+				boneToolsGrpB.text = ::WdxL.t "anim_one_click_tools_grp"
 				addSEkeysbtn.text = ::WdxL.t "anim_addnstart_and_ending_keysnto_selected_ob_btn"
 				try (addSEkeysbtn.tooltip = ::WdxL.t "anim_adds_keyframes_to_frame_0_and_tip") catch ()
 				PosChk.text = ::WdxL.t "anim_position_chk"
@@ -781,8 +999,14 @@ struct WdxAnimTools
 				try (continuityBtn.tooltip = ::WdxL.t "anim_sets_the_continuity_parameter_tip") catch ()
 				fixSquadbtn.text = ::WdxL.t "anim_fix_nonlinearnrotation_problemsnon_selec_btn"
 				try (fixSquadbtn.tooltip = ::WdxL.t "anim_nonlinear_rotation_keys_may_a_tip") catch ()
-				createAttachmentPointsBtn.text = ::WdxL.t "anim_create_attachment_points_btn"
+				createAttachmentPointsBtn.text = ::WdxL.t "anim_one_click_attachment_points_btn"
 				try (createAttachmentPointsBtn.tooltip = ::WdxL.t "anim_automatically_create_attachmen_tip") catch ()
+				createPortraitCamBtn.text = ::WdxL.t "anim_one_click_portrait_camera_btn"
+				try (createPortraitCamBtn.tooltip = ::WdxL.t "anim_creates_a_portrait_camera_fram_tip") catch ()
+				createCollSphereBtn.text = ::WdxL.t "anim_one_click_collision_spheres_btn"
+				try (createCollSphereBtn.tooltip = ::WdxL.t "anim_creates_two_collision_spheres_tip") catch ()
+				createCollBoxBtn.text = ::WdxL.t "anim_one_click_collision_box_btn"
+				try (createCollBoxBtn.tooltip = ::WdxL.t "anim_creates_a_collision_box_sized_tip") catch ()
 			)
 		)
     ),
@@ -1181,8 +1405,8 @@ struct WdxAnimTools
             local cn = (classOf obj) as string
             if cn == "BoneGeometry" or cn == "Biped_Object" do return false
             if cn == "CATParent" or cn == "CATBone" or cn == "HubObject" or cn == "IKTarget" do return false
-            if cn == "Wc3Particles1" or cn == "Wc3Particles2" or cn == "BlizRibbon" do return false
-            if cn == "Wdx_CollisionSphere" or cn == "Wdx_CollisionBox" or cn == "Wc3CollisionCylinder" do return false
+            if cn == "Wc3Particles1" or cn == "Wc3Particles2" or cn == "Wc3Ribbon" do return false
+            if cn == "Wdx_Wc3CollisionSphere" or cn == "Wdx_CollisionBox" do return false
             if cn == "Wdx_Wc3Light" or cn == "Wdx_Wc3Popcorn" do return false
             true
         )
@@ -1219,9 +1443,9 @@ struct WdxAnimTools
                 ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.speed *= factor)catch(); try(obj.gravity *= factor)catch(); try(obj.startscale *= factor)catch(); try(obj.middlescale *= factor)catch(); try(obj.endscale *= factor)catch(); try(obj.taillength *= factor)catch(); count += 1 )
                 if cn == "Wc3Particles1" do
                 ( try(obj.radius *= factor)catch(); try(obj.Gravity *= factor)catch(); count += 1 )
-                if cn == "BlizRibbon" do
-                ( try(obj.Above *= factor)catch(); try(obj.Below *= factor)catch(); try(obj.gravity *= factor)catch(); count += 1 )
-                if cn == "Wdx_CollisionSphere" do ( try(obj.radius *= factor)catch(); count += 1 )
+                if cn == "Wc3Ribbon" do
+                ( try(setProperty obj "Height Above" ((getProperty obj "Height Above") * factor))catch(); try(setProperty obj "Height Below" ((getProperty obj "Height Below") * factor))catch(); try(obj.gravity *= factor)catch(); count += 1 )
+                if cn == "Wdx_Wc3CollisionSphere" do ( try(obj.radius *= factor)catch(); count += 1 )
                 if cn == "Wdx_CollisionBox" do ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.height *= factor)catch(); count += 1 )
                 if cn == "Wdx_Wc3Light" do ( try(obj.DS_Spn *= factor)catch(); try(obj.DE_Spn *= factor)catch(); count += 1 )
                 if cn == "Wdx_Wc3Popcorn" do ( try(obj.speed *= factor)catch(); count += 1 )

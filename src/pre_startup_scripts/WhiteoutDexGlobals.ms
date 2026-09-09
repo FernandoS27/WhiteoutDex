@@ -591,21 +591,27 @@ struct WhiteoutDexRendererStruct
 			buildTVFaces geo
 			
 			for i = 1 to faces.count do setTVFace geo i faces[i]
-			if r.rmaterial != undefined then
+			if r.Material != undefined then
 			(
-				local rm = r.rmaterial
+				local rm = r.Material
 				local m = Standard()
 				m.name = "Tmp: " + r.name
-				m.opacity = rm.alpha
-				m.twoSided = rm.twosides
+				-- Wdx_Wc3Material.opacity is already 0..100, the same scale
+				-- Standard().opacity uses.
+				try ( m.opacity = rm.opacity ) catch ()
+				try ( m.twoSided = rm.twoSided ) catch ()
 				m.useSelfIllumColor = true
-				m.selfIllumColor = r.VertexColor
-				m.diffuseMap = rm.texture
-				if rm.filtermode > 1 then m.opacityMap = rm.texture
+				m.selfIllumColor = r.Color
+				try
+				(
+					m.diffuseMap = rm.diffuseMap
+					if rm.filterMode > 1 then m.opacityMap = rm.diffuseMap
+				)
+				catch ()
 				geo.material = m
 			)
 			geo.visibility = linear_float()
-			geo.visibility.controller.value = r.alpha
+			geo.visibility.controller.value = r.Alpha
 			geo
 		)
 		else undefined
@@ -614,8 +620,11 @@ struct WhiteoutDexRendererStruct
 	fn PickRibbonEmitters =
 	(
 		local result = #()
-		for h in helpers do
-			if (not h.isHidden) and (classof h) as string == "BlizRibbon" then
+		-- `objects`, not `helpers`: Wc3Ribbon is registered with
+		-- GEOMOBJECT_CLASS_ID (Ribbon.h SuperClassID), so it never appears in
+		-- the helpers collection. Same for Wc3Particles2 below.
+		for h in objects do
+			if (not h.isHidden) and (classof h) as string == "Wc3Ribbon" then
 				append result h
 		result
 	),
@@ -623,7 +632,7 @@ struct WhiteoutDexRendererStruct
 	fn PickParticleEmitters2 =
 	(
 		local result = #()
-		for h in helpers do
+		for h in objects do
 			if (not h.isHidden) and (classof h) == Wc3Particles2 then
 				append result h
 		result
