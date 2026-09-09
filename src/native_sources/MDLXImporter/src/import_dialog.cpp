@@ -526,6 +526,10 @@ void setupReforgedVisibility(HWND hDlg, bool isReforged, bool hasCornEmitters) {
         const wdx::l10n::DialogString classic[] = {
             {IDC_GRP_TEXTURES, "imp_mpq_textures_grp"},
             {IDC_CHK_SEARCH_TEXTURES, "imp_search_mpq_chk"},
+            // The Reforged branch sets its own caption, so this branch has to
+            // set one too; without it a Classic import kept the .rc's English
+            // title whatever the language.
+            {0, "imp_whiteoutdex_importer_title"},
         };
         SetDlgItemTextW(hDlg, IDC_GRP_TEXTURES, L"MPQ Textures");
         SetDlgItemTextW(hDlg, IDC_CHK_SEARCH_TEXTURES, L"Search MPQ Archives for Textures");

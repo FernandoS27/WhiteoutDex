@@ -6,8 +6,9 @@ plugin simpleManipulator Wdx_Wc3Event
 (
     local listOfKeys        = #()
     local selectedKey
-    local EventMessageTitle = "Warcraft III Event Info"
-    local EventMessageText  = "The events will happen on the places where the keys are set.\nThe names of the objects can be found in the official Warcraft III Art Tools Documentation"
+    -- The info button these two strings belonged to is gone. Their text lives
+    -- in the catalog as "event_info_ptitle" / "event_info_msg", translated into
+    -- every language, so reinstating the button needs no new strings.
     ----------------------------------------------------------------------
     parameters main rollout:params
     (

@@ -564,35 +564,38 @@ static Mtl* buildSingleLayerWc3Material(
 
     // ── Material-level replaceableId dropdown ──
     //
-    // MDX-Semantik: Jede Texture im TEXS-chunk kann einen replaceableId haben
+    // MDX semantics: every texture in the TEXS chunk can carry a replaceableId
     // (0 = normal, 1 = TeamColor, 2 = TeamGlow, 3+ = Cliff/Tree/etc.).
-    // Im Wc3Material Plugin gibt es zwei VERSCHIEDENE Konstrukte für TC:
+    // The Wc3Material plug-in has two DIFFERENT constructs for team colour:
     //
-    //   Konstrukt A — reines TC-Material (SD/classic):
-    //     ddReplaceable = "Team Color"      (Dropdown)
+    //   Construct A — a pure TC material (SD/classic):
+    //     ddReplaceable = "Team Color"      (dropdown)
     //     diffuseMap = NONE
-    //     → Ganzes Material wird zur TC-Fläche
+    //     -> the whole material becomes the TC surface
     //
-    //   Konstrukt B — HD-Material mit TC-Mask (Reforged):
-    //     ddReplaceable = "Not Used"        (Dropdown bleibt leer)
+    //   Construct B — an HD material with a TC mask (Reforged):
+    //     ddReplaceable = "Not Used"        (the dropdown stays empty)
     //     diffuseMap   = main_diffuse.dds
-    //     teamColorMap = TC_mask.dds        (dedizierter Slot)
-    //     → Mask bestimmt wo TC-Tint angewendet wird
+    //     teamColorMap = TC_mask.dds        (a dedicated slot)
+    //     -> the mask decides where the TC tint is applied
     //
-    // Diskriminator: der SLOT der Textur-Referenz, nicht nur der replaceableId.
-    //   slot == Diffuse  mit replaceableId > 0 → Konstrukt A, Dropdown setzen
-    //   slot == TeamColor (HD-Sub)             → Konstrukt B, teamColorMap-Slot
-    //                                            wird unten im Texmap-Loop
-    //                                            gesetzt; Dropdown bleibt 0
+    // The discriminator is the SLOT of the texture reference, not the
+    // replaceableId on its own.
+    //   slot == Diffuse with replaceableId > 0 -> construct A, set the dropdown
+    //   slot == TeamColor (an HD sub-texture)  -> construct B; the teamColorMap
+    //                                             slot is set below in the
+    //                                             texmap loop and the dropdown
+    //                                             stays 0
     //
-    // Historischer Bug: Ein früherer Versuch nahm max(replaceableId) über alle
-    // Texture-Refs. Das funktionierte für SD aber ruinierte HD-Materials:
-    // Arthas v1200 hat Diffuse(replId=0) + TC-Sub(replId=1) → max=1 → Dropdown
-    // fälschlich "Team Color" → Exporter löschte dann den Diffuse-Pfad.
-    // NeoDex's Äquivalent: NeoDexSceneRebuilder.ms lines 1068-1073
-    //   (teamColorTexId für HD separat, layer.retexture nur für SD-Diffuse).
+    // Historical bug: an earlier attempt took max(replaceableId) across all
+    // texture refs. That worked for SD but ruined HD materials: Arthas v1200
+    // has Diffuse(replId=0) + a TC sub-texture(replId=1), so max=1 put the
+    // dropdown wrongly on "Team Color" and the exporter then dropped the
+    // diffuse path. NeoDex's equivalent is NeoDexSceneRebuilder.ms lines
+    // 1068-1073 (teamColorTexId separately for HD, layer.retexture only for the
+    // SD diffuse).
     //
-    // Dropdown-Mapping (Wc3Material.ms line 411):
+    // Dropdown mapping (Wc3Material.ms line 411):
     //   1 = Not Used (=MDX 0)
     //   2 = Team Color (=MDX 1)
     //   3 = Team Glow (=MDX 2)

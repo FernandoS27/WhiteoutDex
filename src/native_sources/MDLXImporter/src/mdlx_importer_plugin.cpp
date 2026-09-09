@@ -34,6 +34,7 @@
 #include <ilayer.h>
 #include <ilayermanager.h>
 #include <maxscript/maxscript.h>
+#include <wdx_localization.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -2599,10 +2600,19 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     try {
         mdxModel = parser.parse(filePath);
     } catch (const std::exception& e) {
-        MSTR msg;
-        msg.printf(_T("Failed to parse model file:\n%hs"), e.what());
+        // The catalog holds the sentence with a %1 where the parser's own
+        // reason goes; an absent catalog falls back to the English wording.
+        MSTR reason;
+        reason.printf(_T("%hs"), e.what());
+        std::wstring text = wdx::l10n::TrOr("imp_parse_failed_msg",
+                                            L"Failed to parse the model file:\n%1");
+        wdx::l10n::Substitute(text, L"%1", reason.data());
+
+        const std::wstring caption =
+            wdx::l10n::TrOr("report_import_ptitle", L"WhiteoutDex Import");
+
         if (gi->GetMAXHWnd())
-            MessageBoxW(gi->GetMAXHWnd(), msg.data(), _T("MDLXImporter"), MB_OK | MB_ICONERROR);
+            MessageBoxW(gi->GetMAXHWnd(), text.c_str(), caption.c_str(), MB_OK | MB_ICONERROR);
         return IMPEXP_FAIL;
     }
 
@@ -4229,10 +4239,11 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
             // Lights: attStart, attEnd, color, intensity, ambColor, ambIntensity
             //
-            // Wc3Light ist ein scripted simpleManipulator → ParamBlock-Controller-
-            // Assignment ist unzuverlässig. Gleiche Lösung wie bei KGAC: MaxScript-
-            // Route über *NamedScript-Helpers. Die setzen `n.<param>.controller =
-            // bezier_float/bezier_color` und fügen Keys via addNewKey hinzu.
+            // Wc3Light is a scripted simpleManipulator, so assigning a
+            // ParamBlock controller directly is unreliable. Same solution as for
+            // KGAC: go through MaxScript via the *NamedScript helpers. Those set
+            // `n.<param>.controller = bezier_float/bezier_color` and add the keys
+            // with addNewKey.
             for (const auto& light : irModel.lights) {
                 if (light.nodeIndex < 0 || light.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
                     continue;
@@ -4342,7 +4353,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
     // 16. Report
     if (reporter.hasWarnings() || reporter.hasErrors()) {
-        reporter.showSummaryDialog(gi->GetMAXHWnd());
+        reporter.showSummaryDialog(gi->GetMAXHWnd(), core::Operation::Import);
     }
 
     // 17. Populate Material Editor with imported materials

@@ -131,7 +131,7 @@ extends:dummy
             if Temp_adsorption.text != "" then
                 btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
             else
-                btn_adsorption.text = "Select Object (Adsorb)"
+                btn_adsorption.text = ::WdxL.t "common_adsorb_btn"
             if ::WdxL != undefined then
                 General.title = ::WdxL.t "col_general_features_title_2"
         )

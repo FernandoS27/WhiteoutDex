@@ -13,7 +13,7 @@ struct WdxGlobalSequenceManager
 	savedTransforms = #(),
 	savedEditKeys = #(),
 	
-	-- Speichert alle Key-Daten eines Controllers (Zeit + Wert, inkl. Sub-Controller + ORT)
+	-- Stores all key data of a controller (time + value, incl. sub-controllers + ORT)
 	fn backupControllerKeys ctrl =
 	(
 		local data = #()
@@ -35,7 +35,7 @@ struct WdxGlobalSequenceManager
 			)
 			catch()
 		)
-		-- Haupt-Controller Keys (compound Controller wie Euler_XYZ haben keine eigenen)
+		-- Main controller keys (compound controllers like Euler_XYZ have none of their own)
 		try
 		(
 			if (isProperty ctrl #keys) and ctrl.keys != undefined and ctrl.keys.count > 0 then
@@ -52,14 +52,14 @@ struct WdxGlobalSequenceManager
 		data
 	),
 	
-	-- Stellt Key-Daten auf einem Controller wieder her
+	-- Restores key data onto a controller
 	fn restoreControllerKeys ctrl data =
 	(
 		format "DEBUG restore ctrl=% data entries=%\n" (classOf ctrl) data.count
-		-- Erst alle Keys löschen
+		-- Delete all keys first
 		this.forceDeleteAllKeys ctrl
 		format "DEBUG   after forceDelete: keys=%\n" (this.countControllerKeys ctrl)
-		-- Keys wiederherstellen
+		-- Restore the keys
 		for entry in data do
 		(
 			local entryType = entry[1]
@@ -120,9 +120,9 @@ struct WdxGlobalSequenceManager
 		type == "Bone" or type == "Flow"
 	),
 	
-	-- srcObj: Node, zu dem der Controller gehört (undefined für Material-Tracks).
-	-- Wird als 5. Element im ctrlPair mitgeführt, damit später NIE über den
-	-- Namen aufgelöst werden muss — Node-Namen sind nicht eindeutig.
+	-- srcObj: the node the controller belongs to (undefined for material tracks).
+	-- Carried as the 5th element of the ctrlPair so that it NEVER has to be
+	-- resolved by name later on - node names are not unique.
 	fn collectController ctrl description ctrlType &entriesMap srcObj:undefined =
 	(
 		try
@@ -203,9 +203,9 @@ struct WdxGlobalSequenceManager
 		catch()
 	),
 	
-	-- Rekursive Material-Traversierung: scannt ein Material, dessen Bitmap-Slot
-	-- UND alle Sub-Materials (Multi/Sub, Composite, Blend, Shellac, Wc3Material-Layer, ...)
-	-- Verhindert Doppelscannen via scannedMaterials-Liste.
+	-- Recursive material traversal: scans a material, its bitmap slot
+	-- AND all sub-materials (Multi/Sub, Composite, Blend, Shellac, Wc3Material layers, ...)
+	-- Prevents scanning anything twice via the scannedMaterials list.
 	fn scanMaterial mat &entriesMap &scannedMaterials =
 	(
 		if mat == undefined then return()
@@ -214,18 +214,18 @@ struct WdxGlobalSequenceManager
 		
 		local matName = if mat.name != undefined then mat.name else "Material"
 		
-		-- Legacy StandardMaterial alpha-Slot (meist undefined bei Wc3Material)
+		-- Legacy StandardMaterial alpha slot (usually undefined on Wc3Material)
 		try (this.collectController mat.alpha.controller (matName + ".Alpha") "Alpha" &entriesMap) catch()
 
-		-- Wc3Material-Properties direkt: nur noch opacity (KMTA).
-		-- UV-Animation (TXAN) lebt jetzt auf der Wc3Bitmap-Textur und wird
-		-- unten ueber den Bitmap-Slot gescannt.
+		-- Wc3Material properties directly: only opacity (KMTA) is left.
+		-- UV animation (TXAN) now lives on the Wc3Bitmap texture and is
+		-- scanned below through the bitmap slot.
 		try (this.collectController mat.opacity.controller (matName + ".Opacity") "Alpha" &entriesMap) catch()
 
-		-- Bitmap-Slot auflösen: erst StandardMaterial.texture, dann
-		-- Wc3Material.diffuseMap. Akzeptiert BitmapTexture UND Wc3Bitmap —
-		-- Property-Zugriffe (coords etc.) delegieren beim Scripted-Plugin
-		-- transparent an die Bitmaptexture darunter.
+		-- Resolve the bitmap slot: StandardMaterial.texture first, then
+		-- Wc3Material.diffuseMap. Accepts BitmapTexture AND Wc3Bitmap -
+		-- on a scripted plugin, property accesses (coords etc.) delegate
+		-- transparently to the Bitmaptexture underneath.
 		fn isUVBitmap tex = (
 			local cn = try ((classOf tex) as string) catch("")
 			cn == "BitmapTexture" or cn == "Wc3Bitmap"
@@ -236,11 +236,11 @@ struct WdxGlobalSequenceManager
 			try (if mat.diffuseMap != undefined and isUVBitmap mat.diffuseMap then bmp = mat.diffuseMap) catch()
 		)
 
-		-- Bitmap-UV-Controller scannen (bei Wc3Bitmap sind die anim_*-Params
-		-- mit den coords-Controllern geteilt — coords genügt; anim_WOffset
-		-- hat kein coords-Pendant und kommt separat dazu).
-		-- ACHTUNG: Scripted Plugins delegieren unbekannte Properties NICHT —
-		-- coords/playbackrate einer Wc3Bitmap sind nur über .delegate erreichbar.
+		-- Scan the bitmap UV controllers (on a Wc3Bitmap the anim_* params
+		-- share the coords controllers - coords is enough; anim_WOffset
+		-- has no coords counterpart and is added separately).
+		-- CAUTION: scripted plugins do NOT delegate unknown properties -
+		-- coords/playbackrate of a Wc3Bitmap are only reachable via .delegate.
 		if bmp != undefined do
 		(
 			local uvBmp = bmp
@@ -273,7 +273,7 @@ struct WdxGlobalSequenceManager
 			try (this.collectIFL uvBmp matName &entriesMap) catch()
 		)
 		
-		-- REKURSION: Multi/Sub-Object
+		-- RECURSION: Multi/Sub-Object
 		try
 		(
 			if classOf mat == MultiMaterial then
@@ -284,8 +284,8 @@ struct WdxGlobalSequenceManager
 		)
 		catch()
 		
-		-- REKURSION: alle Material-Klassen die getNumSubMtls/getSubMtl unterstützen
-		-- (CompositeMaterial, Blend, Shellac, Wdx_Wc3Material mit Layer-Slots, ...)
+		-- RECURSION: every material class that supports getNumSubMtls/getSubMtl
+		-- (CompositeMaterial, Blend, Shellac, Wdx_Wc3Material with layer slots, ...)
 		try
 		(
 			local n = getNumSubMtls mat
@@ -316,8 +316,8 @@ struct WdxGlobalSequenceManager
 			try (this.collectController obj.scale.controller      (objName + ".Scale")      "Bone" &entriesMap srcObj:obj) catch()
 			try (this.collectController obj.visibility.controller (objName + ".Visibility") "Vis"  &entriesMap srcObj:obj) catch()
 			
-			-- Scan Modifier-Stack: Wc3VertexMod.VertexColor (KGAC-Tracks) und
-			-- andere potenziell animierte Modifier-Parameter.
+			-- Scan the modifier stack: Wc3VertexMod.VertexColor (KGAC tracks) and
+			-- other potentially animated modifier parameters.
 			try
 			(
 				for m in obj.modifiers do
@@ -340,8 +340,8 @@ struct WdxGlobalSequenceManager
 				this.scanMaterial mat &entriesMap &scannedMaterials
 		)
 		
-		-- Zusätzlich: sceneMaterials auch scannen (fängt standalone Materials ab
-		-- die gerade keinem Objekt zugewiesen sind, z.B. nach Material-Duplikation)
+		-- Additionally scan sceneMaterials as well (catches standalone materials
+		-- not currently assigned to any object, e.g. after duplicating a material)
 		try
 		(
 			for m in sceneMaterials do
@@ -381,12 +381,12 @@ struct WdxGlobalSequenceManager
 		this.globalEntries = entriesMap
 	),
 	
-	-- Skaliert Keys auf einem Controller (inkl. Sub-Controller) proportional
+	-- Scales the keys on a controller (incl. sub-controllers) proportionally
 	fn scaleControllerKeys ctrl oldLastFrame newLastFrame =
 	(
 		if oldLastFrame <= 0 or newLastFrame <= 0 then return()
 		
-		-- Helper: Keys auf einem einzelnen Key-Controller skalieren
+		-- Helper: scale the keys on a single key controller
 		fn scaleKeys kCtrl oldLast newLast =
 		(
 			if kCtrl == undefined then return()
@@ -395,19 +395,19 @@ struct WdxGlobalSequenceManager
 			
 			local kc = kCtrl.keys.count
 			format "DEBUG     scaleKeys class=% keys=% old=% new=%\n" (classOf kCtrl) kc oldLast newLast
-			-- Von hinten nach vorne (verhindert Sortierprobleme)
+			-- Back to front (avoids sorting problems)
 			for k = kc to 1 by -1 do
 			(
 				local oldFrame = kCtrl.keys[k].time.frame as integer
 				if k == kc then
 				(
-					-- Letzter Key: EXAKT auf Ziel setzen
+					-- Last key: set EXACTLY to the target
 					kCtrl.keys[k].time = newLast as time
 					format "DEBUG       key[%] %f -> %f (LAST)\n" k oldFrame newLast
 				)
 				else if oldFrame > 0 then
 				(
-					-- Mittlere Keys: Proportional skalieren mit korrektem Runden
+					-- Middle keys: scale proportionally, rounding correctly
 					local newFrame = ((oldFrame as float / oldLast as float) * newLast as float + 0.5) as integer
 					if newFrame < 1 then newFrame = 1
 					if newFrame >= newLast then newFrame = newLast - 1
@@ -429,7 +429,7 @@ struct WdxGlobalSequenceManager
 			)
 			catch()
 		)
-		-- Haupt-Controller (Linear_Position, Bezier_Scale etc.)
+		-- Main controller (Linear_Position, Bezier_Scale etc.)
 		try (scaleKeys ctrl oldLastFrame newLastFrame) catch()
 	),
 	
@@ -443,12 +443,12 @@ struct WdxGlobalSequenceManager
 		
 		local newFrame = newDuration.frame as integer
 		
-		-- Echte alte Duration = tatsächlicher letzter Key-Frame (nicht entry[1] das driften kann)
+		-- Real old duration = the actual last key frame (not entry[1], which can drift)
 		local oldFrame = 0
 		for ctrlPair in entry[2] where ctrlPair[4] do
 		(
 			local ctrl = ctrlPair[1]
-			-- Haupt-Controller
+			-- Main controller
 			try (if ctrl.keys != undefined and ctrl.keys.count > 0 then
 				(local lf = ctrl.keys[ctrl.keys.count].time.frame as integer; if lf > oldFrame then oldFrame = lf)
 			) catch()
@@ -478,7 +478,7 @@ struct WdxGlobalSequenceManager
 			this.scaleControllerKeys ctrl oldFrame newFrame
 		)
 		
-		-- Duration als exakten Frame speichern (kein Float-Drift)
+		-- Store the duration as an exact frame (no float drift)
 		entry[1] = newFrame as time
 		format "DEBUG   stored duration=%\n" entry[1]
 		format "===== DEBUG changeDuration END =====\n\n"
@@ -491,7 +491,7 @@ struct WdxGlobalSequenceManager
 		
 		local entry = this.globalEntries[entryIndex]
 		
-		-- Slider auf Frame 0 setzen damit Initial-Pose erhalten bleibt
+		-- Set the slider to frame 0 so the initial pose is preserved
 		sliderTime = 0
 		
 		for ctrlPair in entry[2] do
@@ -500,14 +500,14 @@ struct WdxGlobalSequenceManager
 			local desc = ctrlPair[2]
 			try
 			(
-				-- Für Bone-Einträge: Controller frisch vom Objekt holen
-				-- (Spin kann den Controller-Typ geändert haben → Referenz veraltet)
+				-- For Bone entries: fetch the controller fresh from the object
+				-- (Spin may have changed the controller type -> stale reference)
 				local dotIdx = findString desc "."
 				if dotIdx != undefined then
 				(
 					local channel = substring desc (dotIdx + 1) -1
-					-- Node aus dem ctrlPair (Element 5) — Namen sind nicht
-					-- eindeutig, getNodeByName träfe ggf. den falschen Node.
+					-- Node comes from the ctrlPair (element 5) - names are not
+					-- unique, so getNodeByName could hit the wrong node.
 					local obj = if ctrlPair.count >= 5 then ctrlPair[5] else undefined
 					if obj == undefined then obj = getNodeByName (substring desc 1 (dotIdx - 1))
 					if obj != undefined and isValidNode obj then
@@ -532,7 +532,7 @@ struct WdxGlobalSequenceManager
 		true
 	),
 	
-	-- Zählt Keys inkl. Sub-Controller (für Euler_XYZ, Position_XYZ)
+	-- Counts keys incl. sub-controllers (for Euler_XYZ, Position_XYZ)
 	fn countControllerKeys ctrl =
 	(
 		try
@@ -548,7 +548,7 @@ struct WdxGlobalSequenceManager
 		catch (0)
 	),
 	
-	-- Setzt ORT auf Controller inkl. Sub-Controller
+	-- Sets the ORT on a controller incl. its sub-controllers
 	fn setControllerORT ctrl ortType =
 	(
 		try (setAfterORT ctrl ortType) catch()
@@ -704,7 +704,7 @@ struct WdxGlobalSequenceManager
 		this.recordedObjects = selection as array
 		this.isEditMode = editMode
 		
-		-- Key-Daten IMMER sichern (für Cancel-Restore, sowohl New als auch Edit)
+		-- ALWAYS back up the key data (for cancel-restore, in both New and Edit)
 		this.savedEditKeys = #()
 		for obj in this.recordedObjects do
 		(
@@ -713,7 +713,7 @@ struct WdxGlobalSequenceManager
 			try (append this.savedEditKeys #(obj, "scl", this.backupControllerKeys obj.scale.controller)) catch()
 		)
 		
-		-- Original-Transforms und Controller-Klassen speichern BEVOR Controller geändert werden
+		-- Save the original transforms and controller classes BEFORE any controller is changed
 		this.savedTransforms = #()
 		for obj in this.recordedObjects do
 		(
@@ -728,7 +728,7 @@ struct WdxGlobalSequenceManager
 		(
 			this.assignControllers ctrlType doPos doRot doScale
 			
-			-- IMMER alle Keys löschen (unabhängig von Checkboxen/ctrlType)
+			-- ALWAYS delete all keys (regardless of the checkboxes/ctrlType)
 			for obj in selection do
 			(
 				try
@@ -758,7 +758,7 @@ struct WdxGlobalSequenceManager
 			(
 				for obj in selection do
 				(
-					-- Position: immer Frame 0 Key
+					-- Position: always a frame 0 key
 					try
 					(
 						local pc = obj.pos.controller
@@ -773,7 +773,7 @@ struct WdxGlobalSequenceManager
 					)
 					catch()
 					
-					-- Rotation: immer Frame 0 Key
+					-- Rotation: always a frame 0 key
 					try
 					(
 						local rc = obj.rotation.controller
@@ -788,7 +788,7 @@ struct WdxGlobalSequenceManager
 					)
 					catch()
 					
-					-- Scale: immer Frame 0 Key
+					-- Scale: always a frame 0 key
 					try
 					(
 						local sc = obj.scale.controller
@@ -836,7 +836,7 @@ struct WdxGlobalSequenceManager
 			
 			try
 			(
-				-- AKTUELLEN Controller vom Objekt holen (nicht die alte Referenz!)
+				-- Fetch the CURRENT controller from the object (not the old reference!)
 				local ctrl = case channel of
 				(
 					"pos": obj.pos.controller
@@ -845,7 +845,7 @@ struct WdxGlobalSequenceManager
 				)
 				
 				local newCount = this.countControllerKeys ctrl
-				-- Im Edit-Modus: oldCount auf 0 setzen (alle Keys sind "neu")
+				-- In edit mode: set oldCount to 0 (every key counts as "new")
 				local effectiveOld = if this.isEditMode then 0 else oldCount
 				format "DEBUG   %: ctrl=% oldKeys=% newKeys=% effectiveOld=%\n" ctrlName (classOf ctrl) oldCount newCount effectiveOld
 				if newCount > effectiveOld then
@@ -881,7 +881,7 @@ struct WdxGlobalSequenceManager
 		#(newGlobals, warnings)
 	),
 	
-	-- Löscht alle Keys nach Frame 0 auf einem Controller (inkl. Sub-Controller)
+	-- Deletes all keys after frame 0 on a controller (incl. sub-controllers)
 	fn deleteKeysAfterZero ctrl =
 	(
 		try
@@ -902,7 +902,7 @@ struct WdxGlobalSequenceManager
 				)
 				catch()
 			)
-			-- Haupt-Controller Keys
+			-- Main controller keys
 			if (isProperty ctrl #keys) and ctrl.keys != undefined then
 			(
 				for k = ctrl.keys.count to 1 by -1 do
@@ -910,19 +910,19 @@ struct WdxGlobalSequenceManager
 					if ctrl.keys[k].time > 0f then deleteKey ctrl k
 				)
 			)
-			-- ORT zurücksetzen
+			-- Reset the ORT
 			try (setAfterORT ctrl #constant) catch()
 			for i = 1 to 3 do (try (setAfterORT ctrl[i].controller #constant) catch())
 		)
 		catch()
 	),
 	
-	-- Löscht ALLE Keys (inkl. Frame 0) auf einem Controller (inkl. Sub-Controller)
+	-- Deletes ALL keys (incl. frame 0) on a controller (incl. sub-controllers)
 	fn deleteAllKeys ctrl =
 	(
 		try
 		(
-			-- Sub-Controller einzeln rückwärts löschen (zuverlässiger als deleteKeys #allKeys)
+			-- Delete sub-controller keys one at a time, backwards (more reliable than deleteKeys #allKeys)
 			for i = 1 to 3 do
 			(
 				try
@@ -935,19 +935,19 @@ struct WdxGlobalSequenceManager
 				)
 				catch()
 			)
-			-- Haupt-Controller Keys
+			-- Main controller keys
 			if (isProperty ctrl #keys) and ctrl.keys != undefined then
 			(
 				for k = ctrl.keys.count to 1 by -1 do (deleteKey ctrl k)
 			)
-			-- ORT zurücksetzen
+			-- Reset the ORT
 			try (setAfterORT ctrl #constant) catch()
 			for i = 1 to 3 do (try (setAfterORT ctrl[i].controller #constant) catch())
 		)
 		catch()
 	),
 	
-	-- Erstellt eine frische Controller-Instanz basierend auf Klasse
+	-- Creates a fresh controller instance based on the class
 	fn createControllerFromClass cls =
 	(
 		case cls of
@@ -966,7 +966,7 @@ struct WdxGlobalSequenceManager
 		)
 	),
 	
-	-- Löscht alle Keys rückwärts auf Controller + Sub-Controller
+	-- Deletes all keys backwards on the controller + sub-controllers
 	fn forceDeleteAllKeys ctrl =
 	(
 		try
@@ -997,7 +997,7 @@ struct WdxGlobalSequenceManager
 		format "DEBUG savedEditKeys count=%\n" this.savedEditKeys.count
 		sliderTime = 0
 		
-		-- IMMER Original-Controller wiederherstellen (Spin/assignControllers können sie geändert haben)
+		-- ALWAYS restore the original controllers (Spin/assignControllers may have changed them)
 		for entry in this.savedTransforms do
 		(
 			local obj = entry[1]
@@ -1006,7 +1006,7 @@ struct WdxGlobalSequenceManager
 			local origSclClass = entry[5]
 			try
 			(
-				-- Nur wiederherstellen wenn sich der Controller-Typ geändert hat
+				-- Only restore if the controller type actually changed
 				if classOf obj.pos.controller != origPosClass then
 				(
 					local newPos = this.createControllerFromClass origPosClass
@@ -1027,7 +1027,7 @@ struct WdxGlobalSequenceManager
 			catch(format "DEBUG   ctrl restore ERROR: %\n" (getCurrentException()))
 		)
 		
-		-- Keys aus Backup wiederherstellen (beide Modi)
+		-- Restore the keys from the backup (both modes)
 		for entry in this.savedEditKeys do
 		(
 			local obj = entry[1]
@@ -1058,7 +1058,7 @@ struct WdxGlobalSequenceManager
 		format "===== DEBUG cancelRecording END =====\n\n"
 	),
 	
-	-- 360-Grad Spin Preset
+	-- 360-degree spin preset
 	fn createSpinSequence duration axisIdx direction ctrlType =
 	(
 		
@@ -1095,12 +1095,12 @@ struct WdxGlobalSequenceManager
 				
 				if ctrlType == 3 then
 				(
-					-- === LINEAR PATH: Linear_Rotation mit 4 Segmenten à 90° ===
+					-- === LINEAR PATH: Linear_Rotation with 4 segments of 90° each ===
 					format "\n===== DEBUG Spin LINEAR =====\n"
 					format "DEBUG obj=% axis=% dir=% dur=%\n" obj.name axis direction dur
 					format "DEBUG current rot ctrl=% keys=%\n" (classOf obj.rotation.controller) (try(obj.rotation.controller.keys.count)catch("?"))
 					
-					-- Pos/Scale Keys sichern (werden durch Controller-Wechsel/animate on gestört)
+					-- Back up the pos/scale keys (a controller swap / animate on disturbs them)
 					local posBak = this.backupControllerKeys obj.pos.controller
 					local sclBak = this.backupControllerKeys obj.scale.controller
 					
@@ -1108,13 +1108,13 @@ struct WdxGlobalSequenceManager
 					local rc = obj.rotation.controller
 					try (deleteKeys rc #allKeys) catch()
 					
-					-- Base-Rotation als Quaternion
+					-- Base rotation as a quaternion
 					local baseQ = savedTM.rotation
 					format "DEBUG baseQ=%\n" baseQ
 					
-					-- 5 Keys: 0°, 90°, 180°, 270°, 359.5° (4 Segmente, jedes < 180°)
-					-- 359.5° statt 360° weil q und -q in Quaternion-Space identisch sind
-					-- → MaxScript merged sonst den ersten und letzten Key
+					-- 5 keys: 0°, 90°, 180°, 270°, 359.5° (4 segments, each < 180°)
+					-- 359.5° instead of 360° because q and -q are identical in quaternion space
+					-- -> otherwise MaxScript merges the first and the last key
 					local segments = 4
 					local stepAngles = #(0.0, 90.0, 180.0, 270.0, 359.5)
 					for step = 0 to segments do
@@ -1125,7 +1125,7 @@ struct WdxGlobalSequenceManager
 						local angle = stepAngles[step + 1] * direction
 						local rotQ = quat angle axis
 						local finalQ = baseQ * rotQ
-						-- addNewKey erzwingt Key-Erstellung (animate on merged manchmal)
+						-- addNewKey forces the key to be created (animate on sometimes merges)
 						local k = addNewKey rc t
 						k.value = finalQ
 						format "DEBUG   step % t=%f angle=% q=%\n" step t angle finalQ
@@ -1136,7 +1136,7 @@ struct WdxGlobalSequenceManager
 					-- Cycle ORT
 					this.setControllerORT rc #cycle
 					
-					-- Pos/Scale Keys wiederherstellen
+					-- Restore the pos/scale keys
 					this.restoreControllerKeys obj.pos.controller posBak
 					this.restoreControllerKeys obj.scale.controller sclBak
 					
@@ -1158,7 +1158,7 @@ struct WdxGlobalSequenceManager
 						savedEulerZ = at time 0 oldRc[3].controller.value
 					)
 					
-					-- Pos/Scale Keys sichern (werden durch Controller-Wechsel/animate on gestört)
+					-- Back up the pos/scale keys (a controller swap / animate on disturbs them)
 					local posBak = this.backupControllerKeys obj.pos.controller
 					local sclBak = this.backupControllerKeys obj.scale.controller
 					
@@ -1201,7 +1201,7 @@ struct WdxGlobalSequenceManager
 					setAfterORT subCtrl #cycle
 					this.setControllerORT rc #cycle
 					
-					-- Pos/Scale Keys wiederherstellen
+					-- Restore the pos/scale keys
 					this.restoreControllerKeys obj.pos.controller posBak
 					this.restoreControllerKeys obj.scale.controller sclBak
 				)
@@ -1358,8 +1358,8 @@ struct WdxGlobalSequenceManager
 			local entryType = entry[6]
 			
 			-- Bone: Edit + EndFrame + Remove
-			-- Flow: EndFrame + Remove (kein Edit)
-			-- Vis/Alpha/IFL/SEQ: nichts
+			-- Flow: EndFrame + Remove (no Edit)
+			-- Vis/Alpha/IFL/SEQ: nothing
 			local canEditBtn = (entryType == "Bone")
 			local canEndFrame = (entryType == "Bone" or entryType == "Flow")
 			local canRemove = true
@@ -1393,7 +1393,7 @@ struct WdxGlobalSequenceManager
 		-- ========== RECORDING UI STATE ==========
 		fn setRecordingUI isRec =
 		(
-			-- Controls die nur während Recording sichtbar sind
+			-- Controls that are only visible while recording
 			ctrlLbl.visible = isRec
 			ctrlDdl.visible = isRec
 			chanLbl.visible = isRec
@@ -1407,11 +1407,11 @@ struct WdxGlobalSequenceManager
 			finishBtn.visible = isRec
 			cancelBtn.visible = isRec
 			
-			-- New/Edit-Buttons nur sichtbar wenn NICHT recording
+			-- New/Edit buttons are only visible when NOT recording
 			beginBtn.visible = not isRec
 			editBtn.visible = not isRec
 			
-			-- Liste-Controls während Recording deaktivieren (verhindert Konflikte)
+			-- Disable the list controls while recording (prevents conflicts)
 			if isRec then
 			(
 				endFrameSpn.enabled = false
@@ -1423,7 +1423,7 @@ struct WdxGlobalSequenceManager
 			else
 			(
 				refreshBtn.enabled = true
-				-- endFrameSpn/removeBtn/editBtn werden von updateEditFields gesetzt
+				-- endFrameSpn/removeBtn/editBtn are set by updateEditFields
 				updateEditFields()
 			)
 		)
@@ -1460,7 +1460,7 @@ struct WdxGlobalSequenceManager
 			local selId = getSelectedIndex()
 			if selId < 1 then return()
 			
-			if not (queryBox ("Remove Global Sequence " + selId as string + "?") title:(::WdxL.t "gseq_confirm_ptitle")) then return()
+			if not (queryBox (substituteString (::WdxL.t "gseq_remove_global_sequence_msg") "%1" (selId as string)) title:(::WdxL.t "gseq_confirm_ptitle")) then return()
 			
 			undo "GlobalSeqMgr Remove" on
 			(
@@ -1479,7 +1479,7 @@ struct WdxGlobalSequenceManager
 				return()
 			)
 			
-			-- Slider auf Frame 0 setzen damit Pose korrekt ist
+			-- Set the slider to frame 0 so the pose is correct
 			sliderTime = 0
 			
 			self.beginRecording durSpn.value ctrlDdl.selection posChk.checked rotChk.checked sclChk.checked
@@ -1505,9 +1505,9 @@ struct WdxGlobalSequenceManager
 				return()
 			)
 			
-			-- Objekte und Channels aus Entry ermitteln — Nodes direkt aus dem
-			-- ctrlPair (Element 5), NICHT über den Namen (Namen sind nicht
-			-- eindeutig; getNodeByName träfe ggf. den falschen Node).
+			-- Determine objects and channels from the entry - nodes come straight
+			-- from the ctrlPair (element 5), NOT by name (names are not
+			-- unique; getNodeByName could hit the wrong node).
 			local objs = #()
 			local objNames = #()
 			local hasPos = false
@@ -1533,7 +1533,7 @@ struct WdxGlobalSequenceManager
 				)
 			)
 
-			-- Fallback nur, wenn kein Entry einen Node mitführt (alte Einträge)
+			-- Fallback only when no entry carries a node (old entries)
 			if objs.count == 0 then
 			(
 				for n in objNames do
@@ -1551,13 +1551,13 @@ struct WdxGlobalSequenceManager
 			
 			select objs
 			
-			-- UI mit Entry-Werten füllen
+			-- Fill the UI with the entry's values
 			durSpn.value = entry[1].frame as integer
 			posChk.checked = hasPos
 			rotChk.checked = hasRot
 			sclChk.checked = hasScl
 			
-			-- Slider auf Frame 0 setzen
+			-- Set the slider to frame 0
 			sliderTime = 0
 			
 			self.beginRecording durSpn.value ctrlDdl.selection hasPos hasRot hasScl editMode:true
@@ -1586,18 +1586,18 @@ struct WdxGlobalSequenceManager
 						recording = false
 						spinApplied = false
 						setRecordingUI false
-						statusBar.Text = "No keys recorded."
+						statusBar.Text = ::WdxL.t "gseq_no_keys_recorded_msg"
 						return()
 					)
 					
 					if warnings.count > 0 then
 					(
-						local warnStr = "Warning - existing keys on: "
+						local warnStr = ::WdxL.t "gseq_existing_keys_warning_msg"
 						for w in warnings do warnStr += w + ", "
 						messageBox warnStr title:(::WdxL.t "gseq_warning_ptitle")
 					)
-					
-					messageBox (newGlobals.count as string + " controller(s) set as Global Sequence.") title:(::WdxL.t "gseq_success_ptitle")
+
+					messageBox (substituteString (::WdxL.t "gseq_controllers_set_msg") "%1" (newGlobals.count as string)) title:(::WdxL.t "gseq_success_ptitle")
 				)
 				
 				refreshAll()
@@ -1636,7 +1636,7 @@ struct WdxGlobalSequenceManager
 				if spinEnd < 1 then
 				(
 					format "GlobalSeqMgr: Move slider past frame 0.\n"
-					statusBar.Text = "Spin: Move slider past frame 0."
+					statusBar.Text = ::WdxL.t "gseq_move_slider_past_frame0_msg"
 					return()
 				)
 				if self.createSpinSequence spinEnd axisDdl.selection 1 ctrlDdl.selection then
@@ -1646,7 +1646,7 @@ struct WdxGlobalSequenceManager
 				)
 				else
 				(
-					statusBar.Text = "Spin failed -- check Listener."
+					statusBar.Text = ::WdxL.t "gseq_spin_failed_msg"
 				)
 			)
 		)
@@ -1665,7 +1665,7 @@ struct WdxGlobalSequenceManager
 				if spinEnd < 1 then
 				(
 					format "GlobalSeqMgr: Move slider past frame 0.\n"
-					statusBar.Text = "Spin: Move slider past frame 0."
+					statusBar.Text = ::WdxL.t "gseq_move_slider_past_frame0_msg"
 					return()
 				)
 				if self.createSpinSequence spinEnd axisDdl.selection -1 ctrlDdl.selection then
@@ -1675,7 +1675,7 @@ struct WdxGlobalSequenceManager
 				)
 				else
 				(
-					statusBar.Text = "Spin failed -- check Listener."
+					statusBar.Text = ::WdxL.t "gseq_spin_failed_msg"
 				)
 			)
 		)
@@ -1713,10 +1713,10 @@ struct WdxGlobalSequenceManager
 			statusBar.TextAlign = (dotNetClass "System.Drawing.ContentAlignment").MiddleLeft
 			statusBar.Text = "Initializing..."
 			
-			-- Recording-Controls initial verstecken
+			-- Hide the recording controls initially
 			setRecordingUI false
 			
-			-- Undo/Redo Callback: Liste automatisch aktualisieren
+			-- Undo/redo callback: refresh the list automatically
 			callbacks.addScript #sceneUndo "try(WdxGlobalSequenceManager.mainRollout.refreshAll())catch()" id:#GlobalSeqMgrUndo
 			callbacks.addScript #sceneRedo "try(WdxGlobalSequenceManager.mainRollout.refreshAll())catch()" id:#GlobalSeqMgrRedo
 			
@@ -1755,11 +1755,11 @@ struct WdxGlobalSequenceManager
 		
 		on mainRollout close do
 		(
-			-- Undo/Redo Callbacks entfernen
+			-- Remove the undo/redo callbacks
 			callbacks.removeScripts id:#GlobalSeqMgrUndo
 			callbacks.removeScripts id:#GlobalSeqMgrRedo
 			
-			-- Fenster geschlossen ohne Finish = Animation löschen + Pose wiederherstellen
+			-- Window closed without Finish = delete the animation + restore the pose
 			if recording then
 			(
 				try (self.cancelRecording()) catch()

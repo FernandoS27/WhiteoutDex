@@ -732,10 +732,12 @@ void Wc3Particles2DlgProc::BrowseTextureFromArchives(HWND hWnd)
     if (!ok || result.type != TYPE_STRING || !result.s || !result.s[0] ||
         result.s[0] == _M('N')) {
         MessageBox(hWnd,
-                   _T("The WhiteoutDex asset browser is not available.\n\n")
-                   _T("It ships as WhiteoutDexModelBrowser.ms and needs ")
-                   _T("WhiteoutDexRenderer.dlx loaded. Use \"Import Particle ")
-                   _T("Texture\" to pick a file off disk instead."),
+                   wdx::l10n::TrOr("p2_browser_unavailable_msg",
+                                   _T("The WhiteoutDex asset browser is not available.\n\n")
+                                   _T("It ships as WhiteoutDexModelBrowser.ms and needs ")
+                                   _T("WhiteoutDexRenderer.dlx loaded. Use Import Particle ")
+                                   _T("Texture to pick a file off disk instead."))
+                       .c_str(),
                    _T("WhiteoutDex"), MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -1302,7 +1304,14 @@ void ConfigDlgProc::ExportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     std::string path = NarrowPath(szFile);
     FILE* f = nullptr;
     fopen_s(&f, path.c_str(), "w");
-    if (!f) { MessageBox(hWnd, _M("Could not create file."), _M("Export Error"), MB_OK); return; }
+    if (!f) {
+        MessageBox(hWnd,
+                   wdx::l10n::TrOr("common_could_not_create_file_msg",
+                                   _M("Could not create the file.")).c_str(),
+                   wdx::l10n::TrOr("common_export_error_ptitle", _M("Export Error")).c_str(),
+                   MB_OK);
+        return;
+    }
 
     fprintf(f, "[Wc3Particles2]\n");
 
@@ -1382,7 +1391,10 @@ void ConfigDlgProc::ExportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     pb->GetValue(PB_XYQUAD,      t, iVal, iv); IniWriteInt(f, "XYQuad", iVal);
 
     fclose(f);
-    MessageBox(hWnd, _M("Configuration exported successfully."), _M("Wc3Particles2"), MB_OK | MB_ICONINFORMATION);
+    MessageBox(hWnd,
+               wdx::l10n::TrOr("common_config_exported_msg",
+                               _M("Configuration exported successfully.")).c_str(),
+               _M("Wc3Particles2"), MB_OK | MB_ICONINFORMATION);
 }
 
 void ConfigDlgProc::ImportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
@@ -1403,8 +1415,11 @@ void ConfigDlgProc::ImportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     auto ini = IniReadSection(path.c_str());
 
     if (ini.empty()) {
-        MessageBox(hWnd, _M("No [Wc3Particles2] section found in this file."),
-                   _M("Import Error"), MB_OK | MB_ICONWARNING);
+        MessageBox(hWnd,
+                   wdx::l10n::TrOr("p2_no_section_msg",
+                                   _M("No [Wc3Particles2] section was found in this file.")).c_str(),
+                   wdx::l10n::TrOr("common_import_error_ptitle", _M("Import Error")).c_str(),
+                   MB_OK | MB_ICONWARNING);
         return;
     }
 
@@ -1495,7 +1510,10 @@ void ConfigDlgProc::ImportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     theHold.Accept(_M("Import Particle Config"));
     pb->GetDesc()->InvalidateUI();
 
-    MessageBox(hWnd, _M("Configuration imported successfully."), _M("Wc3Particles2"), MB_OK | MB_ICONINFORMATION);
+    MessageBox(hWnd,
+               wdx::l10n::TrOr("common_config_imported_msg",
+                               _M("Configuration imported successfully.")).c_str(),
+               _M("Wc3Particles2"), MB_OK | MB_ICONINFORMATION);
 }
 
 INT_PTR ConfigDlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,

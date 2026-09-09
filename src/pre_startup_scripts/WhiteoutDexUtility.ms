@@ -128,12 +128,12 @@ struct WhiteoutDexUtilityStruct
         if count == 0 then return #()
         
         local result = #()
-        result[count] = undefined  -- Pre-allocate für worst case
+        result[count] = undefined  -- Pre-allocate for the worst case
         local resultIdx = 0
         
         for elem in array do
         (
-            -- Nur im bereits gefüllten Bereich suchen
+            -- Only search the part that has been filled in so far
             local found = false
             for i = 1 to resultIdx while not found do
                 if result[i] == elem then found = true
@@ -145,7 +145,7 @@ struct WhiteoutDexUtilityStruct
             )
         )
         
-        -- Array auf tatsächliche Größe trimmen
+        -- Trim the array to the size actually used
         result.count = resultIdx
         return result
     ),
@@ -185,7 +185,7 @@ struct WhiteoutDexUtilityStruct
         if count == 0 then return #()
         
         local result = #()
-        result[count] = undefined  -- Pre-allocate für worst case
+        result[count] = undefined  -- Pre-allocate for the worst case
         local resultIdx = 0
         
         for elem in array do
@@ -197,7 +197,7 @@ struct WhiteoutDexUtilityStruct
             )
         )
         
-        -- Array auf tatsächliche Größe trimmen
+        -- Trim the array to the size actually used
         result.count = resultIdx
         return result
     ),
@@ -387,7 +387,7 @@ struct WhiteoutDexUtilityStruct
     
     fn getBillboardFlags o =
     (
-        -- Alte Property migrieren falls vorhanden
+        -- Migrate the old property if it is present
         local oldBill = getUserProp o "Billboard"
         if oldBill != undefined then
         (
@@ -514,8 +514,9 @@ struct WhiteoutDexUtilityStruct
         for j = 1 to sequences.count do
         (
             local s = sequences[j]
-            -- FIX: Cursor zuruecksetzen wenn aktuelle Sequenz denselben oder
-            -- frueheren Start hat als die vorherige (Alias-Sequenzen / Shared Ranges)
+            -- FIX: rewind the cursor when the current sequence starts at the
+            -- same frame as the previous one, or earlier (alias sequences and
+            -- shared ranges)
             if j > 1 and i > 1 and s.start <= sequences[j - 1].start then
             (
                 while i > 1 and (func2 keys[i - 1].time s.start) do i -= 1
@@ -528,7 +529,7 @@ struct WhiteoutDexUtilityStruct
             )
         )
         
-        -- FIX: Gestohlene Boundary-Keys bei back-to-back Sequenzen zurueck verschieben
+        -- FIX: hand back boundary keys stolen from back-to-back sequences
         if inclusive then
         (
             for j = 1 to (sequences.count - 1) do

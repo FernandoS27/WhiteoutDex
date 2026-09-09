@@ -455,25 +455,28 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
 
             // HD (Reforged) PBR properties.
             //
-            // Der whiteout_lib Parser liest emissiveGain/fresnel* für JEDEN
-            // Layer wenn mdx.version > 800 — egal ob SD oder HD. Wir reichen
-            // diese Werte genauso unconditional durch, damit Byte-Level-
-            // Roundtrips stimmen:
+            // The whiteout_lib parser reads emissiveGain/fresnel* for EVERY
+            // layer when mdx.version > 800, whether the layer is SD or HD. We
+            // pass those values through just as unconditionally, so that
+            // byte-level round-trips still match:
             //
-            //   v800:   Parser liest nichts → Parser-Defaults (0.0, (1,1,1), 0, 0)
-            //           IR bleibt auf IR-Defaults. Das ist OK weil v800-Export
-            //           die Felder auch nicht schreibt.
-            //   v>800:  Parser liest alle vier Werte, wir propagieren sie in
-            //           die IR. Auch bei SD-Materialien (Material-Builder setzt
-            //           sie dann auf das Wc3Material; das Plugin ignoriert sie
-            //           visuell wenn shaderType=SD, aber Roundtrip bleibt sauber).
+            //   v800:   the parser reads nothing, so the parser defaults apply
+            //           (0.0, (1,1,1), 0, 0) and the IR keeps its own defaults.
+            //           That is fine because a v800 export does not write the
+            //           fields either.
+            //   v>800:  the parser reads all four values and we propagate them
+            //           into the IR — for SD materials too. The material builder
+            //           then sets them on the Wc3Material; the plug-in ignores
+            //           them visually when shaderType=SD, but the round-trip
+            //           stays clean.
             //
-            // Historie: Frühere Gates (layer.is_hd → buggy; isHdLayer-Heuristik
-            // → zu restriktiv) haben HD-Props je nach Layer-Klassifikation
-            // verworfen. Dadurch gingen für Arthas v1200:
-            //   - SD-Ribbon-Layer (Material #34): ORIG emissiveGain=1.0 → 0.0 in Max
-            //   - Alle HD-Layer (Material #25): ORIG emissiveGain=2.0 → 0.0 in Max
-            // Jetzt durchreichen statt gaten.
+            // History: earlier gates (layer.is_hd, which was buggy, and an
+            // isHdLayer heuristic, which was too restrictive) discarded the HD
+            // properties depending on how the layer was classified. For Arthas
+            // v1200 that lost:
+            //   - the SD ribbon layer (material #34): emissiveGain 1.0 -> 0.0 in Max
+            //   - every HD layer (material #25):      emissiveGain 2.0 -> 0.0 in Max
+            // Pass them through now instead of gating them.
             if (version_ > 800) {
                 irLayer.emissiveGain = layer.emissiveGain;
                 irLayer.fresnelColor = Point3(layer.fresnelColor.x,
@@ -483,10 +486,10 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                 irLayer.fresnelTeamColor = layer.fresnelTeamColor;
             }
 
-            // isHdLayer: Detection für v1200 animated tracks weiter unten.
-            // Die Detection wird nur dort gebraucht weil animierte HD-Tracks
-            // (KGMR/KGFC/KGFA/KGFT) echte HD-Bedingung benötigen — wenn wir
-            // sie auch für SD-Layer evaluieren würden käme es zu Phantom-Keys.
+            // isHdLayer: detection for the v1200 animated tracks further below.
+            // It is only needed there, because the animated HD tracks
+            // (KGMR/KGFC/KGFA/KGFT) require a genuine HD condition — evaluating
+            // them for SD layers as well would produce phantom keys.
             bool isHdLayer = layer.is_hd;
             if (!isHdLayer) {
                 if (mat.shader == "Shader_HD_DefaultUnit" ||

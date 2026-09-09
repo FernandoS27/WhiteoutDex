@@ -109,6 +109,35 @@ inline std::wstring Tr(const char* key) {
     return detail::EvalString(script);
 }
 
+/// Translate one key, falling back to @p fallback when there is no translation.
+///
+/// Two different failures mean "no translation": `Tr` gives back an empty
+/// string when `::WdxL` itself is missing, and gives back the key when the
+/// catalog has no such entry. Neither is worth showing a user — a message box
+/// reading "imp_parse_failed_msg" is worse than one reading English — so both
+/// land on @p fallback.
+///
+/// LocalizeDialog does not need this: a control it skips keeps the caption the
+/// .rc already gave it. Use TrOr for text built at runtime, where there is no
+/// such standing English default.
+inline std::wstring TrOr(const char* key, const wchar_t* fallback) {
+    const std::wstring v = Tr(key);
+    if (v.empty() || v == detail::Utf8ToWide(key))
+        return fallback;
+    return v;
+}
+
+/// Replace the first occurrence of @p token in @p s with @p value.
+///
+/// The catalog marks substitution points as %1, %2 rather than printf
+/// specifiers, so that a translator can reorder them — several languages need
+/// the count before the noun.
+inline void Substitute(std::wstring& s, const wchar_t* token, const std::wstring& value) {
+    const size_t at = s.find(token);
+    if (at != std::wstring::npos)
+        s.replace(at, ::wcslen(token), value);
+}
+
 /// Translate @p keys in a single MaxScript evaluation. The result has exactly
 /// one entry per key, in order; an entry is empty when that key is missing (or
 /// when the whole catalog is).

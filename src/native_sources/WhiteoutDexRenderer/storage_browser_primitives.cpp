@@ -193,6 +193,21 @@ Value* MakeString(const std::string& s) {
     return new String(w.empty() ? _M("") : w.c_str());
 }
 
+/// Translate @p key and put @p arg where the catalog's single %s sits.
+///
+/// The errors these build are returned to MaxScript, which shows them in a
+/// message box, so they have to be translated like any other user-facing
+/// string. A %s rather than plain concatenation because the path does not sit
+/// at the same point in every language's sentence. A catalog entry that lost
+/// its %s still yields a usable message, just without the path.
+std::string TrWithArg(const char* key, const std::string& arg) {
+    std::string s = whiteout::flakes::i18n::tr(key);
+    const size_t at = s.find("%s");
+    if (at != std::string::npos)
+        s.replace(at, 2, arg);
+    return s;
+}
+
 // ── The one browser ─────────────────────────────────────────────────────────
 // Static rather than heap: it owns a tree of strings plus a shared_ptr into the
 // CASC registry, and keeping it alive across dialog invocations is the whole
@@ -543,7 +558,7 @@ Value* WdxBrowserOpen_cf(Value** arg_list, int count) {
     if (!opened) {
         g_openRoot.clear();
         if (error.empty())
-            error = "Could not open '" + root + "'.";
+            error = TrWithArg("wdx.browser.open_failed", root);
         mprintf(_M("WhiteoutDex Browser: open failed - %hs\n"), error.c_str());
         return MakeString(error);
     }
@@ -889,9 +904,8 @@ Value* WdxExtractAsset_cf(Value** arg_list, int count) {
 #endif
 
     if (!read) {
-        std::string error = "'" + archivePath + "' is not in this installation, or its content "
-                                                "is encrypted with a key this build does not "
-                                                "have.";
+        std::string error =
+            TrWithArg("wdx.browser.asset_missing_or_encrypted", archivePath);
         // Only when nothing could be opened at all: with a storage open, the
         // miss is about the file and the open error is noise.
         if (!cascError.empty())

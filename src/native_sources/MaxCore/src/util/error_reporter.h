@@ -9,6 +9,11 @@ namespace core {
 
 enum class Severity { Info, Warning, Error };
 
+/// Which run produced the entries. Only affects the wording of the summary
+/// dialog — the importer used to borrow the exporter's "Export completed"
+/// heading, which read as the wrong operation entirely.
+enum class Operation { Import, Export };
+
 class ExportErrorReporter {
 public:
     struct Entry {
@@ -43,7 +48,10 @@ public:
 
     const std::vector<Entry>& entries() const { return entries_; }
 
-    void showSummaryDialog(HWND parent) const;
+    /// Show the collected entries in a message box, with the heading, the
+    /// per-row severity prefixes and the caption taken from the translation
+    /// catalog. The entry text itself is whatever the caller passed in.
+    void showSummaryDialog(HWND parent, Operation op = Operation::Export) const;
 
 private:
     std::vector<Entry> entries_;

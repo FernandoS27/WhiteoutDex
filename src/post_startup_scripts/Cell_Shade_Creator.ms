@@ -443,9 +443,9 @@ rollout WdxCellShadeCreator "Wc3 Cell Shade Creator" width:192 height:360
     on btnCreate MouseUp    s e do btnCreate.BackgroundImage = bmpCreateH
     on btnCreate MouseClick s e do
     (
-        if selection.count == 0 then ( messageBox (if ::WdxL != undefined then ::WdxL.t "csh_msg_no_selection" else "Please select the model first!") title:"Cell Shade" ; return undefined )
+        if selection.count == 0 then ( messageBox (if ::WdxL != undefined then ::WdxL.t "csh_msg_no_selection" else "Please select the model first!") title:(::WdxL.t "cell_shade_ptitle") ; return undefined )
         local src = WdxCellShade.getValidMeshObjects (selection as array)
-        if src.count == 0 then ( messageBox (if ::WdxL != undefined then ::WdxL.t "csh_msg_no_valid_mesh" else "No valid mesh objects!\n(Editable Poly/Mesh required)") title:"Cell Shade" ; return undefined )
+        if src.count == 0 then ( messageBox (if ::WdxL != undefined then ::WdxL.t "csh_msg_no_valid_mesh" else "No valid mesh objects!\n(Editable Poly/Mesh required)") title:(::WdxL.t "cell_shade_ptitle") ; return undefined )
         WdxCellShade.createOutlines src filterIndex flipNormals spnThick.value currentColor
     )
 

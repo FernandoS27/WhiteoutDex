@@ -609,10 +609,13 @@ void applyTabAndFormatVisibility(HWND hDlg) {
 // MaxScript round trip. A key the catalog does not carry leaves its control
 // English, so the table may list controls whose translations are still pending.
 //
-// Not in the table: IDC_LBL_SCENE_STATUS and IDC_LBL_STATUS, whose text the
-// scene monitor and the export loop rewrite as they run; those two are
-// localized where they are set. Combo entries are handled by their own init
-// functions below for the same reason.
+// Not in the table: IDC_LBL_SCENE_STATUS, whose text the scene monitor rewrites
+// as it runs and localizes where it sets it. Combo entries are handled by their
+// own init functions below for the same reason.
+//
+// IDC_LBL_STATUS is in the table. Nothing ever rewrites it — the export loop
+// reports through the progress bar — so its .rc caption "Idle" is what the user
+// reads for the whole dialog's life, and it has to be translated here.
 
 constexpr wdx::l10n::DialogString kExportStrings[] = {
     {0, "exp_export_settings_title"},
@@ -656,6 +659,7 @@ constexpr wdx::l10n::DialogString kExportStrings[] = {
     {IDC_BTN_SCENE_DETAILS, "exp_details_btn"},
 
     {IDC_GRP_PROGRESS, "exp_progress_grp"},
+    {IDC_LBL_STATUS, "exp_idle_lbl"},
 
     {IDOK, "exp_export_btn"},
     {IDCANCEL, "common_cancel_btn"},

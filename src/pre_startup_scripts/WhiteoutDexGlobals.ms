@@ -476,7 +476,7 @@ struct WhiteoutDexMaterialManagerStruct
 			)
 		)
 		else
-			::ErrorReporter.logError "Material" "TeamGlow" "TeamGlow files were not found"
+			::ErrorReporter.logError "Material" "TeamGlow" (::WdxL.t "mat_teamglow_not_found_msg")
 		
 		::WhiteoutDexWc3MaterialTeamGlowTextures = this.teamGlowTextures
 	),
