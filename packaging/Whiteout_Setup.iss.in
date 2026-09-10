@@ -16,8 +16,17 @@
 #define GitHubUser     "FernandoS27"
 #define GitHubRepo     "WhiteoutDex"
 
+; --- Legacy AppId (releases up to and including 0.0.1) ---
+; This GUID was copied from NeoDex, so both toolkits registered under the same
+; uninstall key and each installer silently uninstalled the other. We no longer
+; install under it, but GetPreviousInnoUninstallString() still reads it so an
+; older WhiteoutDex can be upgraded — guarded by a DisplayName check so a
+; NeoDex-owned key is never touched.
+#define LegacyAppId               "{{C508AF39-A032-496D-AC08-EE5B20E69FDB}"
+#define LegacyAppIdLastVersion    "0.0.1"
+
 [Setup]
-AppId={{C508AF39-A032-496D-AC08-EE5B20E69FDB}
+AppId={{88D96963-9318-4DE5-BF7B-0B7E29F96509}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -457,20 +466,124 @@ begin
 end;
 
 // -------------------------------------------------------
-// Read previous Inno Setup uninstall string (if a prior install exists).
+// A GUID AppId is written '{{...}' in [Setup] — the doubled brace is Inno's
+// escape for a literal '{' in a constant-expanded value. The uninstall key
+// Inno actually creates has a single brace, because AppId is expanded at
+// runtime; but SetupSetting() is an ISPP text lookup that hands back the raw
+// script text, doubled brace and all, and nothing collapses it on the way
+// into a [Code] string literal. Verified with ISCC:
+//
+//   SetupSetting("AppId") -> {{88D96963-9318-4DE5-BF7B-0B7E29F96509}
+//   real registry key     ->  {88D96963-9318-4DE5-BF7B-0B7E29F96509}_is1
+//
+// So the key this used to build never matched anything and upgrade detection
+// was silently a no-op — every install looked like a first install. Collapse
+// the brace here. Idempotent, so it is safe whichever form arrives.
 // -------------------------------------------------------
-function GetPreviousInnoUninstallString(): String;
+function NormalizeAppId(Id: String): String;
+begin
+  Result := Id;
+  if (Length(Result) >= 2) and (Result[1] = '{') and (Result[2] = '{') then
+    Delete(Result, 1, 1);
+end;
+
+// -------------------------------------------------------
+// Look up one Inno Setup uninstall key (HKLM first, then HKCU) and hand back
+// both its UninstallString and DisplayName.
+// -------------------------------------------------------
+function QueryInnoUninstallKey(AppId: String; var DisplayName: String): String;
 var
   UninstallKey: String;
 begin
   Result := '';
-  UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1';
+  DisplayName := '';
+  UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' +
+                  NormalizeAppId(AppId) + '_is1';
   // Admin installs land in HKLM; older HKCU-installed copies are still
   // checked as a fallback for users upgrading from the lowest-privileges
   // version of the installer.
-  if not RegQueryStringValue(HKLM, UninstallKey, 'UninstallString', Result) then
-    if not RegQueryStringValue(HKCU, UninstallKey, 'UninstallString', Result) then
-      Result := '';
+  if RegQueryStringValue(HKLM, UninstallKey, 'UninstallString', Result) then
+    RegQueryStringValue(HKLM, UninstallKey, 'DisplayName', DisplayName)
+  else if RegQueryStringValue(HKCU, UninstallKey, 'UninstallString', Result) then
+    RegQueryStringValue(HKCU, UninstallKey, 'DisplayName', DisplayName)
+  else
+    Result := '';
+end;
+
+// -------------------------------------------------------
+// Read previous Inno Setup uninstall string (if a prior install exists).
+//
+// Two AppIds are consulted. The current one is WhiteoutDex's own. The legacy
+// one was copied verbatim from NeoDex, so up to and including {#LegacyAppIdLastVersion}
+// both toolkits shared a single uninstall key: whichever installed last owned
+// it, and each installer silently uninstalled the other (its InitializeSetup
+// saw the neighbour's key and took it for "a previous version of me").
+//
+// The legacy key is therefore only honoured when its DisplayName still says
+// WhiteoutDex — that is a genuine pre-{#LegacyAppIdLastVersion} install of ours to upgrade. If
+// NeoDex owns the key we must leave it completely alone, or this installer
+// reproduces the very bug it is fixing.
+// -------------------------------------------------------
+function GetPreviousInnoUninstallString(): String;
+var
+  DisplayName: String;
+begin
+  Result := QueryInnoUninstallKey('{#SetupSetting("AppId")}', DisplayName);
+  if Result <> '' then Exit;
+
+  Result := QueryInnoUninstallKey('{#LegacyAppId}', DisplayName);
+  if (Result <> '') and (Pos('whiteoutdex', Lowercase(DisplayName)) = 0) then
+  begin
+    Log('Legacy uninstall key is owned by "' + DisplayName +
+        '" (not WhiteoutDex) — leaving it untouched.');
+    Result := '';
+  end;
+end;
+
+// -------------------------------------------------------
+// Carry the user's settings across the silent uninstall below.
+//
+// WhiteoutDex_Settings.ini is listed in [UninstallDelete], which is right for
+// a real uninstall and wrong for an upgrade — and an upgrade is exactly what
+// UninstallPreviousInnoSetup() performs. This never bit anyone before only
+// because the uninstall path was unreachable (see NormalizeAppId); now that it
+// works, stash the file first and put it back afterwards.
+// -------------------------------------------------------
+var
+  StashedSettings: String;   // temp copy; '' when there was nothing to stash
+
+procedure StashUserSettings();
+var
+  Src: String;
+begin
+  StashedSettings := '';
+  Src := GetDefaultDir('') + '\WhiteoutDex_Settings.ini';
+  if not FileExists(Src) then Exit;
+
+  if CopyFile(Src, ExpandConstant('{tmp}\WhiteoutDex_Settings.ini.bak'), False) then
+  begin
+    StashedSettings := ExpandConstant('{tmp}\WhiteoutDex_Settings.ini.bak');
+    Log('Stashed user settings from ' + Src);
+  end
+  else
+    Log('Could not stash user settings from ' + Src + ' — they may be lost.');
+end;
+
+procedure RestoreUserSettings();
+var
+  Dest: String;
+begin
+  if StashedSettings = '' then Exit;
+  Dest := ExpandConstant('{app}\WhiteoutDex_Settings.ini');
+
+  // If this install already produced a settings file, it wins — never clobber
+  // fresh state with the pre-upgrade copy.
+  if FileExists(Dest) then Exit;
+
+  if CopyFile(StashedSettings, Dest, False) then
+    Log('Restored user settings to ' + Dest)
+  else
+    Log('Could not restore user settings to ' + Dest);
 end;
 
 // -------------------------------------------------------
@@ -487,6 +600,7 @@ begin
   if UninstallString <> '' then
   begin
     Log('Previous Inno Setup installation found. Uninstalling...');
+    StashUserSettings();
 
     // Strip surrounding quotes
     if (Length(UninstallString) > 1) and (UninstallString[1] = '"') then
@@ -606,13 +720,20 @@ end;
 // -------------------------------------------------------
 // Patch PackageContents.xml post-install:
 //   - AppVersion → current installer version
-//   - ProductCode → fresh GUID (UpgradeCode is never touched)
+//
+// ProductCode and UpgradeCode are both left exactly as CMake rendered them.
+// This used to overwrite ProductCode with a date-stamped string ending in
+// '-0000-NEODEXTOOL}', which is not a GUID at all — wrong field widths and
+// non-hex characters — so it replaced the valid GUID CMake derives with one
+// the package spec rejects (see the ProductCode comment in CMakeLists.txt:
+// Max 2016 drops the whole manifest over it). Nothing needs a per-install
+// ProductCode: the spec asks only that it identify *this version* of the
+// plug-in, which the version-derived UUID already does.
 // -------------------------------------------------------
 procedure UpdatePackageContentsXml();
 var
   XmlFile: String;
   Content: AnsiString;
-  NewProductCode: String;
   PosStart, PosEnd: Integer;
   Before, After: String;
 begin
@@ -637,29 +758,8 @@ begin
     Log('PackageContents.xml: AppVersion set to {#MyAppVersion}.');
   end;
 
-  // --- ProductCode (date+time-derived; deterministic per install) ---
-  NewProductCode := '{' + GetDateTimeString('yyyy', #0, #0)
-    + GetDateTimeString('mmdd', #0, #0)
-    + '-' + GetDateTimeString('hhmm', #0, #0)
-    + '-' + '{#MyAppVersion}'
-    + '-0000-NEODEXTOOL}';
-
-  PosStart := Pos('ProductCode="', Content);
-  if PosStart > 0 then
-  begin
-    PosStart := PosStart + Length('ProductCode="');
-    PosEnd := PosStart;
-    while (PosEnd <= Length(Content)) and (Content[PosEnd] <> '"') do
-      PosEnd := PosEnd + 1;
-
-    Before := Copy(Content, 1, PosStart - 1);
-    After := Copy(Content, PosEnd, Length(Content) - PosEnd + 1);
-    Content := Before + NewProductCode + After;
-
-    Log('PackageContents.xml: ProductCode set to ' + NewProductCode + '.');
-  end;
-
-  // UpgradeCode is left untouched — it must stay stable.
+  // ProductCode and UpgradeCode are left untouched — CMake renders both as
+  // real GUIDs and they must stay stable.
   SaveStringToFile(XmlFile, Content, False);
   Log('PackageContents.xml updated.');
 end;
@@ -724,5 +824,6 @@ begin
 
     UpdatePackageContentsXml();
     RemoveLegacyUserInstall();
+    RestoreUserSettings();
   end;
 end;

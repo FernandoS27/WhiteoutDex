@@ -1,8 +1,8 @@
-if ( DisplayWarcraftIIIAttachments != undefined ) then 
+if ( WdxDisplayWarcraftIIIAttachments != undefined ) then 
 (
-	UnregisterRedrawViewsCallback DisplayWarcraftIIIAttachments
+	UnregisterRedrawViewsCallback WdxDisplayWarcraftIIIAttachments
 )	
-function DisplayWarcraftIIIAttachments=
+function WdxDisplayWarcraftIIIAttachments=
 (
 	gw.setTransform ( matrix3 1 )
 	for obj in objects where ( classof obj == Wdx_Wc3AttachPoint and obj.ishidden == false and obj.isfrozen == false ) do
@@ -16,4 +16,4 @@ function DisplayWarcraftIIIAttachments=
 	)
 	gw.updateScreen()
 )
-RegisterRedrawViewsCallback DisplayWarcraftIIIAttachments
+RegisterRedrawViewsCallback WdxDisplayWarcraftIIIAttachments

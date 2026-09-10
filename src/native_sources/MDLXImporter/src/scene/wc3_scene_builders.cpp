@@ -1423,7 +1423,7 @@ void Wc3SequenceBuilder::buildSequences(
     // If the MDX has no sequences, inject a default "Stand" sequence
     // (frame 10 → 60, looping) so the artist always has a working
     // animation range to start with. Without this the timeline collapses
-    // to a single frame and the SequenceStorage CA stays empty, which
+    // to a single frame and the WdxSequenceStorage CA stays empty, which
     // breaks downstream tooling that assumes at least one sequence.
     //
     // We work from a local copy of the sequence list so the source
@@ -1454,8 +1454,8 @@ void Wc3SequenceBuilder::buildSequences(
     // This matches the MaxScript rebuilder's recreateSequences().
     // Build the script: remove old CA, add fresh one, populate arrays, create FrameTags.
     std::wstring script;
-    script += L"::SequenceStorage.removeCA()\n";
-    script += L"::SequenceStorage.ensureCA()\n";
+    script += L"::WdxSequenceStorage.removeCA()\n";
+    script += L"::WdxSequenceStorage.ensureCA()\n";
 
     for (const auto& seq : sequences) {
         // Convert name to wide string, escape backslashes and quotes

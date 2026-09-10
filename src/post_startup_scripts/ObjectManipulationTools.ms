@@ -6,13 +6,13 @@
 */
 
 -- Poly Position globals & logic struct (must be outside rollout)
-global g_ppt_vertPositions = #()
-global g_ppt_vertIndices = #()
-global g_ppt_objName = undefined
-global g_ppt_faceCount = 0
-global g_ppt_timer = undefined
+global g_wdxPpt_vertPositions = #()
+global g_wdxPpt_vertIndices = #()
+global g_wdxPpt_objName = undefined
+global g_wdxPpt_faceCount = 0
+global g_wdxPpt_timer = undefined
 
-struct PPT_Ops
+struct WdxPPT_Ops
 (
 	fn dbg msg = (format "[PPT] %\n" msg),
 	
@@ -34,7 +34,7 @@ struct PPT_Ops
 	fn getSelectedVertsArray obj =
 	(
 		local c = classOf obj
-		local sl = PPT_Ops.getSL()
+		local sl = WdxPPT_Ops.getSL()
 		local verts = #{}
 		local tmpBA = #{}
 		local nv = 0
@@ -70,7 +70,7 @@ struct PPT_Ops
 	
 	fn countSelectedFaces obj =
 	(
-		local sl = PPT_Ops.getSL()
+		local sl = WdxPPT_Ops.getSL()
 		local c = classOf obj
 		local n = 0
 		if sl >= 3 do
@@ -83,13 +83,13 @@ struct PPT_Ops
 	
 	fn doCopy obj =
 	(
-		local vertArr = PPT_Ops.getSelectedVertsArray obj
+		local vertArr = WdxPPT_Ops.getSelectedVertsArray obj
 		if vertArr.count == 0 do (return false)
-		g_ppt_vertPositions = for vi in vertArr collect (PPT_Ops.getVertPos obj vi)
-		g_ppt_vertIndices = vertArr
-		g_ppt_objName = obj.name
-		g_ppt_faceCount = PPT_Ops.countSelectedFaces obj
-		PPT_Ops.dbg ("COPY: " + (vertArr.count as string) + " verts from \"" + obj.name + "\"")
+		g_wdxPpt_vertPositions = for vi in vertArr collect (WdxPPT_Ops.getVertPos obj vi)
+		g_wdxPpt_vertIndices = vertArr
+		g_wdxPpt_objName = obj.name
+		g_wdxPpt_faceCount = WdxPPT_Ops.countSelectedFaces obj
+		WdxPPT_Ops.dbg ("COPY: " + (vertArr.count as string) + " verts from \"" + obj.name + "\"")
 		true
 	),
 	
@@ -97,7 +97,7 @@ struct PPT_Ops
 	(
 		local doMirror = (mirX or mirY or mirZ)
 		local targetVerts = #()
-		local srcPositions = g_ppt_vertPositions
+		local srcPositions = g_wdxPpt_vertPositions
 		local total = srcPositions.count
 		local applied = 0
 		local skipped = 0
@@ -128,8 +128,8 @@ struct PPT_Ops
 			)
 		)
 		
-		if byIndex then (targetVerts = g_ppt_vertIndices)
-		else (targetVerts = PPT_Ops.getSelectedVertsArray obj)
+		if byIndex then (targetVerts = g_wdxPpt_vertIndices)
+		else (targetVerts = WdxPPT_Ops.getSelectedVertsArray obj)
 		if targetVerts.count == 0 do (return "No target selection")
 		
 		if c == Editable_Poly do (maxVerts = polyOp.getNumVerts obj)
@@ -158,7 +158,7 @@ struct PPT_Ops
 				vi = targetVerts[t]
 				if vi <= maxVerts then
 				(
-					tgtPos = PPT_Ops.getVertPos obj vi
+					tgtPos = WdxPPT_Ops.getVertPos obj vi
 					bestDist = 1e30
 					bestIdx = 1
 					for s = 1 to total do
@@ -185,7 +185,7 @@ struct PPT_Ops
 				else
 				(
 					srcIdx = matchOrder[i]
-					PPT_Ops.setVertPos obj vi (copy mirroredSrc[srcIdx])
+					WdxPPT_Ops.setVertPos obj vi (copy mirroredSrc[srcIdx])
 					applied += 1
 				)
 			)
@@ -195,12 +195,12 @@ struct PPT_Ops
 		
 		local msg = "Pasted " + (applied as string) + " verts"
 		if skipped > 0 do (msg += " (" + (skipped as string) + " skipped)")
-		PPT_Ops.dbg msg
+		WdxPPT_Ops.dbg msg
 		msg
 	)
 )
 
-global PPT = PPT_Ops()
+global WdxPPT = WdxPPT_Ops()
 
 -- ================================================================
 -- Original struct with poly tools added
@@ -571,12 +571,12 @@ struct WdxObjectManipulationTools
 		   ========================================= */
 		fn updatePolyInfo =
 		(
-			local obj = PPT.getValidObject()
+			local obj = WdxPPT.getValidObject()
 			if obj != undefined then
 			(
-				local vn = (PPT.getSelectedVertsArray obj).count
-				local nf = PPT.countSelectedFaces obj
-				local sl = PPT.getSL()
+				local vn = (WdxPPT.getSelectedVertsArray obj).count
+				local nf = WdxPPT.countSelectedFaces obj
+				local sl = WdxPPT.getSL()
 				local slNames = #("Obj","Vtx","Edge","Bdr","Poly","Elem")
 				local slN = "?"
 				if sl >= 0 and sl <= 5 do (slN = slNames[sl + 1])
@@ -592,39 +592,39 @@ struct WdxObjectManipulationTools
 
 		on btnPolyCopy pressed do
 		(
-			local obj = PPT.getValidObject()
+			local obj = WdxPPT.getValidObject()
 			if obj == undefined do (messageBox (::WdxL.t "omt_select_an_editable_polymesh_msg") title:(::WdxL.t "omt_error_ptitle_5"); return())
-			local ok = PPT.doCopy obj
+			local ok = WdxPPT.doCopy obj
 			if ok then
 			(
-				lblPolyBuf.text = "Buffer: " + (g_ppt_vertPositions.count as string) + "v from " + obj.name
+				lblPolyBuf.text = "Buffer: " + (g_wdxPpt_vertPositions.count as string) + "v from " + obj.name
 				btnPolyPaste.enabled = true
-				lblStatus.text = "Poly: copied " + (g_ppt_vertPositions.count as string) + " verts"
+				lblStatus.text = "Poly: copied " + (g_wdxPpt_vertPositions.count as string) + " verts"
 			)
 			else (messageBox (::WdxL.t "omt_no_subobject_selection_msg") title:(::WdxL.t "omt_error_ptitle_6"))
 		)
 
 		on btnPolyPaste pressed do
 		(
-			if g_ppt_vertPositions.count == 0 do (messageBox (::WdxL.t "omt_copy_first_msg") title:(::WdxL.t "omt_error_ptitle_7"); return())
-			local obj = PPT.getValidObject()
+			if g_wdxPpt_vertPositions.count == 0 do (messageBox (::WdxL.t "omt_copy_first_msg") title:(::WdxL.t "omt_error_ptitle_7"); return())
+			local obj = WdxPPT.getValidObject()
 			if obj == undefined do (messageBox (::WdxL.t "omt_select_an_editable_polymesh_msg_2") title:(::WdxL.t "omt_error_ptitle_8"); return())
 
 			local byIdx = (rdoPolyMode.state == 1)
 			if not byIdx do
 			(
-				local tgt = PPT.getSelectedVertsArray obj
+				local tgt = WdxPPT.getSelectedVertsArray obj
 				if tgt.count == 0 do (messageBox (::WdxL.t "omt_no_target_selection_msg") title:(::WdxL.t "omt_error_ptitle_9"); return())
-				if tgt.count != g_ppt_vertPositions.count do
+				if tgt.count != g_wdxPpt_vertPositions.count do
 				(
 					local mn = tgt.count
-					if g_ppt_vertPositions.count < mn do (mn = g_ppt_vertPositions.count)
-					local ok = queryBox ("Mismatch: src=" + (g_ppt_vertPositions.count as string) + " tgt=" + (tgt.count as string) + "\nUse " + (mn as string) + "?") title:(::WdxL.t "omt_mismatch_ptitle")
+					if g_wdxPpt_vertPositions.count < mn do (mn = g_wdxPpt_vertPositions.count)
+					local ok = queryBox ("Mismatch: src=" + (g_wdxPpt_vertPositions.count as string) + " tgt=" + (tgt.count as string) + "\nUse " + (mn as string) + "?") title:(::WdxL.t "omt_mismatch_ptitle")
 					if not ok do (return())
 				)
 			)
 
-			local result = PPT.doPaste obj chkPolyMirX.checked chkPolyMirY.checked chkPolyMirZ.checked rdoPolyCenter.state byIdx
+			local result = WdxPPT.doPaste obj chkPolyMirX.checked chkPolyMirY.checked chkPolyMirZ.checked rdoPolyCenter.state byIdx
 			lblStatus.text = "Poly: " + result
 		)
 
@@ -684,18 +684,18 @@ struct WdxObjectManipulationTools
 			try (WdxSetDialogIcon mainRollout) catch()
 			self = WdxObjectManipulationTools
 			updatePolyInfo()
-			if g_ppt_vertPositions.count > 0 do
+			if g_wdxPpt_vertPositions.count > 0 do
 			(
 				local name = "?"
-				if g_ppt_objName != undefined do (name = g_ppt_objName)
-				lblPolyBuf.text = "Buffer: " + (g_ppt_vertPositions.count as string) + "v from " + name
+				if g_wdxPpt_objName != undefined do (name = g_wdxPpt_objName)
+				lblPolyBuf.text = "Buffer: " + (g_wdxPpt_vertPositions.count as string) + "v from " + name
 				btnPolyPaste.enabled = true
 			)
 			-- Auto-refresh timer for poly selection info
-			g_ppt_timer = dotNetObject "System.Windows.Forms.Timer"
-			g_ppt_timer.Interval = 500
-			dotNet.addEventHandler g_ppt_timer "Tick" (fn pptTick s e = (try(mainRollout.updatePolyInfo()) catch()))
-			g_ppt_timer.Start()
+			g_wdxPpt_timer = dotNetObject "System.Windows.Forms.Timer"
+			g_wdxPpt_timer.Interval = 500
+			dotNet.addEventHandler g_wdxPpt_timer "Tick" (fn pptTick s e = (try(mainRollout.updatePolyInfo()) catch()))
+			g_wdxPpt_timer.Start()
 			
 			-- Localization
 			if ::WdxL != undefined then
@@ -772,10 +772,10 @@ struct WdxObjectManipulationTools
 				))
 				tmr.Start()
 			)
-			if g_ppt_timer != undefined do
+			if g_wdxPpt_timer != undefined do
 			(
-				g_ppt_timer.Stop()
-				g_ppt_timer = undefined
+				g_wdxPpt_timer.Stop()
+				g_wdxPpt_timer = undefined
 			)
 		)
 	),

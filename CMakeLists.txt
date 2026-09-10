@@ -927,10 +927,16 @@ else()
     # ProductCode must be a real {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX} GUID
     # per the package spec — Max 2016 rejects the manifest with anything else.
     # Derive deterministically from the version so it stays stable for a given
-    # release; the .iss's Pascal post-install hook overwrites it again with a
-    # date-stamped variant.
+    # release. This is the ProductCode that ships: the .iss post-install hook
+    # used to overwrite it with a date-stamped non-GUID string, which has been
+    # removed.
+    #
+    # The namespace is WhiteoutDex's own UpgradeCode. It must never be set back
+    # to NeoDex's {4583FEEB-…}: that GUID identified NeoDex to 3ds Max, and
+    # sharing it meant Max loaded only whichever package had the higher
+    # AppVersion — WhiteoutDex silently vanished whenever NeoDex was installed.
     string(UUID WDX_PRODUCT_CODE_BARE
-        NAMESPACE "4583feeb-c403-46e3-9c96-4563a4a34e24"
+        NAMESPACE "d0a962fa-3f18-4a8c-af8b-a474eb3b40fb"
         NAME      "WhiteoutDex-${WDX_VERSION}"
         TYPE      SHA1
         UPPER)

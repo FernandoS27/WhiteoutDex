@@ -547,7 +547,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			if doesFileExist updaterPath then
 			(
 				-- Force check regardless of auto-check setting
-				global _ndxForceUpdateCheck = true
+				global _wdxForceUpdateCheck = true
 				fileIn updaterPath
 			)
 			else

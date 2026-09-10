@@ -42,20 +42,26 @@ global WhiteoutDexInstallRoot = undefined
 
 /* ============================================================================
    SECTION 0: ERROR REPORTER STUB
-   Lightweight fallback if ErrorReporter.ms is not loaded.
-   Provides ::ErrorReporter.logError/logWarning/logInfo used by
+   Provides ::WdxErrorReporter.logError/logWarning/logInfo used by
    SequenceManager, MaterialManager, and other tools.
+
+   The name carries the Wdx prefix deliberately. It used to be plain
+   ::ErrorReporter, guarded by this same "if undefined" check — which is
+   exactly how NeoDex's own ErrorReporter got adopted whenever both toolkits
+   were installed: whichever package loaded first won, and the other silently
+   logged through a struct it did not own. Every global this toolkit publishes
+   must stay Wdx-prefixed for that reason.
    ============================================================================ */
 
-if ::ErrorReporter == undefined then
+if ::WdxErrorReporter == undefined then
 (
-    struct ErrorReporterStub
+    struct WdxErrorReporterStub
     (
         fn logError category source msg = (format "WhiteoutDex ERROR [%/%]: %\n" category source msg),
         fn logWarning category source msg = (format "WhiteoutDex WARNING [%/%]: %\n" category source msg),
         fn logInfo category source msg = (format "WhiteoutDex INFO [%/%]: %\n" category source msg)
     )
-    global ErrorReporter = ErrorReporterStub()
+    global WdxErrorReporter = WdxErrorReporterStub()
 )
 
 
@@ -92,13 +98,13 @@ global WhiteoutDexHasNativeBLP = false
 -- ============================================================================
 -- DATA STRUCTS (used by SequenceManager etc.)
 -- ============================================================================
-struct Wc3Extent (
+struct WdxWc3Extent (
 	minExtent,
 	maxExtent,
 	bound
 )
 
-struct Wc3Sequence (
+struct WdxWc3Sequence (
 	name, 
 	startTime, 
 	endTime, 
@@ -110,7 +116,7 @@ struct Wc3Sequence (
 	sharedGroup
 )
 
-struct Wc3Material (
+struct WdxWc3Material (
     maxObj,
     layers,
     id,
@@ -476,7 +482,7 @@ struct WhiteoutDexMaterialManagerStruct
 			)
 		)
 		else
-			::ErrorReporter.logError "Material" "TeamGlow" (::WdxL.t "mat_teamglow_not_found_msg")
+			::WdxErrorReporter.logError "Material" "TeamGlow" (::WdxL.t "mat_teamglow_not_found_msg")
 		
 		::WhiteoutDexWc3MaterialTeamGlowTextures = this.teamGlowTextures
 	),
@@ -676,8 +682,25 @@ global WdxRenderer = WhiteoutDexRendererStruct()
    This section defines the CA block and provides migration from legacy Note Tracks.
    ============================================================================ */
 
--- Define the Custom Attribute block for sequence data
-global NeoDexSequenceCA = attributes "NeoDexSequenceData"
+-- Define the Custom Attribute block for sequence data.
+--
+-- The definition name is our own. It used to be "NeoDexSequenceData", copied
+-- from NeoDex, which meant both toolkits read and wrote the same block on
+-- rootNode — and a block authored by NeoDex predates the sharedGroup parameter
+-- added below for Reforged v1200.
+--
+-- Scenes saved before this change still carry a NeoDexSequenceData block, so it
+-- is read as a fallback: hasCA() reports either name, and because only one of
+-- them is ever attached at a time, `rootNode.seqNames` and friends resolve to
+-- whichever is present without the read sites having to care.
+--
+-- The fallback is one-way. The first write adopts the legacy block onto this
+-- definition (adoptLegacyCA below) and detaches the old one, because two blocks
+-- declaring the same parameter names would make `rootNode.seqNames` ambiguous.
+global WDX_SEQUENCE_CA_NAME        = "WhiteoutDexSequenceData"
+global WDX_LEGACY_SEQUENCE_CA_NAME = "NeoDexSequenceData"
+
+global WdxSequenceCA = attributes "WhiteoutDexSequenceData"
 (
 	parameters main
     (
@@ -694,29 +717,96 @@ global NeoDexSequenceCA = attributes "NeoDexSequenceData"
 
 struct WhiteoutDexSequenceStorageStruct
 (
-    -- Check if Custom Attributes are present on rootNode
-    fn hasCA =
+    -- Index of the named CA block on rootNode, or 0 when it is not attached.
+    fn caIndex caName =
     (
         for i = 1 to custAttributes.count rootNode do
-            if (custAttributes.get rootNode i).name == "NeoDexSequenceData" then return true
-        false
+            if (custAttributes.get rootNode i).name == caName then return i
+        0
     ),
-    
-    -- Ensure CA block exists on rootNode, create if missing
+
+    fn hasOwnCA    = ((this.caIndex ::WDX_SEQUENCE_CA_NAME) != 0),
+    fn hasLegacyCA = ((this.caIndex ::WDX_LEGACY_SEQUENCE_CA_NAME) != 0),
+
+    -- Check if sequence Custom Attributes are readable on rootNode — our own
+    -- block, or the legacy NeoDexSequenceData one we still read as a fallback.
+    fn hasCA = (this.hasOwnCA() or this.hasLegacyCA()),
+
+    -- Detach every legacy block. Two blocks declaring the same parameter names
+    -- would make rootNode.seqNames ambiguous, so this runs whenever ours is
+    -- (or is about to be) attached.
+    fn removeLegacyCA =
+    (
+        for i = custAttributes.count rootNode to 1 by -1 do
+            if (custAttributes.get rootNode i).name == ::WDX_LEGACY_SEQUENCE_CA_NAME then
+                custAttributes.delete rootNode i
+    ),
+
+    -- Move a legacy NeoDexSequenceData block onto our own definition.
+    --
+    -- Order matters: snapshot while the legacy block is still the only one
+    -- declaring these names, detach it, and only then attach ours and write
+    -- back. That way the two are never attached at the same time and every
+    -- read/write resolves unambiguously.
+    fn adoptLegacyCA =
+    (
+        local names   = try (for v in rootNode.seqNames    collect v) catch (#())
+        local starts  = try (for v in rootNode.startFrames collect v) catch (#())
+        local ends    = try (for v in rootNode.endFrames   collect v) catch (#())
+        local noLoops = try (for v in rootNode.nonLooping  collect v) catch (#())
+        local rars    = try (for v in rootNode.rarity      collect v) catch (#())
+        local mspds   = try (for v in rootNode.moveSpeed   collect v) catch (#())
+        local exts    = try (for v in rootNode.seqExtents  collect v) catch (#())
+        -- NeoDex-authored blocks predate sharedGroup, so this one often throws.
+        local groups  = try (for v in rootNode.sharedGroup collect v) catch (#())
+
+        this.removeLegacyCA()
+        custAttributes.add rootNode ::WdxSequenceCA
+
+        -- Pad the parameters a legacy block may not have carried, so every
+        -- array stays as long as seqNames and index lookups stay aligned.
+        while exts.count   < names.count do append exts   ""
+        while groups.count < names.count do append groups ""
+
+        rootNode.seqNames    = names
+        rootNode.startFrames = starts
+        rootNode.endFrames   = ends
+        rootNode.nonLooping  = noLoops
+        rootNode.rarity      = rars
+        rootNode.moveSpeed   = mspds
+        rootNode.seqExtents  = exts
+        rootNode.sharedGroup = groups
+
+        format "WhiteoutDex: adopted % sequence(s) from % into %\n" \
+            names.count ::WDX_LEGACY_SEQUENCE_CA_NAME ::WDX_SEQUENCE_CA_NAME
+        names.count
+    ),
+
+    -- Ensure OUR CA block exists on rootNode, create if missing. A legacy
+    -- block is adopted rather than left alongside.
     fn ensureCA =
     (
-        if not (this.hasCA()) then
-            custAttributes.add rootNode ::NeoDexSequenceCA
+        if not (this.hasOwnCA()) then
+        (
+            if this.hasLegacyCA() then this.adoptLegacyCA()
+            else custAttributes.add rootNode ::WdxSequenceCA
+        )
+        else
+            this.removeLegacyCA()
     ),
-    
-    -- Remove existing CA block (for clean rebuild)
+
+    -- Remove existing CA block (for clean rebuild) — ours and any legacy one
     fn removeCA =
     (
         for i = custAttributes.count rootNode to 1 by -1 do
-            if (custAttributes.get rootNode i).name == "NeoDexSequenceData" then
+        (
+            local caName = (custAttributes.get rootNode i).name
+            if caName == ::WDX_SEQUENCE_CA_NAME or \
+               caName == ::WDX_LEGACY_SEQUENCE_CA_NAME then
                 custAttributes.delete rootNode i
+        )
     ),
-    
+
     -- Clear all sequence data from CA without removing the block
     fn clearCA =
     (
@@ -904,4 +994,4 @@ struct WhiteoutDexSequenceStorageStruct
     )
 )
 
-global SequenceStorage = WhiteoutDexSequenceStorageStruct()
+global WdxSequenceStorage = WhiteoutDexSequenceStorageStruct()

@@ -1,4 +1,4 @@
-global GlobalSequenceManager
+global WdxGlobalSequenceManager
 
 struct WdxGlobalSequenceManager
 (
@@ -1717,8 +1717,8 @@ struct WdxGlobalSequenceManager
 			setRecordingUI false
 			
 			-- Undo/redo callback: refresh the list automatically
-			callbacks.addScript #sceneUndo "try(WdxGlobalSequenceManager.mainRollout.refreshAll())catch()" id:#GlobalSeqMgrUndo
-			callbacks.addScript #sceneRedo "try(WdxGlobalSequenceManager.mainRollout.refreshAll())catch()" id:#GlobalSeqMgrRedo
+			callbacks.addScript #sceneUndo "try(WdxGlobalSequenceManager.mainRollout.refreshAll())catch()" id:#WdxGlobalSeqMgrUndo
+			callbacks.addScript #sceneRedo "try(WdxGlobalSequenceManager.mainRollout.refreshAll())catch()" id:#WdxGlobalSeqMgrRedo
 			
 			self.scanScene()
 			updateList()
@@ -1756,8 +1756,8 @@ struct WdxGlobalSequenceManager
 		on mainRollout close do
 		(
 			-- Remove the undo/redo callbacks
-			callbacks.removeScripts id:#GlobalSeqMgrUndo
-			callbacks.removeScripts id:#GlobalSeqMgrRedo
+			callbacks.removeScripts id:#WdxGlobalSeqMgrUndo
+			callbacks.removeScripts id:#WdxGlobalSeqMgrRedo
 			
 			-- Window closed without Finish = delete the animation + restore the pose
 			if recording then
@@ -1782,7 +1782,7 @@ struct WdxGlobalSequenceManager
 	
 	on create do
 	(
-		print "GlobalSequenceManager instanced."
+		print "WdxGlobalSequenceManager instanced."
 	)
 )
 

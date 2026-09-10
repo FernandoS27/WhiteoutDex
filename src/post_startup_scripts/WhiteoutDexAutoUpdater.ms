@@ -66,8 +66,8 @@
     fn _ndxShouldCheck = (
         -- If force flag is set (from Settings "Check Now"), always check
         try (
-            if ::_ndxForceUpdateCheck == true then (
-                ::_ndxForceUpdateCheck = false
+            if ::_wdxForceUpdateCheck == true then (
+                ::_wdxForceUpdateCheck = false
                 return true
             )
         ) catch ()

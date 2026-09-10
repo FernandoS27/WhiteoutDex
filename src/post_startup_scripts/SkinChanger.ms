@@ -24,7 +24,7 @@ struct WdxSkinChanger
             )
             else
             (
-                ::ErrorReporter.logError "SkinChanger" "init" "SkinChanger definition not found in rollout. Tool not properly initialized."
+                ::WdxErrorReporter.logError "SkinChanger" "init" "SkinChanger definition not found in rollout. Tool not properly initialized."
                 messageBox (::WdxL.t "skin_cannot_call_changeskindata_sc_msg")
             )
         )
@@ -51,7 +51,7 @@ struct WdxSkinChanger
             )
             else
             (
-                ::ErrorReporter.logError "SkinChanger" "init" "SkinChanger definition not found in rollout. Tool not properly initialized."
+                ::WdxErrorReporter.logError "SkinChanger" "init" "SkinChanger definition not found in rollout. Tool not properly initialized."
                 messageBox (::WdxL.t "skin_cannot_call_removezeroweights_msg")
             )
         )
@@ -179,14 +179,14 @@ struct WdxSkinChanger
             try (
                 if not canConvertTo obj PolyMeshObject and not canConvertTo obj Editable_Mesh then
                 (
-                    ::ErrorReporter.logWarning "SkinChanger" obj.name "Skipping: Cannot be converted to Mesh/Poly."
+                    ::WdxErrorReporter.logWarning "SkinChanger" obj.name "Skipping: Cannot be converted to Mesh/Poly."
                     continue
                 )
 
                 local skinMods = for m in obj.modifiers where classof m == Skin collect m 
                 if skinMods.count == 0 then
                 (
-                    ::ErrorReporter.logWarning "SkinChanger" obj.name "Skipping: No Skin modifier found."
+                    ::WdxErrorReporter.logWarning "SkinChanger" obj.name "Skipping: No Skin modifier found."
                     continue
                 )
                 
@@ -201,7 +201,7 @@ struct WdxSkinChanger
                 local numVertices = skinOps.GetNumberVertices skinMod
                 if numVertices == 0 then 
                 (
-                    ::ErrorReporter.logWarning "SkinChanger" obj.name "Skipping: Skin modifier has 0 vertices."
+                    ::WdxErrorReporter.logWarning "SkinChanger" obj.name "Skipping: Skin modifier has 0 vertices."
                     continue
                 )
 
@@ -222,7 +222,7 @@ struct WdxSkinChanger
                         
                         if boneNode == undefined or isDeleted boneNode then 
                         (
-                            ::ErrorReporter.logWarning "SkinChanger" obj.name ("Vertex " + v as string + " (OrigIdx:" + i as string + ") has invalid Bone ID " + boneID as string + ". Skipping.")
+                            ::WdxErrorReporter.logWarning "SkinChanger" obj.name ("Vertex " + v as string + " (OrigIdx:" + i as string + ") has invalid Bone ID " + boneID as string + ". Skipping.")
                             continue 
                         )
                         
@@ -327,7 +327,7 @@ struct WdxSkinChanger
 
                     if finalBoneIDs.count == 0 or finalWeights.count == 0 or finalBoneIDs.count != finalWeights.count then
                     (
-                        ::ErrorReporter.logError "SkinChanger" obj.name ("Vertex " + v as string + " has NO valid bones/weights. Original influences: " + originalBoneCount as string)
+                        ::WdxErrorReporter.logError "SkinChanger" obj.name ("Vertex " + v as string + " has NO valid bones/weights. Original influences: " + originalBoneCount as string)
                         verticesWithIssues +=1
                         currentObjectSuccess = false
                         continue
@@ -346,7 +346,7 @@ struct WdxSkinChanger
                 if currentObjectSuccess then objectsProcessed += 1
             ) 
             catch (
-                ::ErrorReporter.logError "SkinChanger" obj.name ("Processing failed: " + (getCurrentException()) as string)
+                ::WdxErrorReporter.logError "SkinChanger" obj.name ("Processing failed: " + (getCurrentException()) as string)
                 overallSuccess = false 
             )
         ) 
@@ -412,7 +412,7 @@ struct WdxSkinChanger
                 
                 if skinMod == undefined then
                 (
-                    ::ErrorReporter.logWarning "SkinChanger" obj.name "RemoveZeroWeights: Skipping, no Skin modifier found."
+                    ::WdxErrorReporter.logWarning "SkinChanger" obj.name "RemoveZeroWeights: Skipping, no Skin modifier found."
                     skippedCount += 1
                     continue
                 )
@@ -481,7 +481,7 @@ struct WdxSkinChanger
         if skippedCount > 0 do
             msg += (substituteString (::WdxL.t "skin_zero_weights_skipped_msg") "%1" (skippedCount as string))
         
-        ::ErrorReporter.logInfo "SkinChanger" "RemoveZeroWeights" msg
+        ::WdxErrorReporter.logInfo "SkinChanger" "RemoveZeroWeights" msg
         messageBox msg title:(::WdxL.t "skin_remove_zero_weights_ptitle_2")
         
         return (processedCount > 0)

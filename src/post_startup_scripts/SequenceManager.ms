@@ -350,7 +350,7 @@ struct WdxSequenceManager
             if stricmp (substring c 1 6) "Rarity" == 0 then rarity = ((substring c 7 -1) as integer)
             if stricmp (substring c 1 9) "Movespeed" == 0 then movespeed = ((substring c 10 -1) as integer)
         )
-        Wc3Sequence \ --animName key.time key2.time NoLoop Rarity Movespeed undefined undefined
+        WdxWc3Sequence \ --animName key.time key2.time NoLoop Rarity Movespeed undefined undefined
 			name:animName \ 
 			startTime:key.time \
 			endTime:key2.time \
@@ -424,7 +424,7 @@ struct WdxSequenceManager
         local sig = "-"
         try
         (
-            if ::SequenceStorage != undefined and ::SequenceStorage.hasCA() then
+            if ::WdxSequenceStorage != undefined and ::WdxSequenceStorage.hasCA() then
             (
                 local names = rootNode.seqNames
                 if names != undefined then
@@ -461,7 +461,7 @@ struct WdxSequenceManager
         this.caSignature = this.caSignatureNow()
 
         -- Primary: Read from WhiteoutDex Custom Attributes
-        if ::SequenceStorage != undefined and ::SequenceStorage.hasCA() then
+        if ::WdxSequenceStorage != undefined and ::WdxSequenceStorage.hasCA() then
         (
             format "** WDX LoadSeq: WhiteoutDex CA found on rootNode\n"
             try
@@ -488,14 +488,14 @@ struct WdxSequenceManager
                                 local parts = filterString extStr " "
                                 if parts.count == 7 then
                                 (
-                                    ext = Wc3Extent \
+                                    ext = WdxWc3Extent \
                                         minExtent:[(parts[2] as float), (parts[3] as float), (parts[4] as float)] \
                                         maxExtent:[(parts[5] as float), (parts[6] as float), (parts[7] as float)] \
                                         bound:(parts[1] as float)
                                 )
                             )
                         ) catch ()
-                        append result (Wc3Sequence \
+                        append result (WdxWc3Sequence \
                             name:(names[i]) \
                             startTime:(startF as time) \
                             endTime:(endF as time) \
@@ -552,8 +552,8 @@ struct WdxSequenceManager
         -- Save to Custom Attributes (primary storage)
         try
         (
-            ::SequenceStorage.removeCA()
-            ::SequenceStorage.ensureCA()
+            ::WdxSequenceStorage.removeCA()
+            ::WdxSequenceStorage.ensureCA()
             for seq in this.sequences do
             (
                 local startF = if classOf seq.startTime == Time then (seq.startTime.frame as integer) else (seq.startTime as integer)
@@ -605,7 +605,7 @@ struct WdxSequenceManager
     
     fn addSequence sequenceName starttime endtime noLoop rarity movespeed =
     (
-        local newSequence = Wc3Sequence sequenceName starttime endtime noLoop rarity movespeed undefined undefined
+        local newSequence = WdxWc3Sequence sequenceName starttime endtime noLoop rarity movespeed undefined undefined
         append this.sequences newSequence
     ),
     
@@ -2043,7 +2043,7 @@ struct WdxSequenceManager
 					
 					if validated[valIdx] != newVal then
 					(
-						::ErrorReporter.logWarning "Sequence" "nudge" ("Cannot nudge further - boundary reached at frame " + validated[valIdx] as string)
+						::WdxErrorReporter.logWarning "Sequence" "nudge" ("Cannot nudge further - boundary reached at frame " + validated[valIdx] as string)
 					)
 					else
 					(
@@ -2141,7 +2141,7 @@ struct WdxSequenceManager
                         if stricmp loadedSequences[i][4] "" != 0 then movespeed = (substring loadedSequences[i][4] 1 1) as integer
                         local newStartTime = loadedSequences[i][5] as time
                         local newEndTime = loadedSequences[i][6] as time
-                        local SequenceData = Wc3Sequence sequenceName newStartTime newEndTime noLoop rarity movespeed undefined
+                        local SequenceData = WdxWc3Sequence sequenceName newStartTime newEndTime noLoop rarity movespeed undefined
                         
                         append tempSequences SequenceData
                         animationRange = interval 0f newEndTime
@@ -2473,7 +2473,7 @@ fn WdxPushRendererSequences =
     else
     (
         -- refreshFromScene, not a bare LoadSequences. The load mints brand new
-        -- Wc3Sequence objects, and an open Sequence Manager dialog is holding
+        -- WdxWc3Sequence objects, and an open Sequence Manager dialog is holding
         -- the OLD ones in filteredSequences. Swapping this.sequences without
         -- rebuilding the list left every row pointing at an orphan, so
         -- `findItem self.sequences seq` returned 0: double-clicking a row

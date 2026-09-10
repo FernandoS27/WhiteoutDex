@@ -29,7 +29,6 @@ struct WdxDoubleV
 ) 
 
 -- NOTE: DictionaryOld removed — use native Dictionary #string (3ds Max 2021+)
--- See ErrorReporter.ms for migration example.
 
 -- ============================================================================
 -- MAIN UTILITY FUNCTIONS STRUCT
