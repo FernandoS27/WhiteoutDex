@@ -4237,7 +4237,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 animateFloatPB(pb, RB_PB_TEX_SLOT,     rib.textureSlotTrackIndex, irModel);
             }
 
-            // Lights: attStart, attEnd, color, intensity, ambColor, ambIntensity
+            // Lights: attStart, attEnd, color, intensity, ambColor, ambIntensity,
+            // and the 3.0 shadow-casting range and falloff (KLSS/KLSE/KLQF/KLLF/KLDA)
             //
             // Wc3Light is a scripted simpleManipulator, so assigning a
             // ParamBlock controller directly is unreliable. Same solution as for
@@ -4257,6 +4258,11 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 animateFloatNamedScript(lightNode, L"ShadowValue",  light.intensityTrackIndex, irModel);
                 animateColorNamedScript(lightNode, L"AmbColor",     light.ambColorTrackIndex, irModel);
                 animateFloatNamedScript(lightNode, L"AmbValue",     light.ambIntensityTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"ShadowCastingStart", light.shadowCastStartTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"ShadowCastingEnd",   light.shadowCastEndTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"QuadraticFalloff",   light.quadFalloffTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"LinearFalloff",      light.linearFalloffTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"Damping",            light.dampingTrackIndex, irModel);
             }
 
             ILOG << "==== end parameter animations ====\n";

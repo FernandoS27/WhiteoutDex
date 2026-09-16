@@ -9,15 +9,23 @@ namespace core {
 
 namespace {
 
+// Reforged HD geosets carry more than one UVAS channel: channel 0 is the
+// texture-atlas unwrap, channel 1 a second, non-overlapping unwrap (lightmap /
+// AO bake). Signing only UV set 0 welded vertices that differ purely in the
+// second unwrap — 66 of 5429 on Reforged's townhall.mdx — and whichever vertex
+// won silently took its UV1 with it, tearing map channel 2 and re-exporting
+// that damage back into the file. Every populated set takes part in the
+// signature.
 struct VertexSignature {
     int32_t px, py, pz;   // Quantized position
     int32_t nx, ny, nz;   // Quantized normal
-    int32_t u0, v0;       // Quantized UV set 0
+    int32_t uvCount;      // Number of populated UV sets
+    std::array<int32_t, ir::kMaxUVSets * 2> uv;  // Quantized UV sets, u/v interleaved
 
     bool operator==(const VertexSignature& o) const {
         return px == o.px && py == o.py && pz == o.pz &&
                nx == o.nx && ny == o.ny && nz == o.nz &&
-               u0 == o.u0 && v0 == o.v0;
+               uvCount == o.uvCount && uv == o.uv;
     }
 };
 
@@ -29,7 +37,8 @@ struct VertexSigHash {
         };
         combine(s.px); combine(s.py); combine(s.pz);
         combine(s.nx); combine(s.ny); combine(s.nz);
-        combine(s.u0); combine(s.v0);
+        combine(s.uvCount);
+        for (int32_t q : s.uv) combine(q);
         return h;
     }
 };
@@ -57,8 +66,12 @@ void VertexOptimizer::optimize(ir::Mesh& mesh, float threshold) {
         sig.nx = quantize(v.normal.x, invThreshold * 10.0f);
         sig.ny = quantize(v.normal.y, invThreshold * 10.0f);
         sig.nz = quantize(v.normal.z, invThreshold * 10.0f);
-        sig.u0 = (v.uvSetCount > 0) ? quantize(v.uvSets[0].x, invThreshold * 100.0f) : 0;
-        sig.v0 = (v.uvSetCount > 0) ? quantize(v.uvSets[0].y, invThreshold * 100.0f) : 0;
+        sig.uvCount = v.uvSetCount;
+        sig.uv.fill(0);
+        for (int32_t s = 0; s < v.uvSetCount && s < ir::kMaxUVSets; ++s) {
+            sig.uv[s * 2]     = quantize(v.uvSets[s].x, invThreshold * 100.0f);
+            sig.uv[s * 2 + 1] = quantize(v.uvSets[s].y, invThreshold * 100.0f);
+        }
 
         auto it = sigMap.find(sig);
         if (it != sigMap.end()) {

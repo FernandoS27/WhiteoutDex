@@ -707,6 +707,15 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         light.ambientColor = {irLight.ambientColor.r, irLight.ambientColor.g,
                               irLight.ambientColor.b};
         light.ambientIntensity = irLight.ambientIntensity;
+        // Version-gated by the writer: shadowIntensity from v1200, the shadow
+        // casting range from v1300, the falloff from v1600.
+        light.shadowIntensity = irLight.shadowIntensity;
+        light.shadowCasting = irLight.shadowCasting;
+        light.shadowCastingStart = irLight.shadowCastingStart;
+        light.shadowCastingEnd = irLight.shadowCastingEnd;
+        light.quadraticFalloff = irLight.quadraticFalloff;
+        light.linearFalloff = irLight.linearFalloff;
+        light.damping = irLight.damping;
 
         light.attenuationStartTracks = getFloatTrack(ir, irLight.attStartTrackIndex);
         light.attenuationEndTracks = getFloatTrack(ir, irLight.attEndTrackIndex);
@@ -715,6 +724,11 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         light.visibilityTracks = getFloatTrack(ir, irLight.visibilityTrackIndex);
         light.colorTracks = getColorTrack(ir, irLight.colorTrackIndex);
         light.ambientColorTracks = getColorTrack(ir, irLight.ambColorTrackIndex);
+        light.shadowCastingStartTracks = getFloatTrack(ir, irLight.shadowCastStartTrackIndex);
+        light.shadowCastingEndTracks = getFloatTrack(ir, irLight.shadowCastEndTrackIndex);
+        light.quadraticFalloffTracks = getFloatTrack(ir, irLight.quadFalloffTrackIndex);
+        light.linearFalloffTracks = getFloatTrack(ir, irLight.linearFalloffTrackIndex);
+        light.dampingTracks = getFloatTrack(ir, irLight.dampingTrackIndex);
 
         model.lights.push_back(std::move(light));
     }

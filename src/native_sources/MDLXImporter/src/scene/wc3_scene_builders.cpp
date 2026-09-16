@@ -300,6 +300,17 @@ void Wc3LightBuilder::buildLights(
             pbSetFloat(ref, L"ShadowValue", irLight.intensity);
             pbSetColor(ref, L"AmbColor", irLight.ambientColor);
             pbSetFloat(ref, L"AmbValue", irLight.ambientIntensity);
+
+            // Reforged / 3.0 parameters, named after their MDL keywords.
+            // `ShadowIntensity` is NOT the plug-in's `ShadowValue` above: that
+            // one is the primary intensity, this one the IBL/shadow term.
+            pbSetFloat(ref, L"ShadowIntensity", irLight.shadowIntensity);
+            pbSetBool(ref, L"ShadowCasting", irLight.shadowCasting ? TRUE : FALSE);
+            pbSetFloat(ref, L"ShadowCastingStart", irLight.shadowCastingStart);
+            pbSetFloat(ref, L"ShadowCastingEnd", irLight.shadowCastingEnd);
+            pbSetFloat(ref, L"QuadraticFalloff", irLight.quadraticFalloff);
+            pbSetFloat(ref, L"LinearFalloff", irLight.linearFalloff);
+            pbSetFloat(ref, L"Damping", irLight.damping);
         }
 
         // Store MDX-static values as UserProps so the exporter can

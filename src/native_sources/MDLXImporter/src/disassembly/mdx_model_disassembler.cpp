@@ -796,6 +796,15 @@ void MdxModelDisassembler::mapLights(const wdx::Model& mdx, ir::IRModel& ir) {
         irLight.intensity = light.intensity;
         irLight.ambientColor = Color(light.ambientColor.x, light.ambientColor.y, light.ambientColor.z);
         irLight.ambientIntensity = light.ambientIntensity;
+        // The parser has already substituted the game's defaults for any
+        // field older than the file's version, so these copy straight across.
+        irLight.shadowIntensity = light.shadowIntensity;
+        irLight.shadowCasting = light.shadowCasting;
+        irLight.shadowCastingStart = light.shadowCastingStart;
+        irLight.shadowCastingEnd = light.shadowCastingEnd;
+        irLight.quadraticFalloff = light.quadraticFalloff;
+        irLight.linearFalloff = light.linearFalloff;
+        irLight.damping = light.damping;
 
         if (light.attenuationStartTracks.isUsed)
             irLight.attStartTrackIndex = storeFloatTrack(ir,
@@ -829,6 +838,21 @@ void MdxModelDisassembler::mapLights(const wdx::Model& mdx, ir::IRModel& ir) {
         if (light.shadowIntensityTracks.isUsed)
             irLight.shadowIntensityTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(light.shadowIntensityTracks));
+        if (light.shadowCastingStartTracks.isUsed)
+            irLight.shadowCastStartTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(light.shadowCastingStartTracks));
+        if (light.shadowCastingEndTracks.isUsed)
+            irLight.shadowCastEndTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(light.shadowCastingEndTracks));
+        if (light.quadraticFalloffTracks.isUsed)
+            irLight.quadFalloffTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(light.quadraticFalloffTracks));
+        if (light.linearFalloffTracks.isUsed)
+            irLight.linearFalloffTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(light.linearFalloffTracks));
+        if (light.dampingTracks.isUsed)
+            irLight.dampingTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(light.dampingTracks));
 
         ir.lights.push_back(std::move(irLight));
     }

@@ -363,9 +363,14 @@ const SharedCasc* AcquireForExtract(const std::string& root, std::string& error)
 //
 // A bare path is ambiguous, and the order below is what resolves it: SD, then
 // HD, then the deprecated overlay. That is the order MDLXImporter's texture
-// resolver walks and the order FileContentProvider walks with HD mode off
+// resolver walks and the order FileContentProvider walks on its Classic tier
 // (its default), so a relative path extracted here is the same file the
 // viewport draws and the same one the importer pulls textures from.
+//
+// Definitive's `_de.w3mod` goes after HD rather than first. The Classic chain
+// does not reach it at all, but 3.0.0 ships thousands of paths only it has,
+// and a bare path that exists nowhere else should still extract; putting it
+// behind SD and HD means it never changes which file an existing path picks.
 //
 // Reading the path verbatim comes LAST rather than first, which is the fix for
 // "picked the SD model, got the HD one". Warcraft III's TVFS also lists every
@@ -386,6 +391,7 @@ bool ReadArchiveFile(const SharedCasc& casc, const std::string& archivePath,
     static const char* kPrefixes[] = {
         "war3.w3mod:",
         "war3.w3mod:_hd.w3mod:",
+        "war3.w3mod:_de.w3mod:",
         "war3.w3mod:_deprecated.w3mod:",
         "", // the resolved namespace, and any product that has no mod chain
     };
@@ -853,8 +859,8 @@ Value* WdxPickAsset_cf(Value** arg_list, int count) {
 //
 // `archivePath` may be either spelling: the original ("war3.w3mod:_hd.w3mod:
 // units\...\druid.mdx") or the stripped relative path a resource stores. The
-// original is exact; a bare path is resolved SD first, then HD, then the
-// deprecated overlay — the order the renderer and the importer both use.
+// original is exact; a bare path is resolved SD first, then HD, then
+// Definitive, then the deprecated overlay — the order the importer uses too.
 // ============================================================================
 def_visible_primitive(WdxExtractAsset, "WdxExtractAsset");
 Value* WdxExtractAsset_cf(Value** arg_list, int count) {

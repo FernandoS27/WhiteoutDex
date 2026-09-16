@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 
 // Debug log shared with mdlx_importer_plugin.cpp
@@ -630,6 +631,31 @@ static Mtl* buildSingleLayerWc3Material(
 
             pbSetTexmap(ref, paramName, texmap);
 
+            // Route the bitmap at the UV set this layer names. MDX coordId is a
+            // 0-based UVAS index and Max map channels are 1-based; the importer
+            // writes MDX set 0 -> channel 1 and set 1 -> channel 2, so the
+            // channel is coordId + 1. Without this every BitmapTex kept its
+            // default channel 1 and a layer with coordId 1 silently sampled the
+            // first unwrap — the tiling call below was the only UVGen setup.
+            // coordId -1 is SphereEnvMap, whose UVs are generated rather than
+            // fetched, so leave that one alone.
+            //
+            // Texmaps are shared per TEXS entry, so a texture two layers use
+            // with DIFFERENT coordIds takes whichever is assigned last. Shipping
+            // MDX content does not do that, and splitting the bitmap per layer
+            // would break the texture-animation clone cache built above.
+            //
+            // This does not carry Reforged HD's baked AO: `hd_ps` reads ORM.x at
+            // UV1 while ORM.yzw stay at UV0, and one BitmapTex has one channel.
+            // The preview gets the second unwrap straight from map channel 2 in
+            // MaxSceneAdapter::GetMeshes(), which is where it is actually used.
+            if (layer.uvSetIndex >= 0) {
+                if (BitmapTex* slotBmp = unwrapToBitmapTex(texmap)) {
+                    if (StdUVGen* slotUv = slotBmp->GetUVGen())
+                        slotUv->SetMapChannel(layer.uvSetIndex + 1);
+                }
+            }
+
             // Store the MDX folder prefix (e.g. "Textures\") on the material
             // so the exporter can reconstruct the original full path on
             // re-export. The user can also edit this in the material UI to
@@ -817,54 +843,49 @@ std::vector<Mtl*> Wc3MaterialBuilder::buildMaterials(
     //   → the FIRST unique taIdx per texIdx also uses the baseline (no clone).
     //   → subsequent unique taIdx per texIdx get their own fresh bitmap.
     std::map<int64_t, Texmap*> bitmapCache;
-    auto makeKey = [](int32_t texIdx, int32_t taIdx) -> int64_t {
-        return static_cast<int64_t>(texIdx) * 100000LL +
-               static_cast<int64_t>(taIdx + 1);
+    auto makeKey = [](int32_t texIdx, int32_t taIdx, int32_t uvSet) -> int64_t {
+        return (static_cast<int64_t>(texIdx) * 100000LL +
+                static_cast<int64_t>(taIdx + 1)) * 64LL +
+               static_cast<int64_t>(uvSet + 1);
     };
 
-    // Track the first VALID animation (taIdx >= 0) assigned to each texture.
-    // The first one reuses the baseline; later DIFFERENT valid animations get
-    // fresh bitmap instances. taIdx == -1 means "no animation" and always
-    // shares the baseline (never triggers a clone).
-    std::map<int32_t, int32_t> firstTaForTex;  // texIdx → first valid taIdx seen
+    // The UV set belongs in the key alongside the animation. Both the texture
+    // animation and the map channel are stored ON the texmap, so one shared
+    // instance can only ever hold one of each: when two layers name the same
+    // texture with different coordIds, whichever material is built last wins
+    // and the other layer silently samples the wrong unwrap. That is not
+    // hypothetical — LxX_GuFeng_STreeA01_00.mdx uses its shadow texture at
+    // coordId 1 on the tree and coordId 0 on the ground quad.
+    //
+    // The first (animation, UV set) combination seen for a texture reuses the
+    // baseline instance; every later distinct combination gets its own bitmap.
+    std::set<int32_t> baselineClaimed;
 
     if (importTextures) {
         for (const auto& irMat : irModel.materials) {
             for (const auto& layer : irMat.layers) {
                 int32_t taIdx = layer.textureAnimationIndex;
+                int32_t uvSet = layer.uvSetIndex;
                 for (const auto& texRef : layer.textureRefs) {
                     if (texRef.textureIndex < 0 ||
                         texRef.textureIndex >= (int32_t)irModel.textures.size())
                         continue;
 
                     int32_t texIdx = texRef.textureIndex;
-                    int64_t key = makeKey(texIdx, taIdx);
+                    int64_t key = makeKey(texIdx, taIdx, uvSet);
 
                     if (bitmapCache.find(key) != bitmapCache.end())
-                        continue; // already allocated for this (texIdx, taIdx)
+                        continue; // already allocated for this combination
 
-                    // No animation → always share the baseline bitmap
-                    if (taIdx < 0) {
-                        bitmapCache[key] = texmapsFlat[texIdx];
-                        continue;
-                    }
-
-                    auto fit = firstTaForTex.find(texIdx);
-                    if (fit == firstTaForTex.end()) {
-                        // First valid animation for this texture → reuse baseline
-                        firstTaForTex[texIdx] = taIdx;
-                        bitmapCache[key] = texmapsFlat[texIdx];
-                    } else if (fit->second == taIdx) {
-                        // Same animation as first → reuse baseline (already in cache)
+                    if (baselineClaimed.insert(texIdx).second) {
                         bitmapCache[key] = texmapsFlat[texIdx];
                     } else {
-                        // Different valid animation on same texture → fresh bitmap
                         const auto& irTex = irModel.textures[texIdx];
                         Texmap* bmp = createNativeBitmap(irTex, modelDir, resolver, gi);
                         bitmapCache[key] = bmp;
-                        MLOG << "[TEX-ANIM] Cloned bitmap for texIdx=" << texIdx
-                             << " taIdx=" << taIdx
-                             << " (baseline taIdx=" << fit->second << ")" << std::endl;
+                        MLOG << "[TEX] Cloned bitmap for texIdx=" << texIdx
+                             << " taIdx=" << taIdx << " uvSet=" << uvSet
+                             << std::endl;
                     }
                 }
             }
@@ -878,11 +899,12 @@ std::vector<Mtl*> Wc3MaterialBuilder::buildMaterials(
         // layer doesn't animate. Then override with animation-specific clones.
         std::vector<Texmap*> t = texmapsFlat;
         int32_t taIdx = layer.textureAnimationIndex;
+        int32_t uvSet = layer.uvSetIndex;
         for (const auto& texRef : layer.textureRefs) {
             if (texRef.textureIndex < 0 ||
                 texRef.textureIndex >= (int32_t)t.size())
                 continue;
-            int64_t key = makeKey(texRef.textureIndex, taIdx);
+            int64_t key = makeKey(texRef.textureIndex, taIdx, uvSet);
             auto it = bitmapCache.find(key);
             if (it != bitmapCache.end())
                 t[texRef.textureIndex] = it->second;
@@ -979,13 +1001,24 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
     int numLayers = static_cast<int>(irMat.layers.size());
 
     // Resize all Tab params to accommodate our layers.
-    // CompositeMaterial starts with 10 slots by default; grow if needed.
-    if (numLayers > pb->Count(compmat_mtls)) {
+    // CompositeMaterial's tabs are NOT parallel. compmat_mtls[0] is the BASE
+    // material and the blend tabs describe only the layers composited ON TOP
+    // of it, so blend index i governs compmat_mtls[i + 1] — which is why the
+    // defaults are 10 materials against 9 of everything else. Indexing both
+    // with the same j put each layer's blend settings on the layer above it
+    // and left the base layer's settings governing layer 1.
+    if (numLayers > pb->Count(compmat_mtls))
         pb->SetCount(compmat_mtls, numLayers);
-        pb->SetCount(compmat_type, numLayers);
-        pb->SetCount(compmat_map_on, numLayers);
-        pb->SetCount(compmat_amount, numLayers);
+    if (numLayers - 1 > pb->Count(compmat_type)) {
+        pb->SetCount(compmat_type, numLayers - 1);
+        pb->SetCount(compmat_map_on, numLayers - 1);
+        pb->SetCount(compmat_amount, numLayers - 1);
     }
+
+    // The viewport texture comes from the topmost layer that is actually
+    // composited, so a layer we deliberately leave out (below) does not end
+    // up being the one Nitrous shows.
+    int lastShownLayer = 0;
 
     for (int j = 0; j < numLayers; ++j) {
         // Each layer gets its own texmap vector — this ensures that when two
@@ -1010,22 +1043,48 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
         // Set sub-material
         pb->SetValue(compmat_mtls, 0, subMtl, j);
 
-        // Enable layer
-        pb->SetValue(compmat_map_on, 0, TRUE, j);
+        // The base material has no blend entry of its own — it is what the
+        // others are composited onto.
+        if (j == 0) continue;
 
-        // Blend type: additive filters (4=Additive, 5=AddAlpha) use additive mix
-        int filterMode = blendModeToFilterMode(irMat.layers[j].blendMode);
-        if (filterMode >= 4 && filterMode <= 5) {
-            pb->SetValue(compmat_type, 0, 1, j);     // 1 = Additive
-            pb->SetValue(compmat_amount, 0, 50.0f, j);
-        } else {
-            pb->SetValue(compmat_type, 0, 0, j);     // 0 = Normal
-            pb->SetValue(compmat_amount, 0, 100.0f, j);
+        const int blendIdx = j - 1;
+        pb->SetValue(compmat_map_on, 0, TRUE, blendIdx);
+        lastShownLayer = j;
+
+        switch (irMat.layers[j].blendMode) {
+        case ir::BlendMode::Additive:
+        case ir::BlendMode::AddAlpha:
+            pb->SetValue(compmat_type, 0, 1, blendIdx);      // 1 = Additive
+            pb->SetValue(compmat_amount, 0, 50.0f, blendIdx);
+            break;
+
+        case ir::BlendMode::Modulate:
+        case ir::BlendMode::Modulate2x:
+            // WC3 MULTIPLIES these over what is already on screen, and
+            // Composite Material offers only Mix / Additive / Subtractive.
+            // There is no setting that comes close: compositing the layer at
+            // all draws it as an opaque surface, which discards the base
+            // layer's alpha cutout along with its colour (a tree's leaf cards
+            // come out as solid grey quads, and the whole model turns the
+            // colour of the modulate map). Leave the sub-material in place
+            // but out of the composite so the base art reads correctly. The
+            // layer still round-trips: extractCompositeMaterial() walks
+            // GetSubMtl() and never consults mapEnables.
+            pb->SetValue(compmat_type, 0, 0, blendIdx);
+            pb->SetValue(compmat_amount, 0, 100.0f, blendIdx);
+            pb->SetValue(compmat_map_on, 0, FALSE, blendIdx);
+            lastShownLayer = j - 1;
+            break;
+
+        default:
+            pb->SetValue(compmat_type, 0, 0, blendIdx);      // 0 = Mix
+            pb->SetValue(compmat_amount, 0, 100.0f, blendIdx);
+            break;
         }
     }
 
-    // Show the last layer's texture in the viewport
-    Mtl* lastSubMtl = compMtl->GetSubMtl(numLayers - 1);
+    // Show the topmost composited layer's texture in the viewport
+    Mtl* lastSubMtl = compMtl->GetSubMtl(lastShownLayer);
     if (lastSubMtl) {
         MtlBase* activeTex = lastSubMtl->GetActiveTexmap();
         if (activeTex)

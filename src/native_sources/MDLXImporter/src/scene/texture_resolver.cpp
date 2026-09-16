@@ -259,6 +259,10 @@ std::wstring resolveTexturePath(const std::wstring& modelDir,
 struct TextureResolver::Impl {
     std::wstring modelDir;
 
+    // The `_XX.w3mod` overlay the MODEL itself was pulled out of, when the
+    // extraction path records one. Empty for a model opened straight off disk.
+    std::string modChain;
+
 #if defined(WHITEOUT_HAS_CASC)
     std::optional<whiteout::storages::casc::Storage> casc;
 #endif
@@ -266,6 +270,37 @@ struct TextureResolver::Impl {
 };
 
 namespace {
+
+// Which `_XX.w3mod` overlay did the MODEL come from?
+//
+// Warcraft III 3.0.0 ships three complete art sets behind the same logical
+// path -- `war3.w3mod:` (classic), `:_hd.w3mod:` (Reforged) and
+// `:_de.w3mod:` (Definitive) -- and their atlases are NOT interchangeable.
+// _de's Human_Townhall_Diffuse is a different 2048x2048 image with a
+// different unwrap from _hd's, so resolving textures in a fixed SD->HD->DE
+// order dressed a _de model in _hd's atlas. That reads as "scrambled texture
+// patches" even though the mesh, the faces and BOTH UV sets are byte-exact
+// to the file -- the geometry is fine, it is just wearing the wrong skin.
+//
+// The model browser keeps the overlay it pulled the model from as a
+// directory segment of the extraction path, so recover it here and give that
+// overlay first refusal on every texture the model asks for. A model with no
+// such segment keeps the historical order.
+std::string detectModChain(const std::wstring& modelDir) {
+    for (const auto& part : fs::path(modelDir)) {
+        const std::wstring seg = part.wstring();
+        if (seg.size() <= 6 || seg.front() != L'_') continue;
+        if (seg.compare(seg.size() - 6, 6, L".w3mod") != 0) continue;
+        std::string out;
+        out.reserve(seg.size());
+        for (wchar_t c : seg) {
+            out.push_back(c >= L'A' && c <= L'Z' ? static_cast<char>(c - L'A' + 'a')
+                                                 : static_cast<char>(c));
+        }
+        return out;
+    }
+    return {};
+}
 
 #if defined(WHITEOUT_HAS_CASC)
 std::optional<whiteout::storages::casc::Storage>
@@ -483,9 +518,11 @@ TextureResolver::TextureResolver(const std::wstring& modelDir,
                                  const std::vector<std::wstring>& mpqArchives)
     : impl_(std::make_unique<Impl>()) {
     impl_->modelDir = modelDir;
+    impl_->modChain = detectModChain(modelDir);
 
     RLOG << "[RES] TextureResolver ctor:"
          << " modelDir='" << wlog(modelDir) << "'"
+         << " modChain='" << impl_->modChain << "'"
          << " cascDir='" << wlog(cascDir) << "'"
          << " mpqDir='" << wlog(mpqDir) << "'"
          << " listed=" << mpqArchives.size() << std::endl;
@@ -544,23 +581,35 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
     auto orderedExts = buildOrderedExts(mdxExt);
 
 #if defined(WHITEOUT_HAS_CASC)
-    // 2) CASC. SD prefix first, then HD, then the deprecated bucket (some
-    //    assets were moved out of the main war3.w3mod tree across patches
-    //    and only live in the deprecated overlay now). MDX-stated extension
-    //    is tried before any alias inside each prefix so a real MDX `.tif`
-    //    request that has a CASC `.dds` lands extracted as `.dds` only
-    //    when no `.tif` lives in CASC. Matches WhiteoutFlakes' lookup order.
+    // 2) CASC. The overlay the MODEL came from goes first when we know it:
+    //    3.0.0's three art sets use the same logical texture paths but ship
+    //    genuinely different atlases, so a _de model must read _de's textures
+    //    or it comes out wearing _hd's unwrap (see detectModChain above).
+    //    Otherwise SD prefix first, then HD, then Definitive, then the
+    //    deprecated bucket (some assets were moved out of the main war3.w3mod
+    //    tree across patches and only live in the deprecated overlay now).
+    //    MDX-stated extension is tried before any alias inside each prefix so
+    //    a real MDX `.tif` request that has a CASC `.dds` lands extracted as
+    //    `.dds` only when no `.tif` lives in CASC.
     if (impl_->casc) {
         static const char* kPrefixes[] = {
             "war3.w3mod:",
             "war3.w3mod:_hd.w3mod:",
+            "war3.w3mod:_de.w3mod:",
             "war3.w3mod:_deprecated.w3mod:",
         };
+        std::vector<std::string> prefixes;
+        if (!impl_->modChain.empty())
+            prefixes.push_back("war3.w3mod:" + impl_->modChain + ":");
+        for (const char* p : kPrefixes) {
+            if (prefixes.empty() || prefixes.front() != p)
+                prefixes.push_back(p);
+        }
         RLOG << "[CASC] Searching for: '" << archiveStem
              << "' (mdxExt='" << mdxExt << "')" << std::endl;
-        for (const char* prefix : kPrefixes) {
+        for (const std::string& prefix : prefixes) {
             for (const std::string& ext : orderedExts) {
-                std::string cascPath = std::string(prefix) + archiveStem + ext;
+                std::string cascPath = prefix + archiveStem + ext;
                 auto data = impl_->casc->readFile(cascPath);
                 if (!data || data->empty()) continue;
                 RLOG << "[CASC] Found: '" << cascPath << "' (" << data->size() << " bytes)" << std::endl;

@@ -1571,6 +1571,7 @@ struct WdxSequenceManager
 								local pluginParams = #(
 									-- Light (Wdx_Wc3Light / Wdx_Wc3Light)
 									"DecayStart", "DecayEnd", "AmbColor", "AmbValue", "ShadowColor", "ShadowValue",
+									"ShadowCastingStart", "ShadowCastingEnd", "QuadraticFalloff", "LinearFalloff", "Damping",
 									-- AttachPoint (Wdx_Wc3AttachPoint)
 									"A_Visibility",
 									-- Wc3Particles1 (legacy)

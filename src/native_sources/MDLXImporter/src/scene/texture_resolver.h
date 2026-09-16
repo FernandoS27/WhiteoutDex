@@ -8,7 +8,8 @@
 //   1. Local disk under `modelDir`, peeling subdirectory levels and
 //      trying every extension alias at each tier.
 //   2. CASC (Reforged): MDX-stated extension first, then aliases,
-//      against `war3.w3mod:` and `war3.w3mod:_hd.w3mod:` prefixes.
+//      against the `war3.w3mod:`, `_hd.w3mod:`, `_de.w3mod:` and
+//      `_deprecated.w3mod:` prefixes, in that order.
 //   3. MPQ (Classic v800): MDX-stated extension first, then aliases,
 //      against every .mpq archive opened from `mpqDir`.
 //

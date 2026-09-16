@@ -1821,6 +1821,13 @@ std::vector<MeshData> MaxSceneAdapter::GetMeshes() {
         md.indices.resize(numFaces * 3);
 
         bool hasUVs = mesh.getNumMapVerts(1) > 0;
+        // Map channel 2 is the MDX geoset's second UVAS set: Reforged HD
+        // unwraps twice and bakes ambient occlusion against the second one,
+        // which `hd_ps` samples as ORM.x at TEXCOORD1. The importer writes
+        // MDX set 1 there (set 0 goes to channel 1), so mirror that here.
+        const bool hasUV1 = mesh.getNumMapVerts(2) > 0 && mesh.mapFaces(2) != nullptr;
+        if (hasUV1)
+            md.uvs1.resize(numVerts);
         MeshNormalSpec* specN = mesh.GetSpecifiedNormals();
         bool hasSpecN = specN && specN->GetNumNormals() > 0;
 
@@ -1853,6 +1860,11 @@ std::vector<MeshData> MaxSceneAdapter::GetMeshes() {
                     md.uvs[outIdx] = {uv.x, 1.0f - uv.y};
                 } else {
                     md.uvs[outIdx] = {0, 0};
+                }
+                if (hasUV1) {
+                    TVFace& tvf1 = mesh.mapFaces(2)[f];
+                    UVVert uv1 = mesh.mapVerts(2)[tvf1.t[v]];
+                    md.uvs1[outIdx] = {uv1.x, 1.0f - uv1.y};
                 }
                 md.indices[f * 3 + v] = (u32)outIdx;
             }
@@ -2514,6 +2526,21 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             ls.attenStart = PB2FloatOr(obj, L"DecayStart", t, 0.0f);
             ls.attenEnd = PB2FloatOr(obj, L"DecayEnd", t, 0.0f);
             ls.enabled = visible;
+
+            // Reforged / 3.0 parameters. Read at frame 0 rather than `t`: the
+            // game's SetLightValues uses only the static values and never
+            // evaluates KLSS / KLSE / KLQF / KLLF / KLDA, MdxModelAdapter
+            // mirrors that, and frame 0 is the static value the exporter
+            // writes. A light saved before the plug-in grew these parameters
+            // falls back to the LightState defaults, which are the game's own.
+            ls.shadowIntensity = PB2FloatOr(obj, L"ShadowIntensity", 0, ls.shadowIntensity);
+            ls.shadowCasting = PB2BoolOr(obj, L"ShadowCasting", 0, ls.shadowCasting);
+            ls.shadowCastingStart =
+                PB2FloatOr(obj, L"ShadowCastingStart", 0, ls.shadowCastingStart);
+            ls.shadowCastingEnd = PB2FloatOr(obj, L"ShadowCastingEnd", 0, ls.shadowCastingEnd);
+            ls.quadraticFalloff = PB2FloatOr(obj, L"QuadraticFalloff", 0, ls.quadraticFalloff);
+            ls.linearFalloff = PB2FloatOr(obj, L"LinearFalloff", 0, ls.linearFalloff);
+            ls.damping = PB2FloatOr(obj, L"Damping", 0, ls.damping);
         } else {
             // Stock Max light. SuperClassID() == LIGHT_CLASS_ID is the SDK's
             // guarantee that this derives from LightObject; Type() lives one
@@ -2545,6 +2572,12 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
         intensity = std::max(0.0f, intensity);
         ls.diffuse = {color.x * intensity, color.y * intensity, color.z * intensity};
         ls.dirIntensity = intensity;
+
+        // The game gives a light whose node is named Key_ShadowCast the first
+        // point-shadow slot (EnvSet field 13). Same test MdxModelAdapter makes
+        // on the MDX node name, and the Max node name is what gets exported.
+        if (const MCHAR* nodeName = node->GetName())
+            ls.shadowPriority = wcsstr(nodeName, L"Key_ShadowCast") != nullptr;
 
         if (ls.kind == FrameState::LightKind::Omni)
             ls.worldPos = whiteout::transform_point(Vector3f{0.0f, 0.0f, 0.0f}, world);

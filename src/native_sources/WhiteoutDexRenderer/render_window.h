@@ -160,6 +160,19 @@ public:
         return resyncRequested_.exchange(false, std::memory_order_relaxed);
     }
 
+    // ---- Toolkit settings file ----
+    //
+    // `<plugcfg>\WhiteoutDex_Settings.ini`, where the View menu persists the
+    // art tier. The Max thread resolves plugcfg (an Interface call the render
+    // thread must not make) and hands it over here BEFORE Open, so the render
+    // thread only ever reads a string that no longer changes.
+    void SetToolkitSettingsIni(std::wstring path) {
+        toolkitSettingsIni_ = std::move(path);
+    }
+    const std::wstring& ToolkitSettingsIni() const {
+        return toolkitSettingsIni_;
+    }
+
     RenderService& Service() {
         return service_;
     }
@@ -252,6 +265,9 @@ private:
     // Raised by the toolbar on the render thread, drained by the plugin's
     // timer on Max's.
     std::atomic<bool> resyncRequested_{false};
+
+    // Written once before Open; see SetToolkitSettingsIni.
+    std::wstring toolkitSettingsIni_;
 
     std::atomic<ActorId> focusActor_{0};
 

@@ -22,10 +22,14 @@ struct SkinInfluence {
     float weight = 0.0f;
 };
 
+// How many UVAS channels a vertex can carry. MDX allows up to 16 and Reforged
+// HD geosets ship 2 (atlas unwrap + a second, non-overlapping bake unwrap).
+inline constexpr int kMaxUVSets = 4;
+
 struct Vertex {
     Point3 position;
     Point3 normal;
-    std::array<Point2, 4> uvSets = {};
+    std::array<Point2, kMaxUVSets> uvSets = {};
     int32_t uvSetCount = 0;
     Point4 tangent;
     bool hasTangent = false;
@@ -234,6 +238,17 @@ struct Light {
     float intensity = 1.0f;
     Color ambientColor = Color(0.0f, 0.0f, 0.0f);
     float ambientIntensity = 0.0f;
+    // Static only: MDX has no track for it. Written from v1200.
+    float shadowIntensity = 0.4f;
+    // Warcraft III 3.0 (MDX 1300): point-light shadows.
+    bool shadowCasting = false;
+    float shadowCastingStart = 0.0f;
+    float shadowCastingEnd = 0.0f;
+    // Warcraft III 3.0 (MDX 1600) falloff. The defaults are the values the
+    // game substitutes for an older light, not zeroes.
+    float quadraticFalloff = 0.0005f;
+    float linearFalloff = 0.0f;
+    float damping = 0.00001f;
 
     int32_t attStartTrackIndex = -1;
     int32_t attEndTrackIndex = -1;
@@ -243,6 +258,11 @@ struct Light {
     int32_t ambIntensityTrackIndex = -1;
     int32_t visibilityTrackIndex = -1;
     int32_t shadowIntensityTrackIndex = -1;
+    int32_t shadowCastStartTrackIndex = -1;  // KLSS
+    int32_t shadowCastEndTrackIndex = -1;    // KLSE
+    int32_t quadFalloffTrackIndex = -1;      // KLQF
+    int32_t linearFalloffTrackIndex = -1;    // KLLF
+    int32_t dampingTrackIndex = -1;          // KLDA
 };
 
 struct Attachment {

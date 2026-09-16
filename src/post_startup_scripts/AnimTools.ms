@@ -1449,7 +1449,14 @@ struct WdxAnimTools
                 ( try(setProperty obj "Height Above" ((getProperty obj "Height Above") * factor))catch(); try(setProperty obj "Height Below" ((getProperty obj "Height Below") * factor))catch(); try(obj.gravity *= factor)catch(); count += 1 )
                 if cn == "Wdx_Wc3CollisionSphere" do ( try(obj.radius *= factor)catch(); count += 1 )
                 if cn == "Wdx_CollisionBox" do ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.height *= factor)catch(); count += 1 )
-                if cn == "Wdx_Wc3Light" do ( try(obj.DS_Spn *= factor)catch(); try(obj.DE_Spn *= factor)catch(); count += 1 )
+                -- Distances scale with the model. The 3.0 falloff coefficients
+                -- multiply d and d^2, so they scale inversely to keep the light
+                -- reaching the same part of the rescaled model.
+                if cn == "Wdx_Wc3Light" do
+                ( try(obj.DecayStart *= factor)catch(); try(obj.DecayEnd *= factor)catch()
+                  try(obj.ShadowCastingStart *= factor)catch(); try(obj.ShadowCastingEnd *= factor)catch()
+                  if factor != 0 do ( try(obj.LinearFalloff /= factor)catch(); try(obj.QuadraticFalloff /= (factor * factor))catch(); try(obj.Damping /= (factor * factor))catch() )
+                  count += 1 )
                 if cn == "Wdx_Wc3Popcorn" do ( try(obj.speed *= factor)catch(); count += 1 )
             )
             count
