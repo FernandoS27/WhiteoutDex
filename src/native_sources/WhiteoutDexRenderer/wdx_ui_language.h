@@ -26,6 +26,7 @@
  */
 
 #include "localization.h"
+#include "wdx_install_layout.h"
 
 #include "whiteout/flakes/util/path_utf8.h"
 
@@ -35,6 +36,12 @@
 #include <windows.h>
 
 namespace wdx::ui {
+
+namespace detail {
+/// Whether InitLanguage has run this session. Max UI thread only, which is
+/// where every caller is.
+inline bool g_languageLoaded = false;
+} // namespace detail
 
 /// Read `[Localization] Language` out of WhiteoutDex_Settings.ini in
 /// @p plugcfgDir. Empty when the file or the key is absent, which means
@@ -62,23 +69,16 @@ inline std::string ReadConfiguredLanguage(const std::wstring& plugcfgDir) {
     return out;
 }
 
-/// The WhiteoutDex install root, derived from where this .dlx sits:
-/// `<root>\native plugins\Max<year>\WhiteoutDexRenderer.dlx`. Empty when the
-/// module path cannot be read.
-inline std::filesystem::path InstallRootFromModule(HINSTANCE hInstance) {
-    wchar_t buf[MAX_PATH] = {};
-    if (::GetModuleFileNameW(hInstance, buf, MAX_PATH) == 0)
-        return {};
-    // …\native plugins\Max2027\x.dlx -> …\native plugins\Max2027 -> … -> root
-    return std::filesystem::path(buf).parent_path().parent_path().parent_path();
-}
-
 /// Load the Flakes UI catalogs and activate WhiteoutDex's configured language.
 ///
 /// `lang/` is looked for beside the .dlx first so a hand-copied plug-in folder
 /// still finds it, then at the installed location two levels up. Missing
-/// catalogs are not an error: the Localizer resolves every key to the English
-/// literal it was written with, which is exactly what the pre-i18n build did.
+/// catalogs leave every tr() returning its key verbatim.
+///
+/// This REloads: every pointer tr() handed out before it is freed. Call it
+/// only while the preview's render thread is not building a frame - before it
+/// starts, or with it parked (WdxPreviewPause). Anywhere else, use
+/// EnsureLanguageLoaded.
 inline void InitLanguage(HINSTANCE hInstance, const std::wstring& plugcfgDir) {
     namespace i18n = whiteout::flakes::i18n;
 
@@ -91,7 +91,7 @@ inline void InitLanguage(HINSTANCE hInstance, const std::wstring& plugcfgDir) {
             langDir = dlxDir / "lang";
     }
     if (langDir.empty()) {
-        const std::filesystem::path root = InstallRootFromModule(hInstance);
+        const std::filesystem::path root = wdx::InstallRootFromModule(hInstance);
         if (!root.empty())
             langDir = root / "lang";
     }
@@ -99,6 +99,21 @@ inline void InitLanguage(HINSTANCE hInstance, const std::wstring& plugcfgDir) {
     const auto lang = i18n::languageFromCode(ReadConfiguredLanguage(plugcfgDir));
     i18n::Localizer::instance().load(
         langDir.empty() ? std::string{} : whiteout::flakes::io::PathToUtf8(langDir), lang);
+    detail::g_languageLoaded = true;
+}
+
+/// InitLanguage, unless something already ran it this session.
+///
+/// For the strings a MaxScript primitive returns, which can be asked for while
+/// the preview is drawing and so must never reload under it. That is safe by
+/// ordering: the preview loads the catalog before its render thread exists, so
+/// if it is up this does nothing, and if it is not nobody else reads the
+/// catalog. The cost is that a language changed in Settings reaches these
+/// strings only once something reloads - the preview's next start, or the
+/// picker.
+inline void EnsureLanguageLoaded(HINSTANCE hInstance, const std::wstring& plugcfgDir) {
+    if (!detail::g_languageLoaded)
+        InitLanguage(hInstance, plugcfgDir);
 }
 
 } // namespace wdx::ui

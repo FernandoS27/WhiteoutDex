@@ -34,9 +34,14 @@ the generated copy under <build>/packaging/.
         Email="kontakt@benjaminschiefer.de" />
 
     <!-- ================================================================
-         NATIVE PLUGINS — one Components block per (Max version × plugin).
-         CMake generates the contents from WDX_MAX_VERSIONS so the manifest
-         always tracks the binaries the installer actually ships.
+         NATIVE PLUGINS — one Components block per Max version, listing
+         every plug-in for that year. CMake generates the contents from
+         WDX_MAX_VERSIONS so the manifest always tracks the binaries the
+         installer ships; the installer then cuts out the WDX:Max<year>
+         fence of each year whose 3ds Max it did not find.
+
+         Max 2016/2017 honour these blocks but not the script blocks below;
+         their scripts come from the WhiteoutDexLoader.ms startup loader.
          ================================================================ -->
 
 @WDX_NATIVE_PLUGINS_COMPONENTS@

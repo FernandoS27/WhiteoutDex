@@ -11,6 +11,8 @@
 #include "resource.h" // IDI_WHITEOUTDEX_ICON
 #include "localization.h"
 #include "storage_explorer.h" // WhiteoutFlakesExplorerLib
+#include "wdx_install_layout.h"
+#include "wdx_ui_language.h"
 
 #include <chrono>
 #include <filesystem>
@@ -115,19 +117,20 @@ std::string ParentFolder(const std::string& displayPath) {
     return sep == std::string::npos ? std::string() : displayPath.substr(0, sep);
 }
 
-// Directory holding this .dlx — where the installer drops `shaders/`, which
-// RenderPipeline::InitDevice loads the BLS bundles from.
-std::filesystem::path PluginDirectory() {
-    wchar_t buf[MAX_PATH] = {};
-    if (GetModuleFileNameW(WdxPluginInstance(), buf, MAX_PATH) > 0)
-        return std::filesystem::path(buf).parent_path();
-    return {};
+// Catalog strings are UTF-8; a Win32 caption is UTF-16.
+std::wstring Utf8ToWide(const char* s) {
+    const int len = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+    if (len <= 1)
+        return {};
+    std::wstring out(static_cast<size_t>(len - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, out.data(), len);
+    return out;
 }
 
 } // namespace
 
-AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
-                               const std::string& cascRoot, const std::string& initialRel,
+AssetPickResult RunAssetPicker(io::BrowseType types, const std::string& cascRoot,
+                               const std::string& initialRel,
                                const std::string& initialFilter,
                                const std::vector<AssetPickerRoot>& roots,
                                const std::vector<std::string>& archives) {
@@ -139,21 +142,37 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
     // path below.
     WdxPreviewPause previewPause;
 
+    // The UI catalog. The preview loads it when it starts, but the picker is
+    // routinely the first thing opened, and without this every string below
+    // shows as its bare key. A full reload rather than a load-once, so a
+    // language chosen in Settings applies here without restarting Max - legal
+    // only now that the preview is parked, since it frees the strings the
+    // preview's frames were using.
+    Interface* ip = GetCOREInterface();
+    {
+        // Through MSTR: older SDKs return a const MCHAR* here, newer an MSTR.
+        const MSTR plugcfg = ip ? MSTR(ip->GetDir(APP_PLUGCFG_DIR)) : MSTR();
+        wdx::ui::InitLanguage(WdxPluginInstance(), std::wstring(plugcfg.data()));
+    }
+
     if (cascRoot.empty()) {
         out.error = i18n::tr("wdx.picker.no_install");
         return out;
     }
 
-    // What the empty-selection hint calls the thing being picked. Derived from
-    // the type mask rather than the caption so it stays right when a caller
-    // passes a title of its own.
+    // What is being picked, named in the caption and in the empty-selection
+    // hint.
+    const char* titleKey = "wdx.picker.title.model";
     const char* noun = i18n::tr("wdx.picker.noun.model");
-    if (types == io::BrowseType::Effects)
+    if (types == io::BrowseType::Effects) {
+        titleKey = "wdx.picker.title.effect";
         noun = i18n::tr("wdx.picker.noun.effect");
-    else if (types == io::BrowseType::Textures)
+    } else if (types == io::BrowseType::Textures) {
+        titleKey = "wdx.picker.title.texture";
         noun = i18n::tr("wdx.picker.noun.texture");
+    }
+    const std::wstring title = Utf8ToWide(i18n::tr(titleKey));
 
-    Interface* ip = GetCOREInterface();
     HWND owner = ip ? GetAncestor(ip->GetMAXHWnd(), GA_ROOT) : nullptr;
 
     PickerState st;
@@ -252,8 +271,7 @@ AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
     auto scene = std::make_unique<renderer::SceneManager>();
     auto svc = std::make_unique<renderer::RenderService>(*scene);
     svc->Settings().SetDefaultBackend(gfx::GfxApi::D3D11);
-    if (const auto dir = PluginDirectory(); !dir.empty())
-        scene->GetContentProvider().SetBasePath(dir);
+    wdx::PointAtInstalledAssets(scene->GetContentProvider(), WdxPluginInstance());
     scene->GetContentProvider().SetInstallPath(cascRoot);
 
     if (!svc->Pipeline().InitDevice(gfx::GfxApi::D3D11)) {

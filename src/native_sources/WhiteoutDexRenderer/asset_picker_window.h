@@ -49,9 +49,13 @@ struct AssetPickResult {
 
 /// Show the picker and block until the user chooses or closes it.
 ///
-/// @param title       window caption
+/// Every string it shows, the caption included, is resolved inside: the UI
+/// catalog is (re)loaded here, once the preview is parked, so a caller that
+/// translated something beforehand could be holding a bare key or a pointer
+/// the reload freed.
+///
 /// @param types       which file types to list (io::BrowseType::Models,
-///                    Effects, Textures, …)
+///                    Effects, Textures, …). Also names the window.
 /// @param cascRoot    Warcraft III install root — either generation, CASC or a
 ///                    directory of MPQs
 /// @param initialRel  a relative path to reveal on open; "" starts at the root
@@ -72,8 +76,8 @@ struct AssetPickResult {
 ///                    reads. io::OpenWithArchives has the rule for how this
 ///                    combines with `cascRoot`. Empty means the user never
 ///                    configured one.
-AssetPickResult RunAssetPicker(const std::wstring& title, io::BrowseType types,
-                               const std::string& cascRoot, const std::string& initialRel,
+AssetPickResult RunAssetPicker(io::BrowseType types, const std::string& cascRoot,
+                               const std::string& initialRel,
                                const std::string& initialFilter = {},
                                const std::vector<AssetPickerRoot>& roots = {},
                                const std::vector<std::string>& archives = {});
@@ -104,7 +108,7 @@ private:
 };
 
 /// This .dlx's HINSTANCE — the picker needs it for its window class and to
-/// locate the `shaders/` directory the installer drops beside the plug-in.
+/// locate the `shaders/` pack the installer drops at the bundle root.
 /// Defined in dllmain.cpp.
 HINSTANCE WdxPluginInstance();
 

@@ -862,24 +862,19 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
     // was originally shipped with in this repo.
     g_renderer->Settings().SetDefaultBackend(whiteout::flakes::gfx::GfxApi::D3D11);
 
-    // Point the renderer's disk file resolver at the directory containing
-    // this .dlx — that's where the installer drops `shaders/` (BLS bundles
-    // RenderPipeline::InitDevice loads via the content provider).
+    // Point the renderer's disk file resolver at the .dlx directory and the
+    // install root — the installer drops the one shared `shaders/` pack (BLS
+    // bundles RenderPipeline::InitDevice loads via the content provider) at
+    // the root; see wdx_install_layout.h.
     //
-    // `SetBasePath` is for the disk-side FileResolver and is the ONLY thing
-    // the BLS shader lookup cares about. Earlier this code also called
+    // The base paths are for the disk-side FileResolver and are the ONLY
+    // thing the BLS shader lookup cares about. Earlier this code also called
     // `SetInstallPath(dlxDir)` — that was wrong, InstallPath drives the
     // CASC/MPQ storage roots, and pinning it at the .dlx directory meant
     // the renderer treated the plug-in folder as the WC3 install no matter
     // what the user typed into the Settings dialog. The W3Path read below
     // restores the correct user-configured value.
-    {
-        wchar_t buf[MAX_PATH] = {};
-        if (GetModuleFileNameW(g_hInstance, buf, MAX_PATH) > 0) {
-            std::filesystem::path dlxDir = std::filesystem::path(buf).parent_path();
-            g_scene->GetContentProvider().SetBasePath(dlxDir);
-        }
-    }
+    wdx::PointAtInstalledAssets(g_scene->GetContentProvider(), g_hInstance);
 
     // Pull the WC3 install root the user configured in the Settings dialog
     // (TextureBrowserHelper.ms / Toolkit-Settings.mcr both write to the same
