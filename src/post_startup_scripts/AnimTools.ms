@@ -7,16 +7,17 @@ struct WhiteoutDexBoneResult
 	handLeft = undefined,
 	handRight = undefined,
 	
-	-- Funktion zum Ausgeben der Ergebnisse
+	-- Prints the results
 	fn printResults =
 	(
-		format "===== Gefundene Bones =====\n"
-		format "Head: %\n" (if head != undefined then head.name else "Nicht gefunden")
-		format "Chest: %\n" (if chest != undefined then chest.name else "Nicht gefunden")
-		format "Foot Left: %\n" (if footLeft != undefined then footLeft.name else "Nicht gefunden")
-		format "Foot Right: %\n" (if footRight != undefined then footRight.name else "Nicht gefunden")
-		format "Hand Left: %\n" (if handLeft != undefined then handLeft.name else "Nicht gefunden")
-		format "Hand Right: %\n" (if handRight != undefined then handRight.name else "Nicht gefunden")
+		local missing = ::WdxL.t "anim_not_found_val"
+		format "%\n" (::WdxL.t "anim_bones_found_hdr")
+		format "Head: %\n" (if head != undefined then head.name else missing)
+		format "Chest: %\n" (if chest != undefined then chest.name else missing)
+		format "Foot Left: %\n" (if footLeft != undefined then footLeft.name else missing)
+		format "Foot Right: %\n" (if footRight != undefined then footRight.name else missing)
+		format "Hand Left: %\n" (if handLeft != undefined then handLeft.name else missing)
+		format "Hand Right: %\n" (if handRight != undefined then handRight.name else missing)
 		format "==========================\n"
 	)
 )
@@ -25,7 +26,7 @@ struct WhiteoutDexBoneFinder
 (
     scanResult,
     
-    -- Funktion zum Testen mehrerer Patterns
+    -- Tests a name against several patterns
     fn testPatterns boneName patterns =
 	(
         local lowerName = toLower boneName
@@ -43,10 +44,10 @@ struct WhiteoutDexBoneFinder
     ),
     
     -- =============================================
-    -- Hilfsfunktionen (Struct-Ebene)
+    -- Helper functions (struct level)
     -- =============================================
     
-    -- Prüft ob Keyword als ganzes Wort in den Namensteilen vorkommt
+    -- Checks whether the keyword appears as a whole word among the name parts
     fn isWholeWord parts keyword =
     (
         for p in parts do
@@ -54,7 +55,7 @@ struct WhiteoutDexBoneFinder
         false
     ),
     
-    -- False-Positive Erkennung: Wörter die ein Keyword enthalten aber etwas anderes bedeuten
+    -- False-positive detection: words that contain a keyword but mean something else
     fn isFalsePositive lowerName keyword =
     (
         if keyword == "head" and findString lowerName "overhead" != undefined then return true
@@ -64,47 +65,74 @@ struct WhiteoutDexBoneFinder
         false
     ),
     
-    -- Scoring: Bewertet wie gut ein Bone zu einer Kategorie passt
-    -- Höherer Score = besserer Treffer
+    -- Scoring: rates how well a bone fits a category
+    -- Higher score = better match
     fn scoreBone boneName keywords =
     (
         local lowerName = toLower boneName
         local parts = filterString lowerName " _.-"
         local score = 0
         
-        -- Keyword-Matching
+        -- Keyword matching
         for kw in keywords do
         (
-            -- False Positives sofort überspringen
+            -- Skip false positives right away
             if this.isFalsePositive lowerName kw then continue
             
-            -- Ganzes Wort = starker Treffer
+            -- Whole word = strong match
             if this.isWholeWord parts kw then
                 score += 10
-            -- Substring = schwacher Treffer (z.B. "Bip01Head" ohne Trennzeichen)
+            -- Substring = weak match (e.g. "Bip01Head" with no separator)
             else if findString lowerName kw != undefined then
                 score += 2
         )
         
-        -- Kein Keyword gefunden → kein Kandidat
+        -- No keyword found -> not a candidate
         if score == 0 then return 0
         
-        -- Abzug für Helper/End-Bones die keine echten Rig-Bones sind
+        -- Penalty for helper/end bones that are not real rig bones
         local penaltyWords = #("nub", "tip", "ref", "helper", "dummy", "null", "target", "goal", "ik", "pole", "twist", "roll", "effector")
         for pw in penaltyWords do
         (
             if this.isWholeWord parts pw then
                 score -= 5
         )
+
+        -- isWholeWord does not catch appended suffixes: Biped names its
+        -- end points "Bip001 HeadNub", "Bip001 L Toe0Nub", "Bip001 L Finger0Nub".
+        -- filterString splits that into #("bip001","headnub") - "nub" is not
+        -- a word of its own there, so the penalty above never fired. Result: the
+        -- nub beat the real bone, the one-click tool parented attachment
+        -- points to Biped end points, and those carry a
+        -- BipDriven_Control whose transform.controller cannot be read.
+        -- That is exactly what aborted the export.
+        -- "end" is deliberately NOT in the list: a bone like "Hand Bend" would
+        -- otherwise be penalized wrongly. "nub"/"tip"/"effector" are unambiguous.
+        for sfx in #("nub", "tip", "effector") do
+        (
+            for part in parts do
+            (
+                local pl = part.count
+                local sl = sfx.count
+                if pl > sl do
+                (
+                    if (substring part (pl - sl + 1) sl) == sfx do
+                    (
+                        score -= 5
+                        exit
+                    )
+                )
+            )
+        )
         
-        -- Bonus für kürzere Namen (eher der eigentliche Bone als ein Hilfsobjekt)
+        -- Bonus for shorter names (more likely the actual bone than a helper object)
         if parts.count <= 2 then score += 3
         else if parts.count <= 3 then score += 1
         
         score
     ),
     
-    -- Prüft ob es Links ist
+    -- Checks whether it is the left side
     fn isLeft boneName =
     (
         local lowerName = toLower boneName
@@ -121,7 +149,7 @@ struct WhiteoutDexBoneFinder
         (findString lowerName ".l" != undefined)
     ),
     
-    -- Prüft ob es Rechts ist
+    -- Checks whether it is the right side
     fn isRight boneName =
     (
         local lowerName = toLower boneName
@@ -138,7 +166,7 @@ struct WhiteoutDexBoneFinder
         (findString lowerName ".r" != undefined)
     ),
     
-    -- Erweiterte Bone-Scan Funktion
+    -- Extended bone scan function
 
     fn scanBonesWithRegex =
     (
@@ -147,7 +175,7 @@ struct WhiteoutDexBoneFinder
         local highestSpine = undefined
         local highestSpineNum = -1
         
-        -- Sammle alle Bones UND andere relevante Objekte
+        -- Collect all bones AND other relevant objects
         for obj in objects do
         (
             if classof obj == BoneGeometry \
@@ -162,7 +190,7 @@ struct WhiteoutDexBoneFinder
         )
         
         -- =============================================
-        -- HEAD finden (bester Score gewinnt)
+        -- Find HEAD (best score wins)
         -- =============================================
         local bestHeadScore = 0
         for bone in allBones do
@@ -176,7 +204,7 @@ struct WhiteoutDexBoneFinder
         )
         
         -- =============================================
-        -- CHEST finden (bester Score gewinnt)
+        -- Find CHEST (best score wins)
         -- =============================================
         local bestChestScore = 0
         for bone in allBones do
@@ -190,7 +218,7 @@ struct WhiteoutDexBoneFinder
         )
         
         -- =============================================
-        -- SPINE suchen (Fallback für Chest)
+        -- Look for SPINE (fallback for chest)
         -- =============================================
         for bone in allBones do
         (
@@ -225,7 +253,7 @@ struct WhiteoutDexBoneFinder
             result.chest = highestSpine
         
         -- =============================================
-        -- HAND finden (bester Score pro Seite)
+        -- Find HAND (best score per side)
         -- =============================================
         local handKeywords = #("hand", "finger", "wrist", "palm")
         local bestHandLeftScore = 0
@@ -265,7 +293,7 @@ struct WhiteoutDexBoneFinder
             )
         )
         
-        -- Unbekannte Seite als Fallback
+        -- Unknown side as fallback
         if bestHandUnknown != undefined then
         (
             if result.handLeft == undefined then
@@ -275,7 +303,7 @@ struct WhiteoutDexBoneFinder
         )
         
         -- =============================================
-        -- FOOT finden (bester Score pro Seite)
+        -- Find FOOT (best score per side)
         -- =============================================
         local footKeywords = #("foot", "toe", "ankle")
         local bestFootLeftScore = 0
@@ -315,7 +343,7 @@ struct WhiteoutDexBoneFinder
             )
         )
         
-        -- Unbekannte Seite als Fallback
+        -- Unknown side as fallback
         if bestFootUnknown != undefined then
         (
             if result.footLeft == undefined then
@@ -362,10 +390,13 @@ struct WdxAnimTools
         groupBox smoothRotationsGrpB "Smooth Rotations" pos:[296, 22] width:138 height:110
         button fixSquadbtn "Fix non-linear\nrotation problems\non selection" pos:[304,38] width:122 height:86 tooltip:"Non-linear rotation keys may animate improperly in wc3 if they go beyond 90\xC2\xB0. This tool will apply fixes to those keys by creating a new key between them. Note that you may have to run the tool more than once in some weird occasions where you created rotations of over 180\xC2\xB0"
 
-		groupBox boneToolsGrpB "Bone Tools" pos:[8, 136] width:426 height:46
-		button createAttachmentPointsBtn "Create Attachment Points" pos:[16, 152] width:410 height:22 tooltip:"Automatically create Attachment Points for Bones that have known names."
+		groupBox boneToolsGrpB "One Click Tools" pos:[8, 136] width:426 height:98
+		button createAttachmentPointsBtn "One Click Attachment Points" pos:[16, 152] width:410 height:22 tooltip:"Automatically create Attachment Points for Bones that have known names."
+		button createPortraitCamBtn "One Click Portrait Camera" pos:[16, 178] width:410 height:22 tooltip:"Creates a portrait camera framing the selected object. Without a selection the upper part of the model is used as the head."
+		button createCollSphereBtn "One Click Collision Spheres" pos:[16, 204] width:202 height:22 tooltip:"Creates two collision spheres sized from the model, as Blizzard does for units."
+		button createCollBoxBtn "One Click Collision Box" pos:[224, 204] width:202 height:22 tooltip:"Creates a collision box sized from the model, as Blizzard does for buildings."
 		
-        -- Funktionen
+        -- Functions
         mapped fn setContinuityToZero o time &controllerFunc =
         (
             local c = controllerFunc o
@@ -383,7 +414,7 @@ struct WdxAnimTools
             v
         )
 		
-		-- Berechnet die Modellhoehe aus allen sichtbaren Geometrie-Objekten
+		-- Computes the model height from all visible geometry objects
 		fn getModelHeight =
 		(
 			local minZ = 0.0
@@ -413,7 +444,7 @@ struct WdxAnimTools
 		
 		fn createAttachmentNode rigBone type modelHeight =
 		(
-			-- Skalierungsfaktor: Gizmo ist ~10 Units, bei 100 Unit Modell passt das
+			-- Scale factor: the gizmo is ~10 units, which fits a 100 unit model
 			local scaleFactor = modelHeight / 100.0
 			if scaleFactor < 0.01 then scaleFactor = 0.01
 			
@@ -475,12 +506,12 @@ struct WdxAnimTools
 				
 				if type == #overhead then
 				(
-					-- Proportionaler Overhead-Offset
+					-- Proportional overhead offset
 					obj.pos.z += 50.0 * scaleFactor
 				)
 			)
 			
-			-- Gizmo-Groesse proportional zum Modell skalieren
+			-- Scale the gizmo size proportionally to the model
 			obj.scale = [scaleFactor, scaleFactor, scaleFactor]
 			
 			local attachmentsLayer = LayerManager.getLayerFromName "Attachments"
@@ -490,7 +521,8 @@ struct WdxAnimTools
 			)
 			attachmentsLayer.addnode obj
 			
-			print ("Attachment Point: " + obj.name + " erstellt. (Scale: " + (scaleFactor as string) + ")")
+			print (substituteString (substituteString (::WdxL.t "anim_attach_point_created_msg") \
+					"%1" obj.name) "%2" (scaleFactor as string))
 		)
         
         mapped fn fixSquadRotation s =
@@ -520,7 +552,7 @@ struct WdxAnimTools
         (
             if animToolsSequences.count == 0 then
             (
-                print "No sequences found in the scene."
+                print (::WdxL.t "anim_no_sequences_in_scene_msg")
                 return false
             )
             
@@ -541,10 +573,10 @@ struct WdxAnimTools
             
             for s in sel do
             (
-                -- Prüfe ob es ein Biped-Objekt ist
+                -- Check whether it is a Biped object
                 if classOf s == Biped_Object then
                 (
-                    -- Biped-Objekte haben eine spezielle Controller-Struktur
+                    -- Biped objects have a special controller structure
                     try
                     (
                         -- Biped Position Controller
@@ -559,9 +591,9 @@ struct WdxAnimTools
                 )
                 else
                 (
-                    -- Normale Objekte und Kameras
+                    -- Regular objects and cameras
                     
-                    -- Position - prüfe ob Property existiert
+                    -- Position - check whether the property exists
                     try 
                     (
                         if s.pos != undefined and s.pos.controller != undefined then
@@ -569,10 +601,10 @@ struct WdxAnimTools
                     ) 
                     catch 
                     (
-                        -- Objekt hat keine Standard-Position Property
+                        -- Object has no standard position property
                     )
                     
-                    -- Rotation - prüfe ob Property existiert
+                    -- Rotation - check whether the property exists
                     try 
                     (
                         if s.rotation != undefined and s.rotation.controller != undefined then
@@ -580,10 +612,10 @@ struct WdxAnimTools
                     ) 
                     catch 
                     (
-                        -- Objekt hat keine Rotation (z.B. Kamera)
+                        -- Object has no rotation (e.g. a camera)
                     )
                     
-                    -- Scale - prüfe ob Property existiert
+                    -- Scale - check whether the property exists
                     try 
                     (
                         if s.scale != undefined and s.scale.controller != undefined then
@@ -591,10 +623,10 @@ struct WdxAnimTools
                     ) 
                     catch 
                     (
-                        -- Objekt hat kein Scale
+                        -- Object has no scale
                     )
                     
-                    -- Spezialbehandlung für Kameras mit Roll
+                    -- Special handling for cameras with roll
                     if classOf s == Targetcamera or classOf s == Freecamera then
                     (
                         try 
@@ -608,7 +640,7 @@ struct WdxAnimTools
             )
         )
         
-        -- Event-Handler
+        -- Event handlers
         on continuityBtn pressed do
         (
             fn PosController o =
@@ -645,11 +677,199 @@ struct WdxAnimTools
         
         on fixSquadbtn pressed do fixSquadRotation selection
 			
+		-- Assign layers the same way the importer does. organizeNodesIntoLayers()
+		-- in mdlx_importer_plugin.cpp creates exactly these names: "Cameras" and
+		-- "Collision Shapes". Any other spelling produces a second layer.
+		fn putInLayer objs layerName =
+		(
+			try
+			(
+				local ly = LayerManager.getLayerFromName layerName
+				if ly == undefined then ly = LayerManager.newLayerFromName layerName
+				if ly != undefined then for o in objs where isValidNode o do ly.addNode o
+			)
+			catch ()
+			ok
+		)
+
+		-- Bounding box over all visible geometry objects.
+		-- "at time 0" rather than sliderTime: nodeGetBoundingBox evaluates in the
+		-- current time context. If the model sits on an animation frame, we would
+		-- otherwise get the size of the running animation instead of the initial pose.
+		-- "at time" sets the context directly and leaves the slider alone.
+		fn getModelBounds =
+		(
+			local lo = undefined
+			local hi = undefined
+			at time 0
+			(
+				for obj in objects where superClassOf obj == GeometryClass and not obj.isHidden do
+				(
+					try
+					(
+						local bb = nodeGetBoundingBox obj (matrix3 1)
+						if lo == undefined then ( lo = bb[1] ; hi = bb[2] )
+						else
+						(
+							lo = [ amin lo.x bb[1].x, amin lo.y bb[1].y, amin lo.z bb[1].z ]
+							hi = [ amax hi.x bb[2].x, amax hi.y bb[2].y, amax hi.z bb[2].z ]
+						)
+					)
+					catch ()
+				)
+			)
+			if lo == undefined then #([-50,-50,0],[50,50,100]) else #(lo, hi)
+		)
+
+		on createPortraitCamBtn pressed do
+		(
+			-- Values derived from Blizzard's own portrait models
+			-- (Footman, Knight, Arthas):
+			--   FoV         45 degrees (3 of 4 models)
+			--   Near/Far    8 / 1000   (identical in ALL four)
+			--   View        near horizontal (-2 to -16 degrees)
+			--   Direction   camera sits at +X from the target
+			--   Frame width 23 to 31 units - about one head width,
+			--               independent of the model height (110 to 238)
+			-- So it is not the model size that drives the distance, but the
+			-- size of the framed region.
+			undo "Create Portrait Camera" on
+			(
+				local fovDeg = 45.0
+				local headLo = undefined
+				local headHi = undefined
+
+				if selection.count > 0 then
+				(
+					-- Selection = head, likewise measured in the initial pose
+					at time 0
+					(
+						for o in selection do
+						(
+							try
+							(
+								local bb = nodeGetBoundingBox o (matrix3 1)
+								if headLo == undefined then ( headLo = bb[1] ; headHi = bb[2] )
+								else
+								(
+									headLo = [ amin headLo.x bb[1].x, amin headLo.y bb[1].y, amin headLo.z bb[1].z ]
+									headHi = [ amax headHi.x bb[2].x, amax headHi.y bb[2].y, amax headHi.z bb[2].z ]
+								)
+							)
+							catch ()
+						)
+					)
+				)
+
+				if headLo == undefined then
+				(
+					-- Without a selection: assume the top 20 % of the model is the head
+					local b = getModelBounds()
+					local h = b[2].z - b[1].z
+					headLo = [b[1].x, b[1].y, b[2].z - h * 0.2]
+					headHi = [b[2].x, b[2].y, b[2].z]
+				)
+
+				local ctr = (headLo + headHi) / 2.0
+				local w = amax (headHi.x - headLo.x) (headHi.y - headLo.y)
+				local hh = headHi.z - headLo.z
+				local frame = amax w hh
+				if frame < 0.001 then frame = 10.0
+
+				-- Distance chosen so the region fills the frame, plus a margin
+				local dist = (frame * 0.5) / (tan (fovDeg * 0.5)) * 1.15
+
+				-- View direction: in the MDX portraits the camera sits at +X.
+				-- mdx_coord_transform::position() maps Max to MDX as
+				-- (-y, x, z), so MDX +X corresponds to -Y in Max. That is also
+				-- Max' front view, which is where characters usually look.
+				local camPos = [ctr.x, ctr.y - dist, ctr.z]
+
+				local cam = TargetCamera name:(uniqueName "Portrait Camera") \
+				                         pos:camPos target:(TargetObject pos:ctr)
+				-- In MaxScript fov is in degrees; GenCamera::GetFOV hands the
+				-- exporter radians, exactly the unit of the CAMS fieldOfView.
+				cam.fov = fovDeg
+				-- clipManually stays off - the importer stores the distances the
+				-- same way, without turning manual clipping on.
+				cam.nearclip = 8
+				cam.farclip = 1000
+				cam.target.name = cam.name + ".Target"
+
+				putInLayer #(cam, cam.target) "Cameras"
+				select cam
+				format "WhiteoutDex: Portrait camera created - target %  distance %  fov %\n" \
+				       ctr (dist as integer) fovDeg
+				messageBox ((::WdxL.t "anim_portrait_camera_created_msg") + "\n\n" + \
+				            (::WdxL.t "anim_portrait_cam_distance_lbl") + " " + ((dist as integer) as string) + "\n" + \
+				            "FoV 45, near 8, far 1000\n\n" + \
+				            (::WdxL.t "anim_portrait_cam_front_hint_msg")) \
+				           title:(::WdxL.t "anim_portrait_camera_ptitle") beep:false
+			)
+		)
+
+		-- Collision Shapes. Dimensions derived from Blizzard's own models:
+		--   Footman  spheres at 61 % / 21 % of the height, radius 0.37 / 0.37 x height
+		--   Arthas   spheres at 74 % / 33 % of the height, radius 0.39 / 0.49 x height
+		--   Sanctum  one box, only 17 to 33 % of the model bulk - it encloses
+		--            the base, not the overhangs
+		-- Both are created without a parent, on the center axis.
+		fn createCollisionShapes asBox =
+		(
+			local b = getModelBounds()
+			local lo = b[1]
+			local hi = b[2]
+			local h = hi.z - lo.z
+			if h < 0.001 then h = 100.0
+			local cx = (lo.x + hi.x) / 2.0
+			local cy = (lo.y + hi.y) / 2.0
+			local created = #()
+
+			if asBox then
+			(
+				-- Wdx_CollisionBox has its pivot at bottom center and carries the
+				-- FULL extents (wc3_collision_extractor.cpp builds min/max from
+				-- them as pos +/- width/2, pos.z .. pos.z + height). The box
+				-- therefore stands on lo.z, not at half the height.
+				local bx = Wdx_CollisionBox name:(uniqueName "Collision Box") \
+				                            pos:[cx, cy, lo.z]
+				bx.width  = (hi.x - lo.x) * 0.5
+				bx.length = (hi.y - lo.y) * 0.5
+				bx.height = h * 0.6
+				append created bx
+			)
+			else
+			(
+				local s1 = Wdx_Wc3CollisionSphere name:(uniqueName "Collision Sphere") \
+				                                  pos:[cx, cy, lo.z + h * 0.65]
+				s1.radius = h * 0.38
+				local s2 = Wdx_Wc3CollisionSphere name:(uniqueName "Collision Sphere") \
+				                                  pos:[cx, cy, lo.z + h * 0.27]
+				s2.radius = h * 0.43
+				append created s1
+				append created s2
+			)
+			putInLayer created "Collision Shapes"
+			select created
+			format "WhiteoutDex: % collision shape(s) created, model height %\n" created.count (h as integer)
+			ok
+		)
+
+		on createCollSphereBtn pressed do
+		(
+			undo "Create Collision Spheres" on ( createCollisionShapes false )
+		)
+
+		on createCollBoxBtn pressed do
+		(
+			undo "Create Collision Box" on ( createCollisionShapes true )
+		)
+
 		on createAttachmentPointsBtn pressed do
 		(
 			undo "Create Attachment Points" on
 			(
-				-- Slider auf Frame 0 bewegen damit Bone-Transforms der Initial-Pose gelesen werden
+				-- Move the slider to frame 0 so bone transforms are read from the initial pose
 				local savedTime = sliderTime
 				sliderTime = 0
 				
@@ -675,7 +895,7 @@ struct WdxAnimTools
 				if not isValidNode $'Hand Right Ref' \
 					and isValidNode ::WhiteoutDexBoneFinder.scanResult.handRight then createAttachmentNode ::WhiteoutDexBoneFinder.scanResult.handRight #handRight mHeight
 				
-				-- Slider zurück zur ursprünglichen Position
+				-- Slider back to its original position
 				sliderTime = savedTime
 			)
 		)
@@ -722,7 +942,7 @@ struct WdxAnimTools
 			)
 			
 			::WdxAnimTools.isGeneralPoppedOut = true
-			createDialog generalRoll width:440 height:202 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
+			createDialog generalRoll width:440 height:254 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 		)
 		
 		on generalRoll close do
@@ -768,7 +988,7 @@ struct WdxAnimTools
 				animationGrpB.text = ::WdxL.t "anim_animation_grp"
 				tcbToolsGrpB.text = ::WdxL.t "anim_tcb_tools_grp"
 				smoothRotationsGrpB.text = ::WdxL.t "anim_smooth_rotations_grp"
-				boneToolsGrpB.text = ::WdxL.t "anim_bone_tools_grp"
+				boneToolsGrpB.text = ::WdxL.t "anim_one_click_tools_grp"
 				addSEkeysbtn.text = ::WdxL.t "anim_addnstart_and_ending_keysnto_selected_ob_btn"
 				try (addSEkeysbtn.tooltip = ::WdxL.t "anim_adds_keyframes_to_frame_0_and_tip") catch ()
 				PosChk.text = ::WdxL.t "anim_position_chk"
@@ -781,8 +1001,14 @@ struct WdxAnimTools
 				try (continuityBtn.tooltip = ::WdxL.t "anim_sets_the_continuity_parameter_tip") catch ()
 				fixSquadbtn.text = ::WdxL.t "anim_fix_nonlinearnrotation_problemsnon_selec_btn"
 				try (fixSquadbtn.tooltip = ::WdxL.t "anim_nonlinear_rotation_keys_may_a_tip") catch ()
-				createAttachmentPointsBtn.text = ::WdxL.t "anim_create_attachment_points_btn"
+				createAttachmentPointsBtn.text = ::WdxL.t "anim_one_click_attachment_points_btn"
 				try (createAttachmentPointsBtn.tooltip = ::WdxL.t "anim_automatically_create_attachmen_tip") catch ()
+				createPortraitCamBtn.text = ::WdxL.t "anim_one_click_portrait_camera_btn"
+				try (createPortraitCamBtn.tooltip = ::WdxL.t "anim_creates_a_portrait_camera_fram_tip") catch ()
+				createCollSphereBtn.text = ::WdxL.t "anim_one_click_collision_spheres_btn"
+				try (createCollSphereBtn.tooltip = ::WdxL.t "anim_creates_two_collision_spheres_tip") catch ()
+				createCollBoxBtn.text = ::WdxL.t "anim_one_click_collision_box_btn"
+				try (createCollBoxBtn.tooltip = ::WdxL.t "anim_creates_a_collision_box_sized_tip") catch ()
 			)
 		)
     ),
@@ -795,14 +1021,14 @@ struct WdxAnimTools
         button saveBtn "Save and Unlink" pos:[16,38] width:198 height:22 tooltip:"Saves parent relationships of selected objects and unlinks them from their parents\n\nSometimes you already got a bunch of meshes linked to some bones and suddenly you want to edit the bones. If you don't want to mess up the meshes, you must unlink them, do whatever you need, then relink. This tool saves the parents of the selected meshes, unlinks them and restores them when you want. Use this tool before converting bones from IK to FK, for instance."
         button restoreBtn "Restore Parents" pos:[222,38] width:198 height:22 tooltip:"Restores previously saved parent relationships for selected objects\n\nSometimes you already got a bunch of meshes linked to some bones and suddenly you want to edit the bones. If you don't want to mess up the meshes, you must unlink them, do whatever you need, then relink. This tool saves the parents of the selected meshes, unlinks them and restores them when you want. Use this tool before converting bones from IK to FK, for instance."
         
-        -- Funktionen
+        -- Functions
         mapped fn saveParents s =
         (
             local p = s.parent
             if p != undefined then
             (
-                -- Handle ist der Schlüssel (Namen sind nicht eindeutig);
-                -- der Name bleibt nur als Fallback für alte Szenen.
+                -- The handle is the key (names are not unique);
+                -- the name is kept only as a fallback for old scenes.
                 setUserProp s "OriginalParentHandle" p.inode.handle
                 setUserProp s "OriginalParent" p.name
             )
@@ -822,7 +1048,7 @@ struct WdxAnimTools
             if p != undefined then s.parent = p
         )
         
-        -- Event-Handler
+        -- Event handlers
         on saveBtn pressed do saveParents selection
         on restoreBtn pressed do restoreParents selection
 
@@ -932,17 +1158,17 @@ struct WdxAnimTools
         
         button controllerBtn "Apply to selected" width:410 height:22 pos:[16,132] tooltip:"Applies the selected controller types to the selected objects"
         
-        -- Funktionen
+        -- Functions
         mapped fn applyControllers obj posCon rotCon scaCon =
         (
-            -- Überspringe nur Biped-Objekte
+            -- Skip Biped objects only
             if classOf obj == Biped_Object then
             (
                 print ("Skipping Biped object: " + obj.name + " - Biped controllers cannot be changed")
                 return undefined
             )
             
-            -- Normale Objekte und CAT Bones - verwende try-catch für Sicherheit
+            -- Regular objects and CAT bones - use try-catch to be safe
             try
             (
                 if posCon != undefined and obj.position != undefined then 
@@ -974,7 +1200,7 @@ struct WdxAnimTools
             )
         )
         
-        -- Event-Handler
+        -- Event handlers
         on controllerBtn pressed do
         (
             undo "Apply Controllers" on
@@ -1181,8 +1407,8 @@ struct WdxAnimTools
             local cn = (classOf obj) as string
             if cn == "BoneGeometry" or cn == "Biped_Object" do return false
             if cn == "CATParent" or cn == "CATBone" or cn == "HubObject" or cn == "IKTarget" do return false
-            if cn == "Wc3Particles1" or cn == "Wc3Particles2" or cn == "BlizRibbon" do return false
-            if cn == "Wdx_CollisionSphere" or cn == "Wdx_CollisionBox" or cn == "Wc3CollisionCylinder" do return false
+            if cn == "Wc3Particles1" or cn == "Wc3Particles2" or cn == "Wc3Ribbon" do return false
+            if cn == "Wdx_Wc3CollisionSphere" or cn == "Wdx_CollisionBox" do return false
             if cn == "Wdx_Wc3Light" or cn == "Wdx_Wc3Popcorn" do return false
             true
         )
@@ -1219,11 +1445,18 @@ struct WdxAnimTools
                 ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.speed *= factor)catch(); try(obj.gravity *= factor)catch(); try(obj.startscale *= factor)catch(); try(obj.middlescale *= factor)catch(); try(obj.endscale *= factor)catch(); try(obj.taillength *= factor)catch(); count += 1 )
                 if cn == "Wc3Particles1" do
                 ( try(obj.radius *= factor)catch(); try(obj.Gravity *= factor)catch(); count += 1 )
-                if cn == "BlizRibbon" do
-                ( try(obj.Above *= factor)catch(); try(obj.Below *= factor)catch(); try(obj.gravity *= factor)catch(); count += 1 )
-                if cn == "Wdx_CollisionSphere" do ( try(obj.radius *= factor)catch(); count += 1 )
+                if cn == "Wc3Ribbon" do
+                ( try(setProperty obj "Height Above" ((getProperty obj "Height Above") * factor))catch(); try(setProperty obj "Height Below" ((getProperty obj "Height Below") * factor))catch(); try(obj.gravity *= factor)catch(); count += 1 )
+                if cn == "Wdx_Wc3CollisionSphere" do ( try(obj.radius *= factor)catch(); count += 1 )
                 if cn == "Wdx_CollisionBox" do ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.height *= factor)catch(); count += 1 )
-                if cn == "Wdx_Wc3Light" do ( try(obj.DS_Spn *= factor)catch(); try(obj.DE_Spn *= factor)catch(); count += 1 )
+                -- Distances scale with the model. The 3.0 falloff coefficients
+                -- multiply d and d^2, so they scale inversely to keep the light
+                -- reaching the same part of the rescaled model.
+                if cn == "Wdx_Wc3Light" do
+                ( try(obj.DecayStart *= factor)catch(); try(obj.DecayEnd *= factor)catch()
+                  try(obj.ShadowCastingStart *= factor)catch(); try(obj.ShadowCastingEnd *= factor)catch()
+                  if factor != 0 do ( try(obj.LinearFalloff /= factor)catch(); try(obj.QuadraticFalloff /= (factor * factor))catch(); try(obj.Damping /= (factor * factor))catch() )
+                  count += 1 )
                 if cn == "Wdx_Wc3Popcorn" do ( try(obj.speed *= factor)catch(); count += 1 )
             )
             count

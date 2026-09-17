@@ -49,19 +49,19 @@ struct WdxVisibilityKeyer
 			
 			if selection.count == 0 then
 			(
-				visToggleBtn.text = "No Object(s) selected."
+				visToggleBtn.text = ::WdxL.t "vis_no_objects_selected_btn"
 				return()
 			)
 			
 			if selection.count > 1 then
 			(
-				visToggleBtn.text = "More than one Object selected."
+				visToggleBtn.text = ::WdxL.t "vis_multiple_objects_selected_btn"
 				return()
 			)
 			
 			if getVisController selection[1] == undefined then
 			(
-				visToggleBtn.text = "Select Object has no Visibility Controller."
+				visToggleBtn.text = ::WdxL.t "vis_no_visibility_controller_btn"
 				return()
 			)
 			
@@ -70,12 +70,13 @@ struct WdxVisibilityKeyer
 			(
 				local isVisible = (visConValue >= 0.5)
 				visToggleBtn.checked = isVisible
-				local btnText = if isVisible then "ON (Value >= 0.5)" else "OFF (Value < 0.5)"
-				visToggleBtn.text = "Visibility " + btnText
+				-- One key per state rather than "Visibility " + a suffix: several
+				-- languages put the ON/OFF word before the noun.
+				visToggleBtn.text = ::WdxL.t (if isVisible then "vis_toggle_on_btn" else "vis_toggle_off_btn")
 			)
 		)
 		
-		-- Fix 2: try/catch um timeCallback, verhindert Fehler bei Playback
+		-- Fix 2: try/catch around timeCallback, which keeps playback from erroring
 		fn selectionChangedtimeCB =
 		(
 			try ( selectionChanged() ) catch ()
@@ -107,7 +108,7 @@ struct WdxVisibilityKeyer
 
         on visConCopyBtn pressed do
         (
-            -- Da hier keine Szene-Änderungen vorgenommen werden, ist kein Undo-Block nötig.
+            -- Nothing here changes the scene, so no undo block is needed.
             if selection.count != 1 then
             (
                 messageBox (::WdxL.t "vis_please_select_exactly_one_sour_msg")
@@ -394,7 +395,7 @@ struct WdxVisibilityKeyer
         )
     ),
 
-    -- Entfernt den Controller des SubAnims (sowohl bei ParamBlock2 als auch bei anderen Typen)
+    -- Removes the SubAnim's controller, for a ParamBlock2 and for other types alike
     fn removeController subAnim = if isKindOf subAnim ::SubAnim and isController subAnim.controller do
     (
         local originalValue = subAnim.value
@@ -563,7 +564,7 @@ struct WdxVisibilityKeyer
         
         for selectedId in selectedIds do
         (
-            -- Global Sequences überspringen (haben keine start/endtime)
+            -- Skip global sequences, which have no start/endtime
             if selectedId <= globalCount then continue
             
             -- Offset abziehen: Listbox-Index → filteredSequences-Index

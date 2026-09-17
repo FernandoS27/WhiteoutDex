@@ -10,6 +10,9 @@ add_library(MaxCore STATIC ${CORE_SOURCES})
 
 target_include_directories(MaxCore PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    # wdx_localization.h — the error summary dialog takes its chrome from the
+    # MaxScript translation catalog.
+    "${CMAKE_CURRENT_SOURCE_DIR}/../common"
 )
 
 # Max SDK comes from parent — use the INTERFACE library
@@ -23,6 +26,8 @@ target_link_libraries(MaxCore PUBLIC
     bmm.lib
     paramblk2.lib
     MNMath.lib
+    # ExecuteMAXScriptScript, for the translation lookups in error_reporter.cpp
+    maxscrpt.lib
 )
 
 target_compile_options(MaxCore PRIVATE

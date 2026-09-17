@@ -6,7 +6,9 @@ category:"Warcraft III Plugins"
 (
 	------------------------------------- Variable Registration -------------------------------------
 	local Icon_Path		  = (GetDir #userIcons + "\\WhiteoutDexIcon\\")
-	local MessageboxText  = "FaceFX Emitter\nUsed in Warcraft 3 Reforged (MDX v1200)\nReferences a .facefx_ingame file for\nfacial animation and lip-sync data"
+	-- The info text is looked up when the button is pressed, not here: a plugin
+	-- local is initialised once at definition time, which is before the
+	-- catalog loads and long before the user can change the language.
 	------------------------------------- Parameter Registration -------------------------------------
 
 	parameters main rollout:General
@@ -113,7 +115,7 @@ category:"Warcraft III Plugins"
 		)
 		on btnInfo pressed do
 		(
-			messagebox (MessageboxText + "    ")
+			messagebox ((::WdxL.t "facefx_info_msg") + "    ") title:(::WdxL.t "facefx_info_ptitle")
 		)
 		on params1 open do
 		(
@@ -165,25 +167,25 @@ category:"Warcraft III Plugins"
 		local dc = [255,200,80]
 		dc = [dc.x/255, dc.y/255, dc.z/255]
 
-		-- Kopf (Kreis)
+		-- Head (circle)
 		BuildGizmoCircle 19.0 [0,0,0] dc
 
-		-- Linkes Auge (Bogen)
+		-- Left eye (arc)
 		BuildGizmo #( [-12,3,0], [-10,6,0], [-8,7,0], [-6,6,0], [-4,3,0] ) dc
 
-		-- Rechtes Auge (Bogen)
+		-- Right eye (arc)
 		BuildGizmo #( [4,3,0], [6,6,0], [8,7,0], [10,6,0], [12,3,0] ) dc
 
-		-- Linke Pupille
+		-- Left pupil
 		BuildGizmoCircle 1.8 [-8,3.5,0] dc
 
-		-- Rechte Pupille
+		-- Right pupil
 		BuildGizmoCircle 1.8 [8,3.5,0] dc
 
-		-- Nase (minimale Linie)
+		-- Nose (a minimal line)
 		BuildGizmo #( [0,1,0], [0,-4,0], [-2,-5,0] ) dc
 
-		-- Mund (einfache Kurve)
+		-- Mouth (a simple curve)
 		BuildGizmo #( [-8,-9,0], [-4,-12,0], [0,-13,0], [4,-12,0], [8,-9,0] ) dc
 	)
 )

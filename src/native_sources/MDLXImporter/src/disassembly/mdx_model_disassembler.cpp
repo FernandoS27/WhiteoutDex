@@ -401,6 +401,16 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                 wdx::Layer::ShadingFlag::SphereEnvMap);
             irLayer.unfogged = wdx::hasFlag(layer.shadingFlags,
                 wdx::Layer::ShadingFlag::Unfogged);
+            irLayer.backFacesForShadows = wdx::hasFlag(layer.shadingFlags,
+                wdx::Layer::ShadingFlag::BackFacesForShadows);
+            irLayer.ambientOcclusion = wdx::hasFlag(layer.shadingFlags,
+                wdx::Layer::ShadingFlag::AmbientOcclusion);
+
+            // The parser fills the shader for every version: from disk at
+            // v1100+, from the material's shader name for v900/v1000, and SD
+            // for v800. The material builder maps it onto the Wc3Material
+            // dropdown.
+            irLayer.shaderType = static_cast<int32_t>(layer.shader);
 
             // Texture references.
             // v1100+ (and upgraded v800): textureId is always 0; actual textures are in subTextures.
@@ -455,25 +465,28 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
 
             // HD (Reforged) PBR properties.
             //
-            // Der whiteout_lib Parser liest emissiveGain/fresnel* für JEDEN
-            // Layer wenn mdx.version > 800 — egal ob SD oder HD. Wir reichen
-            // diese Werte genauso unconditional durch, damit Byte-Level-
-            // Roundtrips stimmen:
+            // The whiteout_lib parser reads emissiveGain/fresnel* for EVERY
+            // layer when mdx.version > 800, whether the layer is SD or HD. We
+            // pass those values through just as unconditionally, so that
+            // byte-level round-trips still match:
             //
-            //   v800:   Parser liest nichts → Parser-Defaults (0.0, (1,1,1), 0, 0)
-            //           IR bleibt auf IR-Defaults. Das ist OK weil v800-Export
-            //           die Felder auch nicht schreibt.
-            //   v>800:  Parser liest alle vier Werte, wir propagieren sie in
-            //           die IR. Auch bei SD-Materialien (Material-Builder setzt
-            //           sie dann auf das Wc3Material; das Plugin ignoriert sie
-            //           visuell wenn shaderType=SD, aber Roundtrip bleibt sauber).
+            //   v800:   the parser reads nothing, so the parser defaults apply
+            //           (0.0, (1,1,1), 0, 0) and the IR keeps its own defaults.
+            //           That is fine because a v800 export does not write the
+            //           fields either.
+            //   v>800:  the parser reads all four values and we propagate them
+            //           into the IR — for SD materials too. The material builder
+            //           then sets them on the Wc3Material; the plug-in ignores
+            //           them visually when shaderType=SD, but the round-trip
+            //           stays clean.
             //
-            // Historie: Frühere Gates (layer.is_hd → buggy; isHdLayer-Heuristik
-            // → zu restriktiv) haben HD-Props je nach Layer-Klassifikation
-            // verworfen. Dadurch gingen für Arthas v1200:
-            //   - SD-Ribbon-Layer (Material #34): ORIG emissiveGain=1.0 → 0.0 in Max
-            //   - Alle HD-Layer (Material #25): ORIG emissiveGain=2.0 → 0.0 in Max
-            // Jetzt durchreichen statt gaten.
+            // History: earlier gates (layer.is_hd, which was buggy, and an
+            // isHdLayer heuristic, which was too restrictive) discarded the HD
+            // properties depending on how the layer was classified. For Arthas
+            // v1200 that lost:
+            //   - the SD ribbon layer (material #34): emissiveGain 1.0 -> 0.0 in Max
+            //   - every HD layer (material #25):      emissiveGain 2.0 -> 0.0 in Max
+            // Pass them through now instead of gating them.
             if (version_ > 800) {
                 irLayer.emissiveGain = layer.emissiveGain;
                 irLayer.fresnelColor = Point3(layer.fresnelColor.x,
@@ -481,30 +494,6 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                                                layer.fresnelColor.z);
                 irLayer.fresnelOpacity = layer.fresnelOpacity;
                 irLayer.fresnelTeamColor = layer.fresnelTeamColor;
-            }
-
-            // isHdLayer: Detection für v1200 animated tracks weiter unten.
-            // Die Detection wird nur dort gebraucht weil animierte HD-Tracks
-            // (KGMR/KGFC/KGFA/KGFT) echte HD-Bedingung benötigen — wenn wir
-            // sie auch für SD-Layer evaluieren würden käme es zu Phantom-Keys.
-            bool isHdLayer = layer.is_hd;
-            if (!isHdLayer) {
-                if (mat.shader == "Shader_HD_DefaultUnit" ||
-                    mat.shader == "Shader_HD_Crystal") {
-                    isHdLayer = true;
-                }
-            }
-            if (!isHdLayer && version_ >= 1100) {
-                for (const auto& sub : layer.subTextures) {
-                    if (sub.slot == wdx::Layer::SlotType::NormalMap ||
-                        sub.slot == wdx::Layer::SlotType::ORMMap ||
-                        sub.slot == wdx::Layer::SlotType::EmissiveMap ||
-                        sub.slot == wdx::Layer::SlotType::TeamColor ||
-                        sub.slot == wdx::Layer::SlotType::EnvironmentMap) {
-                        isHdLayer = true;
-                        break;
-                    }
-                }
             }
 
             if (layer.alphaTracks.isUsed)
@@ -531,11 +520,16 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                 }
             }
 
-            // v1200 HD animated tracks — use the robust isHdLayer check computed above
-            if (version_ >= 1200 && isHdLayer) {
+            // Reforged animated layer tracks. The parser reads KMTE from v900
+            // and the fresnel tracks from v1000 for every layer, and sets
+            // isUsed only when the chunk is present, so an SD-on-HD layer's
+            // emissive animation comes through as well.
+            if (version_ > 800) {
                 if (layer.emissiveGainTracks.isUsed)
                     irLayer.emissiveGainTrackIndex = storeFloatTrack(ir,
                         mapFloatTrack(layer.emissiveGainTracks));
+            }
+            if (version_ > 900) {
                 if (layer.fresnelColorTracks.isUsed)
                     irLayer.fresnelColorTrackIndex = storeColorTrack(ir,
                         mapColorTrack(layer.fresnelColorTracks));
@@ -610,6 +604,7 @@ void MdxModelDisassembler::mapGeosets(const wdx::Model& mdx, ir::IRModel& ir) {
         }
 
         irMesh.materialIndex = static_cast<int32_t>(geo.materialId);
+        irMesh.selectionGroup = geo.selectionGroup;
 
         size_t vertCount = geo.vertexPositions.size();
         irMesh.vertices.resize(vertCount);
@@ -793,6 +788,15 @@ void MdxModelDisassembler::mapLights(const wdx::Model& mdx, ir::IRModel& ir) {
         irLight.intensity = light.intensity;
         irLight.ambientColor = Color(light.ambientColor.x, light.ambientColor.y, light.ambientColor.z);
         irLight.ambientIntensity = light.ambientIntensity;
+        // The parser has already substituted the game's defaults for any
+        // field older than the file's version, so these copy straight across.
+        irLight.shadowIntensity = light.shadowIntensity;
+        irLight.shadowCasting = light.shadowCasting;
+        irLight.shadowCastingStart = light.shadowCastingStart;
+        irLight.shadowCastingEnd = light.shadowCastingEnd;
+        irLight.quadraticFalloff = light.quadraticFalloff;
+        irLight.linearFalloff = light.linearFalloff;
+        irLight.damping = light.damping;
 
         if (light.attenuationStartTracks.isUsed)
             irLight.attStartTrackIndex = storeFloatTrack(ir,
@@ -826,6 +830,21 @@ void MdxModelDisassembler::mapLights(const wdx::Model& mdx, ir::IRModel& ir) {
         if (light.shadowIntensityTracks.isUsed)
             irLight.shadowIntensityTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(light.shadowIntensityTracks));
+        if (light.shadowCastingStartTracks.isUsed)
+            irLight.shadowCastStartTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(light.shadowCastingStartTracks));
+        if (light.shadowCastingEndTracks.isUsed)
+            irLight.shadowCastEndTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(light.shadowCastingEndTracks));
+        if (light.quadraticFalloffTracks.isUsed)
+            irLight.quadFalloffTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(light.quadraticFalloffTracks));
+        if (light.linearFalloffTracks.isUsed)
+            irLight.linearFalloffTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(light.linearFalloffTracks));
+        if (light.dampingTracks.isUsed)
+            irLight.dampingTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(light.dampingTracks));
 
         ir.lights.push_back(std::move(irLight));
     }
@@ -1052,6 +1071,9 @@ void MdxModelDisassembler::mapEventObjects(const wdx::Model& mdx, ir::IRModel& i
 
         for (auto time : evt.eventTrackTimes)
             irEvt.keyTimes.push_back(mdx_coord::msToTicks(time));
+        if (evt.globalSequenceId != 0xFFFFFFFFu &&
+            evt.globalSequenceId < mdx.globalSequences.size())
+            irEvt.globalSequenceIndex = static_cast<int32_t>(evt.globalSequenceId);
 
         ir.eventObjects.push_back(std::move(irEvt));
     }
@@ -1078,6 +1100,18 @@ void MdxModelDisassembler::mapCameras(const wdx::Model& mdx, ir::IRModel& ir) {
         if (cam.targetRotationTracks.isUsed)
             irCam.rotationTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(cam.targetRotationTracks));
+        if (cam.visibilityTracks.isUsed)
+            irCam.visibilityTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(cam.visibilityTracks));
+        if (cam.focusDistanceTracks.isUsed)
+            irCam.focusDistanceTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(cam.focusDistanceTracks));
+        if (cam.focalLengthTracks.isUsed)
+            irCam.focalLengthTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(cam.focalLengthTracks));
+        if (cam.fStopTracks.isUsed)
+            irCam.fStopTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(cam.fStopTracks));
 
         ir.cameras.push_back(std::move(irCam));
     }

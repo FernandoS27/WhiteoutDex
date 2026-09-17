@@ -37,7 +37,7 @@
 #define IDC_EDT_BLP_JPEG_QUALITY    1073
 #define IDC_SPIN_BLP_JPEG_QUALITY   1074
 #define IDC_CHK_BLP_DITHERING       1075
-// DDS-specific (visible only for Reforged v1200)
+// DDS-specific (visible only for Reforged v1800)
 #define IDC_LBL_DDS_FORMAT          1080
 #define IDC_CMB_DDS_FORMAT          1081
 

@@ -14,7 +14,7 @@ include(WdxMaxSdk)
 #   -DBUILD_COMMON_ONLY=ON      (build only Max-SDK-independent libraries)
 #   -DPREBUILT_COMMON_DIR=<dir> (import pre-built common libs, skip rebuild)
 # ===========================================================================
-option(BUILD_COMMON_ONLY "Build only Max-SDK-independent libraries (whiteout_lib, zlib, WhiteoutDexTextureBrowser)" OFF)
+option(BUILD_COMMON_ONLY "Build only Max-SDK-independent libraries (whiteout_lib, zlib, WhiteoutDexTextureBrowser, WhiteoutFlakes)" OFF)
 set(PREBUILT_COMMON_DIR "" CACHE PATH "Path to a build_common/ tree with pre-built common libraries")
 
 # ===========================================================================
@@ -85,102 +85,29 @@ if(NOT EXISTS "${WHITEOUT_DIR}/CMakeLists.txt")
 endif()
 
 if(PREBUILT_COMMON_DIR)
+    # Everything Max-SDK-independent — WhiteoutLib, zlib, the texture browser's
+    # native half and the WhiteoutFlakes renderer libraries — was compiled once
+    # by the common build, which exported the lot (usage requirements included)
+    # to WdxCommonTargets.cmake. See "Common-libs export" at the bottom.
+    set(_wdx_common_targets "${PREBUILT_COMMON_DIR}/WdxCommonTargets.cmake")
+    if(NOT EXISTS "${_wdx_common_targets}")
+        message(FATAL_ERROR
+            "PREBUILT_COMMON_DIR=${PREBUILT_COMMON_DIR} has no WdxCommonTargets.cmake. "
+            "Configure and build that directory with -DBUILD_COMMON_ONLY=ON first, "
+            "or leave PREBUILT_COMMON_DIR unset to build everything in this tree.")
+    endif()
     message(STATUS "Using pre-built common libs from: ${PREBUILT_COMMON_DIR}")
+    include("${_wdx_common_targets}")
 
-    add_library(whiteout_lib STATIC IMPORTED GLOBAL)
-    set_target_properties(whiteout_lib PROPERTIES
-        IMPORTED_LOCATION "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_lib.lib"
-        INTERFACE_INCLUDE_DIRECTORIES "${WHITEOUT_DIR}/include"
-    )
-
-    if(EXISTS "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_casc.lib")
-        add_library(whiteout_casc STATIC IMPORTED GLOBAL)
-        set_target_properties(whiteout_casc PROPERTIES
-            IMPORTED_LOCATION "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_casc.lib"
-            INTERFACE_INCLUDE_DIRECTORIES "${WHITEOUT_DIR}/include"
-            INTERFACE_LINK_LIBRARIES whiteout_lib
-            INTERFACE_COMPILE_DEFINITIONS "WHITEOUT_HAS_CASC=1"
-        )
-    endif()
-
-    if(EXISTS "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_database.lib")
-        add_library(whiteout_database STATIC IMPORTED GLOBAL)
-        set_target_properties(whiteout_database PROPERTIES
-            IMPORTED_LOCATION "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_database.lib"
-            INTERFACE_INCLUDE_DIRECTORIES "${WHITEOUT_DIR}/include"
-            INTERFACE_LINK_LIBRARIES whiteout_lib
-            INTERFACE_COMPILE_DEFINITIONS "WHITEOUT_HAS_DATABASE=1"
-        )
-    endif()
-
-    if(EXISTS "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_mpq.lib")
-        add_library(whiteout_mpq STATIC IMPORTED GLOBAL)
-        set_target_properties(whiteout_mpq PROPERTIES
-            IMPORTED_LOCATION "${PREBUILT_COMMON_DIR}/WhiteoutLib/Release/whiteout_mpq.lib"
-            INTERFACE_INCLUDE_DIRECTORIES "${WHITEOUT_DIR}/include"
-            INTERFACE_LINK_LIBRARIES whiteout_lib
-            INTERFACE_COMPILE_DEFINITIONS "WHITEOUT_HAS_MPQ=1"
-        )
-    endif()
-
-    # ── zlibstatic (built via FetchContent during BUILD_COMMON_ONLY) ──────
-    # FetchContent puts sources in _deps/zlib-src and builds in _deps/zlib-build.
-    # The .lib lands at _deps/zlib-build/<Config>/zlibstatic.lib.
-    set(_zlib_lib_release "${PREBUILT_COMMON_DIR}/_deps/zlib-build/Release/zlibstatic.lib")
-    set(_zlib_lib_debug   "${PREBUILT_COMMON_DIR}/_deps/zlib-build/Debug/zlibstaticd.lib")
-    set(_zlib_inc_src     "${PREBUILT_COMMON_DIR}/_deps/zlib-src")
-    set(_zlib_inc_bin     "${PREBUILT_COMMON_DIR}/_deps/zlib-build")
-    if(EXISTS "${_zlib_lib_release}")
-        add_library(zlibstatic STATIC IMPORTED GLOBAL)
-        set_target_properties(zlibstatic PROPERTIES
-            IMPORTED_LOCATION         "${_zlib_lib_release}"
-            IMPORTED_LOCATION_RELEASE "${_zlib_lib_release}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_zlib_inc_src};${_zlib_inc_bin}"
-        )
-        if(EXISTS "${_zlib_lib_debug}")
-            set_target_properties(zlibstatic PROPERTIES
-                IMPORTED_LOCATION_DEBUG "${_zlib_lib_debug}")
-        endif()
-        message(STATUS "Imported zlibstatic: ${_zlib_lib_release}")
-    else()
-        message(WARNING "zlibstatic not found at ${_zlib_lib_release} — MPQ support will not work")
-    endif()
-
-    # ── WhiteoutDexTextureBrowser_native (output dir = build_common root) ──
-    # The TextureBrowser CMakeLists sets ARCHIVE_OUTPUT_DIRECTORY = CMAKE_BINARY_DIR,
-    # so the .lib lands at <build_common>/<Config>/WhiteoutDexTextureBrowser_native.lib.
-    set(_tb_lib_release "${PREBUILT_COMMON_DIR}/Release/WhiteoutDexTextureBrowser_native.lib")
-    set(_tb_lib_debug   "${PREBUILT_COMMON_DIR}/Debug/WhiteoutDexTextureBrowser_native.lib")
-    set(_tb_src_dir     "${CMAKE_CURRENT_SOURCE_DIR}/WhiteoutDexTextureBrowser/Source")
-    if(EXISTS "${_tb_lib_release}")
-        add_library(WhiteoutDexTextureBrowser_native STATIC IMPORTED GLOBAL)
-        set_target_properties(WhiteoutDexTextureBrowser_native PROPERTIES
-            IMPORTED_LOCATION         "${_tb_lib_release}"
-            IMPORTED_LOCATION_RELEASE "${_tb_lib_release}"
-            INTERFACE_INCLUDE_DIRECTORIES "${_tb_src_dir}"
-        )
-        if(EXISTS "${_tb_lib_debug}")
-            set_target_properties(WhiteoutDexTextureBrowser_native PROPERTIES
-                IMPORTED_LOCATION_DEBUG "${_tb_lib_debug}")
-        endif()
-        # Forward transitive deps that the .lib was originally built with.
-        set(_tb_deps whiteout_lib)
-        if(TARGET zlibstatic)
-            list(APPEND _tb_deps zlibstatic)
-        endif()
-        if(TARGET whiteout_casc)
-            list(APPEND _tb_deps whiteout_casc)
-        endif()
-        if(TARGET whiteout_mpq)
-            list(APPEND _tb_deps whiteout_mpq)
-        endif()
-        set_target_properties(WhiteoutDexTextureBrowser_native PROPERTIES
-            INTERFACE_LINK_LIBRARIES "${_tb_deps}")
-        message(STATUS "Imported WhiteoutDexTextureBrowser_native: ${_tb_lib_release}")
-    else()
-        message(WARNING "WhiteoutDexTextureBrowser_native not found at ${_tb_lib_release} — MPQ support will not work")
-    endif()
-
+    # CMake turns an IMPORTED target's include directories into system includes
+    # (/external:I), which MSVC searches only after every plain /I — so the Max
+    # SDK's include dir would jump ahead of WhiteoutFlakes' own. The two share
+    # header names: WhiteoutFlakes' model_template.h includes "particle.h" and
+    # then gets the Max SDK's, whose MaxWindowsVersion.h pins _WIN32_WINNT to
+    # 0x0502 on Max 2016 and hides IFileDialog. Keep them plain /I, in link
+    # order, exactly as an in-tree add_subdirectory would have. Initialises
+    # NO_SYSTEM_FROM_IMPORTED on every plug-in target created below.
+    set(CMAKE_NO_SYSTEM_FROM_IMPORTED ON)
 else()
     set(WHITEOUT_ENABLE_CASC     ON  CACHE BOOL "" FORCE)
     set(WHITEOUT_ENABLE_MPQ      ON  CACHE BOOL "" FORCE)
@@ -237,19 +164,151 @@ endif()
 # WhiteoutFlakes — renderer library consumed by WhiteoutDexRenderer below.
 # WDX_BUILD_MAX_PLUGIN=OFF: we build the .dlx ourselves so the plug-in source
 # lives in this repo (see src/native_sources/WhiteoutDexRenderer/).
+#
+# It has no Max SDK dependency, so it is part of the common build: a
+# per-version sub-build with PREBUILT_COMMON_DIR imports it instead.
 # ===========================================================================
-if(NOT BUILD_COMMON_ONLY)
+set(WHITEOUTFLAKES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../external/WhiteoutFlakes"
+    CACHE PATH "WhiteoutFlakes root")
+if(NOT EXISTS "${WHITEOUTFLAKES_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR
+        "WhiteoutFlakes not found at: ${WHITEOUTFLAKES_DIR}\n"
+        "Run: git submodule update --init --recursive external/WhiteoutFlakes")
+endif()
+
+if(NOT PREBUILT_COMMON_DIR)
     set(WDX_BUILD_MAX_PLUGIN OFF CACHE BOOL "" FORCE)
 
-    set(WHITEOUTFLAKES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../external/WhiteoutFlakes"
-        CACHE PATH "WhiteoutFlakes root")
-    if(NOT EXISTS "${WHITEOUTFLAKES_DIR}/CMakeLists.txt")
-        message(FATAL_ERROR
-            "WhiteoutFlakes not found at: ${WHITEOUTFLAKES_DIR}\n"
-            "Run: git submodule update --init --recursive external/WhiteoutFlakes")
-    endif()
-
     add_subdirectory("${WHITEOUTFLAKES_DIR}" "${CMAKE_BINARY_DIR}/WhiteoutFlakes")
+
+    # The submodule's own executables — the WhiteoutFlakes viewer, ModelExplorer
+    # and two throwaway dev tools. WhiteoutDex ships none of them: the renderer
+    # reaches Max only as WhiteoutDexRenderer.dlx, linked against the libraries
+    # above. Keep them out of ALL_BUILD so no build compiles them; they stay
+    # buildable by name for anyone working on Flakes itself. Their install()
+    # rules are Linux/macOS-only, so nothing on Windows asks for them.
+    foreach(_wdx_flakes_exe
+            WhiteoutFlakesStandalone WhiteoutFlakesExplorer BlsReflect D3ShaderAtlas)
+        if(TARGET ${_wdx_flakes_exe})
+            set_target_properties(${_wdx_flakes_exe} PROPERTIES
+                EXCLUDE_FROM_ALL TRUE
+                EXCLUDE_FROM_DEFAULT_BUILD TRUE)
+        endif()
+    endforeach()
+endif()
+
+# ===========================================================================
+# Common-libs export (BUILD_COMMON_ONLY)
+#
+# A multi-version build compiles the Max-SDK-independent libraries once, here,
+# and every per-version sub-build links that copy through PREBUILT_COMMON_DIR.
+# export(TARGETS) writes IMPORTED definitions — locations, include dirs,
+# compile definitions, link interfaces — so the sub-builds see exactly the
+# usage requirements an in-tree add_subdirectory would have given them.
+#
+# export() insists that every target it is handed has its link dependencies
+# exported too, so the set is the link closure of the roots, walked here rather
+# than listed. Dependencies that are themselves IMPORTED (found packages) can't
+# be exported; WdxCommonTargets.cmake re-finds those before including the
+# export file.
+# ===========================================================================
+if(BUILD_COMMON_ONLY)
+    set(_wdx_queue "")
+    foreach(_t
+            whiteout_lib whiteout_casc whiteout_mpq whiteout_database zlibstatic
+            WhiteoutDexTextureBrowser_native
+            WhiteoutFlakesLib WhiteoutFlakesExplorerLib cubeb)
+        if(TARGET ${_t})
+            list(APPEND _wdx_queue ${_t})
+        endif()
+    endforeach()
+
+    set(_wdx_exported "")
+    set(_wdx_imported "")
+    while(_wdx_queue)
+        list(POP_FRONT _wdx_queue _t)
+        get_target_property(_aliased ${_t} ALIASED_TARGET)
+        if(_aliased)
+            set(_t ${_aliased})
+        endif()
+        if(_t IN_LIST _wdx_exported OR _t IN_LIST _wdx_imported)
+            continue()
+        endif()
+        get_target_property(_imported ${_t} IMPORTED)
+        if(_imported)
+            list(APPEND _wdx_imported ${_t})
+            continue()
+        endif()
+        list(APPEND _wdx_exported ${_t})
+
+        get_target_property(_type ${_t} TYPE)
+        set(_deps "")
+        get_target_property(_iface ${_t} INTERFACE_LINK_LIBRARIES)
+        if(_iface)
+            list(APPEND _deps ${_iface})
+        endif()
+        if(NOT _type STREQUAL "INTERFACE_LIBRARY")
+            get_target_property(_link ${_t} LINK_LIBRARIES)
+            if(_link)
+                list(APPEND _deps ${_link})
+            endif()
+        endif()
+        foreach(_d IN LISTS _deps)
+            # Private deps of a static library arrive as $<LINK_ONLY:…>, and
+            # cubeb's bundled speex as $<LINK_ONLY:$<BUILD_INTERFACE:speex>>.
+            while(_d MATCHES "^\\$<(LINK_ONLY|BUILD_INTERFACE):(.+)>$")
+                set(_d "${CMAKE_MATCH_2}")
+            endwhile()
+            if(TARGET "${_d}")
+                list(APPEND _wdx_queue "${_d}")
+            elseif(_d MATCHES "^[A-Za-z0-9_.+-]+::[A-Za-z0-9_.+-]+$"
+                   AND NOT _d IN_LIST _wdx_imported)
+                # A package's imported target. find_package() declares those
+                # in the directory that called it, so from up here they aren't
+                # targets at all (Threads::Threads is cubeb's, Vulkan::Vulkan
+                # WhiteoutFlakes'). Plain library names (user32.lib) and
+                # cross-directory "::@" markers drop out without matching.
+                list(APPEND _wdx_imported "${_d}")
+            endif()
+        endforeach()
+    endwhile()
+
+    set(_wdx_common_prelude
+        "# Generated by src/native_sources/CMakeLists.txt (BUILD_COMMON_ONLY).\n# Included by per-version sub-builds via PREBUILT_COMMON_DIR.\n")
+    foreach(_i IN LISTS _wdx_imported)
+        if(_i STREQUAL "Threads::Threads")
+            string(APPEND _wdx_common_prelude "find_package(Threads REQUIRED)\n")
+        elseif(_i STREQUAL "Vulkan::Vulkan")
+            string(APPEND _wdx_common_prelude "find_package(Vulkan REQUIRED)\n")
+        else()
+            message(FATAL_ERROR
+                "The common libraries link the imported target ${_i}, which a "
+                "per-version sub-build has no way to recreate. Add the "
+                "find_package() call that defines it to the list above.")
+        endif()
+    endforeach()
+
+    export(TARGETS ${_wdx_exported}
+        FILE "${CMAKE_BINARY_DIR}/WdxCommonTargetsExport.cmake")
+    file(WRITE "${CMAKE_BINARY_DIR}/WdxCommonTargets.cmake"
+        "${_wdx_common_prelude}"
+        "include(\"\${CMAKE_CURRENT_LIST_DIR}/WdxCommonTargetsExport.cmake\")\n")
+
+    # Several of these are EXCLUDE_FROM_ALL where they are declared (WhiteoutLib,
+    # cubeb) — nothing in this tree links them, the sub-builds do — so make
+    # ALL_BUILD produce every one of them.
+    set(_wdx_buildable "")
+    foreach(_t IN LISTS _wdx_exported)
+        get_target_property(_type ${_t} TYPE)
+        if(NOT _type STREQUAL "INTERFACE_LIBRARY")
+            list(APPEND _wdx_buildable ${_t})
+        endif()
+    endforeach()
+    add_custom_target(wdx_common_exports ALL)
+    add_dependencies(wdx_common_exports ${_wdx_buildable})
+
+    list(LENGTH _wdx_exported _wdx_n)
+    message(STATUS "Common libs: exporting ${_wdx_n} targets (re-found packages: ${_wdx_imported})")
 endif()
 
 # ===========================================================================
@@ -275,14 +334,15 @@ endif()
 # can be installed multiple times with different --prefix values:
 #
 #   plugins   → Max<year>/*.{dle,dlo,dlx,bmi}
-#   standalone→ Standalone/*               (exe + shaders + DLLs)
+#   shaders   → shaders/*                  (BLS pack, shared by every Max year)
 #   scripts   → scripts/{macroscripts,pre_startup_scripts,…}/*
-#   manifest  → PackageContents.xml
 #
 # Typical invocations:
 #   cmake --install <build> --prefix output                                 (suite layout)
 #   cmake --install <build> --prefix <AppData>/…/WhiteoutDex/native plugins \
 #         --component plugins                                               (AppData plugins)
+#   cmake --install <build> --prefix <AppData>/…/WhiteoutDex \
+#         --component shaders                                               (AppData shaders)
 #   cmake --install <build> --prefix <AppData>/…/WhiteoutDex \
 #         --component scripts                                               (AppData scripts)
 # ===========================================================================
@@ -297,27 +357,16 @@ if(NOT BUILD_COMMON_ONLY)
         LIBRARY     DESTINATION "${WDX_PLUGIN_DEST}" COMPONENT plugins
     )
 
-    # Ship the prebuilt BLS shader bundles next to the .dlx so the renderer's
-    # FileContentProvider — with the install path overridden to the .dlx
-    # directory in ndxStart() — finds them. Without this, ndxStart hits
+    # The prebuilt BLS shader bundles. Nothing in them depends on the Max SDK,
+    # so they go to the install root once rather than beside each year's .dlx
+    # (they are ~70 MB). The renderer looks beside the .dlx first and at the
+    # root second — see wdx_install_layout.h. Without them ndxStart hits
     # "shader bundle not found" the moment it tries to compile a permute.
     set(_wdx_prebuilt_shaders "${WHITEOUTFLAKES_DIR}/prebuilt/shaders")
     if(EXISTS "${_wdx_prebuilt_shaders}")
         install(DIRECTORY "${_wdx_prebuilt_shaders}/"
-            DESTINATION "${WDX_PLUGIN_DEST}/shaders"
-            COMPONENT plugins
-        )
-    endif()
-
-    # Standalone viewer ships as a folder (exe + shaders/ + DLLs). The
-    # WhiteoutFlakes subproject writes the whole tree to <build>/standalone,
-    # so copy it wholesale rather than reasoning about individual targets.
-    if(EXISTS "${CMAKE_BINARY_DIR}/standalone" OR TARGET WhiteoutFlakesStandalone)
-        install(DIRECTORY "${CMAKE_BINARY_DIR}/standalone/"
-            DESTINATION "Standalone"
-            COMPONENT standalone
-            USE_SOURCE_PERMISSIONS
-            OPTIONAL
+            DESTINATION "shaders"
+            COMPONENT shaders
         )
     endif()
 
@@ -340,7 +389,7 @@ if(NOT BUILD_COMMON_ONLY)
         FILES_MATCHING PATTERN "*.ms"
     )
 
-    # PackageContents.xml is generated by the root CMakeLists (per
-    # WDX_MAX_VERSIONS) and consumed directly by the installer .iss — no
-    # sub-build install rule needed here.
+    # PackageContents.xml and the Max 2016/2017 startup loader are generated /
+    # referenced by the root CMakeLists (per WDX_MAX_VERSIONS) and consumed
+    # directly by the installer .iss — no sub-build install rule needed here.
 endif()

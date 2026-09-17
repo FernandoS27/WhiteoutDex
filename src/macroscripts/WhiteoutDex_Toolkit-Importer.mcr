@@ -69,7 +69,7 @@ macroScript WhiteoutDex_ImportCASC
 	(
 		if ::WhiteoutDexModelBrowser == undefined then
 		(
-			messageBox ("The WhiteoutDex asset browser is not loaded.\n\n" + "Reinstall WhiteoutDex or check the Listener for script errors.") title:"WhiteoutDex" beep:false
+			messageBox (::WdxL.t "common_asset_browser_not_loaded_msg") title:"WhiteoutDex" beep:false
 		)
 		else
 		(

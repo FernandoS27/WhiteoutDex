@@ -8,7 +8,9 @@
 //   1. Local disk under `modelDir`, peeling subdirectory levels and
 //      trying every extension alias at each tier.
 //   2. CASC (Reforged): MDX-stated extension first, then aliases,
-//      against `war3.w3mod:` and `war3.w3mod:_hd.w3mod:` prefixes.
+//      against the `war3.w3mod:`, `_hd.w3mod:`, `_de.w3mod:` and
+//      `_deprecated.w3mod:` prefixes, in the order the scene's art tier
+//      gives them (wdx_scene_art_tier.h).
 //   3. MPQ (Classic v800): MDX-stated extension first, then aliases,
 //      against every .mpq archive opened from `mpqDir`.
 //
@@ -18,6 +20,8 @@
 // path uses the actual extension — so 3ds Max's BitmapTex points at a
 // real file in a format Max can read.
 #pragma once
+
+#include "wdx_scene_art_tier.h"
 
 #include <memory>
 #include <string>
@@ -36,10 +40,13 @@ public:
     /// highest priority first). When non-empty it is opened INSTEAD of
     /// scanning `mpqDir`: the order is the whole point, and a directory scan
     /// has none. Empty falls back to the scan.
+    ///
+    /// `artTier` orders the CASC overlays a bare texture path is tried under.
     TextureResolver(const std::wstring& modelDir,
                     const std::wstring& cascDir,
                     const std::wstring& mpqDir,
-                    const std::vector<std::wstring>& mpqArchives);
+                    const std::vector<std::wstring>& mpqArchives,
+                    wdx::scene::ArtTier artTier);
     ~TextureResolver();
 
     TextureResolver(const TextureResolver&) = delete;
@@ -65,5 +72,10 @@ private:
 /// reuse) can still benefit from the alias logic.
 std::wstring resolveTexturePath(const std::wstring& modelDir,
                                 const std::wstring& relPath);
+
+/// The `_XX.w3mod` overlay segment (lowercase, e.g. "_de.w3mod") the model
+/// browser recorded in a model's extraction directory, or empty when the model
+/// did not come out of CASC that way.
+std::string detectModChain(const std::wstring& modelDir);
 
 } // namespace mdx_scene

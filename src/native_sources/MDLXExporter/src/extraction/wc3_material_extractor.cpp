@@ -255,9 +255,11 @@ BitmapProperties extractBitmapProperties(Texmap* tex) {
         props.replaceableId = std::max(0, replId - 1);
 
         BOOL flag = FALSE;
-        if (PBR::readBoolByName(ref, L"wrapU", t, flag) && flag) props.wrapU = true;
+        const bool hasWrapU = PBR::readBoolByName(ref, L"wrapU", t, flag);
+        if (hasWrapU && flag) props.wrapU = true;
         flag = FALSE;
-        if (PBR::readBoolByName(ref, L"wrapV", t, flag) && flag) props.wrapV = true;
+        const bool hasWrapV = PBR::readBoolByName(ref, L"wrapV", t, flag);
+        if (hasWrapV && flag) props.wrapV = true;
         flag = FALSE;
         if (PBR::readBoolByName(ref, L"sphereEnvMap", t, flag) && flag) props.sphereEnvMap = true;
 
@@ -265,9 +267,12 @@ BitmapProperties extractBitmapProperties(Texmap* tex) {
         if (PBR::readStringByName(ref, L"prefixPath", t, prefix) && !prefix.empty())
             props.prefixPath = wstrToUtf8(prefix.c_str());
 
-        // If Wc3Bitmap wraps a Standard BitmapTex delegate and didn't store
-        // explicit wrap flags, try the delegate as a secondary source.
-        if (!props.wrapU && !props.wrapV) {
+        // The delegate's tiling is only a fallback for a Wc3Bitmap without
+        // the wrap params. When they exist they are the truth: Wc3Material's
+        // filter-mode handler switches tiling ON for the bitmap it uses as the
+        // opacity map of an additive layer (the diffuse's own delegate), and
+        // reading that back turned a clamped Team Glow texture into flags 3.
+        if (!hasWrapU && !hasWrapV) {
             for (int i = 0; i < tex->NumRefs(); i++) {
                 ReferenceTarget* delegate = tex->GetReference(i);
                 if (delegate && delegate->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
@@ -782,6 +787,116 @@ static int32_t extractOpacityTrack(ReferenceTarget* mtlRef,
     return idx;
 }
 
+// Interpolation for an animated material param: step-keyed bezier is how the
+// importer stores DontInterp, and anything unrecognised is sampled linearly.
+static ir::InterpolationType materialTrackInterp(Control* ctrl)
+{
+    ir::InterpolationType interp = detectInterpFromController(ctrl);
+    if (interp == ir::InterpolationType::Bezier && isStepBezierController(ctrl))
+        return ir::InterpolationType::None;
+    if (interp == ir::InterpolationType::None)
+        return ir::InterpolationType::Linear;
+    return interp;
+}
+
+static int32_t detectAndRegisterGlobalSeq(Control* ctrl, ir::IRModel& model);
+static int32_t detectGlobalSeqAny(ir::IRModel& model,
+                                  std::initializer_list<Control*> ctrls);
+
+// KMTE / KFCA / KFTC: one animated float param of the Wc3Material.
+static int32_t extractMaterialFloatTrack(ReferenceTarget* mtlRef, const wchar_t* name,
+                                         ir::IRModel& model)
+{
+    Control* ctrl = getParamController(mtlRef, name);
+    if (!ctrl) return -1;
+
+    std::vector<TimeValue> times;
+    std::vector<float> values, inTans, outTans;
+    bool hasTangents = false;
+    readFloatKeys(ctrl, times, values, inTans, outTans, hasTangents);
+    if (times.empty()) return -1;
+
+    ir::Track<float> track;
+    track.interpolation = materialTrackInterp(ctrl);
+    const bool useTans = hasTangents &&
+                         (track.interpolation == ir::InterpolationType::Hermite ||
+                          track.interpolation == ir::InterpolationType::Bezier);
+    for (size_t i = 0; i < times.size(); i++) {
+        ir::Keyframe<float> key;
+        key.time  = times[i];
+        key.value = values[i];
+        if (useTans) {
+            key.inTangent   = inTans[i];
+            key.outTangent  = outTans[i];
+            key.hasTangents = true;
+        }
+        track.keys.push_back(key);
+    }
+    track.globalSequenceIndex = detectAndRegisterGlobalSeq(ctrl, model);
+
+    int32_t idx = static_cast<int32_t>(model.floatTracks.size());
+    model.floatTracks.push_back(std::move(track));
+    return idx;
+}
+
+// KFC3: the Wc3Material keeps the fresnel colour as three floats, so the keys
+// of the three controllers are merged into one colour track. A channel without
+// a key at a merged time is evaluated there and gets flat tangents.
+static int32_t extractFresnelColorTrack(ReferenceTarget* mtlRef, const Point3& staticColor,
+                                        ir::IRModel& model)
+{
+    static const wchar_t* const kNames[3] = { L"fresnelR", L"fresnelG", L"fresnelB" };
+    Control* ctrls[3] = {};
+    std::vector<TimeValue> keyTimes[3];
+    std::vector<float> keyValues[3], keyIn[3], keyOut[3];
+    bool keyTans[3] = { false, false, false };
+    std::vector<TimeValue> times;
+    Control* firstAnimated = nullptr;
+
+    for (int c = 0; c < 3; c++) {
+        ctrls[c] = getParamController(mtlRef, kNames[c]);
+        readFloatKeys(ctrls[c], keyTimes[c], keyValues[c], keyIn[c], keyOut[c], keyTans[c]);
+        if (!keyTimes[c].empty() && !firstAnimated) firstAnimated = ctrls[c];
+        times.insert(times.end(), keyTimes[c].begin(), keyTimes[c].end());
+    }
+    if (times.empty()) return -1;
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+
+    ir::Track<Color> track;
+    track.interpolation = materialTrackInterp(firstAnimated);
+    const bool useTans = (track.interpolation == ir::InterpolationType::Hermite ||
+                          track.interpolation == ir::InterpolationType::Bezier);
+
+    for (TimeValue t : times) {
+        ir::Keyframe<Color> key;
+        key.time = t;
+        float value[3], in[3], out[3];
+        for (int c = 0; c < 3; c++) {
+            value[c] = evalFloat(ctrls[c], t, staticColor[c]);
+            in[c] = out[c] = value[c];
+            auto it = std::find(keyTimes[c].begin(), keyTimes[c].end(), t);
+            if (it != keyTimes[c].end() && keyTans[c]) {
+                size_t k = static_cast<size_t>(it - keyTimes[c].begin());
+                in[c]  = keyIn[c][k];
+                out[c] = keyOut[c][k];
+            }
+        }
+        key.value = Color(value[0], value[1], value[2]);
+        if (useTans) {
+            key.inTangent   = Color(in[0], in[1], in[2]);
+            key.outTangent  = Color(out[0], out[1], out[2]);
+            key.hasTangents = true;
+        }
+        track.keys.push_back(key);
+    }
+    track.globalSequenceIndex = detectGlobalSeqAny(model, { ctrls[0], ctrls[1], ctrls[2] });
+
+    int32_t idx = static_cast<int32_t>(model.colorTracks.size());
+    model.colorTracks.push_back(std::move(track));
+    return idx;
+}
+
 // ── Global Sequence detection ─────────────────────────────────────
 // A controller is a Global Sequence when its after-ORT is set to a
 // cyclic behaviour: ORT_CYCLE (2) or ORT_LOOP (3). These are treated
@@ -1220,6 +1335,90 @@ int32_t extractIflAnimation(BitmapTex* bmpTex, ir::IRModel& model,
     return trackIdx;
 }
 
+// Exact KMTF from Wc3Material's flipbookTextures / flipbookFrame, which the
+// importer writes next to the IFL preview. Each entry is
+// "replaceableId|flags|MDX path"; flipbookFrame is the animated index into
+// them. Returns the int track index, or -1 when flipbookFrame has no keys.
+// `iflDiskPaths` are the IFL's absolute file paths: an entry whose file name
+// matches one takes it as its source on disk, so texture conversion still
+// finds the file. `outStaticTexIndex` is the texture shown at frame 0.
+static int32_t extractExactFlipbook(ReferenceTarget* mtlRef, ir::IRModel& model,
+                                    const std::vector<std::string>& iflDiskPaths,
+                                    int32_t& outStaticTexIndex)
+{
+    outStaticTexIndex = -1;
+    IParamBlock2* pb = nullptr;
+    ParamID pid = 0;
+    if (!findAnimParam(mtlRef, L"flipbookTextures", pb, pid)) return -1;
+    const int count = pb->Count(pid);
+    if (count <= 0) return -1;
+    Control* frameCtrl = getParamController(mtlRef, L"flipbookFrame");
+    if (!frameCtrl) return -1;
+    const std::vector<TimeValue> times = collectKeyTimes(frameCtrl);
+    if (times.empty()) return -1;
+
+    auto stem = [](const std::string& path) {
+        std::string s = filenameOnly(path);
+        const size_t dot = s.find_last_of('.');
+        if (dot != std::string::npos) s.resize(dot);
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return s;
+    };
+
+    std::vector<int32_t> texIndex(static_cast<size_t>(count), -1);
+    for (int i = 0; i < count; ++i) {
+        const MCHAR* raw = pb->GetStr(pid, 0, i);
+        const std::string entry = raw ? wstrToUtf8(raw) : std::string();
+        const size_t a = entry.find('|');
+        const size_t b = (a == std::string::npos) ? std::string::npos : entry.find('|', a + 1);
+        if (b == std::string::npos) continue;
+        const int replaceableId = std::atoi(entry.substr(0, a).c_str());
+        const int flags = std::atoi(entry.substr(a + 1, b - a - 1).c_str());
+        std::string path = entry.substr(b + 1);
+        std::string disk;
+        if (!path.empty()) {
+            for (const auto& line : iflDiskPaths)
+                if (stem(line) == stem(path)) { disk = line; break; }
+        }
+        // Every other bitmap exports as its MDX folder + the file it loaded
+        // from (an HD .dds for a .blp reference, say). Do the same, or the
+        // flipbook and the static diffuse name one texture twice.
+        if (!disk.empty()) {
+            const size_t sep = path.find_last_of("\\/");
+            path = (sep == std::string::npos ? std::string() : path.substr(0, sep + 1)) +
+                   filenameOnly(disk);
+        }
+        texIndex[static_cast<size_t>(i)] = findOrAddTexture(model, path, replaceableId,
+            (flags & 1) != 0, (flags & 2) != 0, disk);
+    }
+
+    auto textureAt = [&](TimeValue t) {
+        const long frame = std::lround(evalFloat(frameCtrl, t));
+        return texIndex[static_cast<size_t>(std::clamp<long>(frame, 0, count - 1))];
+    };
+
+    ir::IntTrack track;
+    track.interpolation = materialTrackInterp(frameCtrl);
+    if (track.interpolation != ir::InterpolationType::None)
+        track.interpolation = ir::InterpolationType::Linear;
+    for (TimeValue t : times) {
+        const int32_t tex = textureAt(t);
+        if (tex < 0) continue;
+        ir::Keyframe<int32_t> key;
+        key.time = t;
+        key.value = tex;
+        track.keys.push_back(key);
+    }
+    if (track.keys.empty()) return -1;
+
+    outStaticTexIndex = textureAt(0);
+    track.globalSequenceIndex = detectAndRegisterGlobalSeq(frameCtrl, model);
+    int32_t idx = static_cast<int32_t>(model.intTracks.size());
+    model.intTracks.push_back(std::move(track));
+    return idx;
+}
+
 ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
                                   MaterialLevelProps& matProps)
 {
@@ -1263,6 +1462,29 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     flagVal = FALSE;
     if (readBoolFB(mtlRef, L"noDepthSet", L"NoDephSet", t, flagVal) && flagVal)
         layer.noDepthWrite = true;
+    // 3.0.0 layer flags. No NeoDex spelling: NeoDex predates both bits.
+    flagVal = FALSE;
+    if (PBR::readBoolByName(mtlRef, L"ambientOcclusion", t, flagVal) && flagVal)
+        layer.ambientOcclusion = true;
+    flagVal = FALSE;
+    if (PBR::readBoolByName(mtlRef, L"backFacesForShadows", t, flagVal) && flagVal)
+        layer.backFacesForShadows = true;
+
+    // Shader dropdown (1 SD, 2 HD, 3 SD on HD, 4 Crystal) → MDX ShaderType.
+    // Only Wc3Material has it: a NeoDex material would answer with its
+    // Standard delegate's shader instead, so leave that one to the mapper.
+    if (mtlRef->ClassID() == mdx_ids::WC3_MATERIAL) {
+        int shaderDropdown = 0;
+        if (PBR::readIntByName(mtlRef, L"shaderType", t, shaderDropdown)) {
+            switch (shaderDropdown) {
+            case 1: layer.shaderType = 0;  break;
+            case 2: layer.shaderType = 1;  break;
+            case 3: layer.shaderType = 2;  break;
+            case 4: layer.shaderType = 24; break;
+            default: break;
+            }
+        }
+    }
 
     // Priority plane
     int priority = 0;
@@ -1416,7 +1638,18 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
                 }
             }
         }
-        if (bmpTexForIfl) {
+        // The exact flipbook the importer stored wins; the IFL is read back
+        // only for scenes without it (older imports, hand-made IFLs).
+        {
+            std::vector<std::string> iflDiskPaths;
+            if (bmpTexForIfl && bmpTexForIfl->GetMapName()) {
+                const std::string mapName = wstrToUtf8(bmpTexForIfl->GetMapName());
+                if (isIflFilename(mapName))
+                    iflDiskPaths = readIflLines(mapName);
+            }
+            iflTrackIdx = extractExactFlipbook(mtlRef, model, iflDiskPaths, iflFirstTex);
+        }
+        if (iflTrackIdx < 0 && bmpTexForIfl) {
             iflTrackIdx = extractIflAnimation(bmpTexForIfl, model,
                 bmpProps.replaceableId, bmpProps.wrapU, bmpProps.wrapV,
                 iflFirstTex);
@@ -1555,11 +1788,14 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     {
         Texmap* tcMap = nullptr;
         if (PBR::readTexmapByName(mtlRef, L"teamColorMap", tcMap) && tcMap) {
+            // The texture has no path, but its wrap flags are real TEXS data
+            // and the importer keeps them on the bitmap in this slot.
+            BitmapProperties tcProps = extractBitmapProperties(tcMap);
             ir::TextureRef tcRef;
             tcRef.textureIndex = findOrAddTexture(model,
                 /*path=*/std::string(),
                 /*replaceableId=*/1,  // Team Color
-                /*wrapU=*/false, /*wrapV=*/false);
+                tcProps.wrapU, tcProps.wrapV);
             tcRef.slot = ir::TextureSlot::TeamColor;
             layer.textureRefs.push_back(tcRef);
 
@@ -1603,6 +1839,12 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     PBR::readFloatByName(mtlRef, L"fresnelG", t, fG);
     PBR::readFloatByName(mtlRef, L"fresnelB", t, fB);
     layer.fresnelColor = Point3(fR, fG, fB);
+
+    // KMTE / KFC3 / KFCA / KFTC
+    layer.emissiveGainTrackIndex     = extractMaterialFloatTrack(mtlRef, L"emissiveGain", model);
+    layer.fresnelAlphaTrackIndex     = extractMaterialFloatTrack(mtlRef, L"fresnelOpacity", model);
+    layer.fresnelTeamColorTrackIndex = extractMaterialFloatTrack(mtlRef, L"fresnelTeamCol", model);
+    layer.fresnelColorTrackIndex     = extractFresnelColorTrack(mtlRef, layer.fresnelColor, model);
 
     return layer;
 }

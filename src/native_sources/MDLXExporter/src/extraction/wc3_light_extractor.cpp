@@ -23,6 +23,12 @@
 //   Plugin "ShadowValue"                        →  MDX "intensity"
 //   Plugin "AmbColor"    (UI: "Ambient Light") →  MDX "ambientColor"
 //   Plugin "AmbValue"                           →  MDX "ambientIntensity"
+//
+// The Reforged / 3.0 parameters carry their MDL keyword names, so they map
+// one to one: ShadowIntensity, ShadowCasting, ShadowCastingStart (KLSS),
+// ShadowCastingEnd (KLSE), QuadraticFalloff (KLQF), LinearFalloff (KLLF) and
+// Damping (KLDA). The writer only emits each one from the MDX version that
+// introduced it, so extracting them unconditionally is safe for v800 / v1200.
 
 #include "wc3_light_extractor.h"
 #include "../mdx_class_ids.h"
@@ -249,6 +255,19 @@ void extractLights(const std::vector<core::SceneNode>& nodes,
 
         PBR::readFloatByName(ref, L"AmbValue", t, light.ambientIntensity);
 
+        // Each read leaves the IR default in place when the parameter is
+        // missing, which is what a light saved before the plug-in grew them
+        // should export as.
+        PBR::readFloatByName(ref, L"ShadowIntensity", t, light.shadowIntensity);
+        BOOL shadowCasting = light.shadowCasting ? TRUE : FALSE;
+        PBR::readBoolByName(ref, L"ShadowCasting", t, shadowCasting);
+        light.shadowCasting = shadowCasting != FALSE;
+        PBR::readFloatByName(ref, L"ShadowCastingStart", t, light.shadowCastingStart);
+        PBR::readFloatByName(ref, L"ShadowCastingEnd", t, light.shadowCastingEnd);
+        PBR::readFloatByName(ref, L"QuadraticFalloff", t, light.quadraticFalloff);
+        PBR::readFloatByName(ref, L"LinearFalloff", t, light.linearFalloff);
+        PBR::readFloatByName(ref, L"Damping", t, light.damping);
+
         LLOG << "  Light node[" << sn.nodeIndex << "] (maxNode='"
              << (sn.maxNode->GetName() ? "set" : "null") << "'):\n";
         LLOG << "    type=" << static_cast<int>(light.type)
@@ -258,6 +277,12 @@ void extractLights(const std::vector<core::SceneNode>& nodes,
              << " stored as RGB  intensity=" << light.intensity << "\n";
         LLOG << "    ambient  RGB=(" << ambRGB.r << "," << ambRGB.g << "," << ambRGB.b << ")"
              << " stored as RGB  ambIntensity=" << light.ambientIntensity << "\n";
+        LLOG << "    shadowIntensity=" << light.shadowIntensity
+             << "  shadowCasting=" << light.shadowCasting
+             << " [" << light.shadowCastingStart << ", " << light.shadowCastingEnd << "]"
+             << "  falloff quad=" << light.quadraticFalloff
+             << " linear=" << light.linearFalloff
+             << " damping=" << light.damping << "\n";
 
         // ── Animation tracks ──
         //
@@ -277,6 +302,16 @@ void extractLights(const std::vector<core::SceneNode>& nodes,
             extractLightColorTrack(ref, L"AmbColor",    model, "KLBC");
         light.ambIntensityTrackIndex =
             extractLightFloatTrack(ref, L"AmbValue",    model, "KLBI");
+        light.shadowCastStartTrackIndex =
+            extractLightFloatTrack(ref, L"ShadowCastingStart", model, "KLSS");
+        light.shadowCastEndTrackIndex =
+            extractLightFloatTrack(ref, L"ShadowCastingEnd",   model, "KLSE");
+        light.quadFalloffTrackIndex =
+            extractLightFloatTrack(ref, L"QuadraticFalloff",   model, "KLQF");
+        light.linearFalloffTrackIndex =
+            extractLightFloatTrack(ref, L"LinearFalloff",      model, "KLLF");
+        light.dampingTrackIndex =
+            extractLightFloatTrack(ref, L"Damping",            model, "KLDA");
 
         // ── Visibility track (KLAV) ──
         // Uses the node's visibility controller (set by Wc3 Light scripted

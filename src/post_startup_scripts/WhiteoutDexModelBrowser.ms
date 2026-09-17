@@ -244,7 +244,8 @@ struct WhiteoutDexModelBrowserStruct
 
 	     relPath     the stored form, used to place the file under temp
 	     archivePath the original entry to read; pass relPath again if that is
-	                 all you have and HD-first resolution is acceptable */
+	                 all you have, and it resolves SD first, then HD, then the
+	                 deprecated overlay */
 	public fn extractToTemp relPath archivePath =
 	(
 		if not wdxMBPrimitivesAvailable() then return undefined
@@ -254,7 +255,17 @@ struct WhiteoutDexModelBrowserStruct
 		if root == "" then return undefined
 
 		local src = if archivePath == undefined or archivePath == "" then relPath else archivePath
-		local dest = (getDir #temp) + "\\WhiteoutDexCASC\\" + relPath
+
+		-- Keep the `_XX.w3mod` overlay in the extraction path. Warcraft III
+		-- 3.0.0 ships war3.w3mod / _hd.w3mod / _de.w3mod copies of the SAME
+		-- logical path whose atlases are NOT interchangeable, so two of them
+		-- must not overwrite each other here, and the importer's texture
+		-- resolver reads this segment back to give the model's own overlay
+		-- first refusal on its textures (TextureResolver::detectModChain).
+		local overlay = ""
+		for t in (filterString src ":") where (matchPattern t pattern:"_*.w3mod") do overlay = t
+		local destRel = if overlay == "" then relPath else (overlay + "\\" + relPath)
+		local dest = (getDir #temp) + "\\WhiteoutDexCASC\\" + destRel
 
 		local err = ::WdxL.t "mb_extractor_unavailable_msg"
 		try ( err = WdxExtractAsset root src dest ) catch ( err = ::WdxL.t "mb_extraction_failed_msg" )

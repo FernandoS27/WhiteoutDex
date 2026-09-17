@@ -5,19 +5,20 @@ struct WdxSequenceManager
     sequences = #(),
     filteredSequences = #(),
 	lastListSelection = #{},
-	ignoredSequences = #(),  -- Separate Liste für ignorierte Sequenzen
-	globalSequences = #(),   -- Array von Global Sequence Durationen (als time-Werte)
+	ignoredSequences = #(),  -- Separate list of ignored sequences
+	globalSequences = #(),   -- Array of Global Sequence durations (as time values)
+	caSignature = undefined, -- Fingerprint of the last CA data read or written
 
     -- ============================================================================
     -- GLOBAL SEQUENCE FUNCTIONS
     -- ============================================================================
 
-    -- Scannt alle Objekte in der Szene nach Controllern mit ORT #cycle
-    -- und sammelt deren Durationen (letzter Keyframe-Zeitpunkt) als Global Sequences.
-    -- Erfasst: Transform-Controller, Visibility-Controller, Material Alpha,
-    --          UV Offset/Rotation/Scale Controller, sowie IFL-Texturanimationen.
+    -- Scans every object in the scene for controllers with ORT #cycle and
+    -- collects their durations (time of the last keyframe) as Global Sequences.
+    -- Covers: transform controllers, visibility controllers, material alpha,
+    --         UV offset/rotation/scale controllers, and IFL texture animations.
     
-    -- Prüft einen einzelnen Controller auf ORT #cycle und sammelt die Duration
+    -- Checks a single controller for ORT #cycle and collects its duration
     fn checkControllerForGlobalSeq ctrl &durations =
     (
         try (
@@ -32,24 +33,24 @@ struct WdxSequenceManager
         ) catch()
     ),
     
-    -- Prüft ob eine BitmapTexture eine IFL-Datei ist und berechnet deren Global Sequence Duration.
-    -- Gleiche Formel wie Wc3Animation.GetTextureAnimation:
+    -- Checks whether a BitmapTexture is an IFL file and computes its Global Sequence duration.
+    -- Same formula as Wc3Animation.GetTextureAnimation:
     --   n = round(1/playback), Duration = n * fileCount
-    -- Gleiche Dateizählung wie SceneParser.GetImageArray (enumerateFiles).
+    -- Same file counting as SceneParser.GetImageArray (enumerateFiles).
     fn checkIFLForGlobalSeq tex &durations =
     (
         try (
             if tex == undefined or classOf tex != BitmapTexture then return()
             
-            -- tex.fileName liefert bei IFL-Texturen den Pfad zur .ifl Datei
-            -- (tex.bitmap.fileName wäre der aktuelle Frame und kann undefined sein)
+            -- For IFL textures tex.fileName gives the path to the .ifl file
+            -- (tex.bitmap.fileName would be the current frame and can be undefined)
             local texPath = tex.fileName
             if texPath == undefined or texPath.count < 5 then return()
             
-            -- Prüfe auf .ifl Extension
+            -- Check for the .ifl extension
             if stricmp (getFilenameType texPath) ".ifl" != 0 then return()
             
-            -- Zähle referenzierte Bilddateien (identisch mit SceneParser.GetImageArray)
+            -- Count the referenced image files (identical to SceneParser.GetImageArray)
             fn _collectName name arr = append arr name
             local files = #()
             enumerateFiles tex _collectName files
@@ -59,7 +60,7 @@ struct WdxSequenceManager
             local fileCount = files.count
             if fileCount < 2 then return()
             
-            -- Duration berechnen (identisch mit Wc3Animation.GetTextureAnimation)
+            -- Compute the duration (identical to Wc3Animation.GetTextureAnimation)
             local playback = tex.playbackrate
             if playback == undefined or playback == 0 then playback = 1.0
             local n = (::WdxUtils.round (1.0 / playback)) as integer
@@ -70,25 +71,25 @@ struct WdxSequenceManager
         ) catch()
     ),
     
-    -- Scannt ein Material rekursiv (inkl. Sub-Materials in Composite/Multi)
-    -- und sammelt alle Global-Sequence-Durationen.
+    -- Scans a material recursively (including sub-materials in Composite/Multi)
+    -- and collects all Global Sequence durations.
     fn checkMaterialForGlobalSeq mat &durations &scannedMaterials =
     (
         if mat == undefined then return()
         if (findItem scannedMaterials mat) != 0 then return()
         append scannedMaterials mat
         
-        -- Legacy StandardMaterial alpha (meist undefined bei Wc3Material)
+        -- Legacy StandardMaterial alpha (usually undefined on a Wc3Material)
         try (this.checkControllerForGlobalSeq mat.alpha.controller &durations) catch()
 
-        -- Wc3Material-eigene Animations-Properties (nur noch Opacity/KMTA;
-        -- UV-Animation/TXAN lebt jetzt auf der Wc3Bitmap-Textur)
+        -- Wc3Material's own animatable properties (only Opacity/KMTA now;
+        -- UV animation/TXAN lives on the Wc3Bitmap texture these days)
         try (this.checkControllerForGlobalSeq mat.opacity.controller &durations) catch()
 
-        -- Bitmap auflösen: erst .texture (StandardMaterial), dann .diffuseMap
-        -- (Wc3Material). Akzeptiert BitmapTexture UND Wc3Bitmap — die
-        -- Property-Zugriffe (coords etc.) delegieren beim Scripted-Plugin
-        -- transparent an die Bitmaptexture darunter.
+        -- Resolve the bitmap: .texture first (StandardMaterial), then .diffuseMap
+        -- (Wc3Material). Accepts BitmapTexture AND Wc3Bitmap - on the scripted
+        -- plugin the property accesses (coords etc.) delegate transparently to
+        -- the Bitmaptexture underneath.
         fn isUVBitmap tex = (
             local cn = try ((classOf tex) as string) catch("")
             cn == "BitmapTexture" or cn == "Wc3Bitmap"
@@ -99,11 +100,11 @@ struct WdxSequenceManager
             try (if mat.diffuseMap != undefined and isUVBitmap mat.diffuseMap then bmp = mat.diffuseMap) catch()
         )
 
-        -- Bitmap UV-Controller (bei Wc3Bitmap sind die anim_*-Params mit den
-        -- coords-Controllern geteilt — coords scannen genügt; anim_WOffset
-        -- hat kein coords-Pendant und wird separat geprüft).
-        -- ACHTUNG: Scripted Plugins delegieren unbekannte Properties NICHT —
-        -- coords/playbackrate einer Wc3Bitmap sind nur über .delegate erreichbar.
+        -- Bitmap UV controllers (on a Wc3Bitmap the anim_* params share their
+        -- controllers with coords - scanning coords is enough; anim_WOffset
+        -- has no coords counterpart and is checked separately).
+        -- CAUTION: scripted plugins do NOT delegate unknown properties -
+        -- a Wc3Bitmap's coords/playbackrate are only reachable via .delegate.
         if bmp != undefined do
         (
             local uvBmp = bmp
@@ -118,11 +119,11 @@ struct WdxSequenceManager
             ) catch()
             try (this.checkControllerForGlobalSeq bmp.anim_WOffset.controller &durations) catch()
 
-            -- IFL Texture Animation (erzeugt immer eine Global Sequence)
+            -- IFL texture animation (always produces a Global Sequence)
             try (this.checkIFLForGlobalSeq uvBmp &durations) catch()
         )
         
-        -- REKURSION: MultiMaterial
+        -- RECURSION: MultiMaterial
         try (
             if classOf mat == MultiMaterial then (
                 for sm in mat.materialList do
@@ -130,7 +131,7 @@ struct WdxSequenceManager
             )
         ) catch()
         
-        -- REKURSION: Composite / Blend / Shellac / Wc3Material-Sub-Slots / ...
+        -- RECURSION: Composite / Blend / Shellac / Wc3Material sub-slots / ...
         try (
             local n = getNumSubMtls mat
             if n > 0 do (
@@ -156,7 +157,7 @@ struct WdxSequenceManager
             try (this.checkControllerForGlobalSeq obj.scale.controller      &durations) catch()
             try (this.checkControllerForGlobalSeq obj.visibility.controller &durations) catch()
             
-            -- Modifier-Stack scannen: Wc3VertexMod.VertexColor (KGAC-Tracks)
+            -- Scan the modifier stack: Wc3VertexMod.VertexColor (KGAC tracks)
             try
             (
                 for m in obj.modifiers do
@@ -169,14 +170,14 @@ struct WdxSequenceManager
                 )
             ) catch()
             
-            -- Material rekursiv scannen
+            -- Scan the material recursively
             local mat = undefined
             try (mat = obj.material) catch()
             if mat != undefined do
                 this.checkMaterialForGlobalSeq mat &durations &scannedMaterials
         )
         
-        -- Zusätzlich freistehende Scene-Materials abdecken
+        -- Also cover free-standing scene materials
         try (
             for m in sceneMaterials do
                 this.checkMaterialForGlobalSeq m &durations &scannedMaterials
@@ -190,13 +191,13 @@ struct WdxSequenceManager
     -- IGNORED SEQUENCE FUNCTIONS
     -- ============================================================================
 
-    -- Funktion zum Prüfen ob eine Sequenz ignoriert ist
+    -- Function to check whether a sequence is ignored
     fn isSequenceIgnored sequenceName =
     (
         (findItem this.ignoredSequences sequenceName) != 0
     ),
 
-    -- Funktion zum Hinzufügen/Entfernen von ignorierten Sequenzen
+    -- Function to add/remove ignored sequences
     fn setSequenceIgnored sequenceName ignored =
     (
         local index = findItem this.ignoredSequences sequenceName
@@ -210,7 +211,7 @@ struct WdxSequenceManager
         )
     ),
 
-    -- Ignore-Liste in User Properties speichern
+    -- Save the ignore list to User Properties
     fn saveIgnoredSequences =
     (
         local ignoreStr = ""
@@ -222,7 +223,7 @@ struct WdxSequenceManager
         try ( setUserProp rootNode "WhiteoutDex_IgnoredSequences" ignoreStr ) catch()
     ),
 
-    -- Ignore-Liste aus User Properties laden
+    -- Load the ignore list from User Properties
     fn loadIgnoredSequences =
     (
         local ignoreStr = try ( getUserProp rootNode "WhiteoutDex_IgnoredSequences" ) catch ( undefined )
@@ -233,7 +234,7 @@ struct WdxSequenceManager
         )
     ),
 
-    -- Funktion für den Exporter: Gefilterte Sequenzen zurückgeben
+    -- Function for the exporter: return the filtered sequences
     fn getExportSequences =
     (
         local exportSequences = #()
@@ -247,7 +248,7 @@ struct WdxSequenceManager
 
 	fn bumpTime t delta = t + delta,
 		
-    -- Funktionen zum Arbeiten mit Sequenzen
+    -- Functions for working with sequences
     fn getNoteKeyName key =
     (
         (filterString key.value "\"\n\t\x0D")[1]
@@ -289,8 +290,8 @@ struct WdxSequenceManager
             if notFound then append result #(k)
         )
         
-        -- Prüfe doppelte Sequenznamen und lösche Keys ohne passendes zweites Key
-        -- Rückwärts iterieren: deleteItem verschiebt Indices, vorwärts überspringt Elemente
+        -- Check for duplicate sequence names and delete keys with no matching second key
+        -- Iterate backwards: deleteItem shifts the indices, so going forwards skips entries
         local duplicateSequences = #()
         for id = result.count to 1 by -1 do
         (
@@ -320,7 +321,7 @@ struct WdxSequenceManager
         )
         join result duplicateSequences
         
-        -- Sortieren nach Startzeit (ersten Key)
+        -- Sort by start time (first key)
         fn compareFN v1 v2 =
         (
             local d = v1[1].time.frame as integer - v2[1].time.frame as integer
@@ -333,7 +334,7 @@ struct WdxSequenceManager
         )
         qsort result compareFN
         
-        result -- Rückgabe
+        result -- return value
     ),
 
     fn readSequenceData key key2 =
@@ -349,7 +350,7 @@ struct WdxSequenceManager
             if stricmp (substring c 1 6) "Rarity" == 0 then rarity = ((substring c 7 -1) as integer)
             if stricmp (substring c 1 9) "Movespeed" == 0 then movespeed = ((substring c 10 -1) as integer)
         )
-        Wc3Sequence \ --animName key.time key2.time NoLoop Rarity Movespeed undefined undefined
+        WdxWc3Sequence \ --animName key.time key2.time NoLoop Rarity Movespeed undefined undefined
 			name:animName \ 
 			startTime:key.time \
 			endTime:key2.time \
@@ -366,8 +367,8 @@ struct WdxSequenceManager
 
 		local nt = GetNoteTrack Rootnode 1
 
-		-- Schritt 1: Sammle alle Values und zähle ihr Vorkommen
-		local valueCount = #()  -- Array von #(value, count) Paaren
+		-- Step 1: gather every value and count its occurrences
+		local valueCount = #()  -- Array of #(value, count) pairs
 
 		for k in nt.keys do
 		(
@@ -382,7 +383,7 @@ struct WdxSequenceManager
 				append valueCount #(k.value, 1)
 		)
 
-		-- Schritt 2: Erstelle Liste der zu löschenden Keys
+		-- Step 2: build the list of keys to delete
 		local idsToDelete = #()
 
 		for id = 1 to nt.keys.count do
@@ -401,7 +402,7 @@ struct WdxSequenceManager
 			)
 		)
 
-		-- Schritt 3: Lösche die Keys (rückwärts, um Index-Probleme zu vermeiden)
+		-- Step 3: delete the keys (backwards, to avoid index problems)
 		for counter = idsToDelete.count to 1 by -1 do
 		(
 			deleteNoteKey nt.keys idsToDelete[counter]
@@ -413,10 +414,54 @@ struct WdxSequenceManager
 		)
 	),
 	
+    -- Cheap fingerprint of the sequence data currently stored on the rootNode.
+    -- LoadSequences records it, saveSequences compares against it: a mismatch
+    -- means something outside this dialog (the MDX importer, the rebuilder, a
+    -- user script) replaced the scene's sequences while it was open, so the
+    -- in-memory list is stale and must not be written back over the new data.
+    fn caSignatureNow =
+    (
+        local sig = "-"
+        try
+        (
+            if ::WdxSequenceStorage != undefined and ::WdxSequenceStorage.hasCA() then
+            (
+                local names = rootNode.seqNames
+                if names != undefined then
+                (
+                    sig = names.count as string
+                    for i = 1 to names.count do
+                        sig += "|" + (names[i] as string) \
+                            + ":" + (rootNode.startFrames[i] as string) \
+                            + "-" + (rootNode.endFrames[i] as string)
+                )
+            )
+            else if (HasNoteTracks rootNode) then
+                sig = "nt" + ((getNoteTrack rootNode 1).keys.count as string)
+        )
+        catch ( sig = "?" )
+        sig
+    ),
+
+    -- Re-read the scene's sequences into this dialog and refresh the list.
+    -- Deliberately does NOT call saveSequences() - the scene is the source of
+    -- truth here, and writing back would defeat the purpose.
+    fn refreshFromScene =
+    (
+        this.sequences = this.LoadSequences()
+        this.scanGlobalSequences()
+        try ( this.mainRollout.setListItems() ) catch ()
+        this.sequences.count
+    ),
+
     fn LoadSequences =
     (
+        -- Remember what the scene held at the moment we read it, so a later
+        -- saveSequences() can tell whether it still owns this data.
+        this.caSignature = this.caSignatureNow()
+
         -- Primary: Read from WhiteoutDex Custom Attributes
-        if ::SequenceStorage != undefined and ::SequenceStorage.hasCA() then
+        if ::WdxSequenceStorage != undefined and ::WdxSequenceStorage.hasCA() then
         (
             format "** WDX LoadSeq: WhiteoutDex CA found on rootNode\n"
             try
@@ -443,14 +488,14 @@ struct WdxSequenceManager
                                 local parts = filterString extStr " "
                                 if parts.count == 7 then
                                 (
-                                    ext = Wc3Extent \
+                                    ext = WdxWc3Extent \
                                         minExtent:[(parts[2] as float), (parts[3] as float), (parts[4] as float)] \
                                         maxExtent:[(parts[5] as float), (parts[6] as float), (parts[7] as float)] \
                                         bound:(parts[1] as float)
                                 )
                             )
                         ) catch ()
-                        append result (Wc3Sequence \
+                        append result (WdxWc3Sequence \
                             name:(names[i]) \
                             startTime:(startF as time) \
                             endTime:(endF as time) \
@@ -488,14 +533,27 @@ struct WdxSequenceManager
     
     fn saveSequences  =
     (
+        -- Refuse to overwrite sequence data that changed behind our back.
+        -- Importing an MDX with this dialog open used to leave the model with no
+        -- sequences at all: the importer wrote the new ones straight into the
+        -- rootNode CA, the dialog kept showing (and holding) the old list, and
+        -- closing it triggered a save that wiped the CA and re-appended the
+        -- stale entries. Reload instead - the scene wins.
+        if this.caSignature != undefined and (this.caSignatureNow()) != this.caSignature then
+        (
+            format "** WDX saveSequences: scene sequences changed externally - reloading instead of overwriting\n"
+            this.refreshFromScene()
+            return ok
+        )
+
         -- Remove legacy NoteTracks if present
         while (HasNoteTracks Rootnode) do deleteNoteTrack Rootnode (getNoteTrack Rootnode 1)
         
         -- Save to Custom Attributes (primary storage)
         try
         (
-            ::SequenceStorage.removeCA()
-            ::SequenceStorage.ensureCA()
+            ::WdxSequenceStorage.removeCA()
+            ::WdxSequenceStorage.ensureCA()
             for seq in this.sequences do
             (
                 local startF = if classOf seq.startTime == Time then (seq.startTime.frame as integer) else (seq.startTime as integer)
@@ -510,9 +568,23 @@ struct WdxSequenceManager
                 if seq.extents != undefined then
                     extStr = (seq.extents.bound as string) + " " + (seq.extents.minExtent.x as string) + " " + (seq.extents.minExtent.y as string) + " " + (seq.extents.minExtent.z as string) + " " + (seq.extents.maxExtent.x as string) + " " + (seq.extents.maxExtent.y as string) + " " + (seq.extents.maxExtent.z as string)
                 append rootNode.seqExtents extStr
-                -- Reforged v1200: Shared Group Info speichern
+                -- Reforged v1200: store the Shared Group info
                 append rootNode.sharedGroup (if seq.sharedGroup != undefined then seq.sharedGroup else "")
             )
+            -- This dialog is now in sync with the scene again.
+            this.caSignature = this.caSignatureNow()
+
+            -- ...and so is a running preview. Its Animation dropdown is a view
+            -- of these very ranges, so an edit made here has to reach it or the
+            -- combo keeps offering sequences the timeline no longer has. Silent
+            -- when the previewer is not up, which is the common case, and
+            -- silent too on a build whose .dlx predates WhiteoutFlakesIsRunning.
+            try
+            (
+                if (WhiteoutFlakesIsRunning()) do
+                    WdxPushRendererSequencesFrom this.sequences
+            )
+            catch()
         ) catch (format "** WDX saveSequences ERROR: %\n" (getCurrentException()))
     ),
 	
@@ -533,7 +605,7 @@ struct WdxSequenceManager
     
     fn addSequence sequenceName starttime endtime noLoop rarity movespeed =
     (
-        local newSequence = Wc3Sequence sequenceName starttime endtime noLoop rarity movespeed undefined undefined
+        local newSequence = WdxWc3Sequence sequenceName starttime endtime noLoop rarity movespeed undefined undefined
         append this.sequences newSequence
     ),
     
@@ -570,6 +642,14 @@ struct WdxSequenceManager
         print overlappingStr
     ),
     
+    -- An MDX import (or a merge) writes the sequence CA directly. Only reload:
+    -- saving here would push this dialog's stale list back over the fresh data.
+    fn importChangeCallback =
+    (
+        ::WdxSequenceManager.refreshFromScene()
+        ::WdxSequenceManager.checkSequenceOverlapping()
+    ),
+
     fn sceneChangeCallback =
     (
         print "SequenceManager updated"
@@ -589,19 +669,19 @@ struct WdxSequenceManager
         (
             print entryName
             
-            -- Speichere die aktuelle Selektion vor dem Neuladen
+            -- Remember the current selection before reloading
             local currentSelection = this.mainRollout.sequencesLbox.selection
             
-            -- Lade Sequenzen neu
+            -- Reload the sequences
             this.sequences = this.LoadSequences()
 			this.scanGlobalSequences()
             this.saveSequences()
             this.checkSequenceOverlapping()
             
-            -- Aktualisiere die gefilterte Liste
+            -- Refresh the filtered list
             this.mainRollout.setListItems()
             
-            -- Spezielle Behandlung für verschiedene Undo-Typen
+            -- Special handling for the various undo types
             case entryName of
             (
                 "SequenceManager Select All": (
@@ -614,12 +694,12 @@ struct WdxSequenceManager
                     this.mainRollout.sequencesLbox.selection = this.lastListSelection
                 )
                 default: (
-                    -- Für alle anderen Fälle, stelle die Selektion wieder her
+                    -- For every other case, restore the selection
                     this.mainRollout.sequencesLbox.selection = currentSelection
                 )
             )
             
-            -- WICHTIG: Trigger selectionEnd um die UI-Felder zu aktualisieren
+            -- IMPORTANT: trigger selectionEnd to refresh the UI fields
             this.mainRollout.sequencesLbox.selectionEnd()
         )
     ),
@@ -629,10 +709,10 @@ struct WdxSequenceManager
 		local minStart = 0
 		local maxEnd = 999999
 		
-		-- Sortiere alle anderen Sequenzen nach Zeit
+		-- Sort all the other sequences by time
 		local otherSequences = for s in this.sequences where s != seq collect s
 		
-		-- Finde die nächste Sequenz davor
+		-- Find the nearest sequence before this one
 		local prevSeq = undefined
 		for s in otherSequences where s.endtime <= seq.starttime do
 		(
@@ -640,7 +720,7 @@ struct WdxSequenceManager
 				prevSeq = s
 		)
 		
-		-- Finde die nächste Sequenz danach
+		-- Find the nearest sequence after this one
 		local nextSeq = undefined
 		for s in otherSequences where s.starttime >= seq.endtime do
 		(
@@ -648,7 +728,7 @@ struct WdxSequenceManager
 				nextSeq = s
 		)
 		
-		-- Setze die Grenzen basierend auf benachbarten Sequenzen
+		-- Set the bounds based on the neighbouring sequences
 		if prevSeq != undefined then
 			minStart = (prevSeq.endtime.frame as integer) + 1
 		
@@ -658,63 +738,63 @@ struct WdxSequenceManager
 		#(minStart, maxEnd)
 	),
 
-	-- Neue Funktion: Validiert und passt einen Frame-Wert an
+	-- New function: validates and adjusts a frame value
     fn validateFrameForSequence seq newStartFrame newEndFrame =
     (
         local validStart = newStartFrame
         local validEnd = newEndFrame
         
-        -- Wenn seq undefined ist, prüfe gegen ALLE Sequenzen (für neue Sequenzen)
+        -- If seq is undefined, check against ALL sequences (for new sequences)
         if seq == undefined then
         (
-            -- Prüfe ob die neue Range mit existierenden Sequenzen kollidiert
+            -- Check whether the new range collides with existing sequences
             for s in this.sequences do
             (
-                -- Prüfe ob Start Frame in eine existierende Sequenz fällt
+                -- Check whether the start frame falls inside an existing sequence
                 if newStartFrame >= s.starttime.frame and newStartFrame <= s.endtime.frame then
                 (
-                    -- Setze Start nach dieser Sequenz
+                    -- Move the start past that sequence
                     validStart = (s.endtime.frame as integer) + 1
                 )
                 
-                -- Prüfe ob End Frame in eine existierende Sequenz fällt
+                -- Check whether the end frame falls inside an existing sequence
                 if newEndFrame >= s.starttime.frame and newEndFrame <= s.endtime.frame then
                 (
-                    -- Setze End vor dieser Sequenz
+                    -- Move the end before that sequence
                     validEnd = (s.starttime.frame as integer) - 1
                 )
                 
-                -- Prüfe ob die neue Sequenz eine existierende komplett umschließt
+                -- Check whether the new sequence completely encloses an existing one
                 if newStartFrame < s.starttime.frame and newEndFrame > s.endtime.frame then
                 (
-                    -- In diesem Fall End vor die existierende Sequenz setzen
+                    -- In that case, put the end before the existing sequence
                     validEnd = (s.starttime.frame as integer) - 1
                 )
             )
         )
         else
         (
-            -- Original-Code für existierende Sequenzen
+            -- Original code path for existing sequences
             local bounds = this.getSequenceBounds seq
             
-            -- Stelle sicher, dass Start nicht vor der erlaubten Grenze liegt
+            -- Make sure the start does not fall before the allowed bound
             if validStart < bounds[1] then
                 validStart = bounds[1]
             
-            -- Stelle sicher, dass End nicht nach der erlaubten Grenze liegt  
+            -- Make sure the end does not fall after the allowed bound
             if validEnd > bounds[2] then
                 validEnd = bounds[2]
         )
         
-        -- Stelle sicher, dass Start < End
+        -- Make sure start < end
         if validStart >= validEnd then
         (
-            -- Behalte die originalen Werte wenn keine gültige Range möglich
+            -- Keep the original values when no valid range is possible
             if seq != undefined then
                 return #(seq.starttime.frame as integer, seq.endtime.frame as integer)
             else
             (
-                -- Für neue Sequenzen: Versuche minimale Anpassung
+                -- For new sequences: try the smallest possible adjustment
                 if validStart >= newEndFrame then
                     validStart = newEndFrame - 1
                 if validEnd <= newStartFrame then
@@ -730,7 +810,7 @@ struct WdxSequenceManager
         local self
         
 
-        -- Ersetze den kompletten newSequenceRollout mit dieser kompakteren Version:
+        -- Replaces the whole newSequenceRollout with this more compact version:
         local newSequenceRollout =
         (
             rollout newSequenceRollout "New Sequence" width:186 height:184
@@ -742,7 +822,7 @@ struct WdxSequenceManager
                 local lastValidStart = 10
                 local lastValidEnd = 60
                 
-                -- Preset Definitionen (korrigierte Syntax)
+                -- Preset definitions (corrected syntax)
                 local presetNames = #("Stand", "Walk", "Stand Ready", "Attack", "Attack Slam", "Spell", "Spell Slam", "Death", "Portrait Talk", "Custom")
                 local presetStartOffsets = #(10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
                 local presetDurations = #(80, 28, 20, 24, 30, 28, 24, 64, 70, 50)
@@ -773,47 +853,47 @@ struct WdxSequenceManager
                 button okBtn "OK" pos:[4,156] width:84 height:20 align:#left tooltip:"Create new sequence and close dialog"
                 button cancelBtn "Cancel" pos:[96,156] width:84 height:20 align:#left tooltip:"Cancel without creating a sequence"
                 
-                -- Hilfsfunktion: Prüft ob ein Bereich mit existierenden Sequenzen kollidiert
+                -- Helper: checks whether a range collides with existing sequences
                 fn isRangeFree startFrame endFrame =
                 (
                     for seq in self.sequences do
                     (
-                        -- Prüfe ob es eine Überlappung gibt
+                        -- Check whether there is an overlap
                         if not (endFrame < seq.starttime.frame or startFrame > seq.endtime.frame) then
                             return false
                     )
                     return true
                 )
                 
-                -- Funktion zum Anwenden eines Presets
+                -- Function that applies a preset
                 fn applyPreset presetIndex =
                 (
                     if presetIndex > 0 and presetIndex <= presetNames.count then
                     (
-                        -- Name setzen (nur wenn nicht Custom)
+                        -- Set the name (only when not Custom)
                         if presetIndex < 10 then
                         (
                             nameEdt.text = presetNames[presetIndex]
                         )
                         
-                        -- Berechne Start basierend auf letzter Sequenz
-                        local newStart = 10  -- IMMER bei 10 starten wenn keine Sequenzen
+                        -- Derive the start from the last sequence
+                        local newStart = 10  -- ALWAYS start at 10 when there are no sequences
                         if self.sequences.count > 0 then
                         (
                             local highestFrame = amax (for seq in self.sequences collect seq.endtime.frame as integer)
                             newStart = highestFrame + presetStartOffsets[presetIndex]
                         )
                         
-                        -- Setze Frames (OHNE -1!)
+                        -- Set the frames (WITHOUT the -1!)
                         startFrameSpn.value = newStart
-                        endFrameSpn.value = newStart + presetDurations[presetIndex]  -- Kein -1 mehr!
+                        endFrameSpn.value = newStart + presetDurations[presetIndex]  -- No more -1!
                         lastValidStart = newStart
                         lastValidEnd = newStart + presetDurations[presetIndex]
                         
-                        -- Setze Non-Looping
+                        -- Set Non-Looping
                         nonloopingChk.checked = presetNonLooping[presetIndex]
                         
-                        -- Setze Rarity wenn definiert
+                        -- Set Rarity when the preset defines it
                         if presetRarity[presetIndex] != undefined then
                         (
                             rarityChk.checked = true
@@ -827,7 +907,7 @@ struct WdxSequenceManager
                             raritySpn.value = 0
                         )
                         
-                        -- Setze Move Speed wenn definiert
+                        -- Set Move Speed when the preset defines it
                         if presetMoveSpeed[presetIndex] != undefined then
                         (
                             movespeedChk.checked = true
@@ -855,7 +935,7 @@ struct WdxSequenceManager
                     local validated = self.validateFrameForSequence undefined val endFrameSpn.value
                     
                     if validated[1] != val then
-                        format "Warning: Start frame adjusted from % to % to prevent overlap\n" val validated[1]
+                        format "%\n" (substituteString (substituteString (::WdxL.t "seq_start_frame_adjusted_msg") "%1" (val as string)) "%2" (validated[1] as string))
                     
                     startFrameSpn.value = validated[1]
                     lastValidStart = validated[1]
@@ -866,7 +946,7 @@ struct WdxSequenceManager
                     local validated = self.validateFrameForSequence undefined startFrameSpn.value val
                     
                     if validated[2] != val then
-                        format "Warning: End frame adjusted from % to % to prevent overlap\n" val validated[2]
+                        format "%\n" (substituteString (substituteString (::WdxL.t "seq_end_frame_adjusted_msg") "%1" (val as string)) "%2" (validated[2] as string))
                     
                     endFrameSpn.value = validated[2]
                     lastValidEnd = validated[2]
@@ -878,7 +958,7 @@ struct WdxSequenceManager
                 
                 on okBtn pressed do
                 (
-                    -- Finale Validierung mit der ursprünglichen Funktion für Sicherheit
+                    -- Final validation through the original function, for safety
                     local finalValidated = self.validateFrameForSequence undefined startFrameSpn.value endFrameSpn.value
                     
                     undo "SequenceManager Create New Sequence" on
@@ -909,29 +989,29 @@ struct WdxSequenceManager
                     self = WdxSequenceManager
                     parent = mainRollout
                     
-                    -- Initial Name setzen für Custom
+                    -- Set the initial name for Custom
                     nameEdt.text = "New Sequence"
                     
-                    -- Standardmäßig "Custom" auswählen und anwenden  
+                    -- Select and apply "Custom" by default
                     presetDDL.selection = 10
                     
-                    -- IMMER nach der letzten Sequenz einfügen!
+                    -- ALWAYS insert after the last sequence!
                     if self.sequences.count > 0 then
                     (
-                        -- Finde das höchste End-Frame aller Sequenzen
+                        -- Find the highest end frame across all sequences
                         local highestFrame = amax (for seq in self.sequences collect seq.endtime.frame as integer)
                         
-                        -- Setze Start 10 Frames nach der letzten Sequenz
+                        -- Put the start 10 frames after the last sequence
                         startFrameSpn.value = highestFrame + 10
-                        endFrameSpn.value = highestFrame + 60  -- 50 Frames Duration für Custom
+                        endFrameSpn.value = highestFrame + 60  -- 50 frames duration for Custom
                         lastValidStart = highestFrame + 10
                         lastValidEnd = highestFrame + 60
                     )
                     else
                     (
-                        -- Keine Sequenzen vorhanden, starte bei Frame 10
+                        -- No sequences yet, start at frame 10
                         startFrameSpn.value = 10
-                        endFrameSpn.value = 60   -- 50 Frames Duration (10-60)
+                        endFrameSpn.value = 60   -- 50 frames duration (10-60)
                         lastValidStart = 10
                         lastValidEnd = 60
                     )
@@ -1014,13 +1094,13 @@ struct WdxSequenceManager
         button fileSaveBtn "Save" pos:[344,366] width:88 height:20 align:#left tooltip:"Save sequences to a file"
         
         ---------------------------------------------------------
-        -- Event Handlers für die neuen Buttons
+        -- Event handlers for the new buttons
         on setStartFrameBtn pressed do
 		(
 			if sequencesLbox.selection.numberSet == 1 then
 			(
 				local selId = (sequencesLbox.selection as array)[1]
-				-- Global Sequences sind nicht editierbar
+				-- Global Sequences are not editable
 				if selId <= self.globalSequences.count then return()
 				
 				undo "SequenceManager Set Current Frame as Start" on
@@ -1030,12 +1110,12 @@ struct WdxSequenceManager
 					local seq = self.filteredSequences[filteredId]
 					if seq != undefined then
 					(
-						-- Validierung mit Überlappungsschutz
+						-- Validation with overlap protection
 						local validated = self.validateFrameForSequence seq newVal (seq.endtime.frame as integer)
 						
 						if validated[1] != newVal then
 						(
-							format "Warning: Start frame adjusted from % to % to prevent overlap\n" newVal validated[1]
+							format "%\n" (substituteString (substituteString (::WdxL.t "seq_start_frame_adjusted_msg") "%1" (newVal as string)) "%2" (validated[1] as string))
 						)
 						
 						startFrameSpn.value = validated[1]
@@ -1052,7 +1132,7 @@ struct WdxSequenceManager
 			if sequencesLbox.selection.numberSet == 1 then
 			(
 				local selId = (sequencesLbox.selection as array)[1]
-				-- Global Sequences sind nicht editierbar
+				-- Global Sequences are not editable
 				if selId <= self.globalSequences.count then return()
 				
 				undo "SequenceManager Set Current Frame as End" on
@@ -1062,12 +1142,12 @@ struct WdxSequenceManager
 					local seq = self.filteredSequences[filteredId]
 					if seq != undefined then
 					(
-						-- Validierung mit Überlappungsschutz
+						-- Validation with overlap protection
 						local validated = self.validateFrameForSequence seq (seq.starttime.frame as integer) newVal
 						
 						if validated[2] != newVal then
 						(
-							format "Warning: End frame adjusted from % to % to prevent overlap\n" newVal validated[2]
+							format "%\n" (substituteString (substituteString (::WdxL.t "seq_end_frame_adjusted_msg") "%1" (newVal as string)) "%2" (validated[2] as string))
 						)
 						
 						endFrameSpn.value = validated[2]
@@ -1101,35 +1181,35 @@ struct WdxSequenceManager
         )
 
 		-- ============================================================================
-		-- GLOBAL SEQUENCE HELPER FUNCTIONS (Rollout-lokal)
+		-- GLOBAL SEQUENCE HELPER FUNCTIONS (rollout-local)
 		-- ============================================================================
 		
-		-- Prüft ob ein Listbox-Index auf eine Global Sequence zeigt
+		-- Checks whether a listbox index points at a Global Sequence
 		fn isGlobalListId id = (id > 0 and id <= self.globalSequences.count)
 		
-		-- Wandelt einen Listbox-Index in einen filteredSequences-Index um
-		-- Gibt 0 zurück wenn es ein Global-Index ist oder ungültig
+		-- Converts a listbox index into a filteredSequences index
+		-- Returns 0 if it is a global index or otherwise invalid
 		fn toFilteredId id =
 		(
 			local fid = id - self.globalSequences.count
 			if fid >= 1 and fid <= self.filteredSequences.count then fid else 0
 		)
 		
-		-- Holt die Sequenz aus einem Listbox-Index, undefined für Globals
+		-- Fetches the sequence for a listbox index, undefined for globals
 		fn seqFromListId id =
 		(
 			local fid = toFilteredId id
 			if fid > 0 then self.filteredSequences[fid] else undefined
 		)
 		
-		-- Holt den Index in self.sequences aus einem Listbox-Index, 0 für Globals/ungültig
+		-- Fetches the index into self.sequences for a listbox index, 0 for globals/invalid
 		fn seqIndexFromListId id =
 		(
 			local fid = toFilteredId id
 			if fid > 0 then findItem self.sequences self.filteredSequences[fid] else 0
 		)
 		
-		-- Prüft ob die aktuelle Selektion ausschließlich Globals enthält
+		-- Checks whether the current selection contains nothing but globals
 		fn selectionIsOnlyGlobals =
 		(
 			local gc = self.globalSequences.count
@@ -1137,7 +1217,7 @@ struct WdxSequenceManager
 			true
 		)
 		
-		-- Setzt alle Edit-Felder in den deaktivierten Zustand (für Globals oder leere Selektion)
+		-- Puts every edit field into the disabled state (for globals or an empty selection)
 		fn disableAllEditFields =
 		(
 			startFrameSpn.enabled = false
@@ -1153,7 +1233,7 @@ struct WdxSequenceManager
 			movespeedSpn.enabled = false
 		)
 		
-		-- Reaktiviert die Edit-Felder für normale Sequenzen
+		-- Re-enables the edit fields for normal sequences
 		fn enableEditFields =
 		(
 			nameEdt.enabled = true
@@ -1165,26 +1245,26 @@ struct WdxSequenceManager
 			nonloopingChk.enabled = true
 			rarityChk.enabled = true
 			movespeedChk.enabled = true
-			-- raritySpn und movespeedSpn werden separat über ihre Checkboxen gesteuert
+			-- raritySpn and movespeedSpn are driven separately by their own checkboxes
 		)
 		
 		-- ============================================================================
         
         fn setListItems =
         (
-			-- Global Sequences immer oben anzeigen (unabhaengig vom Filter)
+			-- Always show Global Sequences at the top (independent of the filter)
 			local globalItems = for i = 1 to self.globalSequences.count collect 
 			(
 				local dur = self.globalSequences[i].frame as integer
 				"[GLOBAL " + i as string + "]  0 - " + dur as string
 			)
 			
-			-- Normale Sequenzen filtern
+			-- Filter the normal sequences
             self.filteredSequences = for sequence in self.sequences where findString sequence.name filterTxt.text != undefined collect sequence
 			local normalItems = for filteredSequence in self.filteredSequences collect (
 				if self.isSequenceIgnored filteredSequence.name then 
 					"[IGNORED] " + filteredSequence.name 
-				-- Reforged v1200: Shared-Alias anzeigen (nur wenn Name != Master-Name)
+				-- Reforged v1200: show the shared alias (only when name != master name)
 				else if filteredSequence.sharedGroup != undefined and \
 				        filteredSequence.sharedGroup != filteredSequence.name then
 					"[Shared: " + filteredSequence.sharedGroup + "] " + filteredSequence.name
@@ -1192,7 +1272,7 @@ struct WdxSequenceManager
 					filteredSequence.name
 			)
 			
-			-- Kombinieren: Globals oben, dann normale Sequenzen
+			-- Combine: globals on top, then the normal sequences
 			sequencesLbox.items = join globalItems normalItems
         )
             
@@ -1301,12 +1381,12 @@ struct WdxSequenceManager
 						true
 					)
 
-					-- Helper: kopiert Keys eines animatable Property via Property-Setter.
-					-- Schreiben am Controller direkt (copyPasteKeys / addNewKey + key.value)
-					-- umgeht den on-set-Handler scripted Plugins UND die SetValue-Notifications
-					-- nativer ParamBlock2-Plugins. Der Pfad setProperty + animate-on + at-time
-					-- geht zwingend durch den Setter und triggert alle Sync-Notifications,
-					-- so wie der Spinner in der UI das auch tut.
+					-- Helper: copies the keys of an animatable property via the property setter.
+					-- Writing to the controller directly (copyPasteKeys / addNewKey + key.value)
+					-- bypasses the on-set handler of scripted plugins AND the SetValue
+					-- notifications of native ParamBlock2 plugins. The setProperty +
+					-- animate-on + at-time path necessarily goes through the setter and
+					-- fires every sync notification, exactly as the UI spinner does.
 					fn copyParamKeysViaSetter target paramName srcInterval offset =
 					(
 						if target == undefined or paramName == undefined then return false
@@ -1314,8 +1394,8 @@ struct WdxSequenceManager
 						try ( hasProp = isProperty target paramName ) catch()
 						if not hasProp then return false
 						
-						-- Controller via subAnim ermitteln, NICHT über (getProperty x).controller -
-						-- getProperty liefert den Wert (Float), der hat keinen Controller.
+						-- Find the controller via subAnim, NOT through (getProperty x).controller -
+						-- getProperty returns the value (a float), which has no controller.
 						local con = undefined
 						try
 						(
@@ -1337,12 +1417,12 @@ struct WdxSequenceManager
 						
 						if con == undefined or con.keys == undefined or con.keys.count == 0 then return false
 						
-						-- Skip globale (cycle) Animationen
+						-- Skip global (cycle) animations
 						local isGlobal = false
 						try ( isGlobal = (getAfterORT con == #cycle) ) catch()
 						if isGlobal then return false
 						
-						-- Snapshot der Quell-Keys (Zeit + Wert) bevor irgendetwas geschrieben wird
+						-- Snapshot the source keys (time + value) before anything is written
 						local snapTimes = #()
 						local snapVals  = #()
 						for k in con.keys where k.time >= srcInterval.start and k.time <= srcInterval.end do
@@ -1352,8 +1432,8 @@ struct WdxSequenceManager
 						)
 						if snapTimes.count == 0 then return false
 						
-						-- Werte an Offset-Zeiten via setProperty schreiben.
-						-- "with animate on at time T" erzeugt den Key und triggert den Setter.
+						-- Write the values at the offset times via setProperty.
+						-- "with animate on at time T" creates the key and fires the setter.
 						for sIdx = 1 to snapTimes.count do
 						(
 							if snapVals[sIdx] != undefined do
@@ -1395,8 +1475,8 @@ struct WdxSequenceManager
 							)
 							catch()
 							
-							-- Material: Wc3Material animatable params via Property-Setter.
-							-- Iterative Worklist (statt Rekursion) durch MultiMaterial / Composite / Blend / Shellac.
+							-- Material: Wc3Material animatable params via the property setter.
+							-- Iterative worklist (instead of recursion) through MultiMaterial / Composite / Blend / Shellac.
 							try
 							(
 								local matWorklist = #()
@@ -1413,19 +1493,19 @@ struct WdxSequenceManager
 									(
 										append visitedMats mat
 
-										-- Wc3Material params (KMTA; TXAN lebt auf der Textur)
+										-- Wc3Material params (KMTA; TXAN lives on the texture)
 										local matParams = #(
 											"opacity",
-											"alpha"  -- Legacy StandardMaterial-Fallback
+											"alpha"  -- Legacy StandardMaterial fallback
 										)
 										for paramName in matParams do
 											copyParamKeysViaSetter mat paramName srcInterval timeOffset
 
-										-- UV-Animation (TXAN): lebt auf der Diffuse-Textur.
-										-- Wc3Bitmap: anim_*-Params (Controller geteilt mit den
-										-- eigenen coords). Plain BitmapTexture: coords-Controller.
-										-- Controller werden ueber Identitaet dedupliziert, damit
-										-- geteilte Controller nicht mehrfach kopiert werden.
+										-- UV animation (TXAN): lives on the diffuse texture.
+										-- Wc3Bitmap: the anim_* params (controllers shared with
+										-- its own coords). Plain BitmapTexture: coords controllers.
+										-- Controllers are deduplicated by identity so that shared
+										-- controllers are not copied more than once.
 										try
 										(
 											local tex = undefined
@@ -1433,7 +1513,7 @@ struct WdxSequenceManager
 											if tex == undefined do ( try (if mat.texture != undefined do tex = mat.texture) catch() )
 											if tex != undefined do
 											(
-												-- Wc3Bitmap: coords sitzen am Delegate (kein Property-Forwarding)
+												-- Wc3Bitmap: coords live on the delegate (no property forwarding)
 												local uvTex = tex
 												try (if tex.delegate != undefined and classOf tex.delegate == BitmapTexture do uvTex = tex.delegate) catch()
 												local uvCtrls = #()
@@ -1460,7 +1540,7 @@ struct WdxSequenceManager
 										)
 										catch()
 
-										-- Sub-Materials zur Worklist
+										-- Push sub-materials onto the worklist
 										try
 										(
 											if classOf mat == MultiMaterial do
@@ -1481,31 +1561,32 @@ struct WdxSequenceManager
 							)
 							catch()
 
-							-- Plugin-Params: alle bekannten animatable Properties durchprobieren.
-							-- Klassen-unabhaengig: try/catch macht unbekannte Props harmlos.
-							-- Deckt sowohl alte (Wc3Particles1, Wdx_Wc3Light) als auch neue Plugin-Varianten
-							-- (Wc3Particles1Emitter, Wc3Particles2Emitter, RibbonObj) ab.
+							-- Plugin params: try every known animatable property in turn.
+							-- Class-agnostic: try/catch makes unknown props harmless.
+							-- Covers both the old (Wc3Particles1, Wdx_Wc3Light) and the new plugin
+							-- variants (Wc3Particles1Emitter, Wc3Particles2Emitter, RibbonObj).
 							try
 							(
 								local bo = obj.baseObject
 								local pluginParams = #(
 									-- Light (Wdx_Wc3Light / Wdx_Wc3Light)
 									"DecayStart", "DecayEnd", "AmbColor", "AmbValue", "ShadowColor", "ShadowValue",
+									"ShadowCastingStart", "ShadowCastingEnd", "QuadraticFalloff", "LinearFalloff", "Damping",
 									-- AttachPoint (Wdx_Wc3AttachPoint)
 									"A_Visibility",
 									-- Wc3Particles1 (legacy)
 									"radius", "PartEmit",
-									-- Wc3Particles1Emitter (C++ verifiziert)
+									-- Wc3Particles1Emitter (verified against the C++)
 									"Speed", "EmissionRate", "Gravity", "Latitude", "Longitude",
-									-- Wc3Particles2 (Property-Namen aus subAnim verifiziert):
+									-- Wc3Particles2 (property names verified from subAnim):
 									-- speed, variation, width, length, Parts_Sec, Cone_Angle, gravity
-									-- (Speed und Gravity sind bereits oben gelistet)
+									-- (Speed and Gravity are already listed above)
 									"Variation", "Parts_Sec", "Cone_Angle", "width", "length",
-									-- Wc3Particles2 legacy size/scale-Tracks (falls vorhanden)
+									-- Wc3Particles2 legacy size/scale tracks (if present)
 									"startscale", "middlescale", "endscale", "taillength",
 									-- BlizRibbon legacy
 									"slots", "Above", "Below", "vertexcolor", "alpha",
-									-- Wc3Ribbon / RibbonObj (C++ verifiziert)
+									-- Wc3Ribbon / RibbonObj (verified against the C++)
 									"Height Above", "Height Below", "Edges Per Second", "Edge Lifetime", "Color", "Texture Slot"
 								)
 								for paramName in pluginParams do
@@ -1528,7 +1609,7 @@ struct WdxSequenceManager
 							)
 							catch()
 
-							-- Wc3 RefEvent keyList (Frame-Tab, KEINE Controller-Keys)
+							-- Wc3 RefEvent keyList (Frame tab, NOT controller keys)
 							try
 							(
 								local boCls = (classOf obj.baseObject) as string
@@ -1574,7 +1655,7 @@ struct WdxSequenceManager
 
         on sequencesLbox doubleClicked sel do
         (
-			-- Doppelklick auf Global Sequence: ignorieren (kein Playback)
+			-- Double-click on a Global Sequence: ignore it (no playback)
 			if isGlobalListId sel then return()
             if sequencesLbox.selection.numberSet == 1 then
 			(
@@ -1586,7 +1667,7 @@ struct WdxSequenceManager
     
         on sequencesLbox selected id do
         (
-            -- Optionaler Code bei Listbox-Auswahl
+            -- Optional code to run on listbox selection
         )
         
         on sequencesLbox selectionEnd do
@@ -1595,7 +1676,7 @@ struct WdxSequenceManager
 			local gc = self.globalSequences.count
 			
 			-- ============================================================
-			-- NICHTS SELEKTIERT
+			-- NOTHING SELECTED
 			-- ============================================================
 			if numSelected == 0 then
 			(
@@ -1617,13 +1698,13 @@ struct WdxSequenceManager
 			)
 			
 			-- ============================================================
-			-- GENAU 1 ELEMENT SELEKTIERT
+			-- EXACTLY 1 ITEM SELECTED
 			-- ============================================================
 			if numSelected == 1 then
 			(
 				local seqId = (sequencesLbox.selection as array)[1]
 				
-				-- --- GLOBAL SEQUENCE SELEKTIERT ---
+				-- --- GLOBAL SEQUENCE SELECTED ---
 				if seqId <= gc then
 				(
 					disableAllEditFields()
@@ -1633,7 +1714,7 @@ struct WdxSequenceManager
 					startFrameSpn.value = 0
 					endFrameSpn.value = duration.frame as integer
 					
-					-- Reset Ranges für read-only Anzeige
+					-- Reset the ranges for the read-only display
 					startFrameSpn.range = [0, 0, 0]
 					endFrameSpn.range = [0, duration.frame as integer, duration.frame as integer]
 					try (startFrameSpn.tooltip = "Global Sequence - read only") catch ()
@@ -1646,7 +1727,7 @@ struct WdxSequenceManager
 					movespeedChk.triState = 0
 					movespeedSpn.value = 0
 				)
-				-- --- NORMALE SEQUENZ SELEKTIERT ---
+				-- --- NORMAL SEQUENCE SELECTED ---
 				else
 				(
 					local seq = seqFromListId seqId
@@ -1657,14 +1738,14 @@ struct WdxSequenceManager
 					startFrameSpn.value = seq.starttime.frame as integer
 					endFrameSpn.value = seq.endtime.frame as integer
 					
-					-- Setze die erlaubten Ranges für die Spinner
+					-- Set the allowed ranges for the spinners
 					local bounds = self.getSequenceBounds seq
 					
-					-- StartFrame kann zwischen der vorherigen Sequenz und dem aktuellen EndFrame-1 liegen
+					-- StartFrame may sit anywhere between the previous sequence and the current EndFrame-1
 					local maxStartFrame = (seq.endtime.frame as integer) - 1
 					startFrameSpn.range = [bounds[1], maxStartFrame, seq.starttime.frame as integer]
 					
-					-- EndFrame kann zwischen dem aktuellen StartFrame+1 und der nächsten Sequenz liegen
+					-- EndFrame may sit anywhere between the current StartFrame+1 and the next sequence
 					local minEndFrame = (seq.starttime.frame as integer) + 1
 					endFrameSpn.range = [minEndFrame, bounds[2], seq.endtime.frame as integer]
 					
@@ -1685,7 +1766,7 @@ struct WdxSequenceManager
 			)
 			
 			-- ============================================================
-			-- MEHRERE ELEMENTE SELEKTIERT
+			-- SEVERAL ITEMS SELECTED
 			-- ============================================================
 			if numSelected > 1 then
 			(
@@ -1693,13 +1774,13 @@ struct WdxSequenceManager
 				setStartFrameBtn.enabled = setEndFrameBtn.enabled = false
 				startFrameSpn.value = endFrameSpn.value = 0
 				
-				-- Reset Spinner Ranges bei Mehrfachauswahl
+				-- Reset the spinner ranges for a multi-selection
 				startFrameSpn.range = [-999999, 999999, 0]
 				endFrameSpn.range = [-999999, 999999, 0]
 				try (startFrameSpn.tooltip = "Multiple sequences selected") catch ()
 				try (endFrameSpn.tooltip = "Multiple sequences selected") catch ()
 				
-				-- Wenn NUR Globals selektiert sind, alles deaktivieren
+				-- If ONLY globals are selected, disable everything
 				if selectionIsOnlyGlobals() then
 				(
 					disableAllEditFields()
@@ -1713,8 +1794,8 @@ struct WdxSequenceManager
 				)
 				else
 				(
-					-- Mix oder nur normale: Edit-Felder für Multi-Selektion
-					-- Checkboxen reaktivieren (könnten von Global-Selektion deaktiviert sein)
+					-- Mixed, or normal sequences only: edit fields for a multi-selection
+					-- Re-enable the checkboxes (a previous global selection may have disabled them)
 					ignoreChk.enabled = true
 					nonloopingChk.enabled = true
 					rarityChk.enabled = true
@@ -1741,7 +1822,7 @@ struct WdxSequenceManager
             (
                 local counter = 0
 				local gc = self.globalSequences.count
-				-- Nur nicht-globale Selektionen zaehlen fuer die Namensgebung
+				-- Only non-global selections count towards the naming
                 local selectionCount = (for id in sequencesLbox.selection where id > gc collect id).count
                 for id in sequencesLbox.selection where id > gc do
                 (
@@ -1758,7 +1839,7 @@ struct WdxSequenceManager
                     
 					local seq = seqFromListId id
                     if seq == undefined then continue
-                    -- Reforged v1200: Shared-Link brechen bei Umbenennung
+                    -- Reforged v1200: break the shared link on rename
                     if seq.sharedGroup != undefined then seq.sharedGroup = undefined
                     seq.name = currentName
                 )
@@ -1777,18 +1858,18 @@ struct WdxSequenceManager
 					local seq = seqFromListId id
 					if seq == undefined then continue
 					
-					-- Neue Validierung mit Überlappungsschutz
+					-- New validation with overlap protection
 					local validated = self.validateFrameForSequence seq val (seq.endtime.frame as integer)
 					
 					if validated[1] != val then
 					(
-						-- Zeige Warnung wenn der Wert angepasst wurde
-						format "Warning: Start frame adjusted from % to % to prevent overlap\n" val validated[1]
+						-- Warn when the value had to be adjusted
+						format "%\n" (substituteString (substituteString (::WdxL.t "seq_start_frame_adjusted_msg") "%1" (val as string)) "%2" (validated[1] as string))
 					)
 					
 					seq.starttime = validated[1] as time
 					
-					-- Update Spinner wenn Wert angepasst wurde
+					-- Update the spinner if the value was adjusted
 					if sequencesLbox.selection.numberSet == 1 then
 						startFrameSpn.value = validated[1]
 				)
@@ -1807,18 +1888,18 @@ struct WdxSequenceManager
 					local seq = seqFromListId id
 					if seq == undefined then continue
 					
-					-- Neue Validierung mit Überlappungsschutz
+					-- New validation with overlap protection
 					local validated = self.validateFrameForSequence seq (seq.starttime.frame as integer) val
 					
 					if validated[2] != val then
 					(
-						-- Zeige Warnung wenn der Wert angepasst wurde
-						format "Warning: End frame adjusted from % to % to prevent overlap\n" val validated[2]
+						-- Warn when the value had to be adjusted
+						format "%\n" (substituteString (substituteString (::WdxL.t "seq_end_frame_adjusted_msg") "%1" (val as string)) "%2" (validated[2] as string))
 					)
 					
 					seq.endtime = validated[2] as time
 					
-					-- Update Spinner wenn Wert angepasst wurde
+					-- Update the spinner if the value was adjusted
 					if sequencesLbox.selection.numberSet == 1 then
 						endFrameSpn.value = validated[2]
 				)
@@ -1936,11 +2017,11 @@ struct WdxSequenceManager
 					self.setSequenceIgnored seq.name (state == 1)
 				)
 				self.saveIgnoredSequences()
-				setListItems()  -- Liste aktualisieren für visuelle Kennzeichnung
+				setListItems()  -- Refresh the list so the marker shows up
 			)
 		)
 		
-		-- Gemeinsame Nudge-Funktion: which = #start oder #end, delta = 1 oder -1
+		-- Shared nudge function: which = #start or #end, delta = 1 or -1
 		fn nudgeKey which delta =
 		(
 			undo "SequenceManager Nudge Key" on
@@ -1963,7 +2044,7 @@ struct WdxSequenceManager
 					
 					if validated[valIdx] != newVal then
 					(
-						::ErrorReporter.logWarning "Sequence" "nudge" ("Cannot nudge further - boundary reached at frame " + validated[valIdx] as string)
+						::WdxErrorReporter.logWarning "Sequence" "nudge" ("Cannot nudge further - boundary reached at frame " + validated[valIdx] as string)
 					)
 					else
 					(
@@ -2061,7 +2142,7 @@ struct WdxSequenceManager
                         if stricmp loadedSequences[i][4] "" != 0 then movespeed = (substring loadedSequences[i][4] 1 1) as integer
                         local newStartTime = loadedSequences[i][5] as time
                         local newEndTime = loadedSequences[i][6] as time
-                        local SequenceData = Wc3Sequence sequenceName newStartTime newEndTime noLoop rarity movespeed undefined
+                        local SequenceData = WdxWc3Sequence sequenceName newStartTime newEndTime noLoop rarity movespeed undefined
                         
                         append tempSequences SequenceData
                         animationRange = interval 0f newEndTime
@@ -2088,7 +2169,7 @@ struct WdxSequenceManager
             setListItems()
         )
         
-		-- File Save: Nur normale Sequenzen speichern, keine Global Sequences
+		-- File Save: only write the normal sequences, no Global Sequences
         on fileSaveBtn pressed do
         (
             local filename = getSaveFileName types:"TXT File (*.txt)|*.txt"
@@ -2166,8 +2247,8 @@ struct WdxSequenceManager
             try (WdxSetDialogIcon mainRollout) catch()
             self = WdxSequenceManager
 			self.sequences = self.LoadSequences()
-			self.loadIgnoredSequences()  -- Ignore-Liste laden
-			self.scanGlobalSequences()   -- Global Sequences aus Szene scannen
+			self.loadIgnoredSequences()  -- Load the ignore list
+			self.scanGlobalSequences()   -- Scan the scene for Global Sequences
 			self.saveSequences()
 			self.checkSequenceOverlapping()
             
@@ -2181,6 +2262,13 @@ struct WdxSequenceManager
 			
 			callbacks.addScript #sceneUndo listUpdateAfterUndoRedo id:#WhiteoutDex
 			callbacks.addScript #sceneRedo listUpdateAfterUndoRedo id:#WhiteoutDex
+
+			-- An import or merge replaces the scene's sequence data without going
+			-- through this dialog. Pick the new data up right away so the list is
+			-- correct and the close handler has nothing stale to write back.
+			-- try/catch because not every Max version broadcasts every event.
+			try ( callbacks.addScript #postImport importChangeCallback id:#WhiteoutDex ) catch ()
+			try ( callbacks.addScript #filePostMerge importChangeCallback id:#WhiteoutDex ) catch ()
 
 			-- Localization
 			if ::WdxL != undefined then
@@ -2279,7 +2367,7 @@ struct WdxSequenceManager
 			)
             callbacks.removeScripts id:#WhiteoutDex
             self.saveSequences()
-			self.saveIgnoredSequences()  -- Ignore-Liste speichern
+			self.saveIgnoredSequences()  -- Save the ignore list
         )
     ),
     
@@ -2306,6 +2394,64 @@ struct WdxSequenceManager
 global WdxSequenceManager = WdxSequenceManager()
 
 -- ============================================================================
+-- WdxSequenceManagerRefresh
+--
+-- Re-read the scene's sequences into the Sequence Manager. Called by the MDLX
+-- importer at the end of an import: it writes the sequence Custom Attributes
+-- itself, and an already-open Sequence Manager would otherwise keep showing the
+-- previous model's list and write that list back over the new one when closed.
+--
+-- Safe to call at any time - a no-op if the manager was never instanced.
+-- ============================================================================
+global WdxSequenceManagerRefresh
+fn WdxSequenceManagerRefresh =
+(
+    if ::WdxSequenceManager == undefined then 0
+    else
+    (
+        local n = 0
+        try ( n = ::WdxSequenceManager.refreshFromScene() )
+        catch ( format "WDX SequenceManager refresh failed: %\n" (getCurrentException()) )
+        n
+    )
+)
+
+-- ============================================================================
+-- WdxPushRendererSequencesFrom <sequences>
+--
+-- The push itself, against a list already in hand. Split out of
+-- WdxPushRendererSequences below so an edit made in the Sequence Manager can
+-- reach a running preview without a LoadSequences round-trip: saveSequences
+-- calls this with the very array it just wrote, and reloading there would swap
+-- the sequence objects out from under the dialog's own rollout handlers.
+--
+-- Returns the number of ranges the previewer accepted.
+-- ============================================================================
+global WdxPushRendererSequencesFrom
+fn WdxPushRendererSequencesFrom seqs =
+(
+    if seqs == undefined then return 0
+    local namesArr  = #()
+    local startsArr = #()
+    local endsArr   = #()
+    for s in seqs do
+    (
+        try
+        (
+            append namesArr  (s.name as string)
+            append startsArr (s.startTime as integer)
+            append endsArr   (s.endTime   as integer)
+        )
+        catch
+        (
+            format "WDX Renderer:   skipped seq (decode failed): %\n" (getCurrentException())
+        )
+    )
+    format "WDX Renderer: pushing % sequences via WhiteoutFlakesPushSequences\n" namesArr.count
+    if namesArr.count > 0 then (WhiteoutFlakesPushSequences namesArr startsArr endsArr) else 0
+)
+
+-- ============================================================================
 -- WdxPushRendererSequences
 --
 -- Hand the running previewer the scene's current sequence ranges. Called by
@@ -2315,8 +2461,9 @@ global WdxSequenceManager = WdxSequenceManager()
 -- popcorn animVisibilityGuide gate has no current-animation name to match
 -- against so every emitter spawns on every sequence.
 --
--- Forces a LoadSequences() so it works even when the Sequence Manager UI has
--- never been opened this session. Returns the number of ranges pushed.
+-- Re-reads the scene first (through refreshFromScene, which also rebuilds the
+-- dialog's list) so it works even when the Sequence Manager UI has never been
+-- opened this session. Returns the number of ranges pushed.
 -- ============================================================================
 global WdxPushRendererSequences
 fn WdxPushRendererSequences =
@@ -2326,29 +2473,20 @@ fn WdxPushRendererSequences =
         format "WDX Renderer: WdxSequenceManager is undefined - no sequences pushed\n"
     else
     (
-        try (::WdxSequenceManager.sequences = ::WdxSequenceManager.LoadSequences()) catch
-            (format "WDX Renderer: LoadSequences threw: %\n" (getCurrentException()))
+        -- refreshFromScene, not a bare LoadSequences. The load mints brand new
+        -- WdxWc3Sequence objects, and an open Sequence Manager dialog is holding
+        -- the OLD ones in filteredSequences. Swapping this.sequences without
+        -- rebuilding the list left every row pointing at an orphan, so
+        -- `findItem self.sequences seq` returned 0: double-clicking a row
+        -- played nothing, and a rename edited an object no save would ever
+        -- write. That was the "open the Sequence Manager, then the renderer,
+        -- and the list goes dead" bug. refreshFromScene reloads AND calls
+        -- setListItems, and is harmless when the dialog was never shown.
+        try (::WdxSequenceManager.refreshFromScene()) catch
+            (format "WDX Renderer: refreshFromScene threw: %\n" (getCurrentException()))
         local seqs = ::WdxSequenceManager.sequences
         format "WDX Renderer: WdxSequenceManager has % sequences\n" seqs.count
-        local namesArr  = #()
-        local startsArr = #()
-        local endsArr   = #()
-        for s in seqs do
-        (
-            try
-            (
-                append namesArr  (s.name as string)
-                append startsArr (s.startTime as integer)
-                append endsArr   (s.endTime   as integer)
-            )
-            catch
-            (
-                format "WDX Renderer:   skipped seq (decode failed): %\n" (getCurrentException())
-            )
-        )
-        format "WDX Renderer: pushing % sequences via WhiteoutFlakesPushSequences\n" namesArr.count
-        if namesArr.count > 0 do
-            pushed = WhiteoutFlakesPushSequences namesArr startsArr endsArr
+        pushed = WdxPushRendererSequencesFrom seqs
     )
     pushed
 )

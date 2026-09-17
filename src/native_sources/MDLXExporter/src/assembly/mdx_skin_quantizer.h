@@ -1,6 +1,12 @@
 // MDLXExporter — v800 skin weight quantizer
-// Converts per-vertex float bone weights into v800 matrix groups using
-// iterative relaxation with distance-aware correction and softmax sharpening.
+// Converts per-vertex float bone weights into v800 matrix groups by snapping
+// each weight vector to the nearest achievable *uniform* vector.
+//
+// v800 matrix groups carry no weights: the runtime averages the group's bones
+// equally, so a group of k bones can only ever represent (1/k, …, 1/k).
+// Choosing a group is therefore a plain nearest-neighbour quantization, not a
+// smoothing problem — which also makes it exactly idempotent for models that
+// were imported from an already-quantized classic MDX.
 #pragma once
 
 #include <core/intermediate_types.h>
@@ -22,13 +28,15 @@ public:
 
 private:
     // ── Tuning constants ────────────────────────────────────
-    static constexpr int   kMaxSlots        = 4;     // max bones per matrix group
-    static constexpr int   kMaxGroups       = 255;   // u8 vertex-group limit
-    static constexpr int   kRelaxIterations = 6;
-    static constexpr float kTempStart       = 0.50f; // initial softmax temperature (soft)
-    static constexpr float kTempEnd         = 0.08f; // final softmax temperature (sharp)
-    static constexpr float kRelaxAlpha      = 0.25f; // neighbor blend strength
-    static constexpr float kMinWeight       = 0.02f; // discard weights below 2%
+    // kMaxSlots is the largest matrix group we will emit. Blizzard's own
+    // classic assets go up to 8 bones per group (see Undead3D_Exp, kroxigor
+    // family in the corpus), so capping at 4 would silently break round-trip
+    // on those. The nearest-uniform rule only ever picks a large k when the
+    // weights really are near-uniform across that many bones, so raising the
+    // cap does not inflate ordinary hand-painted skins.
+    static constexpr int   kMaxSlots  = 8;     // max bones per matrix group
+    static constexpr int   kMaxGroups = 255;   // u8 vertex-group limit
+    static constexpr float kMinWeight = 0.02f; // discard bleed weights below 2%
 
     // ── Internal types ──────────────────────────────────────
     struct BoneWeight {
@@ -49,14 +57,6 @@ private:
     std::vector<VertexWeights> extractWeights(
         const ir::Mesh& mesh, const MdxHierarchyResolver& hierarchy) const;
 
-    std::vector<std::vector<uint32_t>> buildAdjacency(
-        const std::vector<uint32_t>& indices, size_t vertexCount) const;
-
-    void relax(std::vector<VertexWeights>& weights,
-               const std::vector<ir::Vertex>& vertices,
-               const std::vector<std::vector<uint32_t>>& adjacency) const;
-
-    static void sharpen(VertexWeights& w, float temperature);
     static void normalize(VertexWeights& w);
     static void prune(VertexWeights& w, float threshold);
     static void mergeWeight(VertexWeights& w, uint32_t boneId, float weight);

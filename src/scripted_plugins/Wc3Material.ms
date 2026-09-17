@@ -107,6 +107,8 @@ extends:Standard replaceUI:true version:13
 			this.texMapRollout.mbTeamColor.enabled	= not isSD
 			this.texMapRollout.mbEnv.enabled			= not isSD
 		) catch()
+		-- Occlusion is read out of the ORM map, which the SD shader has none of.
+		try ( this.basicRollout.chkAmbOcc.enabled = not isSD ) catch()
 		try (
 			this.reforgedRollout.spnEmGain.enabled		= not isSD
 			this.reforgedRollout.spnFrR.enabled			= not isSD
@@ -211,6 +213,13 @@ extends:Standard replaceUI:true version:13
 		noDepthTest		type:#boolean	animatable:false	default:false	ui:chkNoDTest
 		noDepthSet		type:#boolean	animatable:false	default:false	ui:chkNoDSet
 		unselectable	type:#boolean	animatable:false	default:false	ui:chkUnsel
+		-- Layer ShadingFlags 0x400 / 0x200 (named by the 3.0.0 client's MDL
+		-- keyword table). AmbientOcclusion is what makes an HD layer sample its
+		-- baked occlusion (ORM.r through the second UV set); without it the
+		-- game draws the layer with no AO at all. BackFacesForShadows flips the
+		-- cull in the shadow pass so the layer casts from its back faces.
+		ambientOcclusion	type:#boolean	animatable:false	default:false	ui:chkAmbOcc
+		backFacesForShadows	type:#boolean	animatable:false	default:false	ui:chkBackShadow
 		sortOrder		type:#integer	animatable:false	default:1	ui:ddSortOrder
 		priorityPlane	type:#integer	animatable:false	default:0	ui:spnPriority
 		-- replaceableId: moved here from Wc3Bitmap (1 = Not Used, 2+ = replaceable type)
@@ -252,6 +261,14 @@ extends:Standard replaceUI:true version:13
 		opacityCtrl		type:#integer	animatable:false	default:1		ui:ddOpacCtrl
 		flipbook		type:#boolean	animatable:false	default:false	ui:chkFlipbook
 		coordId			type:#integer	animatable:false	default:-1		ui:spnCoordId
+		-- Exact KMTF. Each entry is "replaceableId|flags|MDX path" of a texture
+		-- the flipbook shows (flags: 1 wrap width, 2 wrap height), and
+		-- flipbookFrame is the animated index into that list. The IFL on the
+		-- diffuse bitmap only previews the flipbook in the viewport: it can
+		-- keep neither the key times nor the textures' MDX folders, so the
+		-- exporter prefers these whenever flipbookFrame is keyed.
+		flipbookTextures	type:#stringTab	tabSizeVariable:true	animatable:false
+		flipbookFrame		type:#integer	animatable:true		default:0
 
 		on opacity set val do ( try ( delegate.opacity = val ) catch() )
 		on opacityCtrl set val do ( switchOpacityController val )
@@ -301,14 +318,17 @@ extends:Standard replaceUI:true version:13
 	---------------------------------------------------------------------------
 	-- PARAMETERS: Reforged Settings
 	---------------------------------------------------------------------------
+	-- Animatable: MDX carries them as KMTE (emissive gain), KFC3 (fresnel
+	-- colour, merged from R/G/B on export), KFCA (fresnel opacity) and KFTC
+	-- (fresnel team colour).
 	parameters reforged rollout:reforgedRollout
 	(
-		emissiveGain	type:#float		animatable:false	default:1.0		ui:spnEmGain
-		fresnelR		type:#float		animatable:false	default:1.0		ui:spnFrR
-		fresnelG		type:#float		animatable:false	default:1.0		ui:spnFrG
-		fresnelB		type:#float		animatable:false	default:1.0		ui:spnFrB
-		fresnelOpacity	type:#float		animatable:false	default:0.0		ui:spnFrOpacity
-		fresnelTeamCol	type:#float		animatable:false	default:0.0		ui:spnFrTeamCol
+		emissiveGain	type:#float		animatable:true		default:1.0		ui:spnEmGain
+		fresnelR		type:#float		animatable:true		default:1.0		ui:spnFrR
+		fresnelG		type:#float		animatable:true		default:1.0		ui:spnFrG
+		fresnelB		type:#float		animatable:true		default:1.0		ui:spnFrB
+		fresnelOpacity	type:#float		animatable:true		default:0.0		ui:spnFrOpacity
+		fresnelTeamCol	type:#float		animatable:true		default:0.0		ui:spnFrTeamCol
 		shaderPath		type:#string	animatable:false	default:""		ui:edtShaderPath
 	)
 	
@@ -328,7 +348,8 @@ extends:Standard replaceUI:true version:13
 		checkbox	chkNoDTest		"No Depth Test"	align:#left
 		checkbox	chkNoDSet		"No Depth Set"	align:#left across:3 enabled:false
 		checkbox	chkUnsel		"Unselectable"	align:#left
-		label		lblPad			"" align:#left
+		checkbox	chkAmbOcc		"Ambient Occlusion"	align:#left
+		checkbox	chkBackShadow	"Back Faces for Shadows"	align:#left
 		label		lblSep2		"" height:2
 		dropdownlist	ddSortOrder	"Sort Order ..................................................." items:#("Not Used", "Near to far", "Far to near") width:300 align:#center enabled:false
 		spinner		spnPriority		"Priority Plane ................." range:[-20,20,0] type:#integer fieldwidth:55 align:#right
@@ -368,6 +389,8 @@ extends:Standard replaceUI:true version:13
 				chkNoDTest.text			= ::WdxL.t "mat_no_depth_test_chk"
 				chkNoDSet.text			= ::WdxL.t "mat_no_depth_set_chk"
 				chkUnsel.text			= ::WdxL.t "mat_unselectable_chk_2"
+				chkAmbOcc.text			= ::WdxL.t "mat_ambient_occlusion_chk"
+				chkBackShadow.text		= ::WdxL.t "mat_back_faces_shadows_chk"
 
 				ddFilterMode.items	= ::WdxL.tList "mat_filter_mode_items"
 				ddSortOrder.items	= ::WdxL.tList "mat_sort_order_items"

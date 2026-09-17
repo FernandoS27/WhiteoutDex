@@ -64,6 +64,34 @@ public:
     // hostMutex_ (or relaxed atomic for focusActor_).
     void SetCameraPresets(std::vector<CameraPreset> presets);
     void SetSequences(std::vector<std::string> names, std::vector<SequenceInfo> ranges);
+
+    // ---- Timeline sequence (Max thread <-> render thread) ----
+    //
+    // Max owns the timeline, so the toolbar's Animation combo is not a
+    // playback control: it is a *view* of Max's animation range, and a request
+    // to move it.
+    //
+    //  * Max thread: matches Interface::GetAnimRange() against the pushed
+    //    sequence ranges every sync tick and publishes the index here. -1 means
+    //    the range is nobody's sequence -- the combo calls that "free range".
+    //  * Render thread: raises a request the same tick drains, because
+    //    SetAnimRange is Max-UI-thread work the combo cannot do itself.
+    void SetActiveSequenceIdx(i32 idx) {
+        activeSequenceIdx_.store(idx, std::memory_order_relaxed);
+    }
+    i32 ActiveSequenceIdx() const {
+        return activeSequenceIdx_.load(std::memory_order_relaxed);
+    }
+    void RequestSequence(i32 idx) {
+        pendingSequenceReq_.store(idx, std::memory_order_relaxed);
+    }
+    bool ConsumeSequenceRequest(i32& idxOut) {
+        const i32 req = pendingSequenceReq_.exchange(kNoSequenceRequest, std::memory_order_relaxed);
+        if (req == kNoSequenceRequest)
+            return false;
+        idxOut = req;
+        return true;
+    }
     void SetFocusActor(ActorId h) {
         focusActor_.store(h, std::memory_order_relaxed);
     }
@@ -130,6 +158,34 @@ public:
     }
     bool ConsumeResyncRequest() {
         return resyncRequested_.exchange(false, std::memory_order_relaxed);
+    }
+
+    // ---- Scene art tier ----
+    //
+    // The View menu's Art Tier IS the scene's `artTier` attribute on rootNode
+    // (wdx_scene_art_tier.h), the same value the Settings dialog edits. Values
+    // are the stored integers: 0 Auto, 1 Classic, 2 Reforged, 3 Definitive.
+    //  * Max thread: publishes what the scene holds on every rebuild.
+    //  * Render thread: rootNode is out of its reach, so a pick leaves a
+    //    request the viewport-sync timer writes to the scene and then resyncs
+    //    on. The published value follows the pick at once so the menu's check
+    //    mark does not lag the click by a rebuild.
+    void PublishSceneArtTier(i32 stored) {
+        sceneArtTier_.store(stored, std::memory_order_relaxed);
+    }
+    i32 SceneArtTier() const {
+        return sceneArtTier_.load(std::memory_order_relaxed);
+    }
+    void RequestSceneArtTier(i32 stored) {
+        sceneArtTier_.store(stored, std::memory_order_relaxed);
+        pendingArtTierReq_.store(stored, std::memory_order_relaxed);
+    }
+    bool ConsumeSceneArtTierRequest(i32& storedOut) {
+        const i32 req = pendingArtTierReq_.exchange(kNoArtTierRequest, std::memory_order_relaxed);
+        if (req == kNoArtTierRequest)
+            return false;
+        storedOut = req;
+        return true;
     }
 
     RenderService& Service() {
@@ -203,6 +259,13 @@ private:
     std::vector<std::string> sequenceNames_;
     std::vector<SequenceInfo> sequenceRanges_;
 
+    // Which of sequenceNames_ Max's animation range currently spans, -1 for
+    // none ("free range"), and the toolbar's pending request for a different
+    // one. -2 is the empty-mailbox sentinel: every real request is >= -1.
+    static constexpr i32 kNoSequenceRequest = -2;
+    std::atomic<i32> activeSequenceIdx_{-1};
+    std::atomic<i32> pendingSequenceReq_{kNoSequenceRequest};
+
     // Latest active-viewport pose, written by the Max thread under hostMutex_
     // and consumed by ApplyExternalCamera on the render thread. `extCamValid_`
     // stays false until the first push, so enabling the checkbox never snaps
@@ -217,6 +280,11 @@ private:
     // Raised by the toolbar on the render thread, drained by the plugin's
     // timer on Max's.
     std::atomic<bool> resyncRequested_{false};
+
+    // See PublishSceneArtTier.
+    static constexpr i32 kNoArtTierRequest = -1;
+    std::atomic<i32> sceneArtTier_{0};
+    std::atomic<i32> pendingArtTierReq_{kNoArtTierRequest};
 
     std::atomic<ActorId> focusActor_{0};
 

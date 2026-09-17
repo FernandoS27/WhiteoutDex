@@ -7,7 +7,7 @@
 #include "renderer/debug/debug_renderer.h"
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/model/model_instance.h"
-#include "renderer/particle/splat_service.h"
+#include "renderer/effects/splat_service.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "renderer/shadow/shadow_service.h"
@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
 
 namespace whiteout::flakes {
@@ -112,6 +113,10 @@ constexpr std::array<const char*, 3> kLightingKeys = {"lighting.ingame", "lighti
                                                       "lighting.dynamic"};
 constexpr std::array<const char*, 4> kShadowKeys = {"shadow.off", "shadow.1", "shadow.2",
                                                     "shadow.3"};
+// Indexed by the shader's fog mode (bls::FogParams::mode), same as the viewer.
+constexpr std::array<const char*, 7> kFogModeKeys = {"fog.off",        "fog.linear", "fog.exp",
+                                                     "fog.exp2",       "fog.volumetric",
+                                                     "fog.exp_banded", "fog.exp2_banded"};
 constexpr std::array<const char*, 4> kBackendLabels = {"D3D11", "D3D12", "Vulkan", "WebGPU"};
 
 /// Resolve a key array into a `const char*[]` for ImGui::Combo. The
@@ -180,6 +185,41 @@ void MaxPluginUI::BuildMenuBar() {
             dfChanged |=
                 ImGui::MenuItem(i18n::tr("menu.view.ribbons"), nullptr, &df.showRibbons);
             dfChanged |= ImGui::MenuItem(i18n::tr("menu.view.events"), nullptr, &df.showEvents);
+
+            ImGui::Separator();
+            // Which of Warcraft III's three CASC overlays the preview reads
+            // through. Separate from HD/SD, which the plugin still decides per
+            // material: 3.0.0 made Reforged and Definitive different files
+            // drawn down the same HD path. Only what the renderer fetches out
+            // of the install follows this - particle and ribbon textures,
+            // effects, replaceables, the DNC rig - not the bitmaps a Max
+            // material already points at on disk.
+            //
+            // It is the scene's own art tier, saved in the .max and shared
+            // with the Settings dialog, so a pick only leaves a request: the
+            // Max thread writes rootNode and then resyncs, and the rebuild is
+            // what applies it (every asset slot latched the old tier when it
+            // was acquired, so nothing on screen re-resolves on its own).
+            const bool artTierOpen = ImGui::BeginMenu(i18n::tr("menu.view.art_tier"));
+            // Hover-test before the body, for the same reason as the Animation
+            // combo: once the submenu is open, the last item is whatever it drew.
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", i18n::tr("wdx.menu.art_tier.tip"));
+            if (artTierOpen) {
+                const i32 cur = win_.SceneArtTier();
+                // Stored values, in wdx_scene_art_tier.h's order.
+                const char* const choices[] = {
+                    "menu.view.art_tier_auto",
+                    "menu.view.art_tier_classic",
+                    "menu.view.art_tier_reforged",
+                    "menu.view.art_tier_definitive",
+                };
+                for (i32 i = 0; i < static_cast<i32>(std::size(choices)); ++i) {
+                    if (ImGui::MenuItem(i18n::tr(choices[i]), nullptr, cur == i) && cur != i)
+                        win_.RequestSceneArtTier(i);
+                }
+                ImGui::EndMenu();
+            }
 
             ImGui::Separator();
             if (ImGui::BeginMenu(i18n::tr("menu.view.tileset"))) {
@@ -262,31 +302,58 @@ void MaxPluginUI::BuildToolbar() {
     RenderService& svc = win_.Service();
     model::Actor* focus = svc.Scene().Actors().Find(win_.FocusActor());
 
-    // ---- Animation sequence (driven by Max's timeline; the dropdown only
-    //      picks which range we're previewing) ----
+    // ---- Animation sequence ----
+    //
+    // Two-way with Max's timeline, and Max is the one holding the pen: the
+    // selection is whichever pushed sequence the *animation range* currently
+    // spans (RenderWindow::ActiveSequenceIdx, republished by the plugin's sync
+    // timer), so dragging the range in Max moves this combo on its own. A range
+    // that is nobody's sequence reads as "Free Range".
+    //
+    // Picking an entry only leaves a request behind - Interface::SetAnimRange
+    // is Max-UI-thread work - which the same timer applies a tick later.
     const auto seqs = win_.SequenceNamesSnapshot();
     if (!seqs.empty()) {
-        i32 sel = focus ? focus->animation.ActiveSequenceIndex() : 0;
-        sel = std::clamp(sel, 0, (i32)seqs.size() - 1);
+        const i32 active = win_.ActiveSequenceIdx();
+        const bool isFree = (active < 0 || active >= static_cast<i32>(seqs.size()));
+        const char* preview =
+            isFree ? i18n::tr("wdx.toolbar.animation.free") : seqs[active].c_str();
+
+        // Switching sequences invalidates whatever the old one splatted on the
+        // ground - except for the decay/dissipate pair, whose whole job is to
+        // play out over a corpse the previous sequence left behind.
+        const auto requestSequence = [&](i32 idx) {
+            if (idx == active)
+                return;
+            win_.RequestSequence(idx);
+            const bool keep = idx >= 0 && idx < static_cast<i32>(seqs.size()) &&
+                              (seqs[idx].find("decay") != std::string::npos ||
+                               seqs[idx].find("dissipate") != std::string::npos);
+            if (!keep)
+                svc.Splats().Clear();
+        };
+
         ImGui::SetNextItemWidth(220);
-        if (ImGui::BeginCombo(i18n::tr("toolbar.animation"), seqs[sel].c_str())) {
+        // Hover-test before the popup body: EndCombo closes a window, and the
+        // last-item state IsItemHovered reads would be whatever was drawn
+        // inside it rather than the combo itself.
+        const bool comboOpen = ImGui::BeginCombo(i18n::tr("toolbar.animation"), preview);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", i18n::tr("wdx.toolbar.animation.tip"));
+        if (comboOpen) {
+            if (ImGui::Selectable(i18n::tr("wdx.toolbar.animation.free"), isFree))
+                requestSequence(-1);
             for (i32 i = 0; i < static_cast<i32>(seqs.size()); ++i) {
-                const bool isSel = (i == sel);
-                if (ImGui::Selectable(seqs[i].c_str(), isSel)) {
-                    if (focus) {
-                        const i32 prev = focus->animation.ActiveSequenceIndex();
-                        focus->animation.SetActiveSequenceIndex(i);
-                        if (i != prev) {
-                            const std::string& name = seqs[i];
-                            const bool keep = (name.find("decay") != std::string::npos) ||
-                                              (name.find("dissipate") != std::string::npos);
-                            if (!keep)
-                                svc.Splats().Clear();
-                        }
-                    }
-                }
+                // Duplicate sequence names are routine in WC3 models and ImGui
+                // derives a Selectable's id from its label, so without the
+                // index push the second "Stand" would drive the first one.
+                ImGui::PushID(i);
+                const bool isSel = (i == active);
+                if (ImGui::Selectable(seqs[i].c_str(), isSel))
+                    requestSequence(i);
                 if (isSel)
                     ImGui::SetItemDefaultFocus();
+                ImGui::PopID();
             }
             ImGui::EndCombo();
         }
@@ -474,6 +541,54 @@ void MaxPluginUI::BuildSettingsWindow() {
                     shadow->SetParams(p);
                     SaveIni(win_);
                 }
+            }
+        }
+
+        // ---- World fog ----
+        // Warcraft III 3.0 takes fog from the map, and a model preview has none,
+        // so this is its only source. Mirrors the standalone viewer's section,
+        // down to which fields each mode shows. Distances are world units.
+        if (ImGui::CollapsingHeader(i18n::tr("settings.fog.header"))) {
+            RenderSettings::WorldFog fog = svc.Settings().GetWorldFog();
+            bool changed = false;
+            const char* modeItems[kFogModeKeys.size()];
+            TranslateAll(kFogModeKeys, modeItems);
+            ImGui::SetNextItemWidth(180.0f);
+            changed |= ImGui::Combo(i18n::tr("settings.fog.mode"), &fog.mode, modeItems,
+                                    static_cast<i32>(kFogModeKeys.size()));
+            f32 rgb[3] = {fog.color[0] / 255.0f, fog.color[1] / 255.0f, fog.color[2] / 255.0f};
+            if (ImGui::ColorEdit3(i18n::tr("settings.fog.color"), rgb)) {
+                for (i32 c = 0; c < 3; ++c)
+                    fog.color[c] = static_cast<u8>(std::clamp(rgb[c], 0.0f, 1.0f) * 255.0f + 0.5f);
+                changed = true;
+            }
+            const auto dragDistance = [&](const char* key, f32& v, f32 lo, f32 hi, f32 speed) {
+                ImGui::SetNextItemWidth(180.0f);
+                changed |= ImGui::DragFloat(i18n::tr(key), &v, speed, lo, hi, "%.0f");
+            };
+            dragDistance("settings.fog.start", fog.start, 0.0f, 20000.0f, 5.0f);
+            dragDistance("settings.fog.end", fog.end, 0.0f, 20000.0f, 5.0f);
+            const bool usesDensity = fog.mode == 2 || fog.mode == 3 || fog.mode == 5 ||
+                                     fog.mode == 6;
+            if (usesDensity) {
+                ImGui::SetNextItemWidth(180.0f);
+                changed |= ImGui::DragFloat(i18n::tr("settings.fog.density"), &fog.density,
+                                           0.0001f, 0.0f, 1.0f, "%.4f");
+            }
+            if (fog.mode == 4) { // volumetric
+                dragDistance("settings.fog.height_top", fog.heightTop, -5000.0f, 5000.0f, 1.0f);
+                dragDistance("settings.fog.height_bottom", fog.heightBottom, -5000.0f, 5000.0f,
+                             1.0f);
+                dragDistance("settings.fog.radial_inner", fog.radialInner, 0.0f, 20000.0f, 5.0f);
+                dragDistance("settings.fog.radial_outer", fog.radialOuter, 0.0f, 20000.0f, 5.0f);
+                ImGui::SetNextItemWidth(180.0f);
+                changed |= ImGui::SliderFloat(i18n::tr("settings.fog.radial_strength"),
+                                             &fog.radialStrength, 0.0f, 1.0f, "%.2f");
+                changed |= ImGui::Checkbox(i18n::tr("settings.fog.everywhere"), &fog.everywhere);
+            }
+            if (changed) {
+                svc.Settings().SetWorldFog(fog);
+                SaveIni(win_);
             }
         }
 

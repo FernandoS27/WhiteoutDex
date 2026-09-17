@@ -34,6 +34,7 @@
 #include <ilayer.h>
 #include <ilayermanager.h>
 #include <maxscript/maxscript.h>
+#include <wdx_localization.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -672,10 +673,47 @@ INode* createMeshNode(const ir::Mesh& irMesh, Interface* gi) {
         }
     }
 
+    // Only written when set, so plain meshes keep a clean User Defined box.
+    if (irMesh.selectionGroup != 0)
+        node->SetUserPropInt(_T("Wc3SelectionGroup"), static_cast<int>(irMesh.selectionGroup));
+
     return node;
 }
 
 // ── Skin modifier application ───────────────────────────────
+
+// Max's Skin modifier ships with "Bone Affect Limit" (bone_Limit) = 5 and
+// silently discards every influence past it — AddWeights accepts an 8-bone
+// list and GetNumAssignedBones later reports 5. Classic MDX matrix groups do
+// reach 8 bones (Undead3D_Exp, the kroxigor family), so raise the limit to
+// whatever this mesh actually needs before any weights go in, or those bones
+// are gone before the exporter ever sees them.
+static void raiseSkinBoneLimit(Modifier* skinMod, int needed) {
+    if (!skinMod || needed <= 0) return;
+
+    for (int i = 0; i < skinMod->NumParamBlocks(); ++i) {
+        // Through Animatable: the 2016 SDK's BaseObject::GetParamBlock()
+        // (no argument, IParamArray*) hides the indexed overload.
+        IParamBlock2* pb = static_cast<Animatable*>(skinMod)->GetParamBlock(i);
+        if (!pb) continue;
+        ParamBlockDesc2* desc = pb->GetDesc();
+        if (!desc) continue;
+
+        for (int p = 0; p < desc->Count(); ++p) {
+            const ParamDef& pd = desc->paramdefs[p];
+            if (!pd.int_name || _tcsicmp(pd.int_name, _T("bone_Limit")) != 0)
+                continue;
+
+            int current = 0;
+            Interval valid = FOREVER;
+            pb->GetValue(pd.ID, 0, current, valid);
+            // 0 means "no limit" in Max — leave that alone.
+            if (current > 0 && current < needed)
+                pb->SetValue(pd.ID, 0, needed);
+            return;
+        }
+    }
+}
 
 bool applySkinModifier(INode* meshNode, const ir::Mesh& irMesh,
                        const std::vector<INode*>& boneNodes, Interface* gi)
@@ -711,6 +749,15 @@ bool applySkinModifier(INode* meshNode, const ir::Mesh& irMesh,
     ISkinImportData* skinImport = static_cast<ISkinImportData*>(
         skinMod->GetInterface(I_SKINIMPORTDATA));
     if (!skinImport) return false;
+
+    // Widen the bone-affect limit before any AddWeights call, so wide matrix
+    // groups survive the import.
+    {
+        size_t maxInfluences = 0;
+        for (const auto& v : irMesh.vertices)
+            maxInfluences = std::max(maxInfluences, v.skinInfluences.size());
+        raiseSkinBoneLimit(skinMod, static_cast<int>(maxInfluences));
+    }
 
     // Collect all unique bones used
     std::set<int32_t> usedBones;
@@ -1462,6 +1509,11 @@ Control* createColorController(const ir::ColorTrack& track) {
             if (track.interpolation == ir::InterpolationType::None) {
                 SetInTanType(key.flags, BEZKEY_STEP);
                 SetOutTanType(key.flags, BEZKEY_STEP);
+            } else if (track.interpolation == ir::InterpolationType::Linear) {
+                // No linear colour controller exists; LINEAR tangents play the
+                // same and tell the exporter the track was Linear.
+                SetInTanType(key.flags, BEZKEY_LINEAR);
+                SetOutTanType(key.flags, BEZKEY_LINEAR);
             } else if (kf.hasTangents && track.interpolation == ir::InterpolationType::Bezier) {
                 // V3 strategy: BEZKEY_FLAT on the side with a same-value neighbour
                 // (per RGB component, but we treat the whole color as stable only
@@ -2456,6 +2508,8 @@ void remapTimeline(ir::IRModel& irModel) {
         addIfValid(pe.visibilityTrackIndex);
     for (const auto& rib : irModel.ribbonEmitters)
         addIfValid(rib.visibilityTrackIndex);
+    for (const auto& cam : irModel.cameras)
+        addIfValid(cam.visibilityTrackIndex);
     // GeosetAnim alpha tracks drive mesh visibility — same NeoDex logic.
     for (const auto& ga : irModel.geosetAnims)
         addIfValid(ga.alphaTrackIndex);
@@ -2478,8 +2532,11 @@ void remapTimeline(ir::IRModel& irModel) {
     for (auto& t : irModel.vec4Tracks)
         remapTrackKeys(t, ranges, Point4(0.0f, 0.0f, 0.0f, 0.0f), false);
 
-    // Remap event object key times
+    // Remap event object key times. Keys on a global sequence are in that
+    // sequence's own clock, like every other global-sequence track, so they
+    // stay where they are.
     for (auto& evt : irModel.eventObjects) {
+        if (evt.globalSequenceIndex >= 0) continue;
         std::vector<TimeValue> newTimes;
         for (TimeValue kt : evt.keyTimes) {
             for (size_t si = 0; si < ranges.size(); ++si) {
@@ -2559,10 +2616,19 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     try {
         mdxModel = parser.parse(filePath);
     } catch (const std::exception& e) {
-        MSTR msg;
-        msg.printf(_T("Failed to parse model file:\n%hs"), e.what());
+        // The catalog holds the sentence with a %1 where the parser's own
+        // reason goes; an absent catalog falls back to the English wording.
+        MSTR reason;
+        reason.printf(_T("%hs"), e.what());
+        std::wstring text = wdx::l10n::TrOr("imp_parse_failed_msg",
+                                            L"Failed to parse the model file:\n%1");
+        wdx::l10n::Substitute(text, L"%1", reason.data());
+
+        const std::wstring caption =
+            wdx::l10n::TrOr("report_import_ptitle", L"WhiteoutDex Import");
+
         if (gi->GetMAXHWnd())
-            MessageBoxW(gi->GetMAXHWnd(), msg.data(), _T("MDLXImporter"), MB_OK | MB_ICONERROR);
+            MessageBoxW(gi->GetMAXHWnd(), text.c_str(), caption.c_str(), MB_OK | MB_ICONERROR);
         return IMPEXP_FAIL;
     }
 
@@ -2823,6 +2889,26 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         meshNodes.push_back(meshNode);  // may be nullptr for empty meshes
     }
 
+    // Bone visibility gates. A gated bone (geosetAnimationId set) follows the
+    // geoset animation of its geoset — in every shipped model the id is the
+    // GEOA of the bone's geosetId. Blizzard's geosetId cannot be re-derived
+    // from the skin (heropaladin's head bone names geoset 0 while it skins
+    // several), so the gating geoset is kept as the handle of its mesh node
+    // and the exporter resolves it back to the final geoset.
+    for (const auto& bone : irModel.bones) {
+        if (bone.geosetAnimationIndex < 0 ||
+            bone.geosetAnimationIndex >= static_cast<int32_t>(irModel.geosetAnims.size()))
+            continue;
+        const int32_t meshIdx = irModel.geosetAnims[bone.geosetAnimationIndex].meshIndex;
+        if (meshIdx < 0 || meshIdx >= static_cast<int32_t>(meshNodes.size()) || !meshNodes[meshIdx])
+            continue;
+        if (bone.nodeIndex < 0 || bone.nodeIndex >= static_cast<int32_t>(nodeMap.size()) ||
+            !nodeMap[bone.nodeIndex])
+            continue;
+        nodeMap[bone.nodeIndex]->SetUserPropInt(_T("Wc3VisibilityGeoset"),
+                                                static_cast<int>(meshNodes[meshIdx]->GetHandle()));
+    }
+
     // NOTE: Skin modifier application is deferred to AFTER animation key
     // writing (step 12b) so that AddBoneEx captures the post-controller
     // bone TMs.  In MaxScript this happens automatically because the Skin
@@ -2838,6 +2924,23 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             modelDir = fullPath.substr(0, lastSep + 1);
     }
 
+    // ── Scene art tier ──────────────────────────────────────────────────
+    // Which of 3.0.0's CASC overlays this model's bare paths resolve through.
+    // The overlay the model browser pulled it out of is certain; failing
+    // that, the MDX version bounds the tier and the shaders pick inside it
+    // (wdx_scene_art_tier.h). Stored on the scene at step 14b so the preview
+    // and the texture browser read the chain the textures were resolved with.
+    wdx::scene::ArtTier artTier =
+        wdx::scene::ArtTierFromOverlay(mdx_scene::detectModChain(modelDir));
+    if (artTier == wdx::scene::ArtTier::Auto) {
+        bool hasHdLayers = false;
+        for (const auto& mat : irModel.materials) {
+            for (const auto& layer : mat.layers)
+                hasHdLayers = hasHdLayers || mdx_scene::isHdLayer(mat, layer);
+        }
+        artTier = wdx::scene::InferArtTier(opts.detectedVersion, hasHdLayers);
+    }
+
     // ── TextureResolver ─────────────────────────────────────────────────
     // Single resolver instance owns the CASC + MPQ archive handles for the
     // import session and centralises all alias/path logic (see
@@ -2848,7 +2951,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     std::optional<mdx_scene::TextureResolver> resolverOpt;
     if (opts.core.importTextures) {
         resolverOpt.emplace(modelDir, opts.cascDirectory, opts.mpqDirectory,
-                            opts.mpqArchives);
+                            opts.mpqArchives, artTier);
     }
     mdx_scene::TextureResolver* resolver = resolverOpt ? &*resolverOpt : nullptr;
 
@@ -3198,7 +3301,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             }
         }
 
-        // Camera animations: KCTR (camera pos), KTTR (target pos), KCRL (roll)
+        // Camera animations: KCTR (camera pos), KTTR (target pos), KCRL (roll),
+        // KCVS (visibility), IDUF / ELAF / PTSF (depth of field)
         if (opts.core.importCameras && !cameraPairs.empty()) {
             ILOG << "\n==== Camera Animations ====\n";
             for (size_t ci = 0; ci < irModel.cameras.size() && ci < cameraPairs.size(); ++ci) {
@@ -3250,20 +3354,49 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                         if (rollCtrl) {
                             // Roll lives on the LookAt TM controller, not on
                             // the camera object (a Targetcamera has no
-                            // `.rotation` at all). Verified sub-anim layout:
-                            //   node      → [0]visibility [1]spaceWarps
-                            //               [2]transform  [3]object [4]material
-                            //   lookat TM → [0]position [1]roll_angle [2]scale
-                            Animatable* tmSubAnim = pair.cameraNode->SubAnim(2); // transform (lookat)
-                            if (tmSubAnim) {
-                                Animatable* rollSubAnim = tmSubAnim->SubAnim(1); // roll_angle
-                                if (rollSubAnim) {
-                                    rollSubAnim->AssignController(rollCtrl, 0);
-                                    ILOG << "  cam[" << ci << "] KCRL keys=" << track.keys.size() << "\n";
-                                }
-                            }
+                            // `.rotation` at all). The controller is set on
+                            // the LookAt itself: AssignController goes on the
+                            // PARENT with the sub-anim index, and calling it on
+                            // the roll controller (as this used to) was a
+                            // silent no-op, so no KCRL ever reached Max.
+                            Control* tmCtrl = pair.cameraNode->GetTMController();
+                            const BOOL assigned = tmCtrl && tmCtrl->SetRollController(rollCtrl);
+                            ILOG << "  cam[" << ci << "] KCRL keys=" << track.keys.size()
+                                 << (assigned ? "" : " (not assigned: no LookAt controller)") << "\n";
+                            if (!assigned)
+                                rollCtrl->DeleteThis();
                         }
                     }
+                }
+
+                // KCVS: the camera node's visibility. The 3.0.0 client skips
+                // a camera while this is 0.
+                if (opts.core.importVisibility && irCam.visibilityTrackIndex >= 0 &&
+                    irCam.visibilityTrackIndex < static_cast<int32_t>(irModel.floatTracks.size())) {
+                    const auto& track = irModel.floatTracks[irCam.visibilityTrackIndex];
+                    insertVisibilityKeys(pair.cameraNode, track, irModel.sequences);
+                    ILOG << "  cam[" << ci << "] KCVS keys=" << track.keys.size() << "\n";
+                }
+
+                // IDUF / ELAF / PTSF onto the Physical Camera the builder made
+                // (no-op on a Target Camera, which has none of these params).
+                Object* camObj = opts.core.importParameterAnimations
+                                     ? pair.cameraNode->GetObjectRef() : nullptr;
+                if (camObj) {
+                    auto animateCamParam = [&](const wchar_t* name, int32_t idx, const char* tag) {
+                        if (idx < 0 || idx >= static_cast<int32_t>(irModel.floatTracks.size()))
+                            return;
+                        auto p = findPBParam(camObj, name);
+                        if (!p) return;
+                        const auto& track = irModel.floatTracks[idx];
+                        if (Control* ctrl = createFloatController(track)) {
+                            p.pb->SetControllerByID(p.id, 0, ctrl, FALSE);
+                            ILOG << "  cam[" << ci << "] " << tag << " keys=" << track.keys.size() << "\n";
+                        }
+                    };
+                    animateCamParam(L"focus_distance",  irCam.focusDistanceTrackIndex, "IDUF");
+                    animateCamParam(L"focal_length_mm", irCam.focalLengthTrackIndex,   "ELAF");
+                    animateCamParam(L"f_number",        irCam.fStopTrackIndex,         "PTSF");
                 }
             }
             ILOG << "==== end camera animations ====\n";
@@ -3374,6 +3507,103 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                             ILOG << "  mat[" << mi << "] layer[" << li << "] KMTA keys="
                                  << srcTrack.keys.size() << "\n";
                         }
+                    }
+
+                    // Exact KMTF next to the IFL preview the material builder
+                    // made: the textures the flipbook shows, in first-use
+                    // order, and the animated index into them. Written as
+                    // "replaceableId|flags|MDX path" (see Wc3Material.ms).
+                    if (layer.textureIdTrackIndex >= 0 &&
+                        layer.textureIdTrackIndex < static_cast<int32_t>(irModel.intTracks.size())) {
+                        const auto& texTrack = irModel.intTracks[layer.textureIdTrackIndex];
+                        std::vector<int32_t> order;
+                        ir::FloatTrack frames;
+                        frames.interpolation = texTrack.interpolation;
+                        frames.globalSequenceIndex = texTrack.globalSequenceIndex;
+                        for (const auto& k : texTrack.keys) {
+                            auto it = std::find(order.begin(), order.end(), k.value);
+                            if (it == order.end()) { order.push_back(k.value); it = order.end() - 1; }
+                            ir::Keyframe<float> fk;
+                            fk.time = k.time;
+                            fk.value = static_cast<float>(it - order.begin());
+                            frames.keys.push_back(fk);
+                        }
+                        auto texList = findPBParam(ref, L"flipbookTextures");
+                        auto frameParam = findPBParam(ref, L"flipbookFrame");
+                        if (texList && frameParam && !frames.keys.empty()) {
+                            texList.pb->SetCount(texList.id, static_cast<int>(order.size()));
+                            for (size_t oi = 0; oi < order.size(); ++oi) {
+                                std::string entry = "0|0|";
+                                if (order[oi] >= 0 && order[oi] < static_cast<int32_t>(irModel.textures.size())) {
+                                    const auto& tex = irModel.textures[order[oi]];
+                                    entry = std::to_string(tex.replaceableId) + "|" +
+                                            std::to_string((tex.wrapU ? 1 : 0) | (tex.wrapV ? 2 : 0)) + "|" +
+                                            tex.filePath;
+                                }
+                                std::wstring wentry(
+                                    MultiByteToWideChar(CP_UTF8, 0, entry.c_str(), -1, nullptr, 0), L'\0');
+                                MultiByteToWideChar(CP_UTF8, 0, entry.c_str(), -1, wentry.data(),
+                                                    static_cast<int>(wentry.size()));
+                                if (!wentry.empty()) wentry.pop_back();  // the terminator
+                                texList.pb->SetValue(texList.id, 0, wentry.c_str(), static_cast<int>(oi));
+                            }
+                            // Integer steps: anything but a hold reads as Linear.
+                            if (frames.interpolation != ir::InterpolationType::None)
+                                frames.interpolation = ir::InterpolationType::Linear;
+                            if (Control* ctrl = createFloatController(frames))
+                                frameParam.pb->SetControllerByID(frameParam.id, 0, ctrl, FALSE);
+                            ILOG << "  mat[" << mi << "] layer[" << li << "] KMTF exact: "
+                                 << order.size() << " textures, " << frames.keys.size() << " keys\n";
+                        }
+                    }
+
+                    // KMTE / KFCA / KFTC / KFC3 onto the Reforged params. The
+                    // Wc3Material keeps the fresnel colour as three floats, so
+                    // KFC3 is split per channel.
+                    {
+                        auto animateMtlParam = [&](const wchar_t* name, const ir::FloatTrack& track) {
+                            if (track.empty()) return;
+                            auto p = findPBParam(ref, name);
+                            if (!p) return;
+                            if (Control* ctrl = createFloatController(track))
+                                p.pb->SetControllerByID(p.id, 0, ctrl, FALSE);
+                        };
+                        auto floatTrackAt = [&](int32_t idx) -> const ir::FloatTrack* {
+                            return (idx >= 0 && idx < static_cast<int32_t>(irModel.floatTracks.size()))
+                                ? &irModel.floatTracks[idx] : nullptr;
+                        };
+                        if (auto* t = floatTrackAt(layer.emissiveGainTrackIndex))
+                            animateMtlParam(L"emissiveGain", *t);
+                        if (auto* t = floatTrackAt(layer.fresnelAlphaTrackIndex))
+                            animateMtlParam(L"fresnelOpacity", *t);
+                        if (auto* t = floatTrackAt(layer.fresnelTeamColorTrackIndex))
+                            animateMtlParam(L"fresnelTeamCol", *t);
+                        if (layer.fresnelColorTrackIndex >= 0 &&
+                            layer.fresnelColorTrackIndex < static_cast<int32_t>(irModel.colorTracks.size())) {
+                            const auto& color = irModel.colorTracks[layer.fresnelColorTrackIndex];
+                            static const wchar_t* const kChannel[3] = { L"fresnelR", L"fresnelG", L"fresnelB" };
+                            for (int c = 0; c < 3; ++c) {
+                                ir::FloatTrack channel;
+                                channel.interpolation = color.interpolation;
+                                channel.globalSequenceIndex = color.globalSequenceIndex;
+                                for (const auto& k : color.keys) {
+                                    ir::Keyframe<float> fk;
+                                    fk.time = k.time;
+                                    fk.value = k.value[c];
+                                    fk.inTangent = k.inTangent[c];
+                                    fk.outTangent = k.outTangent[c];
+                                    fk.hasTangents = k.hasTangents;
+                                    channel.keys.push_back(fk);
+                                }
+                                animateMtlParam(kChannel[c], channel);
+                            }
+                        }
+                        if (layer.emissiveGainTrackIndex >= 0 || layer.fresnelColorTrackIndex >= 0 ||
+                            layer.fresnelAlphaTrackIndex >= 0 || layer.fresnelTeamColorTrackIndex >= 0)
+                            ILOG << "  mat[" << mi << "] layer[" << li << "] KMTE=" << layer.emissiveGainTrackIndex
+                                 << " KFC3=" << layer.fresnelColorTrackIndex
+                                 << " KFCA=" << layer.fresnelAlphaTrackIndex
+                                 << " KFTC=" << layer.fresnelTeamColorTrackIndex << "\n";
                     }
 
                     // Texture animation (KTAT translation, KTAR rotation, KTAS scale)
@@ -4184,15 +4414,36 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 animateFloatPB(pb, RB_PB_HEIGHT_BELOW, rib.heightBelowTrackIndex, irModel);
                 animateFloatPB(pb, RB_PB_ALPHA,        rib.alphaTrackIndex, irModel);
                 animateColorPB(pb, RB_PB_COLOR,        rib.colorTrackIndex, irModel);
-                animateFloatPB(pb, RB_PB_TEX_SLOT,     rib.textureSlotTrackIndex, irModel);
+                // KRTX is an integer track (intTracks), animated through the
+                // int parameter's float controller.
+                if (rib.textureSlotTrackIndex >= 0 &&
+                    rib.textureSlotTrackIndex < static_cast<int32_t>(irModel.intTracks.size())) {
+                    const auto& slots = irModel.intTracks[rib.textureSlotTrackIndex];
+                    ir::FloatTrack slotTrack;
+                    // An integer track carries no tangents, so Bezier/Hermite
+                    // come in as Linear; the exporter reads them back the same.
+                    slotTrack.interpolation = (slots.interpolation == ir::InterpolationType::None)
+                        ? ir::InterpolationType::None : ir::InterpolationType::Linear;
+                    slotTrack.globalSequenceIndex = slots.globalSequenceIndex;
+                    for (const auto& k : slots.keys) {
+                        ir::Keyframe<float> fk;
+                        fk.time = k.time;
+                        fk.value = static_cast<float>(k.value);
+                        slotTrack.keys.push_back(fk);
+                    }
+                    if (Control* ctrl = createFloatController(slotTrack))
+                        pb->SetControllerByID(RB_PB_TEX_SLOT, 0, ctrl, FALSE);
+                }
             }
 
-            // Lights: attStart, attEnd, color, intensity, ambColor, ambIntensity
+            // Lights: attStart, attEnd, color, intensity, ambColor, ambIntensity,
+            // and the 3.0 shadow-casting range and falloff (KLSS/KLSE/KLQF/KLLF/KLDA)
             //
-            // Wc3Light ist ein scripted simpleManipulator → ParamBlock-Controller-
-            // Assignment ist unzuverlässig. Gleiche Lösung wie bei KGAC: MaxScript-
-            // Route über *NamedScript-Helpers. Die setzen `n.<param>.controller =
-            // bezier_float/bezier_color` und fügen Keys via addNewKey hinzu.
+            // Wc3Light is a scripted simpleManipulator, so assigning a
+            // ParamBlock controller directly is unreliable. Same solution as for
+            // KGAC: go through MaxScript via the *NamedScript helpers. Those set
+            // `n.<param>.controller = bezier_float/bezier_color` and add the keys
+            // with addNewKey.
             for (const auto& light : irModel.lights) {
                 if (light.nodeIndex < 0 || light.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
                     continue;
@@ -4206,6 +4457,11 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 animateFloatNamedScript(lightNode, L"ShadowValue",  light.intensityTrackIndex, irModel);
                 animateColorNamedScript(lightNode, L"AmbColor",     light.ambColorTrackIndex, irModel);
                 animateFloatNamedScript(lightNode, L"AmbValue",     light.ambIntensityTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"ShadowCastingStart", light.shadowCastStartTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"ShadowCastingEnd",   light.shadowCastEndTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"QuadraticFalloff",   light.quadFalloffTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"LinearFalloff",      light.linearFalloffTrackIndex, irModel);
+                animateFloatNamedScript(lightNode, L"Damping",            light.dampingTrackIndex, irModel);
             }
 
             ILOG << "==== end parameter animations ====\n";
@@ -4294,6 +4550,21 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         seqBuilder.buildSequences(irModel, gi, reporter);
     }
 
+    // 14b. Scene art tier, through the same MaxScript writer the Settings
+    // dialog and the preview's View menu use. No resync: the import is still
+    // running, and a preview only shows the imported model after its next
+    // rebuild anyway, which is where it reads the tier.
+    {
+        wchar_t script[96];
+        swprintf_s(script, L"::WdxSceneData.setArtTier %d resync:false",
+                   static_cast<int>(artTier));
+        ExecuteMAXScriptScript(script,
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE, nullptr);
+    }
+
     // 15. Organize imported nodes into type-based layers
     // (Geometry, Bones, Attachments, Events, Lights, Cameras,
     //  Particle Emitters 1/2, Ribbon Emitters, Popcorn FX, FaceFX,
@@ -4302,7 +4573,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
     // 16. Report
     if (reporter.hasWarnings() || reporter.hasErrors()) {
-        reporter.showSummaryDialog(gi->GetMAXHWnd());
+        reporter.showSummaryDialog(gi->GetMAXHWnd(), core::Operation::Import);
     }
 
     // 17. Populate Material Editor with imported materials
@@ -4444,6 +4715,19 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                  << " ticks (" << (maxGS / GetTicksPerFrame()) << " frames)\n";
         }
     }
+
+    // Tell an open Sequence Manager to re-read the scene. We wrote the sequence
+    // Custom Attributes ourselves (Wc3SequenceBuilder::buildSequences), which the
+    // dialog knows nothing about: it would keep showing the previous model's list
+    // and, because closing it saves, write that stale list back over ours -
+    // leaving the freshly imported model with no sequences at all.
+    // No-op when the manager was never instanced.
+    ExecuteMAXScriptScript(
+        _M("try(WdxSequenceManagerRefresh())catch()"),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+        MAXScript::ScriptSource::NonEmbedded,
+#endif
+        TRUE, nullptr);
 
     gi->ForceCompleteRedraw();
 

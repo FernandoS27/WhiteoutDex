@@ -13,12 +13,22 @@ category:"Warcraft III Plugins"
 	-- not guaranteed to exist yet when this file is parsed.
 	fn parentBtnLabel = ( if ::WdxL == undefined then "Parent: " else (::WdxL.t "common_parent_prefix") )
 	local TempSelction = "None"
-	parameters main rollout:General
-    (
-        adsorption  type:#string	ui:Temp_adsorption
-    )
+	-- ONE block named `main`, holding what used to be two blocks that were both
+	-- named `main` (`adsorption` under rollout:General, the light under
+	-- rollout:params1). Keep it that way. When a scene saved with an older
+	-- definition loads, Max matches each saved block to the current definition
+	-- BY NAME: with two current blocks called `main`, both saved ones landed on
+	-- the first - the adsorption-only one - and every light value of every old
+	-- scene silently reset to its default the moment the definition changed at
+	-- all. With a single `main`, both saved blocks find all of their parameters
+	-- here. Verified headlessly against a scene saved by the two-block version:
+	-- values, colours and animated keys all survive.
+	--
+	-- `adsorption` has no ui: binding for the same reason - a block binds to one
+	-- rollout - so the General rollout reads and writes it by hand.
 	parameters main rollout:params1
 	(
+		adsorption   type:#string    default:""
 		LightType    ui:LightType   type:#integer  default:1              animatable:false
 		DecayStart   ui:DS_Spn       type:#float    default:80             animatable:true
 		DecayEnd     ui:DE_Spn       type:#float    default:200            animatable:true
@@ -26,6 +36,22 @@ category:"Warcraft III Plugins"
 		AmbValue     ui:Dif_Value    type:#float    default:1.3            animatable:true
 		ShadowColor  ui:Amb_Color    type:#color    default:[122,172,255]  animatable:true
 		ShadowValue  ui:Amb_Value    type:#float    default:0.5            animatable:true
+	)
+	-- Reforged and Warcraft III 3.0 light fields, named after their MDL keywords
+	-- so the importer, exporter and preview map them one to one. A block of its
+	-- own, with a name no saved scene has, so a light saved before these existed
+	-- loads with the defaults below - which are the values the game itself
+	-- substitutes for a light that predates them.
+	-- ShadowIntensity is NOT ShadowValue: that one is the primary intensity.
+	parameters reforged rollout:params2
+	(
+		ShadowIntensity     ui:SI_Spn   type:#float    default:0.4      animatable:false
+		ShadowCasting       ui:SC_Chk   type:#boolean  default:false    animatable:false
+		ShadowCastingStart  ui:SCS_Spn  type:#float    default:0        animatable:true
+		ShadowCastingEnd    ui:SCE_Spn  type:#float    default:0        animatable:true
+		QuadraticFalloff    ui:QF_Spn   type:#float    default:0.0005   animatable:true
+		LinearFalloff       ui:LF_Spn   type:#float    default:0        animatable:true
+		Damping             ui:DA_Spn   type:#float    default:0.00001  animatable:true
 	)
 	rollout General "General Functions"
 	(
@@ -38,12 +64,18 @@ category:"Warcraft III Plugins"
 			(
 				selection[1].pos = obj.pos
 				selection[1].parent = obj
+				adsorption = obj.name
 				Temp_adsorption.text = obj.name
 				btn_adsorption.text = (parentBtnLabel()) + obj.name
 			)catch()
 		)
 		on General open do
 		(
+			-- Not ui:-bound any more (see the parameters block), so seed the
+			-- hidden field from the parameter the way the binding used to.
+			-- A light saved before the parameter had a default carries
+			-- undefined here, which an edittext refuses.
+			Temp_adsorption.text = if adsorption == undefined then "" else adsorption
 			if ::WdxL != undefined then
 			(
 				General.title = ::WdxL.t "light_general_functions_title"
@@ -262,6 +294,59 @@ category:"Warcraft III Plugins"
 			)
 		)
 		------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	)
+	rollout params2 "Reforged Parameters"
+	(
+		-- groupBox rather than `group`: a groupBox has a name, so its caption can
+		-- be translated at runtime (see the note in WhiteoutDexLocalization.ms).
+		label        l1          "Shadow Int. .."     pos:[12,9]   align:#left     width:66
+		spinner      SI_Spn                           pos:[79,8]   height:16  fieldwidth:59  range:[0,100,0.4]      scale:0.01
+		-----------------------------------------------------------------------------------------------------
+		groupBox     grpCasting  "Shadow Casting"     pos:[5,32]   width:152  height:92
+		checkbox     SC_Chk      "Cast Shadows"       pos:[14,50]
+		label        l2          "Start ......."      pos:[14,76]  align:#left     width:62
+		spinner      SCS_Spn                          pos:[79,75]  height:16  fieldwidth:59  range:[0,99999,0]      scale:1
+		label        l3          "End ........"       pos:[14,100] align:#left     width:62
+		spinner      SCE_Spn                          pos:[79,99]  height:16  fieldwidth:59  range:[0,99999,0]      scale:1
+		-----------------------------------------------------------------------------------------------------
+		groupBox     grpFalloff  "Falloff"            pos:[5,132]  width:152  height:92
+		label        l4          "Quadratic .."       pos:[14,152] align:#left     width:62
+		spinner      QF_Spn                           pos:[79,151] height:16  fieldwidth:59  range:[0,1000,0.0005]  scale:0.0001
+		label        l5          "Linear ......"      pos:[14,176] align:#left     width:62
+		spinner      LF_Spn                           pos:[79,175] height:16  fieldwidth:59  range:[0,1000,0]       scale:0.001
+		label        l6          "Damping ...."       pos:[14,200] align:#left     width:62
+		spinner      DA_Spn                           pos:[79,199] height:16  fieldwidth:59  range:[0,1000,0.00001] scale:0.00001
+
+		on params2 open do
+		(
+			if ::WdxL != undefined then
+			(
+				params2.title = ::WdxL.t "light_reforged_parameters_title"
+				l1.text = ::WdxL.t "light_shadow_intensity_lbl"
+				grpCasting.text = ::WdxL.t "light_shadow_casting_grp"
+				SC_Chk.text = ::WdxL.t "light_cast_shadows_chk"
+				l2.text = ::WdxL.t "light_shadow_casting_start_lbl"
+				l3.text = ::WdxL.t "light_shadow_casting_end_lbl"
+				grpFalloff.text = ::WdxL.t "light_falloff_grp"
+				l4.text = ::WdxL.t "light_quadratic_falloff_lbl"
+				l5.text = ::WdxL.t "light_linear_falloff_lbl"
+				l6.text = ::WdxL.t "light_damping_lbl"
+
+				-- Each tooltip in a try of its own: older Max releases reject
+				-- `.tooltip` on some control types, and one refusal must not
+				-- take the rest down with it.
+				local tips = #(
+					#(SI_Spn,  "light_shadow_intensity_tip"),
+					#(SC_Chk,  "light_cast_shadows_tip"),
+					#(SCS_Spn, "light_shadow_casting_start_tip"),
+					#(SCE_Spn, "light_shadow_casting_end_tip"),
+					#(QF_Spn,  "light_quadratic_falloff_tip"),
+					#(LF_Spn,  "light_linear_falloff_tip"),
+					#(DA_Spn,  "light_damping_tip"))
+				for tip in tips do
+					try (tip[1].tooltip = ::WdxL.t tip[2]) catch ()
+			)
+		)
 	)
 
 	tool create

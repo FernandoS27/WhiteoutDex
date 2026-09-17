@@ -12,6 +12,7 @@
 #include <map>
 #include <set>
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <windows.h>
 
@@ -275,6 +276,25 @@ Track<Vector3f> getColorTrack(const ir::IRModel& ir, int32_t trackIndex) {
     return convertTrack<Vector3f, Color>(ir.colorTracks[trackIndex], colorTransform);
 }
 
+Track<u32> getIntTrack(const ir::IRModel& ir, int32_t trackIndex) {
+    if (trackIndex < 0 || trackIndex >= static_cast<int32_t>(ir.intTracks.size()))
+        return {};
+    return convertTrack<u32, int32_t>(ir.intTracks[trackIndex], intIdentity);
+}
+
+// PREM names what it spawns with one of two flags. Blizzard's files pair
+// EmitterUsesMDL with a model path and EmitterUsesTGA with a texture, and the
+// Wc3Particles1 plugin only keeps the path, so the extension decides.
+Node::NodeFlag particleEmitter1SpawnFlag(const std::string& path) {
+    size_t dot = path.find_last_of('.');
+    std::string ext = (dot == std::string::npos) ? std::string() : path.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    const bool isImage = (ext == "tga" || ext == "blp" || ext == "dds" || ext == "tif" ||
+                          ext == "png" || ext == "jpg");
+    return static_cast<Node::NodeFlag>(isImage ? 0x10000u : 0x8000u);
+}
+
 } // anonymous namespace
 
 Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts) {
@@ -362,8 +382,11 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     }
 
     // 6. Bones + helpers
+    std::vector<int32_t> irBoneToMdxBone(ir.bones.size(), -1);
     for (auto& bone : ir.bones) {
         auto boneFlags = static_cast<Node::NodeFlag>(bone.nodeFlags);
+        irBoneToMdxBone[&bone - ir.bones.data()] =
+            (bone.isHelper && opts.version < 1200) ? -1 : static_cast<int32_t>(model.bones.size());
         if (bone.isHelper && opts.version < 1200) {
             // v800: separate helper
             Helper h;
@@ -428,16 +451,46 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             // Skin weights (v1200 SKIN chunk)
             if (opts.version >= 1200 && !v.skinInfluences.empty()) {
                 // SKIN: 4 bone indices (u8) + 4 weights (u8) = 8 bytes per vertex
-                // boneIndex is an IR node index; convert to hierarchy objectId
+                // boneIndex is an IR node index; convert to hierarchy objectId.
+                //
+                // mesh_extractor hands us every influence, heaviest first, so
+                // the first 4 are the dominant bones. Renormalize over just
+                // those 4 and hand out the byte budget by largest remainder so
+                // the row sums to exactly 255 — a vertex with 5+ influences,
+                // or plain per-bone rounding, otherwise ends up under-weighted
+                // and drifts toward the origin.
                 uint8_t boneIds[4] = {0, 0, 0, 0};
                 uint8_t weights[4] = {0, 0, 0, 0};
                 size_t count = std::min(v.skinInfluences.size(), size_t(4));
+
+                float kept = 0.0f;
+                for (size_t si = 0; si < count; si++)
+                    kept += v.skinInfluences[si].weight;
+
+                int   assigned = 0;
+                float remainder[4] = {0.0f, 0.0f, 0.0f, 0.0f};
                 for (size_t si = 0; si < count; si++) {
                     uint32_t objId = hierarchy.getObjectId(v.skinInfluences[si].boneIndex);
                     boneIds[si] = (objId != Node::NO_PARENT)
                                       ? static_cast<uint8_t>(objId) : 0;
-                    weights[si] = static_cast<uint8_t>(
-                        v.skinInfluences[si].weight * 255.0f + 0.5f);
+                    float exact = (kept > 1e-7f)
+                        ? v.skinInfluences[si].weight / kept * 255.0f
+                        : 0.0f;
+                    int whole = static_cast<int>(exact);
+                    weights[si] = static_cast<uint8_t>(whole);
+                    remainder[si] = exact - static_cast<float>(whole);
+                    assigned += whole;
+                }
+                for (int leftover = 255 - assigned; leftover > 0; --leftover) {
+                    int best = -1;
+                    for (size_t si = 0; si < count; si++) {
+                        if (weights[si] == 255) continue;
+                        if (best < 0 || remainder[si] > remainder[best])
+                            best = static_cast<int>(si);
+                    }
+                    if (best < 0) break;
+                    weights[best]++;
+                    remainder[best] -= 1.0f;
                 }
                 for (int bi = 0; bi < 4; bi++) geo.skinData.push_back(boneIds[bi]);
                 for (int wi = 0; wi < 4; wi++) geo.skinData.push_back(weights[wi]);
@@ -558,7 +611,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
                 geo.matrixIndices[i] = i;
         }
 
-        geo.selectionGroup = 0;
+        geo.selectionGroup = irMesh.selectionGroup;
         geo.selectionFlags = 0;
 
         // LOD fields — propagate from IR (populated by mesh_extractor from
@@ -677,6 +730,15 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         light.ambientColor = {irLight.ambientColor.r, irLight.ambientColor.g,
                               irLight.ambientColor.b};
         light.ambientIntensity = irLight.ambientIntensity;
+        // Version-gated by the writer: shadowIntensity from v1200, the shadow
+        // casting range from v1300, the falloff from v1600.
+        light.shadowIntensity = irLight.shadowIntensity;
+        light.shadowCasting = irLight.shadowCasting;
+        light.shadowCastingStart = irLight.shadowCastingStart;
+        light.shadowCastingEnd = irLight.shadowCastingEnd;
+        light.quadraticFalloff = irLight.quadraticFalloff;
+        light.linearFalloff = irLight.linearFalloff;
+        light.damping = irLight.damping;
 
         light.attenuationStartTracks = getFloatTrack(ir, irLight.attStartTrackIndex);
         light.attenuationEndTracks = getFloatTrack(ir, irLight.attEndTrackIndex);
@@ -685,6 +747,11 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         light.visibilityTracks = getFloatTrack(ir, irLight.visibilityTrackIndex);
         light.colorTracks = getColorTrack(ir, irLight.colorTrackIndex);
         light.ambientColorTracks = getColorTrack(ir, irLight.ambColorTrackIndex);
+        light.shadowCastingStartTracks = getFloatTrack(ir, irLight.shadowCastStartTrackIndex);
+        light.shadowCastingEndTracks = getFloatTrack(ir, irLight.shadowCastEndTrackIndex);
+        light.quadraticFalloffTracks = getFloatTrack(ir, irLight.quadFalloffTrackIndex);
+        light.linearFalloffTracks = getFloatTrack(ir, irLight.linearFalloffTrackIndex);
+        light.dampingTracks = getFloatTrack(ir, irLight.dampingTrackIndex);
 
         model.lights.push_back(std::move(light));
     }
@@ -707,6 +774,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             pe.node = buildNode(ir, irPe.nodeIndex, hierarchy,
                                 Node::NodeType::ParticleEmitter,
                                 Node::NodeFlag::ParticleEmitter, invScale);
+            pe.node.flags = pe.node.flags | particleEmitter1SpawnFlag(irPe.modelPath);
 
             pe.emissionRate = irPe.emissionRate;
             pe.gravity = irPe.gravity;
@@ -840,6 +908,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         rib.heightBelowTracks = getFloatTrack(ir, irRib.heightBelowTrackIndex);
         rib.alphaTracks = getFloatTrack(ir, irRib.alphaTrackIndex);
         rib.colorTracks = getColorTrack(ir, irRib.colorTrackIndex);
+        rib.textureSlotTracks = getIntTrack(ir, irRib.textureSlotTrackIndex);
         rib.visibilityTracks = getFloatTrack(ir, irRib.visibilityTrackIndex);
 
         model.ribbonEmitters.push_back(std::move(rib));
@@ -856,6 +925,8 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
 
         for (auto keyTime : irEvt.keyTimes)
             evt.eventTrackTimes.push_back(mdx_transform::ticksToMs(keyTime));
+        if (irEvt.globalSequenceIndex >= 0)
+            evt.globalSequenceId = static_cast<u32>(irEvt.globalSequenceIndex);
 
         model.eventObjects.push_back(std::move(evt));
     }
@@ -1016,6 +1087,12 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         cam.positionTracks = getVec3Track(ir, irCam.positionTrackIndex);
         cam.targetPositionTracks = getVec3Track(ir, irCam.targetPositionTrackIndex);
         cam.targetRotationTracks = getFloatTrack(ir, irCam.rotationTrackIndex);
+        // KCVS / IDUF / ELAF / PTSF are written at every version (see the
+        // writer); only a 3.0 source scene carries them.
+        cam.visibilityTracks = getFloatTrack(ir, irCam.visibilityTrackIndex);
+        cam.focusDistanceTracks = getFloatTrack(ir, irCam.focusDistanceTrackIndex);
+        cam.focalLengthTracks = getFloatTrack(ir, irCam.focalLengthTrackIndex);
+        cam.fStopTracks = getFloatTrack(ir, irCam.fStopTrackIndex);
 
         // Convert absolute world positions -> deltas relative to cam.position/targetPosition
         applyCameraDelta(cam.positionTracks,       cam.position);
@@ -1043,10 +1120,12 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             ga.color = {irGa.color.r, irGa.color.g, irGa.color.b};
             ga.alphaTracks = getFloatTrack(ir, irGa.alphaTrackIndex);
             ga.colorTracks = getColorTrack(ir, irGa.colorTrackIndex);
-            // flags bit 0 = use color (static or animated)
+            // flags bit 0 = DropShadow, bit 1 = use color (static or animated)
             bool hasNonWhiteColor = (irGa.color.r < 0.999f || irGa.color.g < 0.999f || irGa.color.b < 0.999f);
-            if (ga.colorTracks.isUsed || hasNonWhiteColor)
-                ga.flags = GeosetAnimation::Flag::Color;
+            if (irGa.usesColor || ga.colorTracks.isUsed || hasNonWhiteColor)
+                ga.flags = ga.flags | GeosetAnimation::Flag::Color;
+            if (irGa.dropShadow)
+                ga.flags = ga.flags | GeosetAnimation::Flag::DropShadow;
             model.geosetAnimations.push_back(std::move(ga));
         }
     } else {
@@ -1057,6 +1136,43 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             ga.geosetId = static_cast<uint32_t>(i);
             ga.color = Vector3f{1, 1, 1};
             model.geosetAnimations.push_back(std::move(ga));
+        }
+    }
+
+    // 16b. Bone visibility gates. The importer keeps a gated bone's geoset as
+    // the `Wc3VisibilityGeoset` UserProp (the mesh node's handle). The bone
+    // then names that geoset and its geoset animation, which is the pairing
+    // every shipped model uses. Bones without the prop keep the MATS-derived
+    // geosetId above and no gate.
+    if (!ir.geosetAnims.empty()) {
+        for (size_t bi = 0; bi < ir.bones.size(); ++bi) {
+            const int32_t mdxBone = irBoneToMdxBone[bi];
+            const int32_t nodeIdx = ir.bones[bi].nodeIndex;
+            if (mdxBone < 0 || nodeIdx < 0 || nodeIdx >= static_cast<int32_t>(ir.nodes.size()))
+                continue;
+            INode* boneNode = ir.nodes[nodeIdx].maxNode;
+            int handle = 0;
+            if (!boneNode || !boneNode->GetUserPropInt(_T("Wc3VisibilityGeoset"), handle) || handle <= 0)
+                continue;
+
+            for (size_t mi = 0; mi < ir.meshes.size(); ++mi) {
+                const int32_t meshNode = ir.meshes[mi].nodeIndex;
+                if (meshNode < 0 || meshNode >= static_cast<int32_t>(ir.nodes.size()) ||
+                    !ir.nodes[meshNode].maxNode ||
+                    ir.nodes[meshNode].maxNode->GetHandle() != static_cast<ULONG>(handle))
+                    continue;
+                uint32_t gid = static_cast<uint32_t>(mi);
+                if (!geosetRemap.empty() && gid < geosetRemap.size())
+                    gid = geosetRemap[gid];
+                for (size_t gai = 0; gai < model.geosetAnimations.size(); ++gai) {
+                    if (model.geosetAnimations[gai].geosetId != gid) continue;
+                    model.bones[mdxBone].geosetId = gid;
+                    model.bones[mdxBone].geosetAnimationId = static_cast<uint32_t>(gai);
+                    break;
+                }
+                if (model.bones[mdxBone].geosetAnimationId != Bone::MULTIPLE_GEOSETS)
+                    break;
+            }
         }
     }
 

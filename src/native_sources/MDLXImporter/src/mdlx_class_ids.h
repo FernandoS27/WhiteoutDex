@@ -23,6 +23,11 @@ namespace mdx_ids {
     inline const Class_ID WC3_PARTICLES2     (0xD9F33BC9, 0x7A0DA37A);
     inline const Class_ID WC3_RIBBON         (0x937AA064, 0x9EFFA3DA);
 
+    // 3ds Max Physical Camera (stdplugs/PhysicalCamera.dlo, shipped since
+    // 2016 with the same Class_ID and parameter names). Its focal
+    // length, f-number and focus distance carry the 3.0 camera DoF tracks.
+    inline const Class_ID PHYSICAL_CAMERA    (0x46697218, 0x28E8008D);
+
     // Cross-DLL interface IDs
     constexpr ULONG WC3P1_MODEL_PATH_IID    = 0x7B3C8D01;
     constexpr ULONG WC3P1_MODEL_PREFIX_IID  = 0x7B3C8D02;

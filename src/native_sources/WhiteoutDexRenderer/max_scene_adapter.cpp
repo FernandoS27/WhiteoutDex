@@ -621,8 +621,9 @@ std::wstring MaxSceneAdapter::ResolveBitmapPath(Mtl* mtl, const wchar_t* paramNa
 }
 
 // ============================================================================
-// ReadWc3MaterialFlags — pack the six Wc3Material bool toggles into the
-// renderer's compact MaterialLayerData::flags bitmask.
+// ReadWc3MaterialFlags — pack the Wc3Material bool toggles into the
+// renderer's compact MaterialLayerData::flags bitmask (the MAT_* values in
+// whiteout/flakes/enums.h).
 // ============================================================================
 
 i32 MaxSceneAdapter::ReadWc3MaterialFlags(Mtl* mtl) {
@@ -630,8 +631,16 @@ i32 MaxSceneAdapter::ReadWc3MaterialFlags(Mtl* mtl) {
         const wchar_t* name;
         i32 bit;
     } kFlags[] = {
-        {L"twoSided", 1},    {L"unshaded", 2},    {L"unfogged", 4},
-        {L"noDepthTest", 8}, {L"noDepthSet", 16}, {L"constantColor", 32},
+        {L"twoSided", MAT_TWO_SIDED},
+        {L"unshaded", MAT_UNSHADED},
+        {L"unfogged", MAT_UNFOGGED},
+        {L"noDepthTest", MAT_NO_DEPTH_TEST},
+        {L"noDepthSet", MAT_NO_DEPTH_SET},
+        {L"constantColor", MAT_CONSTANT_COLOR},
+        // The HD pass gates AO_MAP on this bit, so a Max material without it
+        // previews with no baked occlusion - the same as the game draws it.
+        {L"ambientOcclusion", MAT_AMBIENT_OCCLUSION},
+        {L"backFacesForShadows", MAT_BACK_FACES_FOR_SHADOWS},
     };
     i32 flags = 0;
     for (auto& f : kFlags) {
@@ -1821,6 +1830,13 @@ std::vector<MeshData> MaxSceneAdapter::GetMeshes() {
         md.indices.resize(numFaces * 3);
 
         bool hasUVs = mesh.getNumMapVerts(1) > 0;
+        // Map channel 2 is the MDX geoset's second UVAS set: Reforged HD
+        // unwraps twice and bakes ambient occlusion against the second one,
+        // which `hd_ps` samples as ORM.x at TEXCOORD1. The importer writes
+        // MDX set 1 there (set 0 goes to channel 1), so mirror that here.
+        const bool hasUV1 = mesh.getNumMapVerts(2) > 0 && mesh.mapFaces(2) != nullptr;
+        if (hasUV1)
+            md.uvs1.resize(numVerts);
         MeshNormalSpec* specN = mesh.GetSpecifiedNormals();
         bool hasSpecN = specN && specN->GetNumNormals() > 0;
 
@@ -1853,6 +1869,11 @@ std::vector<MeshData> MaxSceneAdapter::GetMeshes() {
                     md.uvs[outIdx] = {uv.x, 1.0f - uv.y};
                 } else {
                     md.uvs[outIdx] = {0, 0};
+                }
+                if (hasUV1) {
+                    TVFace& tvf1 = mesh.mapFaces(2)[f];
+                    UVVert uv1 = mesh.mapVerts(2)[tvf1.t[v]];
+                    md.uvs1[outIdx] = {uv1.x, 1.0f - uv1.y};
                 }
                 md.indices[f * 3 + v] = (u32)outIdx;
             }
@@ -2405,6 +2426,32 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             ForEachWc3SubMtl(mtl, [&](Mtl* sub, i32 layerIdx) {
                 const f32 a = PB2FloatOr(sub, L"opacity", t, 100.0f);
                 state.layerAlphas.push_back({matId, layerIdx, std::min(a / 100.0f, 1.0f)});
+
+                // KMTE / KFC3 / KFCA / KFTC: only a layer that animates one of
+                // them needs a per-frame override — the static values already
+                // went up with the material.
+                static const wchar_t* const kReforgedParams[] = {
+                    L"emissiveGain", L"fresnelR", L"fresnelG", L"fresnelB",
+                    L"fresnelOpacity", L"fresnelTeamCol"};
+                bool animated = false;
+                for (const wchar_t* name : kReforgedParams) {
+                    FindPB2Param(sub, name, [&](IParamBlock2* pblock, ParamID pid, ParamDef&) {
+                        Control* c = pblock->GetControllerByID(pid, 0);
+                        animated = animated || (c && c->IsAnimated());
+                    });
+                }
+                if (animated) {
+                    FrameState::LayerFresnelState lf;
+                    lf.materialId = matId;
+                    lf.layerIndex = layerIdx;
+                    lf.fresnelColor = {PB2FloatOr(sub, L"fresnelR", t, 1.0f),
+                                       PB2FloatOr(sub, L"fresnelG", t, 1.0f),
+                                       PB2FloatOr(sub, L"fresnelB", t, 1.0f)};
+                    lf.fresnelOpacity = PB2FloatOr(sub, L"fresnelOpacity", t, 0.0f);
+                    lf.fresnelTeamColor = PB2FloatOr(sub, L"fresnelTeamCol", t, 0.0f);
+                    lf.emissiveGain = PB2FloatOr(sub, L"emissiveGain", t, 1.0f);
+                    state.layerFresnels.push_back(lf);
+                }
             });
         }
     }
@@ -2514,6 +2561,21 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             ls.attenStart = PB2FloatOr(obj, L"DecayStart", t, 0.0f);
             ls.attenEnd = PB2FloatOr(obj, L"DecayEnd", t, 0.0f);
             ls.enabled = visible;
+
+            // Reforged / 3.0 parameters. Read at frame 0 rather than `t`: the
+            // game's SetLightValues uses only the static values and never
+            // evaluates KLSS / KLSE / KLQF / KLLF / KLDA, MdxModelAdapter
+            // mirrors that, and frame 0 is the static value the exporter
+            // writes. A light saved before the plug-in grew these parameters
+            // falls back to the LightState defaults, which are the game's own.
+            ls.shadowIntensity = PB2FloatOr(obj, L"ShadowIntensity", 0, ls.shadowIntensity);
+            ls.shadowCasting = PB2BoolOr(obj, L"ShadowCasting", 0, ls.shadowCasting);
+            ls.shadowCastingStart =
+                PB2FloatOr(obj, L"ShadowCastingStart", 0, ls.shadowCastingStart);
+            ls.shadowCastingEnd = PB2FloatOr(obj, L"ShadowCastingEnd", 0, ls.shadowCastingEnd);
+            ls.quadraticFalloff = PB2FloatOr(obj, L"QuadraticFalloff", 0, ls.quadraticFalloff);
+            ls.linearFalloff = PB2FloatOr(obj, L"LinearFalloff", 0, ls.linearFalloff);
+            ls.damping = PB2FloatOr(obj, L"Damping", 0, ls.damping);
         } else {
             // Stock Max light. SuperClassID() == LIGHT_CLASS_ID is the SDK's
             // guarantee that this derives from LightObject; Type() lives one
@@ -2545,6 +2607,12 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
         intensity = std::max(0.0f, intensity);
         ls.diffuse = {color.x * intensity, color.y * intensity, color.z * intensity};
         ls.dirIntensity = intensity;
+
+        // The game gives a light whose node is named Key_ShadowCast the first
+        // point-shadow slot (EnvSet field 13). Same test MdxModelAdapter makes
+        // on the MDX node name, and the Max node name is what gets exported.
+        if (const MCHAR* nodeName = node->GetName())
+            ls.shadowPriority = wcsstr(nodeName, L"Key_ShadowCast") != nullptr;
 
         if (ls.kind == FrameState::LightKind::Omni)
             ls.worldPos = whiteout::transform_point(Vector3f{0.0f, 0.0f, 0.0f}, world);

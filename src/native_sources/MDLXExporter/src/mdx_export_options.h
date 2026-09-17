@@ -29,7 +29,7 @@ struct MdxExportOptions {
     int32_t blpCompression = 0;           // 0 = Paletted (256 colors), 1 = JPEG
     int32_t blpJpegQuality = 75;          // 1..100
     bool    blpDithering = false;
-    // DDS-specific (used when version == 1200)
+    // DDS-specific (used for Reforged, version >= 1200)
     int32_t ddsFormat = 0;                // 0 = BC3, 1 = BC7
 
     int32_t animSampleInterval = 160; // ticks (160 = ~30fps subsample)

@@ -17,7 +17,7 @@ the generated copy under <build>/packaging/.
     AppVersion="@WDX_VERSION@"
     Author="Fernando Sahmkow &amp; Benjamin Schiefer"
     ProductCode="@WDX_PRODUCT_CODE@"
-    UpgradeCode="{4583FEEB-C403-46E3-9C96-4563A4A34E24}">
+    UpgradeCode="{D0A962FA-3F18-4A8C-AF8B-A474EB3B40FB}">
 
     <!-- Top-level RuntimeRequirements. SeriesMin/SeriesMax must bracket every
          per-version <Components> block below; if Max's version falls outside
@@ -34,9 +34,14 @@ the generated copy under <build>/packaging/.
         Email="kontakt@benjaminschiefer.de" />
 
     <!-- ================================================================
-         NATIVE PLUGINS — one Components block per (Max version × plugin).
-         CMake generates the contents from WDX_MAX_VERSIONS so the manifest
-         always tracks the binaries the installer actually ships.
+         NATIVE PLUGINS — one Components block per Max version, listing
+         every plug-in for that year. CMake generates the contents from
+         WDX_MAX_VERSIONS so the manifest always tracks the binaries the
+         installer ships; the installer then cuts out the WDX:Max<year>
+         fence of each year whose 3ds Max it did not find.
+
+         Max 2016/2017 honour these blocks but not the script blocks below;
+         their scripts come from the WhiteoutDexLoader.ms startup loader.
          ================================================================ -->
 
 @WDX_NATIVE_PLUGINS_COMPONENTS@

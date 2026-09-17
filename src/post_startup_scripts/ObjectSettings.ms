@@ -5,7 +5,7 @@ struct WdxObjectSettings
 	mainRollout = rollout mainRollout "Settings" width:440 height:232
 	(
 		
-		-- Flags (links) - Alle Bone-Flags wie im Reforged Editor
+		-- Flags (left-hand column) - every bone flag, as in the Reforged editor
 		GroupBox grpFlags "Flags" pos:[8,33] width:212 height:192
 		checkbox dontInhTransChk "Don't Inherit Translation" pos:[28,52] width:180 height:18 tooltip:"Ignore parent translation"
 		checkbox dontInhRotChk "Don't Inherit Rotation" pos:[28,72] width:180 height:18 tooltip:"Ignore parent rotation"
@@ -218,7 +218,7 @@ struct WdxObjectSettings
 
 		for s in selection do
 		(
-			-- Alte "Billboard" Property migrieren falls vorhanden
+			-- Migrate the old "Billboard" property if it is present
 			try ( ::WdxUtils.getBillboardFlags s ) catch()
 			
 			bbFull  = tmp bbFull  (tmp2 s "Billboarded")
@@ -230,7 +230,7 @@ struct WdxObjectSettings
 			unsel = tmp unsel (tmp2 s "Unselectable")
 			skinEnabled = skinEnabled and (WdxIsMesh s)
 			
-			-- DontInherit aus den nativen Max Inheritance Flags lesen
+			-- Read DontInherit from Max's own native inheritance flags
 			try
 			(
 				local inhFlags = getInheritanceFlags s

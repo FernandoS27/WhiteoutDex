@@ -1,51 +1,60 @@
-# BLP Plugin für 3ds Max — Anleitung
+# BLP plug-in for 3ds Max
 
-## Ordnerstruktur
+`blp-max` builds `blp.bmi`, a Bitmap I/O plug-in that lets 3ds Max open
+Warcraft III `.blp` textures anywhere it accepts a bitmap — the Material
+Editor, a Bitmap texmap, the asset browser.
 
-Lege den `blp-max` Ordner NEBEN deinen `WhiteoutLib` Ordner:
+It is a thin shell around WhiteoutLib's BLP decoder: `blpio.cpp` converts a
+decoded image into a Max `BitmapStorage`, and `blpdll.cpp` exposes the class
+descriptor. WhiteoutLib itself is not modified.
 
-```
-C:\Users\DeinName\Projekte\
-├── WhiteoutLib\        ← dein vorhandenes Repo (unverändert!)
-└── blp-max\            ← dieser Ordner hier
-    ├── blpio.h
-    ├── blpio.cpp
-    ├── blpdll.cpp
-    ├── blp.def
-    ├── CMakeLists.txt
-    └── BAUE_PLUGIN.bat
-```
+## Layout
 
-Das ist alles. WhiteoutLib wird NICHT verändert.
-
-
-## Was du brauchst
-
-1. **Visual Studio 2022 oder neuer** mit "Desktopentwicklung mit C++"
-2. **3ds Max SDK** für deine Version (z.B. 2026)
-3. **CMake** (kommt normalerweise mit Visual Studio mit)
-
-
-## Bauen — 3 Schritte
-
-### Schritt 1: Pfade anpassen
-
-Öffne `BAUE_PLUGIN.bat` mit einem Texteditor und passe diese 2 Zeilen an:
+The plug-in is built as part of the WhiteoutDex CMake tree, which supplies both
+the `MaxSDK` interface library and `whiteout_lib`. It is not meant to be
+configured standalone.
 
 ```
-set MAX_SDK=C:\Program Files\Autodesk\3ds Max 2026 SDK\maxsdk
-set MAX_PLUGINS=C:\Program Files\Autodesk\3ds Max 2026\Plugins
+src/native_sources/blp-max/
+├── blpio.h        - decoder-to-BitmapStorage bridge
+├── blpio.cpp
+├── blpdll.cpp     - DLL entry points and class descriptor
+├── blp.def        - exported symbols
+├── CMakeLists.txt - target definition (parent supplies the dependencies)
+└── Build.bat      - standalone build for every installed Max SDK
 ```
 
-### Schritt 2: Bauen
+## Building
 
-Rechtsklick auf `BAUE_PLUGIN.bat` → **"Als Administrator ausführen"**
+The whole toolkit builds through the top-level `CMakeLists.txt`, which is the
+normal path. `Build.bat` is there for iterating on the plug-in on its own.
 
-Das baut automatisch WhiteoutLib UND das Plugin zusammen.
+Run it from this directory. It needs no arguments and no editing: it walks the
+Max versions 2016 through 2027, and for each one where
+`C:\Program Files\Autodesk\3ds Max <year> SDK\maxsdk\include\max.h` exists it
+configures a `build_<year>` tree and builds it in Release. A version whose SDK
+is not installed is skipped.
 
-### Schritt 3: Testen
+It picks the CMake generator from the installed Visual Studio: Visual Studio
+2026 when `vswhere` reports one, otherwise Visual Studio 2022.
 
-1. 3ds Max starten
-2. Material Editor öffnen (Taste M)
-3. Auf Diffuse Map klicken → Bitmap → eine .blp Datei laden
-4. Die Textur wird direkt angezeigt!
+Each successful build is copied to two places:
+
+- `output\blp_<year>.bmi`, next to the sources.
+- `%APPDATA%\Autodesk\ApplicationPlugins\WhiteoutDex\native plugins\Max<year>\blp.bmi`,
+  where WhiteoutDex loads it from.
+
+The run ends with a count of how many versions built, failed and were skipped.
+
+Writing into the per-user `%APPDATA%` plug-in folder needs no elevation. A
+system-wide install under `Program Files` does.
+
+## Checking that it worked
+
+1. Start 3ds Max.
+2. Open the Material Editor (keyboard `M`).
+3. Click a Diffuse map slot, choose Bitmap, and load a `.blp` file.
+
+The texture should display directly. If the file dialog does not offer `.blp`,
+the `.bmi` did not load — confirm it is in the `Max<year>` folder that matches
+the running version.

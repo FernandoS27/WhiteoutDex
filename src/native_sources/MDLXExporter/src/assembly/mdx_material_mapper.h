@@ -15,4 +15,7 @@ private:
     whiteout::mdx::Layer mapLayer(const ir::MaterialLayer& irLayer,
                                    const ir::IRModel& model,
                                    uint32_t version);
+
+    static whiteout::mdx::Track<whiteout::f32> floatTrack(const ir::IRModel& model,
+                                                         int32_t index);
 };

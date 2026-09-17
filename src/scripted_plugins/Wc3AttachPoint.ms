@@ -206,7 +206,7 @@ category:"Warcraft III Plugins"
 		)
 		on btnInfo pressed do
 		(
-			messageBox ("Please note that the model path is prefixed with the Warcraft root directory, which means that for example, if my model is placed in the textures folder under the Warcraft root directory, then my path would be Textures\\Model.mdx    ") beep: false
+			messageBox ((::WdxL.t "attach_model_path_info_msg") + "    ") beep: false
 		)
 		on params open do
 		(

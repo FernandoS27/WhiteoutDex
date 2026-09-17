@@ -1014,7 +1014,7 @@ global WhiteoutDexTexBrowserLastPick = ""
 
    The naming convention Reforged textures follow is the only thing that tells
    a normal map from a diffuse one, and it is the same convention
-   _ntbValidateSlot checks on the way back out. Seeding the search box with it
+   _wdxValidateSlot checks on the way back out. Seeding the search box with it
    means the browse opens on the plausible files without HIDING the rest - the
    user can clear the box, which they could not do with the old form's fixed
    slot filter. */
@@ -1032,7 +1032,7 @@ fn _ntbSlotSearchSeed slotName =
 )
 
 -- Validates whether a filename matches the expected naming convention for a slot
-fn _ntbValidateSlot fileName slotName =
+fn _wdxValidateSlot fileName slotName =
 (
     local baseName = toLower (getFilenameFile fileName)
     case slotName of
@@ -1049,7 +1049,7 @@ fn _ntbValidateSlot fileName slotName =
 )
 
 -- Assigns a texture file to a specific slot on an existing Warcraft3 material
-fn _ntbAssignToSlot mat slotName filePath archivePath:"" =
+fn _wdxAssignToSlot mat slotName filePath archivePath:"" =
 (
     -- ── New Wc3Material plugin (Build 2.x) ───────────────────────────────
     -- Detected by presence of `diffuseMap` + `diffusePrefix` properties.
@@ -1241,7 +1241,7 @@ fn _ntbSlotLabel slotName =
 -- that belongs there. Returns true when something was assigned.
 fn _ntbAssignChecked mat slotName filePath archivePath:"" =
 (
-    if not (_ntbValidateSlot filePath slotName) then
+    if not (_wdxValidateSlot filePath slotName) then
     (
         -- Two placeholders, so the sentence can be reordered: %1 is the
         -- file name, %2 the slot label. German and Japanese both need the
@@ -1251,7 +1251,7 @@ fn _ntbAssignChecked mat slotName filePath archivePath:"" =
         if not (queryBox msg title:"WhiteoutDex Texture Browser" beep:false) then
             return false
     )
-    _ntbAssignToSlot mat slotName filePath archivePath:archivePath
+    _wdxAssignToSlot mat slotName filePath archivePath:archivePath
     true
 )
 

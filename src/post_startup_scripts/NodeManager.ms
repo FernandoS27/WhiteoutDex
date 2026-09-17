@@ -8,11 +8,11 @@ struct WdxNodeManager
 		-- Detection functions
 		fn isGeometry o = classof o == Editable_Mesh
 		fn isAttachmentPoint o = ((classof o) as string == "Wdx_Wc3AttachPoint")
-		fn isCollisionShape o = ((classof o) as string == "Wdx_CollisionBox") or ((classof o) as string == "Wdx_CollisionSphere")
+		fn isCollisionShape o = ((classof o) as string == "Wdx_CollisionBox") or ((classof o) as string == "Wdx_Wc3CollisionSphere")
 		fn isEventObject o = ((classof o) as string == "Wdx_Wc3Event")
 		fn isParticle1 o = ((classof o) as string == "Wc3Particles1")
 		fn isParticle2 o = ((classof o) as string == "Wc3Particles2")
-		fn isRibbon o = ((classof o) as string == "BlizRibbon")
+		fn isRibbon o = ((classof o) as string == "Wc3Ribbon")
 		fn isPopcorn o = ((classof o) as string == "Wdx_Wc3Popcorn")
 		fn isFaceFX o = ((classof o) as string == "Wdx_FaceFX")
 		fn isBipedBone o = classof o == Biped_Object

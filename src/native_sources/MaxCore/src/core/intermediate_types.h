@@ -22,10 +22,14 @@ struct SkinInfluence {
     float weight = 0.0f;
 };
 
+// How many UVAS channels a vertex can carry. MDX allows up to 16 and Reforged
+// HD geosets ship 2 (atlas unwrap + a second, non-overlapping bake unwrap).
+inline constexpr int kMaxUVSets = 4;
+
 struct Vertex {
     Point3 position;
     Point3 normal;
-    std::array<Point2, 4> uvSets = {};
+    std::array<Point2, kMaxUVSets> uvSets = {};
     int32_t uvSetCount = 0;
     Point4 tangent;
     bool hasTangent = false;
@@ -41,6 +45,8 @@ struct Mesh {
     std::vector<uint32_t> indices;
     int32_t materialIndex = -1;
     bool hasDropShadow = false;
+    // MDX geoset SelectionGroup, kept in the `Wc3SelectionGroup` UserProp.
+    uint32_t selectionGroup = 0;
 
     // LOD (v1000+ only): level-of-detail index. 0 = highest detail / main mesh,
     // 1,2,... = lower detail HD layers. Populated from the `Wc3GeosetLod`
@@ -144,6 +150,12 @@ struct MaterialLayer {
     bool noDepthWrite = false;
     bool sphereEnvMap = false;
     bool unfogged = false;
+    bool backFacesForShadows = false;
+    bool ambientOcclusion = false;
+
+    // MDX Layer::ShaderType value (0 SD, 1 HD, 2 SD on HD, 24 Crystal), or -1
+    // when the source does not say and the exporter has to infer it.
+    int32_t shaderType = -1;
 
     int32_t alphaTrackIndex = -1;
     int32_t textureIdTrackIndex = -1;
@@ -234,6 +246,17 @@ struct Light {
     float intensity = 1.0f;
     Color ambientColor = Color(0.0f, 0.0f, 0.0f);
     float ambientIntensity = 0.0f;
+    // Static only: MDX has no track for it. Written from v1200.
+    float shadowIntensity = 0.4f;
+    // Warcraft III 3.0 (MDX 1300): point-light shadows.
+    bool shadowCasting = false;
+    float shadowCastingStart = 0.0f;
+    float shadowCastingEnd = 0.0f;
+    // Warcraft III 3.0 (MDX 1600) falloff. The defaults are the values the
+    // game substitutes for an older light, not zeroes.
+    float quadraticFalloff = 0.0005f;
+    float linearFalloff = 0.0f;
+    float damping = 0.00001f;
 
     int32_t attStartTrackIndex = -1;
     int32_t attEndTrackIndex = -1;
@@ -243,6 +266,11 @@ struct Light {
     int32_t ambIntensityTrackIndex = -1;
     int32_t visibilityTrackIndex = -1;
     int32_t shadowIntensityTrackIndex = -1;
+    int32_t shadowCastStartTrackIndex = -1;  // KLSS
+    int32_t shadowCastEndTrackIndex = -1;    // KLSE
+    int32_t quadFalloffTrackIndex = -1;      // KLQF
+    int32_t linearFalloffTrackIndex = -1;    // KLLF
+    int32_t dampingTrackIndex = -1;          // KLDA
 };
 
 struct Attachment {
@@ -338,6 +366,9 @@ struct EventObject {
     std::string eventCode;
     std::string eventData;
     std::vector<TimeValue> keyTimes;
+    // Index into IRModel::globalSequenceDurations when the keys run on a
+    // global sequence, -1 otherwise.
+    int32_t globalSequenceIndex = -1;
 };
 
 struct CollisionShape {
@@ -357,6 +388,13 @@ struct Camera {
     int32_t positionTrackIndex = -1;
     int32_t targetPositionTrackIndex = -1;
     int32_t rotationTrackIndex = -1;
+    // Warcraft III 3.0 camera tracks (float tracks). MDX has no static field
+    // for any of them; the game applies depth of field only when all three
+    // DoF tracks exist.
+    int32_t visibilityTrackIndex = -1;     // KCVS
+    int32_t focusDistanceTrackIndex = -1;  // IDUF
+    int32_t focalLengthTrackIndex = -1;    // ELAF
+    int32_t fStopTrackIndex = -1;          // PTSF
 };
 
 // ── Format-Specific Extension Hooks ──────────────────────────

@@ -300,6 +300,17 @@ void Wc3LightBuilder::buildLights(
             pbSetFloat(ref, L"ShadowValue", irLight.intensity);
             pbSetColor(ref, L"AmbColor", irLight.ambientColor);
             pbSetFloat(ref, L"AmbValue", irLight.ambientIntensity);
+
+            // Reforged / 3.0 parameters, named after their MDL keywords.
+            // `ShadowIntensity` is NOT the plug-in's `ShadowValue` above: that
+            // one is the primary intensity, this one the IBL/shadow term.
+            pbSetFloat(ref, L"ShadowIntensity", irLight.shadowIntensity);
+            pbSetBool(ref, L"ShadowCasting", irLight.shadowCasting ? TRUE : FALSE);
+            pbSetFloat(ref, L"ShadowCastingStart", irLight.shadowCastingStart);
+            pbSetFloat(ref, L"ShadowCastingEnd", irLight.shadowCastingEnd);
+            pbSetFloat(ref, L"QuadraticFalloff", irLight.quadraticFalloff);
+            pbSetFloat(ref, L"LinearFalloff", irLight.linearFalloff);
+            pbSetFloat(ref, L"Damping", irLight.damping);
         }
 
         // Store MDX-static values as UserProps so the exporter can
@@ -340,10 +351,10 @@ void Wc3LightBuilder::buildLights(
 
 // ── Wc3AttachmentBuilder ────────────────────────────────────
 
-// Parse MDX attachment name (z.B. "Hand Right Ref") in die drei
-// 1-basierten Dropdown-Indices des Wc3AttachPoint-Plugins.
+// Parse an MDX attachment name (e.g. "Hand Right Ref") into the three
+// 1-based dropdown indices of the Wc3AttachPoint plug-in.
 //
-// Plugin-Listen (aus Wc3AttachPoint.ms):
+// Plug-in lists (from Wc3AttachPoint.ms):
 //   attachmentList     = #("Head", "Overhead", "Origin", "Foot", "Chest",
 //                          "Hand", "Weapon", "Sprite")
 //   attachmentAdd1List = #("None", "Right", "Left", "Mount Left", "Mount Right")
@@ -351,8 +362,8 @@ void Wc3LightBuilder::buildLights(
 //                          "Mount Rear", "Rear", "Smart", "Alternate",
 //                          "First", "Second", "Third", "Fourth", "Fifth", "Sixth")
 //
-// Alle Indices sind 1-basiert (MaxScript-Konvention). Default ist jeweils 1
-// wenn nichts matcht ("Head" / "None" / "None").
+// Every index is 1-based (the MaxScript convention). Each one defaults to 1
+// when nothing matches ("Head" / "None" / "None").
 struct AttachNameIndices {
     int nameFirst = 1;   // "Head"
     int nameAdd1  = 1;   // "None"
@@ -362,22 +373,22 @@ struct AttachNameIndices {
 static AttachNameIndices parseAttachmentName(const std::string& name) {
     AttachNameIndices out;
 
-    // Type-Tokens (matcht als separates Wort; "Head" darf NICHT auch "Overhead" matchen).
-    // Reihenfolge wichtig: längere Tokens zuerst matchen damit "Overhead" nicht als "Head" fehlerkannt wird.
+    // Type tokens (matched as a separate word; "Head" must NOT also match "Overhead").
+    // Order matters: match the longer tokens first so "Overhead" is not misread as "Head".
     static const std::pair<const char*, int> kTypeTable[] = {
         {"Overhead", 2},
         {"Origin",   3},
         {"Sprite",   8},
         {"Weapon",   7},
         {"Chest",    5},
-        {"Head",     1},   // nach "Overhead" prüfen!
+        {"Head",     1},   // check after "Overhead"!
         {"Foot",     4},
         {"Hand",     6},
     };
     for (const auto& [tok, idx] : kTypeTable) {
         size_t pos = name.find(tok);
         if (pos != std::string::npos) {
-            // Als ganzes Wort prüfen: Grenze links & rechts
+            // Check as a whole word: boundary on the left and on the right
             bool leftOk  = (pos == 0)                || !isalpha(static_cast<unsigned char>(name[pos - 1]));
             bool rightOk = (pos + strlen(tok) >= name.size()) || !isalpha(static_cast<unsigned char>(name[pos + strlen(tok)]));
             if (leftOk && rightOk) {
@@ -387,14 +398,14 @@ static AttachNameIndices parseAttachmentName(const std::string& name) {
         }
     }
 
-    // Add1 (Direction) — "Mount Left" / "Mount Right" vor "Left"/"Right" prüfen!
-    // Matchender Token wird aus `remaining` entfernt damit er nicht versehentlich
-    // auch als Add2-Token matcht (z.B. "Mount" in "Mount Left").
+    // Add1 (Direction) — check "Mount Left" / "Mount Right" before "Left"/"Right"!
+    // The matching token is erased from `remaining` so that it cannot accidentally
+    // match as an Add2 token too (e.g. "Mount" inside "Mount Left").
     static const std::pair<const char*, int> kAdd1Table[] = {
         {"Mount Left",  4},
         {"Mount Right", 5},
-        {"Right",       2},   // nach "Mount Right" prüfen
-        {"Left",        3},   // nach "Mount Left" prüfen
+        {"Right",       2},   // check after "Mount Right"
+        {"Left",        3},   // check after "Mount Left"
     };
     std::string remaining = name;
     for (const auto& [tok, idx] : kAdd1Table) {
@@ -406,7 +417,7 @@ static AttachNameIndices parseAttachmentName(const std::string& name) {
         }
     }
 
-    // Add2 (Additional) — sucht in `remaining` (ohne verbrauchten Add1-Token)
+    // Add2 (Additional) — searches `remaining` (without the consumed Add1 token)
     static const std::pair<const char*, int> kAdd2Table[] = {
         {"Mount Rear",  6},
         {"RallyPoint",  2},
@@ -419,7 +430,7 @@ static AttachNameIndices parseAttachmentName(const std::string& name) {
         {"Sixth",      15},
         {"First",      10},
         {"Smart",       8},
-        {"Mount",       5},   // nach "Mount Rear" prüfen
+        {"Mount",       5},   // check after "Mount Rear"
         {"Rear",        7},
         {"Gold",        4},
     };
@@ -460,7 +471,7 @@ void Wc3AttachmentBuilder::buildAttachments(
         // Paramblock setup
         auto* ref = dynamic_cast<ReferenceTarget*>(obj);
         if (ref) {
-            // Type/Direction/Additional Dropdowns aus Node-Name parsen
+            // Parse the Type/Direction/Additional dropdowns out of the node name
             AttachNameIndices idx = parseAttachmentName(irAtt.name);
             pbSetInt(ref, L"nameFirst", idx.nameFirst);
             pbSetInt(ref, L"nameAdd1",  idx.nameAdd1);
@@ -866,11 +877,11 @@ void Wc3EventBuilder::buildEvents(
 
         INode* node = gi->CreateObjectNode(obj);
         MSTR name;
-        // Wc3RefEvent-Plugin-UI erwartet "Obj:"-Prefix im Node-Name — das
-        // auto-detect in 'on params open do' parst objName[5..] um Type-Code
-        // (FPT/SPL/UBR/SND/SPN) und Data-Code zu extrahieren und die
-        // Dropboxen korrekt vorzuselektieren. Ohne diesen Prefix bleiben
-        // die Dropdowns auf Default (FPT + erster Eintrag).
+        // The Wc3RefEvent plug-in UI expects an "Obj:" prefix in the node name.
+        // Its auto-detect in 'on params open do' parses objName[5..] to extract
+        // the type code (FPT/SPL/UBR/SND/SPN) and the data code, so it can
+        // preselect the dropdowns correctly. Without that prefix the dropdowns
+        // stay on their defaults (FPT + first entry).
         if (irEvt.nodeIndex >= 0 && irEvt.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
             name.printf(_T("Obj:%hs"), irModel.nodes[irEvt.nodeIndex].name.c_str());
         else
@@ -881,26 +892,34 @@ void Wc3EventBuilder::buildEvents(
         setupNodeProperties(node, irEvt.nodeIndex, irModel);
         attachToParent(node, irEvt.nodeIndex, irModel, nodeMap);
 
-        // Set event key times via MaxScript — analog zum KGAC/Wc3VertexMod-Fix.
-        // Scripted simpleManipulator-Plugins (wie Wdx_Wc3Event extends
-        // simpleManipulator) haben ihre ParamBlocks nicht auf fixem BlockID 0,
-        // und ParamIDs werden von Max dynamisch vergeben. Der alte Code
-        // `PBR::findParamBlock(ref, 0) + pb->Append(0, 1, ...)` findet den
-        // IntTab-Parameter `keyList` nicht → Event-Notes blieben leer.
+        // Events on a global sequence keep its duration (ms) in a UserProp —
+        // Wc3RefEvent has no parameter for it, and its duplicate parameter
+        // blocks make adding one unsafe (see the exporter's event extractor).
+        if (irEvt.globalSequenceIndex >= 0 &&
+            irEvt.globalSequenceIndex < static_cast<int32_t>(irModel.globalSequenceDurations.size()))
+            node->SetUserPropInt(_T("Wc3GlobalSequence"),
+                static_cast<int>(irModel.globalSequenceDurations[irEvt.globalSequenceIndex]));
+
+        // Set event key times via MaxScript — the same approach as the
+        // KGAC/Wc3VertexMod fix. Scripted simpleManipulator plug-ins (such as
+        // Wdx_Wc3Event, which extends simpleManipulator) do not keep their
+        // ParamBlocks on a fixed BlockID 0, and Max assigns the ParamIDs
+        // dynamically. The old code
+        // `PBR::findParamBlock(ref, 0) + pb->Append(0, 1, ...)` did not find the
+        // IntTab parameter `keyList`, so event notes came out empty.
         //
-        // MaxScript sieht den Plugin-Parameter `keyList` direkt (als
-        // IntTab-Array mit `tabSizeVariable:true`) und kann ihn als einfaches
-        // Array zuweisen.
+        // MaxScript sees the plug-in parameter `keyList` directly (as an IntTab
+        // array with `tabSizeVariable:true`) and can assign it a plain array.
         //
-        // WICHTIG: Das Plugin erwartet Frame-Nummern, NICHT Ticks!
-        // Der btnAddNote-Handler macht: `sliderTime / ticksperframe`, d.h.
-        // die ListView-Darstellung rechnet Frames an. Wenn wir Ticks speichern,
-        // bleiben die Keys außerhalb der Timeline "unsichtbar".
+        // IMPORTANT: the plug-in expects frame numbers, NOT ticks!
+        // The btnAddNote handler does `sliderTime / ticksperframe`, i.e. the
+        // ListView presentation assumes frames. Storing ticks instead leaves the
+        // keys "invisible" outside the timeline.
         if (irEvt.keyTimes.empty()) {
-            // Diagnose: IR-Seite hat diesem Event keine Keys mehr zugeordnet
-            // (z.B. durch Remap-Verlust). Damit man es im Log sieht:
+            // Diagnostic: the IR side no longer has any keys mapped to this
+            // event (a remap loss, for instance). Surface it in the log:
             std::wstring warn = L"Event '" + std::wstring(node->GetName()) +
-                L"' hat keine keyTimes nach Remap — Notes bleiben leer!";
+                L"' has no keyTimes after the remap — its notes will stay empty!";
             reporter.warning(warn.c_str());
         } else {
             std::wstring nodeName(node->GetName());
@@ -911,7 +930,7 @@ void Wc3EventBuilder::buildEvents(
             bool first = true;
             for (auto t : irEvt.keyTimes) {
                 if (!first) kl << L",";
-                // Ticks → Frames (UI erwartet Frame-Nummern)
+                // Ticks -> frames (the UI expects frame numbers)
                 int frame = static_cast<int>(t) / tpf;
                 kl << frame;
                 first = false;
@@ -935,8 +954,8 @@ void Wc3EventBuilder::buildEvents(
                 TRUE, nullptr);
 
             if (!execOk) {
-                std::wstring warn = L"ExecuteMAXScriptScript für Event '" +
-                    nodeName + L"' fehlgeschlagen. Script: " + scriptStr;
+                std::wstring warn = L"ExecuteMAXScriptScript failed for event '" +
+                    nodeName + L"'. Script: " + scriptStr;
                 reporter.warning(warn.c_str());
             }
         }
@@ -1380,11 +1399,47 @@ std::vector<Wc3CameraBuilder::CameraNodePair> Wc3CameraBuilder::buildCameras(
         camObj->SetClipDist(0, CAM_YON_CLIP, irCam.farClip);
         camObj->Enable(TRUE);
 
+        // Warcraft III 3.0 depth of field (IDUF / ELAF / PTSF) needs a focus
+        // distance, a lens focal length and an f-number, which only the
+        // Physical Camera has. It replaces the Target Camera object on the
+        // same node, so the target, LookAt controller and roll built above
+        // stay. The FOV is pinned ("Specify FOV") because MDX keeps it
+        // static while the focal length animates. If PhysicalCamera.dlo is
+        // missing, CreateInstance fails and the camera stays a Target Camera
+        // without its DoF tracks.
+        bool physical = false;
+        if (irCam.focusDistanceTrackIndex >= 0 || irCam.focalLengthTrackIndex >= 0 ||
+            irCam.fStopTrackIndex >= 0) {
+            if (auto* phys = static_cast<Object*>(
+                    gi->CreateInstance(CAMERA_CLASS_ID, mdx_ids::PHYSICAL_CAMERA))) {
+                // A new Physical Camera is already "targeted"; the node's
+                // LookAt binding supplies the target itself.
+                camNode->SetObjectRef(phys);
+                pbSetBool(phys, L"specify_fov", TRUE);
+                // The Physical Camera's fov parameter is a plain float in
+                // degrees (the MDX value is radians).
+                pbSetFloat(phys, L"fov", irCam.fov * 180.0f / 3.14159265358979f);
+                pbSetFloat(phys, L"clip_near", irCam.nearClip);
+                pbSetFloat(phys, L"clip_far", irCam.farClip);
+                // Focus on the IDUF distance rather than on the target.
+                pbSetInt(phys, L"specify_focus", irCam.focusDistanceTrackIndex >= 0 ? 1 : 0);
+                // The game applies DoF only with all three tracks.
+                pbSetBool(phys, L"use_dof",
+                          (irCam.focusDistanceTrackIndex >= 0 && irCam.focalLengthTrackIndex >= 0 &&
+                           irCam.fStopTrackIndex >= 0) ? TRUE : FALSE);
+                physical = true;
+            } else {
+                reporter.warning(L"Camera '" + wname + L"' has depth-of-field tracks, but this "
+                                 L"3ds Max has no Physical Camera to hold them; they are not imported.");
+            }
+        }
+
         {
             std::ostringstream ss;
             ss << "[Camera] created '" << irCam.name << "' fov=" << irCam.fov
                << " near=" << irCam.nearClip << " far=" << irCam.farClip
-               << " target=" << (targetNode ? "yes" : "no");
+               << " target=" << (targetNode ? "yes" : "no")
+               << " physical=" << (physical ? "yes" : "no");
             PopLog(ss.str());
         }
 
@@ -1423,7 +1478,7 @@ void Wc3SequenceBuilder::buildSequences(
     // If the MDX has no sequences, inject a default "Stand" sequence
     // (frame 10 → 60, looping) so the artist always has a working
     // animation range to start with. Without this the timeline collapses
-    // to a single frame and the SequenceStorage CA stays empty, which
+    // to a single frame and the WdxSequenceStorage CA stays empty, which
     // breaks downstream tooling that assumes at least one sequence.
     //
     // We work from a local copy of the sequence list so the source
@@ -1454,8 +1509,8 @@ void Wc3SequenceBuilder::buildSequences(
     // This matches the MaxScript rebuilder's recreateSequences().
     // Build the script: remove old CA, add fresh one, populate arrays, create FrameTags.
     std::wstring script;
-    script += L"::SequenceStorage.removeCA()\n";
-    script += L"::SequenceStorage.ensureCA()\n";
+    script += L"::WdxSequenceStorage.removeCA()\n";
+    script += L"::WdxSequenceStorage.ensureCA()\n";
 
     for (const auto& seq : sequences) {
         // Convert name to wide string, escape backslashes and quotes

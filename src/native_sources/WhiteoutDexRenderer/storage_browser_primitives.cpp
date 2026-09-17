@@ -52,7 +52,7 @@
 
 #include "asset_picker_window.h"
 #include "io/storage_browser.h"
-#include "localization.h"
+#include "wdx_ui_language.h"
 
 #if WHITEOUT_HAS_CASC
 // WdxExtractAsset reads bytes, which the browser cannot do — it walks a
@@ -82,6 +82,7 @@
 // After max.h (which has already pulled in <windows.h>) and before the
 // maxscript block, whose macros this header must not be compiled under.
 #include "wdx_mpq_settings.h"
+#include "wdx_scene_art_tier_max.h"
 #include <maxscript/maxscript.h>
 #include <maxscript/util/listener.h>
 #include <maxscript/foundation/arrays.h>
@@ -191,6 +192,35 @@ std::vector<whiteout::flakes::AssetPickerRoot> ArgToRoots(Value* v) {
 Value* MakeString(const std::string& s) {
     const std::wstring w = ToWide(s);
     return new String(w.empty() ? _M("") : w.c_str());
+}
+
+/// i18n::tr for the errors these primitives return to MaxScript.
+///
+/// A rollout can list or extract before the preview or the picker has ever
+/// loaded the catalog, so load it here if nobody has - once, never a reload,
+/// because a primitive can run while the preview is mid-frame. See
+/// wdx::ui::EnsureLanguageLoaded.
+const char* Tr(const char* key) {
+    Interface* ip = GetCOREInterface();
+    const MSTR plugcfg = ip ? MSTR(ip->GetDir(APP_PLUGCFG_DIR)) : MSTR();
+    wdx::ui::EnsureLanguageLoaded(whiteout::flakes::WdxPluginInstance(),
+                                  std::wstring(plugcfg.data()));
+    return whiteout::flakes::i18n::tr(key);
+}
+
+/// Translate @p key and put @p arg where the catalog's single %s sits.
+///
+/// The errors these build are returned to MaxScript, which shows them in a
+/// message box, so they have to be translated like any other user-facing
+/// string. A %s rather than plain concatenation because the path does not sit
+/// at the same point in every language's sentence. A catalog entry that lost
+/// its %s still yields a usable message, just without the path.
+std::string TrWithArg(const char* key, const std::string& arg) {
+    std::string s = Tr(key);
+    const size_t at = s.find("%s");
+    if (at != std::string::npos)
+        s.replace(at, 2, arg);
+    return s;
 }
 
 // ── The one browser ─────────────────────────────────────────────────────────
@@ -340,24 +370,50 @@ const SharedCasc* AcquireForExtract(const std::string& root, std::string& error)
 
 // Read `archivePath` out of `casc`, accepting either spelling the rest of this
 // file deals in: the original archive path the browser hands back (mod chain
-// and all) or the stripped relative path a resource stores. The chain order
-// mirrors CascSource's — HD overrides win — so a bare path resolves to the
-// same file the renderer would draw.
+// and all) or the stripped relative path a resource stores.
+//
+// A fully qualified path is read verbatim and a miss is a miss — it names one
+// mod's copy and substituting another's would be answering a different
+// question.
+//
+// A bare path is ambiguous, and the scene's art tier is what resolves it
+// (wdx::scene::CascPrefixes): Auto and Classic try SD, HD, Definitive, then
+// the deprecated overlay; Reforged starts at HD and Definitive at DE. That is
+// the order MDLXImporter's texture resolver walks for the same scene, so a
+// relative path extracted here is the same file the importer pulls textures
+// from.
+//
+// Definitive's `_de.w3mod` stays reachable from the Classic and Reforged
+// orders, behind the older overlays. 3.0.0 ships thousands of paths only it
+// has, and a bare path that exists nowhere else should still extract; putting
+// it behind SD and HD means it never changes which file an existing path picks.
+//
+// Reading the path verbatim comes LAST rather than first, which is the fix for
+// "picked the SD model, got the HD one". Warcraft III's TVFS also lists every
+// file under a bare name that is the mod chain already resolved, and that name
+// reads the HD copy whenever one exists — so trying it first quietly turned
+// every relative read into an HD read. It still runs, because a handful of
+// stock textures are named nowhere else.
 bool ReadArchiveFile(const SharedCasc& casc, const std::string& archivePath,
-                     std::vector<whiteout::u8>& out) {
-    if (auto data = casc.Storage().readFile(archivePath)) {
-        out = std::move(*data);
-        return true;
+                     wdx::scene::ArtTier tier, std::vector<whiteout::u8>& out) {
+    if (archivePath.find(':') != std::string::npos) {
+        if (auto data = casc.Storage().readFile(archivePath)) {
+            out = std::move(*data);
+            return true;
+        }
+        return false;
     }
-    if (archivePath.find(':') != std::string::npos)
-        return false; // already fully qualified; a miss is a miss
 
-    static const char* kPrefixes[] = {"war3.w3mod:_hd.w3mod:", "war3.w3mod:"};
-    for (const char* prefix : kPrefixes) {
+    for (const char* prefix : wdx::scene::CascPrefixes(tier)) {
         if (auto data = casc.Storage().readFile(prefix + archivePath)) {
             out = std::move(*data);
             return true;
         }
+    }
+    // The resolved namespace, and any product that has no mod chain.
+    if (auto data = casc.Storage().readFile(archivePath)) {
+        out = std::move(*data);
+        return true;
     }
     return false;
 }
@@ -495,11 +551,11 @@ Value* WdxBrowserOpen_cf(Value** arg_list, int count) {
 
     const std::string root = ArgToUtf8(arg_list[0]);
     if (root.empty())
-        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.no_archive_path_settings"));
+        return MakeString(Tr("wdx.browser.no_archive_path_settings"));
 
     const int kindArg = ArgToInt(arg_list[1], -1);
     if (kindArg > 3)
-        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.unknown_kind"));
+        return MakeString(Tr("wdx.browser.unknown_kind"));
 
     // Already walked this exact storage — hand back the live tree rather than
     // re-reading a manifest that has not changed under us.
@@ -522,7 +578,7 @@ Value* WdxBrowserOpen_cf(Value** arg_list, int count) {
     if (!opened) {
         g_openRoot.clear();
         if (error.empty())
-            error = "Could not open '" + root + "'.";
+            error = TrWithArg("wdx.browser.open_failed", root);
         mprintf(_M("WhiteoutDex Browser: open failed - %hs\n"), error.c_str());
         return MakeString(error);
     }
@@ -773,18 +829,11 @@ Value* WdxPickAsset_cf(Value** arg_list, int count) {
     const std::vector<whiteout::flakes::AssetPickerRoot> roots =
         count >= 5 ? ArgToRoots(arg_list[4]) : std::vector<whiteout::flakes::AssetPickerRoot>{};
 
-    // The caption is a Win32 window title, so the UTF-8 catalog value has to
-    // be widened. Every catalog string is UTF-8, hence CP_UTF8 rather than
-    // the ACP a naive char-by-char widen would effectively assume.
-    const char* titleKey = "wdx.picker.title.model";
-    if (mask == static_cast<int>(BrowseType::Effects))
-        titleKey = "wdx.picker.title.effect";
-    else if (mask == static_cast<int>(BrowseType::Textures))
-        titleKey = "wdx.picker.title.texture";
-    const std::wstring title = ToWide(whiteout::flakes::i18n::tr(titleKey));
+    // No strings resolved here, the caption included: RunAssetPicker loads the
+    // UI catalog itself, once the preview is parked.
     const whiteout::flakes::AssetPickResult picked =
-        whiteout::flakes::RunAssetPicker(title, static_cast<BrowseType>(static_cast<unsigned>(mask)),
-                                         root, initial, filter, roots, ConfiguredArchives());
+        whiteout::flakes::RunAssetPicker(static_cast<BrowseType>(static_cast<unsigned>(mask)), root,
+                                         initial, filter, roots, ConfiguredArchives());
 
     two_typed_value_locals(Array* result, Value* entry);
     vl.result = new Array(0);
@@ -817,26 +866,26 @@ Value* WdxPickAsset_cf(Value** arg_list, int count) {
 //
 // `archivePath` may be either spelling: the original ("war3.w3mod:_hd.w3mod:
 // units\...\druid.mdx") or the stripped relative path a resource stores. The
-// original is exact; a bare path is resolved HD-first, the way the renderer
-// would.
+// original is exact; a bare path is resolved in the order the scene's art tier
+// gives — the order the importer uses too.
 // ============================================================================
 def_visible_primitive(WdxExtractAsset, "WdxExtractAsset");
 Value* WdxExtractAsset_cf(Value** arg_list, int count) {
     check_arg_count(WdxExtractAsset, 3, count);
 
 #if !WHITEOUT_HAS_CASC && !WHITEOUT_HAS_MPQ
-    return MakeString(whiteout::flakes::i18n::tr("wdx.browser.no_archive_support"));
+    return MakeString(Tr("wdx.browser.no_archive_support"));
 #else
     const std::string root = ArgToUtf8(arg_list[0]);
     const std::string archivePath = ArgToUtf8(arg_list[1]);
     const std::wstring dest = ToWide(ArgToUtf8(arg_list[2]));
 
     if (root.empty())
-        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.no_install_settings"));
+        return MakeString(Tr("wdx.browser.no_install_settings"));
     if (archivePath.empty())
-        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.no_archive_path"));
+        return MakeString(Tr("wdx.browser.no_archive_path"));
     if (dest.empty())
-        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.no_destination"));
+        return MakeString(Tr("wdx.browser.no_destination"));
 
     // Ask the storage the install actually is first. io::ClassifyStorage is the
     // same rule the picker opened `root` with, so the two agree by
@@ -858,8 +907,11 @@ Value* WdxExtractAsset_cf(Value** arg_list, int count) {
 #endif
 #if WHITEOUT_HAS_CASC
     if (!read) {
-        if (const SharedCasc* casc = AcquireForExtract(root, cascError))
-            read = ReadArchiveFile(*casc, archivePath, data);
+        if (const SharedCasc* casc = AcquireForExtract(root, cascError)) {
+            const wdx::scene::ArtTier tier =
+                wdx::scene::ReadSceneArtTier(GetCOREInterface()->GetRootNode());
+            read = ReadArchiveFile(*casc, archivePath, tier, data);
+        }
     }
 #endif
 #if WHITEOUT_HAS_MPQ
@@ -868,9 +920,8 @@ Value* WdxExtractAsset_cf(Value** arg_list, int count) {
 #endif
 
     if (!read) {
-        std::string error = "'" + archivePath + "' is not in this installation, or its content "
-                                                "is encrypted with a key this build does not "
-                                                "have.";
+        std::string error =
+            TrWithArg("wdx.browser.asset_missing_or_encrypted", archivePath);
         // Only when nothing could be opened at all: with a storage open, the
         // miss is about the file and the open error is noise.
         if (!cascError.empty())
@@ -880,9 +931,9 @@ Value* WdxExtractAsset_cf(Value** arg_list, int count) {
     }
 
     if (!EnsureParentDirs(dest))
-        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.mkdir_failed"));
+        return MakeString(Tr("wdx.browser.mkdir_failed"));
     if (!WriteWholeFile(dest, data))
-        return MakeString(whiteout::flakes::i18n::tr("wdx.browser.write_failed"));
+        return MakeString(Tr("wdx.browser.write_failed"));
 
     mprintf(_M("WhiteoutDex Extract: %hs (%d bytes)\n"), archivePath.c_str(),
             static_cast<int>(data.size()));
