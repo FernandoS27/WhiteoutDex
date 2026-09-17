@@ -438,8 +438,8 @@ void dialogToOptions(HWND hDlg, MdxExportOptions& opts) {
         WideCharToMultiByte(CP_UTF8, 0, nameText, -1, opts.modelName.data(), len, nullptr, nullptr);
     }
 
-    // Format Version
-    opts.version = getCheck(hDlg, IDC_RDO_REFORGED) ? 1200 : 800;
+    // Format Version. Reforged is written as v1800, the version WC3 3.0.0 ships.
+    opts.version = getCheck(hDlg, IDC_RDO_REFORGED) ? 1800 : 800;
 
     // Options
     opts.mergeGeosets = getCheck(hDlg, IDC_CHK_MERGE_SIMILAR);

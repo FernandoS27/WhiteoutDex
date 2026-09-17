@@ -82,6 +82,7 @@
 // After max.h (which has already pulled in <windows.h>) and before the
 // maxscript block, whose macros this header must not be compiled under.
 #include "wdx_mpq_settings.h"
+#include "wdx_scene_art_tier_max.h"
 #include <maxscript/maxscript.h>
 #include <maxscript/util/listener.h>
 #include <maxscript/foundation/arrays.h>
@@ -361,16 +362,17 @@ const SharedCasc* AcquireForExtract(const std::string& root, std::string& error)
 // mod's copy and substituting another's would be answering a different
 // question.
 //
-// A bare path is ambiguous, and the order below is what resolves it: SD, then
-// HD, then the deprecated overlay. That is the order MDLXImporter's texture
-// resolver walks and the order FileContentProvider walks on its Classic tier
-// (its default), so a relative path extracted here is the same file the
-// viewport draws and the same one the importer pulls textures from.
+// A bare path is ambiguous, and the scene's art tier is what resolves it
+// (wdx::scene::CascPrefixes): Auto and Classic try SD, HD, Definitive, then
+// the deprecated overlay; Reforged starts at HD and Definitive at DE. That is
+// the order MDLXImporter's texture resolver walks for the same scene, so a
+// relative path extracted here is the same file the importer pulls textures
+// from.
 //
-// Definitive's `_de.w3mod` goes after HD rather than first. The Classic chain
-// does not reach it at all, but 3.0.0 ships thousands of paths only it has,
-// and a bare path that exists nowhere else should still extract; putting it
-// behind SD and HD means it never changes which file an existing path picks.
+// Definitive's `_de.w3mod` stays reachable from the Classic and Reforged
+// orders, behind the older overlays. 3.0.0 ships thousands of paths only it
+// has, and a bare path that exists nowhere else should still extract; putting
+// it behind SD and HD means it never changes which file an existing path picks.
 //
 // Reading the path verbatim comes LAST rather than first, which is the fix for
 // "picked the SD model, got the HD one". Warcraft III's TVFS also lists every
@@ -379,7 +381,7 @@ const SharedCasc* AcquireForExtract(const std::string& root, std::string& error)
 // every relative read into an HD read. It still runs, because a handful of
 // stock textures are named nowhere else.
 bool ReadArchiveFile(const SharedCasc& casc, const std::string& archivePath,
-                     std::vector<whiteout::u8>& out) {
+                     wdx::scene::ArtTier tier, std::vector<whiteout::u8>& out) {
     if (archivePath.find(':') != std::string::npos) {
         if (auto data = casc.Storage().readFile(archivePath)) {
             out = std::move(*data);
@@ -388,18 +390,16 @@ bool ReadArchiveFile(const SharedCasc& casc, const std::string& archivePath,
         return false;
     }
 
-    static const char* kPrefixes[] = {
-        "war3.w3mod:",
-        "war3.w3mod:_hd.w3mod:",
-        "war3.w3mod:_de.w3mod:",
-        "war3.w3mod:_deprecated.w3mod:",
-        "", // the resolved namespace, and any product that has no mod chain
-    };
-    for (const char* prefix : kPrefixes) {
+    for (const char* prefix : wdx::scene::CascPrefixes(tier)) {
         if (auto data = casc.Storage().readFile(prefix + archivePath)) {
             out = std::move(*data);
             return true;
         }
+    }
+    // The resolved namespace, and any product that has no mod chain.
+    if (auto data = casc.Storage().readFile(archivePath)) {
+        out = std::move(*data);
+        return true;
     }
     return false;
 }
@@ -859,8 +859,8 @@ Value* WdxPickAsset_cf(Value** arg_list, int count) {
 //
 // `archivePath` may be either spelling: the original ("war3.w3mod:_hd.w3mod:
 // units\...\druid.mdx") or the stripped relative path a resource stores. The
-// original is exact; a bare path is resolved SD first, then HD, then
-// Definitive, then the deprecated overlay — the order the importer uses too.
+// original is exact; a bare path is resolved in the order the scene's art tier
+// gives — the order the importer uses too.
 // ============================================================================
 def_visible_primitive(WdxExtractAsset, "WdxExtractAsset");
 Value* WdxExtractAsset_cf(Value** arg_list, int count) {
@@ -900,8 +900,11 @@ Value* WdxExtractAsset_cf(Value** arg_list, int count) {
 #endif
 #if WHITEOUT_HAS_CASC
     if (!read) {
-        if (const SharedCasc* casc = AcquireForExtract(root, cascError))
-            read = ReadArchiveFile(*casc, archivePath, data);
+        if (const SharedCasc* casc = AcquireForExtract(root, cascError)) {
+            const wdx::scene::ArtTier tier =
+                wdx::scene::ReadSceneArtTier(GetCOREInterface()->GetRootNode());
+            read = ReadArchiveFile(*casc, archivePath, tier, data);
+        }
     }
 #endif
 #if WHITEOUT_HAS_MPQ

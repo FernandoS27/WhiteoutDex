@@ -892,6 +892,14 @@ void Wc3EventBuilder::buildEvents(
         setupNodeProperties(node, irEvt.nodeIndex, irModel);
         attachToParent(node, irEvt.nodeIndex, irModel, nodeMap);
 
+        // Events on a global sequence keep its duration (ms) in a UserProp —
+        // Wc3RefEvent has no parameter for it, and its duplicate parameter
+        // blocks make adding one unsafe (see the exporter's event extractor).
+        if (irEvt.globalSequenceIndex >= 0 &&
+            irEvt.globalSequenceIndex < static_cast<int32_t>(irModel.globalSequenceDurations.size()))
+            node->SetUserPropInt(_T("Wc3GlobalSequence"),
+                static_cast<int>(irModel.globalSequenceDurations[irEvt.globalSequenceIndex]));
+
         // Set event key times via MaxScript — the same approach as the
         // KGAC/Wc3VertexMod fix. Scripted simpleManipulator plug-ins (such as
         // Wdx_Wc3Event, which extends simpleManipulator) do not keep their
@@ -1391,11 +1399,47 @@ std::vector<Wc3CameraBuilder::CameraNodePair> Wc3CameraBuilder::buildCameras(
         camObj->SetClipDist(0, CAM_YON_CLIP, irCam.farClip);
         camObj->Enable(TRUE);
 
+        // Warcraft III 3.0 depth of field (IDUF / ELAF / PTSF) needs a focus
+        // distance, a lens focal length and an f-number, which only the
+        // Physical Camera has. It replaces the Target Camera object on the
+        // same node, so the target, LookAt controller and roll built above
+        // stay. The FOV is pinned ("Specify FOV") because MDX keeps it
+        // static while the focal length animates. If PhysicalCamera.dlo is
+        // missing, CreateInstance fails and the camera stays a Target Camera
+        // without its DoF tracks.
+        bool physical = false;
+        if (irCam.focusDistanceTrackIndex >= 0 || irCam.focalLengthTrackIndex >= 0 ||
+            irCam.fStopTrackIndex >= 0) {
+            if (auto* phys = static_cast<Object*>(
+                    gi->CreateInstance(CAMERA_CLASS_ID, mdx_ids::PHYSICAL_CAMERA))) {
+                // A new Physical Camera is already "targeted"; the node's
+                // LookAt binding supplies the target itself.
+                camNode->SetObjectRef(phys);
+                pbSetBool(phys, L"specify_fov", TRUE);
+                // The Physical Camera's fov parameter is a plain float in
+                // degrees (the MDX value is radians).
+                pbSetFloat(phys, L"fov", irCam.fov * 180.0f / 3.14159265358979f);
+                pbSetFloat(phys, L"clip_near", irCam.nearClip);
+                pbSetFloat(phys, L"clip_far", irCam.farClip);
+                // Focus on the IDUF distance rather than on the target.
+                pbSetInt(phys, L"specify_focus", irCam.focusDistanceTrackIndex >= 0 ? 1 : 0);
+                // The game applies DoF only with all three tracks.
+                pbSetBool(phys, L"use_dof",
+                          (irCam.focusDistanceTrackIndex >= 0 && irCam.focalLengthTrackIndex >= 0 &&
+                           irCam.fStopTrackIndex >= 0) ? TRUE : FALSE);
+                physical = true;
+            } else {
+                reporter.warning(L"Camera '" + wname + L"' has depth-of-field tracks, but this "
+                                 L"3ds Max has no Physical Camera to hold them; they are not imported.");
+            }
+        }
+
         {
             std::ostringstream ss;
             ss << "[Camera] created '" << irCam.name << "' fov=" << irCam.fov
                << " near=" << irCam.nearClip << " far=" << irCam.farClip
-               << " target=" << (targetNode ? "yes" : "no");
+               << " target=" << (targetNode ? "yes" : "no")
+               << " physical=" << (physical ? "yes" : "no");
             PopLog(ss.str());
         }
 

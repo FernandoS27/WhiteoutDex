@@ -487,6 +487,17 @@ IFLGenResult generateIFLForLayer(
 
 namespace mdx_scene {
 
+bool isHdLayer(const ir::Material& irMat, const ir::MaterialLayer& layer) {
+    if (!irMat.shaderName.empty())
+        return true;
+    for (const auto& texRef : layer.textureRefs) {
+        if (texRef.slot != ir::TextureSlot::Diffuse &&
+            texRef.slot != ir::TextureSlot::TeamColor)
+            return true;
+    }
+    return false;
+}
+
 // ── Helper: Build a single Wc3Material from one layer ────────
 
 static Mtl* buildSingleLayerWc3Material(
@@ -506,19 +517,24 @@ static Mtl* buildSingleLayerWc3Material(
     auto* ref = dynamic_cast<ReferenceTarget*>(mtl);
     if (!ref) return mtl;
 
-    // Shader type: 1 = SD (Classic), 2 = HD (Reforged PBR)
-    // HD layers have PBR texture slots (Normal/ORM/Emissive/Environment) or a shader path.
-    bool isHD = !irMat.shaderName.empty();
-    if (!isHD) {
-        for (const auto& texRef : layer.textureRefs) {
-            if (texRef.slot != ir::TextureSlot::Diffuse &&
-                texRef.slot != ir::TextureSlot::TeamColor) {
-                isHD = true;
-                break;
-            }
-        }
+    // Shader dropdown: 1 SD, 2 HD, 3 SD on HD, 4 Crystal. The layer's MDX
+    // shader decides; the texture-slot heuristic only covers a shader the
+    // dropdown has no entry for.
+    int shaderDropdown = 0;
+    switch (layer.shaderType) {
+    case 0:  shaderDropdown = 1; break;  // SD
+    case 1:  shaderDropdown = 2; break;  // HD
+    case 2:  shaderDropdown = 3; break;  // SD on HD
+    case 24: shaderDropdown = 4; break;  // Crystal
+    default: shaderDropdown = isHdLayer(irMat, layer) ? 2 : 1; break;
     }
-    pbSetInt(ref, L"shaderType", isHD ? 2 : 1);
+    // The parser only merges a v900/v1000 Shader_HD_DefaultUnit material into
+    // an HD layer when it has all six layers; any other shape keeps SD. The
+    // shader name (or a PBR map) still says HD, as it did before the shader
+    // was carried through.
+    if (shaderDropdown == 1 && isHdLayer(irMat, layer))
+        shaderDropdown = 2;
+    pbSetInt(ref, L"shaderType", shaderDropdown);
 
     // Filter mode (1-based)
     pbSetInt(ref, L"filterMode", blendModeToFilterMode(layer.blendMode));
@@ -540,6 +556,8 @@ static Mtl* buildSingleLayerWc3Material(
     pbSetBool(ref, L"unfogged", layer.unfogged ? TRUE : FALSE);
     pbSetBool(ref, L"noDepthTest", layer.noDepthTest ? TRUE : FALSE);
     pbSetBool(ref, L"noDepthSet", layer.noDepthWrite ? TRUE : FALSE);
+    pbSetBool(ref, L"ambientOcclusion", layer.ambientOcclusion ? TRUE : FALSE);
+    pbSetBool(ref, L"backFacesForShadows", layer.backFacesForShadows ? TRUE : FALSE);
 
     // Priority plane
     pbSetInt(ref, L"priorityPlane", irMat.priorityPlane);

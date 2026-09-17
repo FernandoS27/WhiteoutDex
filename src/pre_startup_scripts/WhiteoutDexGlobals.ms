@@ -995,3 +995,70 @@ struct WhiteoutDexSequenceStorageStruct
 )
 
 global WdxSequenceStorage = WhiteoutDexSequenceStorageStruct()
+
+
+/* ============================================================================
+   SECTION 6: SCENE DATA
+   Scene-wide model properties that are not sequences, on their own rootNode CA.
+   A separate block because the Sequence Manager removes and re-adds the
+   sequence one on every save - anything parked on it would be wiped.
+   ============================================================================ */
+
+global WDX_SCENE_CA_NAME = "WhiteoutDexSceneData"
+
+global WdxSceneCA = attributes "WhiteoutDexSceneData"
+(
+	parameters main
+	(
+		-- Which Warcraft III 3.0.0 art overlay a bare CASC path resolves
+		-- through first: 0 Auto, 1 Classic, 2 Reforged, 3 Definitive.
+		-- Native readers: src/native_sources/common/wdx_scene_art_tier.h.
+		artTier type:#integer default:0
+	)
+)
+
+struct WhiteoutDexSceneDataStruct
+(
+	-- Index of our CA block on rootNode, or 0 when it is not attached.
+	fn caIndex =
+	(
+		for i = 1 to custAttributes.count rootNode do
+			if (custAttributes.get rootNode i).name == ::WDX_SCENE_CA_NAME then return i
+		0
+	),
+
+	-- 0 (Auto) for a scene that never had the block, which is every scene
+	-- saved before it existed.
+	fn getArtTier =
+	(
+		local idx = this.caIndex()
+		if idx == 0 then 0 else (try ((custAttributes.get rootNode idx).artTier) catch (0))
+	),
+
+	-- The one writer: the importer, the Settings dialog and the preview's View
+	-- menu all come through here. A running preview is resynced so the chain
+	-- it reads follows at once; the preview's own menu passes resync:false
+	-- because it rebuilds right after. Returns true when the value changed.
+	fn setArtTier tier resync:true =
+	(
+		tier = amax 0 (amin 3 (tier as integer))
+		if tier == this.getArtTier() then return false
+		local idx = this.caIndex()
+		if idx == 0 then
+		(
+			custAttributes.add rootNode ::WdxSceneCA
+			idx = this.caIndex()
+		)
+		(custAttributes.get rootNode idx).artTier = tier
+		-- WhiteoutFlakesResync leaves re-pushing the sequences to its caller.
+		-- Silent on a build whose .dlx is not loaded.
+		if resync then try
+		(
+			if (WhiteoutFlakesIsRunning()) and (WhiteoutFlakesResync()) do
+				try ( WdxPushRendererSequences() ) catch()
+		) catch()
+		true
+	)
+)
+
+global WdxSceneData = WhiteoutDexSceneDataStruct()

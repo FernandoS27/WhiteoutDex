@@ -40,6 +40,7 @@
 #include <istdplug.h>
 #include <ref.h>
 
+#include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <vector>
@@ -172,6 +173,13 @@ inline std::vector<TimeValue> collectKeyTimes(Control* ctrl) {
 // MDX readers that get Hermite with zero tangents interpolate smoothly
 // which is visually close enough in practice).
 //
+// Bezier tangents come back as MDX control-point VALUES, not Max slopes:
+// IBezFloatKey::intan/outtan are dQ/dt, and writing those straight into an
+// MDX Bezier track bends every curve. The controller is sampled at the 1/3
+// and 2/3 points of each segment and the control points solved from those
+// (NeoDex Wc3Animation.ms FloatKeys + ProcessBezier) — the same reading
+// the material extractor and extractVisibilityTrack use.
+//
 // Does nothing for controllers without IKeyControl — use collectKeyTimes
 // + evalFloat in that case.
 inline void readFloatKeys(Control* ctrl,
@@ -194,12 +202,40 @@ inline void readFloatKeys(Control* ctrl,
 
     if (cidA == HYBRIDINTERP_FLOAT_CLASS_ID) {
         hasTangents = true;
+        std::vector<TimeValue> kt(n);
+        std::vector<float> kv(n), sampleIn(n), sampleOut(n);
         for (int i = 0; i < n; i++) {
             IBezFloatKey k; ikc->GetKey(i, &k);
-            times.push_back(k.time);
-            values.push_back(k.val);
-            inTans.push_back(k.intan);
-            outTans.push_back(k.outtan);
+            kt[i] = k.time;
+            kv[i] = evalFloat(ctrl, k.time);
+        }
+        for (int i = 0; i < n; i++) {
+            sampleIn[i] = (i > 0)
+                ? evalFloat(ctrl, kt[i-1] + static_cast<TimeValue>(2.0 * (kt[i] - kt[i-1]) / 3.0))
+                : kv[i];
+            sampleOut[i] = (i < n - 1)
+                ? evalFloat(ctrl, kt[i] + static_cast<TimeValue>((kt[i+1] - kt[i]) / 3.0))
+                : kv[i];
+        }
+        for (int i = 0; i < n; i++) {
+            float val = kv[i];
+            float inTan = val, outTan = val;
+            if (i > 0) {
+                float pe = sampleOut[i-1], pd = sampleIn[i];
+                float a = kv[i-1], d = kv[i];
+                inTan = 3.0f*pd + (2.0f*a - 9.0f*pe - 5.0f*d) / 6.0f;
+            }
+            if (i < n - 1) {
+                float pe = sampleOut[i], pd = sampleIn[i+1];
+                float a = kv[i], d = kv[i+1];
+                outTan = 3.0f*pe + (2.0f*d - 5.0f*a - 9.0f*pd) / 6.0f;
+            }
+            if (std::fabs(inTan - val) < 0.01f)  inTan = val;
+            if (std::fabs(outTan - val) < 0.01f) outTan = val;
+            times.push_back(kt[i]);
+            values.push_back(val);
+            inTans.push_back(inTan);
+            outTans.push_back(outTan);
         }
     } else if (cidA == TCBINTERP_FLOAT_CLASS_ID) {
         // TCB keys get zero tangents — proper TCB→Hermite conversion

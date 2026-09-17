@@ -61,6 +61,10 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
             result.lodName.assign(w.begin(), w.end());
         }
 
+        int selectionGroup = 0;
+        if (node->GetUserPropInt(_T("Wc3SelectionGroup"), selectionGroup) && selectionGroup > 0)
+            result.selectionGroup = static_cast<uint32_t>(selectionGroup);
+
         // DEDICATED LOD DEBUG LOG — writes to %TEMP%\mdlx_lod_debug.log so we
         // can trace exactly which UserProps were found on each mesh.
         {

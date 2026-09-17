@@ -401,6 +401,16 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                 wdx::Layer::ShadingFlag::SphereEnvMap);
             irLayer.unfogged = wdx::hasFlag(layer.shadingFlags,
                 wdx::Layer::ShadingFlag::Unfogged);
+            irLayer.backFacesForShadows = wdx::hasFlag(layer.shadingFlags,
+                wdx::Layer::ShadingFlag::BackFacesForShadows);
+            irLayer.ambientOcclusion = wdx::hasFlag(layer.shadingFlags,
+                wdx::Layer::ShadingFlag::AmbientOcclusion);
+
+            // The parser fills the shader for every version: from disk at
+            // v1100+, from the material's shader name for v900/v1000, and SD
+            // for v800. The material builder maps it onto the Wc3Material
+            // dropdown.
+            irLayer.shaderType = static_cast<int32_t>(layer.shader);
 
             // Texture references.
             // v1100+ (and upgraded v800): textureId is always 0; actual textures are in subTextures.
@@ -486,30 +496,6 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                 irLayer.fresnelTeamColor = layer.fresnelTeamColor;
             }
 
-            // isHdLayer: detection for the v1200 animated tracks further below.
-            // It is only needed there, because the animated HD tracks
-            // (KGMR/KGFC/KGFA/KGFT) require a genuine HD condition — evaluating
-            // them for SD layers as well would produce phantom keys.
-            bool isHdLayer = layer.is_hd;
-            if (!isHdLayer) {
-                if (mat.shader == "Shader_HD_DefaultUnit" ||
-                    mat.shader == "Shader_HD_Crystal") {
-                    isHdLayer = true;
-                }
-            }
-            if (!isHdLayer && version_ >= 1100) {
-                for (const auto& sub : layer.subTextures) {
-                    if (sub.slot == wdx::Layer::SlotType::NormalMap ||
-                        sub.slot == wdx::Layer::SlotType::ORMMap ||
-                        sub.slot == wdx::Layer::SlotType::EmissiveMap ||
-                        sub.slot == wdx::Layer::SlotType::TeamColor ||
-                        sub.slot == wdx::Layer::SlotType::EnvironmentMap) {
-                        isHdLayer = true;
-                        break;
-                    }
-                }
-            }
-
             if (layer.alphaTracks.isUsed)
                 irLayer.alphaTrackIndex = storeFloatTrack(ir,
                     mapFloatTrack(layer.alphaTracks));
@@ -534,11 +520,16 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                 }
             }
 
-            // v1200 HD animated tracks — use the robust isHdLayer check computed above
-            if (version_ >= 1200 && isHdLayer) {
+            // Reforged animated layer tracks. The parser reads KMTE from v900
+            // and the fresnel tracks from v1000 for every layer, and sets
+            // isUsed only when the chunk is present, so an SD-on-HD layer's
+            // emissive animation comes through as well.
+            if (version_ > 800) {
                 if (layer.emissiveGainTracks.isUsed)
                     irLayer.emissiveGainTrackIndex = storeFloatTrack(ir,
                         mapFloatTrack(layer.emissiveGainTracks));
+            }
+            if (version_ > 900) {
                 if (layer.fresnelColorTracks.isUsed)
                     irLayer.fresnelColorTrackIndex = storeColorTrack(ir,
                         mapColorTrack(layer.fresnelColorTracks));
@@ -613,6 +604,7 @@ void MdxModelDisassembler::mapGeosets(const wdx::Model& mdx, ir::IRModel& ir) {
         }
 
         irMesh.materialIndex = static_cast<int32_t>(geo.materialId);
+        irMesh.selectionGroup = geo.selectionGroup;
 
         size_t vertCount = geo.vertexPositions.size();
         irMesh.vertices.resize(vertCount);
@@ -1079,6 +1071,9 @@ void MdxModelDisassembler::mapEventObjects(const wdx::Model& mdx, ir::IRModel& i
 
         for (auto time : evt.eventTrackTimes)
             irEvt.keyTimes.push_back(mdx_coord::msToTicks(time));
+        if (evt.globalSequenceId != 0xFFFFFFFFu &&
+            evt.globalSequenceId < mdx.globalSequences.size())
+            irEvt.globalSequenceIndex = static_cast<int32_t>(evt.globalSequenceId);
 
         ir.eventObjects.push_back(std::move(irEvt));
     }
@@ -1105,6 +1100,18 @@ void MdxModelDisassembler::mapCameras(const wdx::Model& mdx, ir::IRModel& ir) {
         if (cam.targetRotationTracks.isUsed)
             irCam.rotationTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(cam.targetRotationTracks));
+        if (cam.visibilityTracks.isUsed)
+            irCam.visibilityTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(cam.visibilityTracks));
+        if (cam.focusDistanceTracks.isUsed)
+            irCam.focusDistanceTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(cam.focusDistanceTracks));
+        if (cam.focalLengthTracks.isUsed)
+            irCam.focalLengthTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(cam.focalLengthTracks));
+        if (cam.fStopTracks.isUsed)
+            irCam.fStopTrackIndex = storeFloatTrack(ir,
+                mapFloatTrack(cam.fStopTracks));
 
         ir.cameras.push_back(std::move(irCam));
     }

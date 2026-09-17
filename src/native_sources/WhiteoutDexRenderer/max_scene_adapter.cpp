@@ -621,8 +621,9 @@ std::wstring MaxSceneAdapter::ResolveBitmapPath(Mtl* mtl, const wchar_t* paramNa
 }
 
 // ============================================================================
-// ReadWc3MaterialFlags — pack the six Wc3Material bool toggles into the
-// renderer's compact MaterialLayerData::flags bitmask.
+// ReadWc3MaterialFlags — pack the Wc3Material bool toggles into the
+// renderer's compact MaterialLayerData::flags bitmask (the MAT_* values in
+// whiteout/flakes/enums.h).
 // ============================================================================
 
 i32 MaxSceneAdapter::ReadWc3MaterialFlags(Mtl* mtl) {
@@ -630,8 +631,16 @@ i32 MaxSceneAdapter::ReadWc3MaterialFlags(Mtl* mtl) {
         const wchar_t* name;
         i32 bit;
     } kFlags[] = {
-        {L"twoSided", 1},    {L"unshaded", 2},    {L"unfogged", 4},
-        {L"noDepthTest", 8}, {L"noDepthSet", 16}, {L"constantColor", 32},
+        {L"twoSided", MAT_TWO_SIDED},
+        {L"unshaded", MAT_UNSHADED},
+        {L"unfogged", MAT_UNFOGGED},
+        {L"noDepthTest", MAT_NO_DEPTH_TEST},
+        {L"noDepthSet", MAT_NO_DEPTH_SET},
+        {L"constantColor", MAT_CONSTANT_COLOR},
+        // The HD pass gates AO_MAP on this bit, so a Max material without it
+        // previews with no baked occlusion - the same as the game draws it.
+        {L"ambientOcclusion", MAT_AMBIENT_OCCLUSION},
+        {L"backFacesForShadows", MAT_BACK_FACES_FOR_SHADOWS},
     };
     i32 flags = 0;
     for (auto& f : kFlags) {
@@ -2417,6 +2426,32 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             ForEachWc3SubMtl(mtl, [&](Mtl* sub, i32 layerIdx) {
                 const f32 a = PB2FloatOr(sub, L"opacity", t, 100.0f);
                 state.layerAlphas.push_back({matId, layerIdx, std::min(a / 100.0f, 1.0f)});
+
+                // KMTE / KFC3 / KFCA / KFTC: only a layer that animates one of
+                // them needs a per-frame override — the static values already
+                // went up with the material.
+                static const wchar_t* const kReforgedParams[] = {
+                    L"emissiveGain", L"fresnelR", L"fresnelG", L"fresnelB",
+                    L"fresnelOpacity", L"fresnelTeamCol"};
+                bool animated = false;
+                for (const wchar_t* name : kReforgedParams) {
+                    FindPB2Param(sub, name, [&](IParamBlock2* pblock, ParamID pid, ParamDef&) {
+                        Control* c = pblock->GetControllerByID(pid, 0);
+                        animated = animated || (c && c->IsAnimated());
+                    });
+                }
+                if (animated) {
+                    FrameState::LayerFresnelState lf;
+                    lf.materialId = matId;
+                    lf.layerIndex = layerIdx;
+                    lf.fresnelColor = {PB2FloatOr(sub, L"fresnelR", t, 1.0f),
+                                       PB2FloatOr(sub, L"fresnelG", t, 1.0f),
+                                       PB2FloatOr(sub, L"fresnelB", t, 1.0f)};
+                    lf.fresnelOpacity = PB2FloatOr(sub, L"fresnelOpacity", t, 0.0f);
+                    lf.fresnelTeamColor = PB2FloatOr(sub, L"fresnelTeamCol", t, 0.0f);
+                    lf.emissiveGain = PB2FloatOr(sub, L"emissiveGain", t, 1.0f);
+                    state.layerFresnels.push_back(lf);
+                }
             });
         }
     }

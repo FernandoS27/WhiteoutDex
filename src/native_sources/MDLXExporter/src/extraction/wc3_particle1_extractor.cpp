@@ -7,6 +7,7 @@
 
 #include "wc3_particle1_extractor.h"
 #include "../mdx_class_ids.h"
+#include "controller_track_helper.h"
 #include "visibility_track_helper.h"
 #include <scene/paramblock_reader.h>
 #include <animation/global_sequence_helper.h>
@@ -54,49 +55,10 @@ int32_t extractTrackByIndex(IParamBlock2* pb, ParamID pid,
                              ir::IRModel& model, const char* tag,
                              float scale = 1.0f) {
     if (!pb) return -1;
-    Control* ctrl = pb->GetControllerByID(pid, 0);
-    if (!ctrl) return -1;
-    int nk = ctrl->NumKeys();
-    if (nk <= 0) return -1;
-
-    ir::Track<float> track;
-    ULONG cidA = ctrl->ClassID().PartA();
-    if (cidA == HYBRIDINTERP_FLOAT_CLASS_ID) {
-        IKeyControl* ikc = GetKeyControlInterface(ctrl);
-        if (ikc && mdx_extract::detail::bezierKeysAllStep(ikc))
-            track.interpolation = ir::InterpolationType::None;
-        else
-            track.interpolation = ir::InterpolationType::Bezier;
-    } else if (cidA == LININTERP_FLOAT_CLASS_ID) {
-        track.interpolation = ir::InterpolationType::Linear;
-    } else if (cidA == TCBINTERP_FLOAT_CLASS_ID) {
-        track.interpolation = ir::InterpolationType::Hermite;
-    } else {
-        track.interpolation = ir::InterpolationType::Linear;
-    }
-
-    std::vector<TimeValue> times; std::vector<float> vals, inT, outT;
-    bool hasTan = false;
-    core::anim::readFloatKeys(ctrl, times, vals, inT, outT, hasTan);
-    if (times.empty()) {
-        for (int i = 0; i < nk; ++i) {
-            TimeValue t = ctrl->GetKeyTime(i);
-            float v = 0.0f; Interval iv = FOREVER;
-            ctrl->GetValue(t, &v, iv);
-            times.push_back(t); vals.push_back(v); inT.push_back(0); outT.push_back(0);
-        }
-    }
-    for (size_t i = 0; i < times.size(); i++) {
-        ir::Keyframe<float> k;
-        k.time = times[i]; k.value = vals[i] * scale;
-        k.inTangent = inT[i] * scale; k.outTangent = outT[i] * scale;
-        k.hasTangents = hasTan;
-        track.keys.push_back(k);
-    }
-    int32_t gs = core::anim::detectAndRegisterGlobalSeq(ctrl, model);
-    if (gs >= 0) track.globalSequenceIndex = gs;
-    int32_t idx = static_cast<int32_t>(model.floatTracks.size());
-    model.floatTracks.push_back(std::move(track));
+    int32_t idx = mdx_extract::extractFloatControllerTrack(
+        pb->GetControllerByID(pid, 0), model, scale);
+    if (idx >= 0)
+        P1ELOG << "  [" << tag << "] " << model.floatTracks[idx].keys.size() << " keys\n";
     return idx;
 }
 
@@ -104,49 +66,10 @@ int32_t extractTrackByIndex(IParamBlock2* pb, ParamID pid,
 int32_t extractTrackByName(ReferenceTarget* ref, const wchar_t* name,
                             ir::IRModel& model, const char* tag,
                             float scale = 1.0f) {
-    Control* ctrl = core::anim::getParamControllerDirect(ref, name);
-    if (!ctrl) return -1;
-    int nk = ctrl->NumKeys();
-    if (nk <= 0) return -1;
-
-    ir::Track<float> track;
-    ULONG cidA = ctrl->ClassID().PartA();
-    if (cidA == HYBRIDINTERP_FLOAT_CLASS_ID) {
-        IKeyControl* ikc = GetKeyControlInterface(ctrl);
-        if (ikc && mdx_extract::detail::bezierKeysAllStep(ikc))
-            track.interpolation = ir::InterpolationType::None;
-        else
-            track.interpolation = ir::InterpolationType::Bezier;
-    } else if (cidA == LININTERP_FLOAT_CLASS_ID) {
-        track.interpolation = ir::InterpolationType::Linear;
-    } else if (cidA == TCBINTERP_FLOAT_CLASS_ID) {
-        track.interpolation = ir::InterpolationType::Hermite;
-    } else {
-        track.interpolation = ir::InterpolationType::Linear;
-    }
-
-    std::vector<TimeValue> times; std::vector<float> vals, inT, outT;
-    bool hasTan = false;
-    core::anim::readFloatKeys(ctrl, times, vals, inT, outT, hasTan);
-    if (times.empty()) {
-        for (int i = 0; i < nk; ++i) {
-            TimeValue t = ctrl->GetKeyTime(i);
-            float v = 0.0f; Interval iv = FOREVER;
-            ctrl->GetValue(t, &v, iv);
-            times.push_back(t); vals.push_back(v); inT.push_back(0); outT.push_back(0);
-        }
-    }
-    for (size_t i = 0; i < times.size(); i++) {
-        ir::Keyframe<float> k;
-        k.time = times[i]; k.value = vals[i] * scale;
-        k.inTangent = inT[i] * scale; k.outTangent = outT[i] * scale;
-        k.hasTangents = hasTan;
-        track.keys.push_back(k);
-    }
-    int32_t gs = core::anim::detectAndRegisterGlobalSeq(ctrl, model);
-    if (gs >= 0) track.globalSequenceIndex = gs;
-    int32_t idx = static_cast<int32_t>(model.floatTracks.size());
-    model.floatTracks.push_back(std::move(track));
+    int32_t idx = mdx_extract::extractFloatControllerTrack(
+        core::anim::getParamControllerDirect(ref, name), model, scale);
+    if (idx >= 0)
+        P1ELOG << "  [" << tag << "] " << model.floatTracks[idx].keys.size() << " keys\n";
     return idx;
 }
 
@@ -212,8 +135,9 @@ void extractParticles1(const std::vector<core::SceneNode>& nodes,
             pe.speedTrackIndex        = extractTrackByIndex(pb, P1_PB_SPEED,         model, "KPES");
             pe.emissionRateTrackIndex = extractTrackByIndex(pb, P1_PB_EMISSION_RATE, model, "KPEE");
             pe.gravityTrackIndex      = extractTrackByIndex(pb, P1_PB_ACCELERATION,  model, "KPEG");
-            pe.latitudeTrackIndex     = extractTrackByIndex(pb, P1_PB_LATITUDE,      model, "KPEL", kDegToRad);
+            pe.latitudeTrackIndex     = extractTrackByIndex(pb, P1_PB_LATITUDE,      model, "KPLT", kDegToRad);
             pe.longitudeTrackIndex    = extractTrackByIndex(pb, P1_PB_LONGITUDE,     model, "KPLN", kDegToRad);
+            pe.lifespanTrackIndex     = extractTrackByIndex(pb, P1_PB_LIFE,          model, "KPEL");
 
         } else {
             // ═══ NEODEX — name-based with BlizzPart1.ms names ═══
@@ -244,8 +168,9 @@ void extractParticles1(const std::vector<core::SceneNode>& nodes,
 
             pe.emissionRateTrackIndex = extractTrackByName(ref, L"PartEmit",  model, "KPEE");
             pe.gravityTrackIndex      = extractTrackByName(ref, L"Gravity",   model, "KPEG");
-            pe.latitudeTrackIndex     = extractTrackByName(ref, L"latitude",  model, "KPEL", kDegToRad);
+            pe.latitudeTrackIndex     = extractTrackByName(ref, L"latitude",  model, "KPLT", kDegToRad);
             pe.longitudeTrackIndex    = extractTrackByName(ref, L"longitude", model, "KPLN", kDegToRad);
+            pe.lifespanTrackIndex     = extractTrackByName(ref, L"Life",      model, "KPEL");
         }
 
         pe.visibilityTrackIndex = extractVisibilityTrack(sn.maxNode, model);

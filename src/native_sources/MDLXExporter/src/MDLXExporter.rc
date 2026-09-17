@@ -11,7 +11,7 @@ LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 // Export Options Dialog
 // File path is taken from Max's File→Export save dialog.
 // Two tabs: Options + Texture Conversion. The Texture Conversion tab swaps
-// its inner content depending on Format Version (BLP for v800, DDS for v1200).
+// its inner content depending on Format Version (BLP for v800, DDS for v1800).
 // Smoothgroups export is always on. Extents are always animation-dependent.
 // Uses dialog units (DLU). Approx conversion: 1 DLU ~ 1.5-1.75 px.
 // ============================================================================
@@ -28,7 +28,7 @@ BEGIN
     GROUPBOX        "Format Version", IDC_GRP_FORMAT_VERSION, 7, 37, 166, 26
     CONTROL         "Classic (v800)", IDC_RDO_CLASSIC, "Button",
                     BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 14, 49, 72, 10
-    CONTROL         "Reforged (v1200)", IDC_RDO_REFORGED, "Button",
+    CONTROL         "Reforged (v1800)", IDC_RDO_REFORGED, "Button",
                     BS_AUTORADIOBUTTON, 92, 49, 72, 10
 
     // ── Tab Control (Options + Material Fix + Texture Conversion) ──

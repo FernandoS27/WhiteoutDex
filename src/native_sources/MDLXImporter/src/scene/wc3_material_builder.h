@@ -12,6 +12,10 @@ class TextureResolver;
 
 namespace mdx_scene {
 
+/// Does this layer import as an HD Wc3Material (shaderType 2)? A shader path,
+/// or any texture slot besides diffuse and team colour, makes it one.
+bool isHdLayer(const ir::Material& irMat, const ir::MaterialLayer& layer);
+
 class Wc3MaterialBuilder {
 public:
     /// Create Wc3Material instances for all IR materials.

@@ -92,7 +92,7 @@ void loadOptionsFromINI(Interface* gi, MdxExportOptions& opts) {
     // onto every later export — including headless ones, which never see the
     // dialog. The dialog still prefills its field from the INI for an unsaved
     // scene; a saved scene's name wins over both (see DoExport).
-    auto ver=gs(L"ExportVersion"); if(!ver.empty()){int v=_wtoi(ver.c_str()); opts.version=(v==2||v==1200)?1200:800;}
+    auto ver=gs(L"ExportVersion"); if(!ver.empty()){int v=_wtoi(ver.c_str()); opts.version=(v==2||v>=1200)?1800:800;}
     auto m=gs(L"MergeSimilarMeshes"); if(!m.empty()) opts.mergeGeosets=iniBool(m);
     auto fsn=gs(L"FixSharedNormals"); if(!fsn.empty()) opts.fixSharedNormals=iniBool(fsn);
     auto kb=gs(L"KeepUnusedBonesHelpers"); if(!kb.empty()) opts.keepUnusedBonesHelpers=iniBool(kb);
@@ -501,6 +501,7 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         for (const auto& at   : irModel.attachments)      addIfValid(at.visibilityTrackIndex);
         for (const auto& pe   : irModel.particleEmitters) addIfValid(pe.visibilityTrackIndex); // PE1+PE2+Corn
         for (const auto& rib  : irModel.ribbonEmitters)   addIfValid(rib.visibilityTrackIndex);
+        for (const auto& cam  : irModel.cameras)          addIfValid(cam.visibilityTrackIndex);
         // KMTA layer alpha behaves like visibility: DontInterp holds with a
         // boundary stub at every sequence start (form-switch composites flip
         // 1.0/0.0 per sequence). Reduction dropped those stubs (27 → 16 keys

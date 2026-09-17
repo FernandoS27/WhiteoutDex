@@ -40,8 +40,8 @@
 #include <max.h>
 // After max.h (which has already pulled in <windows.h>) and before the
 // maxscript block, whose macros these headers must not be compiled under.
-#include "wdx_art_tier_setting.h"
 #include "wdx_mpq_settings.h"
+#include "wdx_scene_art_tier_max.h"
 #include <notify.h>
 #include <maxversion.h>
 #include <maxscript/maxscript.h>
@@ -399,12 +399,19 @@ static bool BuildSceneAndSpawn(Interface* ip) {
     if (!userInstallPath.empty())
         g_adapter->GetContentProvider().SetInstallPath(userInstallPath);
     ApplyIoOverridesTo(g_adapter->GetContentProvider(), plugcfgDir);
-    // And the same art tier - but only one the user actually picked. The
-    // collect below is what tells HD from SD, so "follow the render mode" has
-    // no mode to follow yet; it stays Classic, which is what this provider
-    // always read before the tier existed.
-    g_adapter->GetContentProvider().SetArtTier(
-        g_renderer->Settings().GetArtTier().value_or(whiteout::flakes::Wc3ArtTier::Classic));
+    // And the scene's art tier, saved on rootNode (wdx_scene_art_tier.h) - but
+    // only when the scene names one. The collect below is what tells HD from
+    // SD, so Auto ("follow the render mode") has no mode to follow yet; it
+    // stays Classic, which is what this provider always read before the tier
+    // existed.
+    using whiteout::flakes::Wc3ArtTier;
+    const wdx::scene::ArtTier sceneTier = wdx::scene::ReadSceneArtTier(ip->GetRootNode());
+    const std::optional<Wc3ArtTier> pinnedTier =
+        sceneTier == wdx::scene::ArtTier::Auto
+            ? std::nullopt
+            : std::optional<Wc3ArtTier>(static_cast<Wc3ArtTier>(static_cast<int>(sceneTier) - 1));
+    g_renderWindow->PublishSceneArtTier(static_cast<i32>(sceneTier));
+    g_adapter->GetContentProvider().SetArtTier(pinnedTier.value_or(Wc3ArtTier::Classic));
     // Cross-model dedup: skip BLP/CASC decode for textures another model
     // already uploaded. SpawnUnitFromSource sets this too, but setting it now
     // means CollectScene's incidental texture reads also benefit.
@@ -468,12 +475,17 @@ static bool BuildSceneAndSpawn(Interface* ip) {
         g_renderer->Settings().SetRenderMode(mode);
 
         // Which files the scene reads is a separate question from how it
-        // draws them: a Definitive model is HD *and* Definitive. Now that the
-        // mode is known, "follow the render mode" has an answer too. The asset
-        // pump re-arms the provider per need anyway; arming it here as well
-        // covers the readers that go straight to it (sound, the DNC rig).
-        using whiteout::flakes::Wc3ArtTier;
-        const Wc3ArtTier tier = g_renderer->EffectiveArtTier();
+        // draws them: a Definitive model is HD *and* Definitive. The scene's
+        // pin is its own override; Auto clears it, and now that the mode is
+        // known, "follow the render mode" has an answer too. ClearArtTier
+        // leaves the provider on whatever it last read, and the asset pump
+        // only re-arms it per need, so arm it here for the readers that go
+        // straight to it (sound, the DNC rig).
+        if (pinnedTier)
+            g_scene->SetArtTier(*pinnedTier);
+        else
+            g_scene->ClearArtTier();
+        const Wc3ArtTier tier = g_renderer->EffectiveArtTier(*g_scene);
         if (auto* provider = g_scene->ActiveContentProviderIfAny())
             provider->SetArtTier(tier);
         const MCHAR* tierName = tier == Wc3ArtTier::Definitive ? _M("Definitive")
@@ -481,7 +493,7 @@ static bool BuildSceneAndSpawn(Interface* ip) {
                                                                : _M("Classic");
         mprintf(_M("WhiteoutDex: render mode = %s, art tier = %s%s\n"),
                 mode == RenderMode::HD ? _M("HD") : _M("SD"), tierName,
-                g_renderer->Settings().GetArtTier() ? _M("") : _M(" (follows render mode)"));
+                pinnedTier ? _M("") : _M(" (follows render mode)"));
     }
     g_renderWindow->SetFocusActor(g_actor->handle);
 
@@ -597,9 +609,28 @@ static void CALLBACK ViewportSyncTimer(HWND, UINT, UINT_PTR, DWORD) {
     if (!g_running || g_rebuilding || !g_renderWindow || !g_renderWindow->IsOpen())
         return;
 
+    // The View menu's Art Tier pick: write it onto the scene through the same
+    // MaxScript writer the Settings dialog and the importer use, then rebuild,
+    // which is where BuildSceneAndSpawn reads it back and applies it.
+    const bool artTierPicked = [] {
+        i32 stored = 0;
+        if (!g_renderWindow->ConsumeSceneArtTierRequest(stored))
+            return false;
+        // An integer from a fixed menu is all that is spliced in, so this is
+        // still the NonEmbedded case RefreshSequencesFromMaxScript describes.
+        wchar_t script[96];
+        swprintf_s(script, L"try(::WdxSceneData.setArtTier %d resync:false)catch()", stored);
+#if MAX_VERSION_MAJOR >= 24
+        ExecuteMAXScriptScript(script, MAXScript::ScriptSource::NonEmbedded, TRUE);
+#else
+        ExecuteMAXScriptScript(script, TRUE);
+#endif
+        return true;
+    }();
+
     // A rebuild is long enough that servicing the camera on the same tick would
     // just push a pose at a scene that is about to be replaced.
-    if (g_renderWindow->ConsumeResyncRequest()) {
+    if (g_renderWindow->ConsumeResyncRequest() || artTierPicked) {
         if (WhiteoutFlakesRebuild())
             RefreshSequencesFromMaxScript();
         return;
@@ -873,12 +904,11 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
         mprintf(_M("WhiteoutDex: CASC W3Path = '%hs'\n"), userInstallPath.c_str());
     }
 
-    // The Warcraft III art tier the View menu last picked, from the same INI.
-    // Unset follows the render mode BuildSceneAndSpawn settles on. Read on
-    // Start only: during a session the menu is the authority, and it writes
-    // the file as it changes the setting.
-    const std::wstring toolkitIni = wdx::mpq::SettingsIniPath(plugcfgDir);
-    g_renderer->Settings().SetArtTier(wdx::renderer::LoadArtTier(toolkitIni));
+    // The Warcraft III art tier is the scene's, not a global preference:
+    // BuildSceneAndSpawn reads it off rootNode on every rebuild. Clear any
+    // global a previous session could have left, so an Auto scene really does
+    // follow its render mode.
+    g_renderer->Settings().SetArtTier(std::nullopt);
 
     // UI language. Done here rather than at DllMain time because plugcfgDir is
     // only known once GetCOREInterface() is usable, and re-reading it on every
@@ -887,8 +917,6 @@ Value* WhiteoutFlakesStart_cf(Value** arg_list, i32 count) {
     wdx::ui::InitLanguage(g_hInstance, plugcfgDir);
 
     g_renderWindow = new whiteout::flakes::RenderWindow(*g_renderer);
-    // Before Open: the render thread reads it from the first frame's menu.
-    g_renderWindow->SetToolkitSettingsIni(toolkitIni);
     // Open() defaults to D3D12 — Settings().SetDefaultBackend() above only
     // affects Settings::DefaultBackend() and isn't plumbed through to
     // RenderWindow::ThreadFunc, which passes its `api` arg verbatim into

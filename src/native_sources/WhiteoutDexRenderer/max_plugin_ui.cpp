@@ -13,7 +13,6 @@
 #include "renderer/shadow/shadow_service.h"
 #include "localization.h"
 #include "settings_ini.h"
-#include "wdx_art_tier_setting.h"
 #include "whiteout/flakes/display.h"
 #include "whiteout/flakes/enums.h"
 #include "whiteout/flakes/sound_emitter.h"
@@ -195,35 +194,29 @@ void MaxPluginUI::BuildMenuBar() {
             // of the install follows this - particle and ribbon textures,
             // effects, replaceables, the DNC rig - not the bitmaps a Max
             // material already points at on disk.
+            //
+            // It is the scene's own art tier, saved in the .max and shared
+            // with the Settings dialog, so a pick only leaves a request: the
+            // Max thread writes rootNode and then resyncs, and the rebuild is
+            // what applies it (every asset slot latched the old tier when it
+            // was acquired, so nothing on screen re-resolves on its own).
             const bool artTierOpen = ImGui::BeginMenu(i18n::tr("menu.view.art_tier"));
             // Hover-test before the body, for the same reason as the Animation
             // combo: once the submenu is open, the last item is whatever it drew.
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", i18n::tr("wdx.menu.art_tier.tip"));
             if (artTierOpen) {
-                const std::optional<Wc3ArtTier> cur = svc.Settings().GetArtTier();
-                struct Choice {
-                    const char* key;
-                    std::optional<Wc3ArtTier> tier;
+                const i32 cur = win_.SceneArtTier();
+                // Stored values, in wdx_scene_art_tier.h's order.
+                const char* const choices[] = {
+                    "menu.view.art_tier_auto",
+                    "menu.view.art_tier_classic",
+                    "menu.view.art_tier_reforged",
+                    "menu.view.art_tier_definitive",
                 };
-                const Choice choices[] = {
-                    {"menu.view.art_tier_auto", std::nullopt},
-                    {"menu.view.art_tier_classic", Wc3ArtTier::Classic},
-                    {"menu.view.art_tier_reforged", Wc3ArtTier::Reforged},
-                    {"menu.view.art_tier_definitive", Wc3ArtTier::Definitive},
-                };
-                for (const Choice& c : choices) {
-                    if (!ImGui::MenuItem(i18n::tr(c.key), nullptr, cur == c.tier) || cur == c.tier)
-                        continue;
-                    svc.Settings().SetArtTier(c.tier);
-                    if (auto* p = svc.Scene().ActiveContentProviderIfAny())
-                        p->SetArtTier(svc.EffectiveArtTier());
-                    wdx::renderer::SaveArtTier(win_.ToolkitSettingsIni(), c.tier);
-                    // Every asset slot latched the old tier when it was
-                    // acquired, so nothing already on screen re-resolves on
-                    // its own. A Resync re-acquires the lot, and it is also
-                    // what hands the scene adapter's own provider the new tier.
-                    win_.RequestResync();
+                for (i32 i = 0; i < static_cast<i32>(std::size(choices)); ++i) {
+                    if (ImGui::MenuItem(i18n::tr(choices[i]), nullptr, cur == i) && cur != i)
+                        win_.RequestSceneArtTier(i);
                 }
                 ImGui::EndMenu();
             }

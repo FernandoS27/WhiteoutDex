@@ -19,6 +19,7 @@
 #include "../mdx_class_ids.h"
 #include <algorithm>
 #include <scene/paramblock_reader.h>
+#include <animation/global_sequence_helper.h>
 #include <iparamb2.h>
 #include <maxscript/maxscript.h>
 #include <maxscript/util/listener.h>
@@ -227,6 +228,18 @@ void extractEvents(const std::vector<core::SceneNode>& nodes,
         for (int f : frames) {
             TimeValue ticks = static_cast<TimeValue>(f) * tpf;
             evt.keyTimes.push_back(ticks);
+        }
+
+        // KEVT global sequence: the importer keeps its duration (ms) in a
+        // UserProp, because Wc3RefEvent's duplicate parameter blocks make a
+        // new parameter unsafe (see reference memory on scripted plugins).
+        int gsMs = 0;
+        if (sn.maxNode->GetUserPropInt(_T("Wc3GlobalSequence"), gsMs) && gsMs > 0) {
+            const TimeValue gsTicks = static_cast<TimeValue>(
+                (static_cast<int64_t>(gsMs) * 4800 + 500) / 1000);
+            evt.globalSequenceIndex = core::anim::registerGlobalSequence(model, gsTicks);
+            ELOG << "    global sequence " << gsMs << " ms -> idx "
+                 << evt.globalSequenceIndex << "\n";
         }
 
         EFLUSH;

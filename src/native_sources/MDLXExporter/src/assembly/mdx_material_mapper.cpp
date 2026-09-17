@@ -66,6 +66,10 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
     if (irLayer.unfogged)     flags = flags | Layer::ShadingFlag::Unfogged;
     if (irLayer.noDepthTest)  flags = flags | Layer::ShadingFlag::NoDepthTest;
     if (irLayer.noDepthWrite) flags = flags | Layer::ShadingFlag::NoDepthSet;
+    // Not version-gated: the 3.0.0 client reads shadingFlags as one u32 at
+    // every version, and older clients never test these bits.
+    if (irLayer.backFacesForShadows) flags = flags | Layer::ShadingFlag::BackFacesForShadows;
+    if (irLayer.ambientOcclusion)    flags = flags | Layer::ShadingFlag::AmbientOcclusion;
     layer.shadingFlags = flags;
 
     layer.alpha = irLayer.alpha;
@@ -73,20 +77,26 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
     layer.textureAnimationId = (irLayer.textureAnimationIndex >= 0)
         ? static_cast<uint32_t>(irLayer.textureAnimationIndex) : 0xFFFFFFFF;
 
-    for (auto& ref : irLayer.textureRefs) {
-        if (ref.slot == ir::TextureSlot::Diffuse && ref.textureIndex >= 0) {
-            layer.textureId = static_cast<uint32_t>(ref.textureIndex);
-            break;
+    // From v1100 the textures live in the sub-texture list and Blizzard's
+    // files leave the old textureId at 0.
+    if (version < 1100) {
+        for (auto& ref : irLayer.textureRefs) {
+            if (ref.slot == ir::TextureSlot::Diffuse && ref.textureIndex >= 0) {
+                layer.textureId = static_cast<uint32_t>(ref.textureIndex);
+                break;
+            }
         }
     }
 
-    if (version >= 1200) {
-        layer.emissiveGain = irLayer.emissiveGain;
-        layer.fresnelOpacity = irLayer.fresnelOpacity;
-        layer.fresnelTeamColor = irLayer.fresnelTeamColor;
-        layer.fresnelColor = {irLayer.fresnelColor.x, irLayer.fresnelColor.y,
-                              irLayer.fresnelColor.z};
+    // The writer gates each of these on the version that introduced it.
+    layer.emissiveGain = irLayer.emissiveGain;
+    layer.fresnelOpacity = irLayer.fresnelOpacity;
+    layer.fresnelTeamColor = irLayer.fresnelTeamColor;
+    layer.fresnelColor = {irLayer.fresnelColor.x, irLayer.fresnelColor.y,
+                          irLayer.fresnelColor.z};
 
+    if (version >= 1100) {
+        bool hasPbrSlot = false;
         for (auto& ref : irLayer.textureRefs) {
             if (ref.textureIndex < 0) continue;
             Layer::SubTexture sub;
@@ -100,17 +110,22 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
             case ir::TextureSlot::Environment: sub.slot = Layer::SlotType::EnvironmentMap; break;
             default: sub.slot = Layer::SlotType::DiffuseMap; break;
             }
+            if (sub.slot != Layer::SlotType::DiffuseMap &&
+                sub.slot != Layer::SlotType::TeamColor)
+                hasPbrSlot = true;
             layer.subTextures.push_back(sub);
         }
 
-        if (!layer.subTextures.empty()) {
-            layer.is_hd = true;
-            // v1200 HD layers must carry ShaderType::HD (=1) so the game
-            // and downstream tools interpret the sub-textures correctly.
-            // Without this the writer emits shader=0 (ShaderType::SD) and
-            // Reforged renders ignore the sub-texture array.
-            layer.shader = whiteout::mdx::Layer::ShaderType::HD;
-        }
+        // The shader the material names wins. Without one (a Standard
+        // material, a NeoDex material) a layer is HD only if it carries a
+        // PBR map: every layer has a diffuse sub-texture, so "has
+        // sub-textures" would turn every SD layer into HD.
+        using ShaderType = Layer::ShaderType;
+        layer.shader = (irLayer.shaderType >= 0)
+            ? static_cast<ShaderType>(irLayer.shaderType)
+            : (hasPbrSlot ? ShaderType::HD : ShaderType::SD);
+        layer.is_hd = (layer.shader == ShaderType::HD ||
+                       layer.shader == ShaderType::Crystal);
     }
 
     // Animated alpha track
@@ -159,24 +174,119 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
     {
         auto& irTrack = model.intTracks[irLayer.textureIdTrackIndex];
         if (!irTrack.empty()) {
-            layer.textureIdTracks.isUsed = true;
-            layer.textureIdTracks.interpolationType = static_cast<InterpolationType>(
+            Track<whiteout::u32> track;
+            track.isUsed = true;
+            track.interpolationType = static_cast<InterpolationType>(
                 static_cast<int>(irTrack.interpolation));
-            layer.textureIdTracks.globalSequenceId = (irTrack.globalSequenceIndex >= 0)
+            track.globalSequenceId = (irTrack.globalSequenceIndex >= 0)
                 ? static_cast<uint32_t>(irTrack.globalSequenceIndex)
                 : Track<whiteout::u32>::kNoGlobalSequence;
-            layer.textureIdTracks.keyCount = irTrack.keys.size();
+            track.keyCount = irTrack.keys.size();
 
-            layer.textureIdTracks.timestamps.resize(irTrack.keys.size());
-            layer.textureIdTracks.keys_data.resize(irTrack.keys.size());
+            track.timestamps.resize(irTrack.keys.size());
+            track.keys_data.resize(irTrack.keys.size());
             for (size_t k = 0; k < irTrack.keys.size(); k++) {
-                layer.textureIdTracks.timestamps[k] = mdx_transform::ticksToMs(irTrack.keys[k].time);
-                layer.textureIdTracks.keys_data[k] = static_cast<whiteout::u32>(irTrack.keys[k].value);
+                track.timestamps[k] = mdx_transform::ticksToMs(irTrack.keys[k].time);
+                track.keys_data[k] = static_cast<whiteout::u32>(irTrack.keys[k].value);
             }
+
+            // From v1100 the writer emits KMTF only from a sub-texture, so a
+            // flipbook on the layer itself would be dropped. The flipbook
+            // swaps the diffuse texture.
+            Layer::SubTexture* diffuseSub = nullptr;
+            for (auto& sub : layer.subTextures) {
+                if (sub.slot == Layer::SlotType::DiffuseMap) { diffuseSub = &sub; break; }
+            }
+            if (version >= 1100 && diffuseSub)
+                diffuseSub->tracks = std::move(track);
+            else
+                layer.textureIdTracks = std::move(track);
 
             MDX_LOG(_T("      texId animated: %d keys\n"), (int)irTrack.keys.size());
         }
     }
 
+    // KMTE / KFC3 / KFCA / KFTC. The writer only emits them from the version
+    // that has the matching static field.
+    layer.emissiveGainTracks = floatTrack(model, irLayer.emissiveGainTrackIndex);
+    layer.fresnelAlphaTracks = floatTrack(model, irLayer.fresnelAlphaTrackIndex);
+    layer.fresnelTeamColorTracks = floatTrack(model, irLayer.fresnelTeamColorTrackIndex);
+    if (irLayer.fresnelColorTrackIndex >= 0 &&
+        irLayer.fresnelColorTrackIndex < static_cast<int32_t>(model.colorTracks.size()))
+    {
+        const auto& irTrack = model.colorTracks[irLayer.fresnelColorTrackIndex];
+        if (!irTrack.empty()) {
+            auto& out = layer.fresnelColorTracks;
+            out.isUsed = true;
+            out.interpolationType = static_cast<InterpolationType>(
+                static_cast<int>(irTrack.interpolation));
+            out.globalSequenceId = (irTrack.globalSequenceIndex >= 0)
+                ? static_cast<uint32_t>(irTrack.globalSequenceIndex)
+                : Track<whiteout::Vector3f>::kNoGlobalSequence;
+            out.keyCount = irTrack.keys.size();
+            out.timestamps.resize(irTrack.keys.size());
+            const bool hasTangents = (irTrack.interpolation == ir::InterpolationType::Hermite ||
+                                      irTrack.interpolation == ir::InterpolationType::Bezier);
+            auto rgb = [](const Color& c) { return whiteout::Vector3f{c.r, c.g, c.b}; };
+            if (hasTangents) {
+                using TK = Track<whiteout::Vector3f>::TangentKey;
+                out.keys_data.resize(irTrack.keys.size() * sizeof(TK) / sizeof(whiteout::Vector3f));
+                auto keys = out.tangentKeys();
+                for (size_t k = 0; k < irTrack.keys.size(); k++) {
+                    out.timestamps[k] = mdx_transform::ticksToMs(irTrack.keys[k].time);
+                    keys[k].value = rgb(irTrack.keys[k].value);
+                    keys[k].inTan = rgb(irTrack.keys[k].inTangent);
+                    keys[k].outTan = rgb(irTrack.keys[k].outTangent);
+                }
+            } else {
+                out.keys_data.resize(irTrack.keys.size());
+                for (size_t k = 0; k < irTrack.keys.size(); k++) {
+                    out.timestamps[k] = mdx_transform::ticksToMs(irTrack.keys[k].time);
+                    out.keys_data[k] = rgb(irTrack.keys[k].value);
+                }
+            }
+        }
+    }
+
     return layer;
+}
+
+Track<whiteout::f32> MdxMaterialMapper::floatTrack(const ir::IRModel& model, int32_t index)
+{
+    Track<whiteout::f32> out;
+    if (index < 0 || index >= static_cast<int32_t>(model.floatTracks.size()))
+        return out;
+    const auto& irTrack = model.floatTracks[index];
+    if (irTrack.empty())
+        return out;
+
+    out.isUsed = true;
+    out.interpolationType = static_cast<InterpolationType>(
+        static_cast<int>(irTrack.interpolation));
+    out.globalSequenceId = (irTrack.globalSequenceIndex >= 0)
+        ? static_cast<uint32_t>(irTrack.globalSequenceIndex)
+        : Track<whiteout::f32>::kNoGlobalSequence;
+    out.keyCount = irTrack.keys.size();
+    out.timestamps.resize(irTrack.keys.size());
+
+    const bool hasTangents = (irTrack.interpolation == ir::InterpolationType::Hermite ||
+                              irTrack.interpolation == ir::InterpolationType::Bezier);
+    if (hasTangents) {
+        using TK = Track<whiteout::f32>::TangentKey;
+        out.keys_data.resize(irTrack.keys.size() * sizeof(TK) / sizeof(whiteout::f32));
+        auto keys = out.tangentKeys();
+        for (size_t k = 0; k < irTrack.keys.size(); k++) {
+            out.timestamps[k] = mdx_transform::ticksToMs(irTrack.keys[k].time);
+            keys[k].value = irTrack.keys[k].value;
+            keys[k].inTan = irTrack.keys[k].inTangent;
+            keys[k].outTan = irTrack.keys[k].outTangent;
+        }
+    } else {
+        out.keys_data.resize(irTrack.keys.size());
+        for (size_t k = 0; k < irTrack.keys.size(); k++) {
+            out.timestamps[k] = mdx_transform::ticksToMs(irTrack.keys[k].time);
+            out.keys_data[k] = irTrack.keys[k].value;
+        }
+    }
+    return out;
 }

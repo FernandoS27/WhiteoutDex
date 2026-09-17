@@ -304,7 +304,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 		)
 	)
 
-	rollout settingsRollout "WhiteoutDex Settings" width:340 height:512
+	rollout settingsRollout "WhiteoutDex Settings" width:340 height:540
 	(
 		local sidebarIni = (::WhiteoutDexInstallRoot) + "\\WhiteoutDex_Settings.ini"
 		local settingsIni = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
@@ -331,24 +331,29 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 		button mpqOrderBtn "Edit Load Order..." pos:[20,168] width:150 height:22 tooltip:"Choose which MPQ archives are searched and in what order, including your own"
 		label mpqOrderLbl "" pos:[178,172] width:142 height:16
 
-		groupBox cascGrp "CASC Archives (Reforged v1200)" pos:[8,210] width:324 height:94
+		groupBox cascGrp "CASC Archives (Reforged v1200)" pos:[8,210] width:324 height:122
 		label cascLabel "Warcraft III Reforged:" pos:[20,230] width:140 height:16
 		edittext cascPathEdt "" pos:[20,248] width:260 height:20 readOnly:true
 		button cascBrowseBtn "..." pos:[284,248] width:38 height:20 tooltip:"Browse for Warcraft III Reforged installation folder"
 		label cascStatusLbl "" pos:[20,274] width:140 height:14
 		button cascDetectBtn "Detect" pos:[166,272] width:76 height:18 tooltip:"Auto-detect the Warcraft III installation"
 		button cascClearBtn "Clear" pos:[248,272] width:72 height:18 tooltip:"Clear the CASC directory"
+		-- Not a toolkit preference like the rest of this dialog: the value lives
+		-- on the open scene (::WdxSceneData), and the preview's Warcraft III Art
+		-- menu edits the same one.
+		label artTierLbl "Scene Art Tier:" pos:[20,304] width:120 height:16
+		dropdownList artTierDDL "" pos:[142,300] width:180 height:20 items:#("Follow Render Mode", "Classic", "Reforged (HD)", "Definitive (DE)") tooltip:"Which Warcraft III art overlay this scene's textures are looked up in first. Saved with the scene; the preview's Warcraft III Art menu edits the same value."
 
-		groupBox sidebarGrp "Sidebar" pos:[8,310] width:324 height:78
-		checkbox chk_sidebarEnabled "Show Sidebar" pos:[20,332] width:120 height:18 tooltip:"Show the WhiteoutDex tool sidebar on startup"
-		label lblDockSide "Dock Side:" pos:[160,334] width:60 height:16
-		dropdownList ddl_dockSide "" pos:[222,330] width:100 height:20 items:#("Left", "Right")
+		groupBox sidebarGrp "Sidebar" pos:[8,338] width:324 height:78
+		checkbox chk_sidebarEnabled "Show Sidebar" pos:[20,360] width:120 height:18 tooltip:"Show the WhiteoutDex tool sidebar on startup"
+		label lblDockSide "Dock Side:" pos:[160,362] width:60 height:16
+		dropdownList ddl_dockSide "" pos:[222,358] width:100 height:20 items:#("Left", "Right")
 
-		groupBox updateGrp "Auto-Update" pos:[8,394] width:324 height:72
-		checkbox chk_autoUpdate "Check for updates on startup" pos:[20,416] width:200 height:18 tooltip:"Automatically check GitHub for new versions when 3ds Max starts"
-		button btn_checkNow "Check Now" pos:[228,414] width:92 height:22 tooltip:"Manually check for updates now"
+		groupBox updateGrp "Auto-Update" pos:[8,422] width:324 height:72
+		checkbox chk_autoUpdate "Check for updates on startup" pos:[20,444] width:200 height:18 tooltip:"Automatically check GitHub for new versions when 3ds Max starts"
+		button btn_checkNow "Check Now" pos:[228,442] width:92 height:22 tooltip:"Manually check for updates now"
 
-		button closeBtn "OK" pos:[248,478] width:82 height:24
+		button closeBtn "OK" pos:[248,506] width:82 height:24
 
 		fn populateLanguages =
 		(
@@ -394,6 +399,21 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				mpqOrderLbl.text = ::WdxL.t "set_order_default_lbl"
 			else
 				mpqOrderLbl.text = (::WdxL.t "set_order_custom_lbl") + " (" + n as string + ")"
+		)
+
+		-- The open scene's art tier into the dropdown. Stored 0 (Auto) ..
+		-- 3 (Definitive); the dropdown is one-based.
+		fn refreshArtTier =
+		(
+			local tier = if ::WdxSceneData != undefined then ::WdxSceneData.getArtTier() else 0
+			artTierDDL.selection = tier + 1
+		)
+
+		-- Written straight onto the scene, like every other control here applies
+		-- at once; a running preview resyncs so it reads the new chain.
+		on artTierDDL selected idx do
+		(
+			if ::WdxSceneData != undefined then ::WdxSceneData.setArtTier (idx - 1)
 		)
 
 		on langDDL selected idx do
@@ -622,7 +642,12 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				cascDetectBtn.text = ::WdxL.t "set_detect_btn"
 				cascDetectBtn.tooltip = ::WdxL.t "set_detect_tip"
 				cascClearBtn.tooltip = ::WdxL.t "set_casc_clear_tip"
+				artTierLbl.text = ::WdxL.t "set_art_tier_lbl"
+				artTierDDL.tooltip = ::WdxL.t "set_art_tier_tip"
+				artTierDDL.items = ::WdxL.tList "set_art_tier_items"
 			)
+			-- After the relabel: assigning .items resets the selection.
+			refreshArtTier()
 			-- Sidebar localization
 			if ::WdxL != undefined then
 			(

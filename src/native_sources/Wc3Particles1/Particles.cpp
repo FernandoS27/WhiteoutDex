@@ -65,7 +65,8 @@ static ParamBlockDesc2 wc3particles1_param_blk(
     p_end,
 
     // [3] P1_PB_LIFE — lifespan in seconds (matches m_particleLifeSpan)
-    P1_PB_LIFE, _M("Life"), TYPE_FLOAT, 0, IDS_P1_PARAM_LIFE,
+    //     Animatable: MDX carries it as KPEL, which the 3.0.0 client reads.
+    P1_PB_LIFE, _M("Life"), TYPE_FLOAT, P_ANIMATABLE, IDS_P1_PARAM_LIFE,
         p_default,  1.0f,
         p_range,    0.0f, 1000000000.0f,
         p_ui,       P1_MAP_TIMING, TYPE_SPINNER, EDITTYPE_FLOAT,
@@ -837,7 +838,7 @@ void Config1DlgProc::ExportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     ExportAnimFloat(f, "Gravity",   "GravityUseAnim",   pb, P1_PB_ACCELERATION, t);
 
     // Timing
-    pb->GetValue(P1_PB_LIFE, t, fVal, iv); IniWriteFloat(f, "Life", fVal);
+    ExportAnimFloat(f, "Life", "LifeUseAnim", pb, P1_PB_LIFE, t);
     ExportAnimFloat(f, "EmissionRate", "EmissionRateUseAnim", pb, P1_PB_EMISSION_RATE, t);
 
     // Model
@@ -893,7 +894,7 @@ void Config1DlgProc::ImportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     ImportAnimFloat(ini, "Gravity",   "GravityUseAnim",   pb, P1_PB_ACCELERATION,  0.0f, dynLoad);
 
     // Timing
-    pb->SetValue(P1_PB_LIFE, t, IniGetFloat(ini, "Life", 1.0f));
+    ImportAnimFloat(ini, "Life", "LifeUseAnim", pb, P1_PB_LIFE, 1.0f, dynLoad);
     ImportAnimFloat(ini, "EmissionRate", "EmissionRateUseAnim", pb, P1_PB_EMISSION_RATE, 50.0f, dynLoad);
 
     // Model

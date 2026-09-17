@@ -5,7 +5,9 @@
 
 #include "wc3_ribbon_extractor.h"
 #include "../mdx_class_ids.h"
+#include "controller_track_helper.h"
 #include "visibility_track_helper.h"
+#include <animation/global_sequence_helper.h>
 #include <scene/paramblock_reader.h>
 #include <modstack.h>
 
@@ -93,6 +95,18 @@ void extractRibbons(const std::vector<core::SceneNode>& nodes,
                 if (it != mtlToIndex.end()) rib.materialIndex = it->second;
             }
 
+            // KRHA / KRHB / KRAL / KRCO / KRTX
+            rib.heightAboveTrackIndex = extractFloatControllerTrack(
+                pb->GetControllerByID(pb_height_above, 0), model);
+            rib.heightBelowTrackIndex = extractFloatControllerTrack(
+                pb->GetControllerByID(pb_height_below, 0), model);
+            rib.alphaTrackIndex = extractFloatControllerTrack(
+                pb->GetControllerByID(pb_alpha, 0), model);
+            rib.colorTrackIndex = extractColorControllerTrack(
+                pb->GetControllerByID(pb_color, 0), model);
+            rib.textureSlotTrackIndex = extractIntControllerTrack(
+                pb->GetControllerByID(pb_tex_slot, 0), model);
+
         } else {
             // ═══ NEODEX — name-based with BlizRibbon.ms names ═══
             PBR::readFloatByName(ref, L"Above",   t, rib.heightAbove);
@@ -116,6 +130,18 @@ void extractRibbons(const std::vector<core::SceneNode>& nodes,
                 auto it = mtlToIndex.find(mtl);
                 if (it != mtlToIndex.end()) rib.materialIndex = it->second;
             }
+
+            using core::anim::getParamControllerDirect;
+            rib.heightAboveTrackIndex = extractFloatControllerTrack(
+                getParamControllerDirect(ref, L"Above"), model);
+            rib.heightBelowTrackIndex = extractFloatControllerTrack(
+                getParamControllerDirect(ref, L"Below"), model);
+            rib.alphaTrackIndex = extractFloatControllerTrack(
+                getParamControllerDirect(ref, L"alpha"), model);
+            rib.colorTrackIndex = extractColorControllerTrack(
+                getParamControllerDirect(ref, L"vertexcolor"), model);
+            rib.textureSlotTrackIndex = extractIntControllerTrack(
+                getParamControllerDirect(ref, L"slots"), model);
         }
 
         // Common: visibility

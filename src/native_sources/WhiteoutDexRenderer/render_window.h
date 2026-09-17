@@ -160,17 +160,32 @@ public:
         return resyncRequested_.exchange(false, std::memory_order_relaxed);
     }
 
-    // ---- Toolkit settings file ----
+    // ---- Scene art tier ----
     //
-    // `<plugcfg>\WhiteoutDex_Settings.ini`, where the View menu persists the
-    // art tier. The Max thread resolves plugcfg (an Interface call the render
-    // thread must not make) and hands it over here BEFORE Open, so the render
-    // thread only ever reads a string that no longer changes.
-    void SetToolkitSettingsIni(std::wstring path) {
-        toolkitSettingsIni_ = std::move(path);
+    // The View menu's Art Tier IS the scene's `artTier` attribute on rootNode
+    // (wdx_scene_art_tier.h), the same value the Settings dialog edits. Values
+    // are the stored integers: 0 Auto, 1 Classic, 2 Reforged, 3 Definitive.
+    //  * Max thread: publishes what the scene holds on every rebuild.
+    //  * Render thread: rootNode is out of its reach, so a pick leaves a
+    //    request the viewport-sync timer writes to the scene and then resyncs
+    //    on. The published value follows the pick at once so the menu's check
+    //    mark does not lag the click by a rebuild.
+    void PublishSceneArtTier(i32 stored) {
+        sceneArtTier_.store(stored, std::memory_order_relaxed);
     }
-    const std::wstring& ToolkitSettingsIni() const {
-        return toolkitSettingsIni_;
+    i32 SceneArtTier() const {
+        return sceneArtTier_.load(std::memory_order_relaxed);
+    }
+    void RequestSceneArtTier(i32 stored) {
+        sceneArtTier_.store(stored, std::memory_order_relaxed);
+        pendingArtTierReq_.store(stored, std::memory_order_relaxed);
+    }
+    bool ConsumeSceneArtTierRequest(i32& storedOut) {
+        const i32 req = pendingArtTierReq_.exchange(kNoArtTierRequest, std::memory_order_relaxed);
+        if (req == kNoArtTierRequest)
+            return false;
+        storedOut = req;
+        return true;
     }
 
     RenderService& Service() {
@@ -266,8 +281,10 @@ private:
     // timer on Max's.
     std::atomic<bool> resyncRequested_{false};
 
-    // Written once before Open; see SetToolkitSettingsIni.
-    std::wstring toolkitSettingsIni_;
+    // See PublishSceneArtTier.
+    static constexpr i32 kNoArtTierRequest = -1;
+    std::atomic<i32> sceneArtTier_{0};
+    std::atomic<i32> pendingArtTierReq_{kNoArtTierRequest};
 
     std::atomic<ActorId> focusActor_{0};
 

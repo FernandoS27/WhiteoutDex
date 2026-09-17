@@ -45,6 +45,8 @@ struct Mesh {
     std::vector<uint32_t> indices;
     int32_t materialIndex = -1;
     bool hasDropShadow = false;
+    // MDX geoset SelectionGroup, kept in the `Wc3SelectionGroup` UserProp.
+    uint32_t selectionGroup = 0;
 
     // LOD (v1000+ only): level-of-detail index. 0 = highest detail / main mesh,
     // 1,2,... = lower detail HD layers. Populated from the `Wc3GeosetLod`
@@ -148,6 +150,12 @@ struct MaterialLayer {
     bool noDepthWrite = false;
     bool sphereEnvMap = false;
     bool unfogged = false;
+    bool backFacesForShadows = false;
+    bool ambientOcclusion = false;
+
+    // MDX Layer::ShaderType value (0 SD, 1 HD, 2 SD on HD, 24 Crystal), or -1
+    // when the source does not say and the exporter has to infer it.
+    int32_t shaderType = -1;
 
     int32_t alphaTrackIndex = -1;
     int32_t textureIdTrackIndex = -1;
@@ -358,6 +366,9 @@ struct EventObject {
     std::string eventCode;
     std::string eventData;
     std::vector<TimeValue> keyTimes;
+    // Index into IRModel::globalSequenceDurations when the keys run on a
+    // global sequence, -1 otherwise.
+    int32_t globalSequenceIndex = -1;
 };
 
 struct CollisionShape {
@@ -377,6 +388,13 @@ struct Camera {
     int32_t positionTrackIndex = -1;
     int32_t targetPositionTrackIndex = -1;
     int32_t rotationTrackIndex = -1;
+    // Warcraft III 3.0 camera tracks (float tracks). MDX has no static field
+    // for any of them; the game applies depth of field only when all three
+    // DoF tracks exist.
+    int32_t visibilityTrackIndex = -1;     // KCVS
+    int32_t focusDistanceTrackIndex = -1;  // IDUF
+    int32_t focalLengthTrackIndex = -1;    // ELAF
+    int32_t fStopTrackIndex = -1;          // PTSF
 };
 
 // ── Format-Specific Extension Hooks ──────────────────────────
