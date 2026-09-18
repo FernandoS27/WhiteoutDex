@@ -664,8 +664,9 @@ void MdxModelDisassembler::mapGeosets(const wdx::Model& mdx, ir::IRModel& ir) {
 
                 auto& vert = irMesh.vertices[v];
                 for (int j = 0; j < 4; ++j) {
-                    uint8_t boneIdx = geo.skinData[base + j];
-                    uint8_t weight = geo.skinData[base + 4 + j];
+                    // u16: v1400+ SKIN indexes past 255 bones.
+                    uint16_t boneIdx = geo.skinData[base + j];
+                    uint16_t weight = geo.skinData[base + 4 + j];
                     if (weight == 0) continue;
 
                     uint32_t objectId;

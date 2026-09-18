@@ -40,6 +40,9 @@ add_library(WhiteoutDexRenderer SHARED
     # theme (also pulls in the embedded Roboto font header).
     "${_imgui_backends}/imgui_impl_win32.cpp"
     "${_basic_viewer_dir}/settings_ini.cpp"
+    # The BoolSetting / FloatSetting Load/Save helpers settings_ini.cpp calls
+    # moved here in the upstream viewer refactor.
+    "${_basic_viewer_dir}/settings/setting_descriptors.cpp"
     # settings_io.cpp split out of settings_ini.cpp upstream: it owns
     # ExecutableDir / SettingsIniPath / AssetDir and the per-game IO path
     # overrides, which settings_ini.cpp, dllmain.cpp and max_plugin_ui.cpp

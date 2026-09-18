@@ -450,7 +450,8 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
 
             // Skin weights (v1200 SKIN chunk)
             if (opts.version >= 1200 && !v.skinInfluences.empty()) {
-                // SKIN: 4 bone indices (u8) + 4 weights (u8) = 8 bytes per vertex
+                // SKIN: 4 bone indices + 4 weights per vertex. v1400+ writes
+                // them as u16 (bone ids past 255), older versions as bytes.
                 // boneIndex is an IR node index; convert to hierarchy objectId.
                 //
                 // mesh_extractor hands us every influence, heaviest first, so
@@ -459,7 +460,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
                 // the row sums to exactly 255 — a vertex with 5+ influences,
                 // or plain per-bone rounding, otherwise ends up under-weighted
                 // and drifts toward the origin.
-                uint8_t boneIds[4] = {0, 0, 0, 0};
+                uint16_t boneIds[4] = {0, 0, 0, 0};
                 uint8_t weights[4] = {0, 0, 0, 0};
                 size_t count = std::min(v.skinInfluences.size(), size_t(4));
 
@@ -472,7 +473,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
                 for (size_t si = 0; si < count; si++) {
                     uint32_t objId = hierarchy.getObjectId(v.skinInfluences[si].boneIndex);
                     boneIds[si] = (objId != Node::NO_PARENT)
-                                      ? static_cast<uint8_t>(objId) : 0;
+                                      ? static_cast<uint16_t>(objId) : 0;
                     float exact = (kept > 1e-7f)
                         ? v.skinInfluences[si].weight / kept * 255.0f
                         : 0.0f;
