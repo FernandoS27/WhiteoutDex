@@ -929,6 +929,25 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         if (irEvt.globalSequenceIndex >= 0)
             evt.globalSequenceId = static_cast<u32>(irEvt.globalSequenceIndex);
 
+        // The game cannot load an event object without keys: a KEVT with
+        // count 0 fails MDL::ReadBinEventObjects (and with it the whole model
+        // — invisible in game), and dropping the chunk desyncs that reader
+        // unless the object is the section's last. Give it one key that never
+        // fires: past every sequence (the game buckets keys by inclusive
+        // interval) and not global (a global track is rebased to its first key,
+        // which would then fire every loop). A whole frame past, frame-aligned:
+        // the importer rounds times to the nearest frame, and 1 ms past the end
+        // would come back as the end itself.
+        if (evt.eventTrackTimes.empty()) {
+            const TimeValue tpf = GetTicksPerFrame();
+            TimeValue lastEnd = 0;
+            for (const auto& seq : ir.sequences)
+                lastEnd = std::max(lastEnd, seq.endTime);
+            const TimeValue unplayed = ((lastEnd + tpf - 1) / tpf + 1) * tpf;
+            evt.eventTrackTimes.push_back(mdx_transform::ticksToMs(unplayed));
+            evt.globalSequenceId = 0xFFFFFFFF;
+        }
+
         model.eventObjects.push_back(std::move(evt));
     }
 
