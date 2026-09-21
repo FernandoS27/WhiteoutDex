@@ -7,6 +7,8 @@
 #include "cat_sampler.h"
 #include "link_constraint_sampler.h"
 #include "subsample_engine.h"
+#include "../optimization/keyframe_optimizer.h"
+#include "../util/max_helpers.h"
 
 #include <modstack.h>  // IDerivedObject (full definition for GetObjRef etc.)
 #include <istdplug.h> // IKeyControl, ILinFloatKey, etc.
@@ -68,147 +70,6 @@ static bool isIdentityQuat(const Quat& q, float eps = 0.0001f) {
 
 static bool isIdentityScale(const Point3& s, float eps = 0.001f) {
     return fabsf(s.x - 1.0f) < eps && fabsf(s.y - 1.0f) < eps && fabsf(s.z - 1.0f) < eps;
-}
-
-// Slerp between two quaternions
-static Quat slerpQuat(const Quat& a, const Quat& b, float t) {
-    float dot = a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w;
-    Quat bb = b;
-    if (dot < 0.0f) { bb.x=-bb.x; bb.y=-bb.y; bb.z=-bb.z; bb.w=-bb.w; dot=-dot; }
-    if (dot > 0.9999f) {
-        // Nearly identical — lerp + normalize
-        Quat r;
-        r.x = a.x + t*(bb.x - a.x);
-        r.y = a.y + t*(bb.y - a.y);
-        r.z = a.z + t*(bb.z - a.z);
-        r.w = a.w + t*(bb.w - a.w);
-        float len = sqrtf(r.x*r.x + r.y*r.y + r.z*r.z + r.w*r.w);
-        if (len > 0.0f) { r.x/=len; r.y/=len; r.z/=len; r.w/=len; }
-        return r;
-    }
-    float theta = acosf(dot);
-    float sinTheta = sinf(theta);
-    float wa = sinf((1.0f-t)*theta) / sinTheta;
-    float wb = sinf(t*theta) / sinTheta;
-    Quat r;
-    r.x = wa*a.x + wb*bb.x;
-    r.y = wa*a.y + wb*bb.y;
-    r.z = wa*a.z + wb*bb.z;
-    r.w = wa*a.w + wb*bb.w;
-    return r;
-}
-
-// Quaternion distance (angle between two quaternions)
-//
-// FIX 2026-05-02: switched from 2*acos(|dot|) to 4*asin(|a-b|/2) to fix
-// catastrophic float32 precision loss for near-identical quaternions.
-//
-// THE BUG: For two quats with relative rotation ~0.022° (well above the
-// reducer tolerance of 0.0057°), the dot product equals 1 - 1.8e-8.
-// Float32 epsilon at 1.0 is 1.19e-7, so 1.8e-8 falls BELOW representable
-// precision — dot rounds to exactly 1.0, acos(1.0) = 0, and the reducer
-// reports zero error. Result: every key in a sub-degree rotation animation
-// gets marked "redundant" and discarded, leaving only boundary keys.
-// Confirmed on Moria_platform: 131-key Chain_R004 track collapsed to 3
-// identity keys despite a clearly visible 0.4° peak in the source.
-//
-// THE FIX: For unit quaternions q1, q2 with relative rotation θ, the
-// vector distance |q1 - q2| = 2|sin(θ/4)|, so θ = 4·asin(|q1-q2|/2).
-// Computing |q1-q2| via direct subtraction has NO catastrophic
-// cancellation — small differences are preserved at full mantissa
-// precision, regardless of how close to identity both quats are.
-// We also try |q1+q2| (handles q ≡ -q hemisphere ambiguity) and use
-// whichever gives the smaller distance.
-static float quatError(const Quat& a, const Quat& b) {
-    // Same-hemisphere distance
-    float dx1 = a.x - b.x, dy1 = a.y - b.y, dz1 = a.z - b.z, dw1 = a.w - b.w;
-    float dist1Sq = dx1*dx1 + dy1*dy1 + dz1*dz1 + dw1*dw1;
-
-    // Opposite-hemisphere distance (q and -q represent same rotation)
-    float dx2 = a.x + b.x, dy2 = a.y + b.y, dz2 = a.z + b.z, dw2 = a.w + b.w;
-    float dist2Sq = dx2*dx2 + dy2*dy2 + dz2*dz2 + dw2*dw2;
-
-    float minDistSq = (dist1Sq < dist2Sq) ? dist1Sq : dist2Sq;
-    float halfDist = sqrtf(minDistSq) * 0.5f;
-    if (halfDist >= 1.0f) return 3.14159265f; // 180° apart
-    return 4.0f * asinf(halfDist);
-}
-
-// Remove redundant keys from a rotation track.
-// Keys that can be reconstructed by slerp interpolation within the given
-// angular tolerance are discarded — this matches NeoDex's key reduction behavior.
-static void reduceRotationKeys(ir::QuatTrack& track, float toleranceRad = 0.001f) {
-    if (track.keys.size() <= 2) return;
-
-    std::vector<bool> keep(track.keys.size(), false);
-    keep.front() = true;
-    keep.back() = true;
-
-    // Greedy forward pass: walk from first kept key, skip keys that
-    // can be interpolated, keep a key when error exceeds threshold.
-    size_t anchor = 0;
-    for (size_t i = 1; i < track.keys.size() - 1; ++i) {
-        // Check if ALL keys from anchor+1..i can be interpolated from anchor..i+1
-        bool canSkip = true;
-        size_t next = i + 1;
-        for (size_t j = anchor + 1; j <= i; ++j) {
-            float tTotal = static_cast<float>(track.keys[next].time - track.keys[anchor].time);
-            float tJ = static_cast<float>(track.keys[j].time - track.keys[anchor].time);
-            float frac = (tTotal > 0.0f) ? (tJ / tTotal) : 0.0f;
-            Quat interp = slerpQuat(track.keys[anchor].value, track.keys[next].value, frac);
-            if (quatError(interp, track.keys[j].value) > toleranceRad) {
-                canSkip = false;
-                break;
-            }
-        }
-        if (!canSkip) {
-            keep[i] = true;
-            anchor = i;
-        }
-    }
-
-    // Compact
-    std::vector<ir::Keyframe<Quat>> reduced;
-    for (size_t i = 0; i < track.keys.size(); ++i) {
-        if (keep[i]) reduced.push_back(track.keys[i]);
-    }
-    track.keys = std::move(reduced);
-}
-
-// Remove redundant keys from a translation track (linear interpolation check).
-static void reduceTranslationKeys(ir::Vec3Track& track, float tolerance = 0.01f) {
-    if (track.keys.size() <= 2) return;
-
-    std::vector<bool> keep(track.keys.size(), false);
-    keep.front() = true;
-    keep.back() = true;
-
-    size_t anchor = 0;
-    for (size_t i = 1; i < track.keys.size() - 1; ++i) {
-        bool canSkip = true;
-        size_t next = i + 1;
-        for (size_t j = anchor + 1; j <= i; ++j) {
-            float tTotal = static_cast<float>(track.keys[next].time - track.keys[anchor].time);
-            float tJ = static_cast<float>(track.keys[j].time - track.keys[anchor].time);
-            float frac = (tTotal > 0.0f) ? (tJ / tTotal) : 0.0f;
-            Point3 interp = track.keys[anchor].value + frac * (track.keys[next].value - track.keys[anchor].value);
-            Point3 diff = interp - track.keys[j].value;
-            if (Length(diff) > tolerance) {
-                canSkip = false;
-                break;
-            }
-        }
-        if (!canSkip) {
-            keep[i] = true;
-            anchor = i;
-        }
-    }
-
-    std::vector<ir::Keyframe<Point3>> reduced;
-    for (size_t i = 0; i < track.keys.size(); ++i) {
-        if (keep[i]) reduced.push_back(track.keys[i]);
-    }
-    track.keys = std::move(reduced);
 }
 
 // Check if ALL keys in a track are identity (no real animation content)
@@ -357,6 +218,50 @@ static std::vector<TimeValue> filterIKKeyTimes(
     // Already sorted (allIKKeys is sorted), just dedup
     times.erase(std::unique(times.begin(), times.end()), times.end());
     return times;
+}
+
+// Key-time sampling assumes each span between samples is the short arc that
+// linear playback takes. A half turn or more between two keys (a TCB key at
+// 360°, Euler keys 270° apart, a cycling ORT with no key in the sequence)
+// samples as a small turn the wrong way or none at all. Probe every span and
+// sample the ones that travel that far densely; the reducer trims them back.
+static std::vector<TimeValue> densifyRotationTimes(
+        const std::vector<TimeValue>& times,
+        const std::function<Quat(TimeValue)>& localRotAt) {
+    if (times.size() < 2) return times;
+    const float maxTravel = 2.0f * acosf(KeyframeOptimizer::kHalfTurnDot);
+    std::vector<TimeValue> out;
+    std::vector<TimeValue> probes;
+    Quat q0 = localRotAt(times.front());
+    for (size_t i = 0; i + 1 < times.size(); ++i) {
+        const TimeValue t0 = times[i], t1 = times[i + 1];
+        out.push_back(t0);
+
+        // Per frame, but at least 8 probes so a spin between keys one frame
+        // apart is still seen; >= 10 ticks (~2 ms) apart so MDX times stay
+        // distinct after rounding to milliseconds.
+        const TimeValue span = t1 - t0;
+        const int n = std::min(std::max(8, static_cast<int>((span + 159) / 160)),
+                               static_cast<int>(span / 10));
+        probes.clear();
+        float travel = 0.0f;
+        Quat prev = q0;
+        for (int k = 1; k < n; ++k) {
+            TimeValue t = t0 + static_cast<TimeValue>(static_cast<int64_t>(span) * k / n);
+            Quat q = localRotAt(t);
+            travel += quatAngle(prev, q);
+            prev = q;
+            probes.push_back(t);
+        }
+        Quat q1 = localRotAt(t1);
+        travel += quatAngle(prev, q1);
+        q0 = q1;
+
+        if (travel >= maxTravel)
+            out.insert(out.end(), probes.begin(), probes.end());
+    }
+    out.push_back(times.back());
+    return out;
 }
 
 // ─── Patch C: PRE2 cyclic rotation extraction ────────────────────────
@@ -1083,26 +988,8 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
 
                 Quat invWorldBind = Inverse(worldBindRot);
                 Quat invParentWorldBind = Inverse(parentWorldBindRot);
-                int logCount = 0;
-                const int frameInterval = 160; // 1 frame at 30fps
-                auto rotTimes = isIKNode
-                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
-                    : (!needsPerFrame && isFKRotNode)
-                        ? (rotTypeFK == ControllerType::Euler_XYZ
-                            ? collectEulerKeyTimes(rotCtrlFK, seq.startTime, seq.endTime)
-                            : collectKeyTimes(rotCtrlFK, seq.startTime, seq.endTime))
-                        : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
 
-                if (logCount == 0) {
-                    ALOG << "    ROT seq[" << seq.startTime << "-" << seq.endTime
-                         << "] rotTimes=" << rotTimes.size()
-                         << " ctrlNumKeys=" << (rotCtrlFK ? rotCtrlFK->NumKeys() : -1)
-                         << " isFKRot=" << isFKRotNode
-                         << " isIK=" << isIKNode
-                         << " needsPerFrame=" << needsPerFrame << "\n";
-                }
-
-                for (TimeValue t : rotTimes) {
+                auto localRotAt = [&](TimeValue t) {
                     Quat worldRot = extractRotation(maxNode->GetNodeTM(t));
 
                     Quat parentWorldRot(0.0f,0.0f,0.0f,1.0f);
@@ -1117,16 +1004,41 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                     // attachments) have nothing that bakes the bind
                     // orientation, so their KGRT must reproduce the absolute
                     // Max world orientation instead.
-                    Quat worldDelta = invWorldBind * worldRot;
                     Quat parentDelta = invParentWorldBind * parentWorldRot;
-                    Quat localRot;
                     if (useAbsoluteRotScale) {
                         Quat parentGameRot = parentIsAbsolute ? parentWorldRot
                                                               : parentDelta;
-                        localRot = worldRot * Inverse(parentGameRot);
-                    } else {
-                        localRot = worldDelta * Inverse(parentDelta);
+                        return worldRot * Inverse(parentGameRot);
                     }
+                    return (invWorldBind * worldRot) * Inverse(parentDelta);
+                };
+
+                int logCount = 0;
+                const int frameInterval = 160; // 1 frame at 30fps
+                const bool keyTimeRot = isIKNode || (!needsPerFrame && isFKRotNode);
+                auto rotTimes = isIKNode
+                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    : keyTimeRot
+                        ? (rotTypeFK == ControllerType::Euler_XYZ
+                            ? collectEulerKeyTimes(rotCtrlFK, seq.startTime, seq.endTime)
+                            : collectKeyTimes(rotCtrlFK, seq.startTime, seq.endTime))
+                        : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
+                const size_t keyTimeCount = rotTimes.size();
+                if (keyTimeRot)
+                    rotTimes = densifyRotationTimes(rotTimes, localRotAt);
+
+                if (logCount == 0) {
+                    ALOG << "    ROT seq[" << seq.startTime << "-" << seq.endTime
+                         << "] rotTimes=" << rotTimes.size()
+                         << " (key times " << keyTimeCount << ")"
+                         << " ctrlNumKeys=" << (rotCtrlFK ? rotCtrlFK->NumKeys() : -1)
+                         << " isFKRot=" << isFKRotNode
+                         << " isIK=" << isIKNode
+                         << " needsPerFrame=" << needsPerFrame << "\n";
+                }
+
+                for (TimeValue t : rotTimes) {
+                    Quat localRot = localRotAt(t);
 
                     // Hemisphere consistency: force w >= 0, then check prev-key
                     if (localRot.w < 0.0f) {
@@ -1148,9 +1060,6 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
 
                     if (logCount < 6) {
                         ALOG << "    ROT t=" << t
-                             << " worldRot=(" << worldRot.x << "," << worldRot.y << "," << worldRot.z << "," << worldRot.w << ")"
-                             << " wDelta=(" << worldDelta.x << "," << worldDelta.y << "," << worldDelta.z << "," << worldDelta.w << ")"
-                             << " pDelta=(" << parentDelta.x << "," << parentDelta.y << "," << parentDelta.z << "," << parentDelta.w << ")"
                              << " localRot=(" << localRot.x << "," << localRot.y << "," << localRot.z << "," << localRot.w << ")\n";
                         logCount++;
                     }
@@ -1236,44 +1145,28 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 size_t rtBefore = nodeAnim.rotation.keys.size();
                 size_t scBefore = nodeAnim.scale.keys.size();
 
+                KeyframeOptimizer reducer;
+
                 // Translation tolerance: 0.001 units. Original value before
                 // the drift-investigation detour. Drift was caused by a
                 // mesh bind-pose bug in mesh_extractor.cpp, not by key
                 // density — see useSkinned policy there.
-                reduceTranslationKeys(nodeAnim.translation, 0.001f);
+                reducer.optimize(nodeAnim.translation, 0.001f);
 
-                // Detect multi-revolution rotation (>360°) by summing
-                // frame-to-frame angular changes. Quaternion slerp can't
-                // represent >180° per segment, so key reduction would break
-                // continuous rotations like 720° spins.
-                float cumulativeAngle = 0.0f;
-                for (size_t k = 1; k < nodeAnim.rotation.keys.size(); ++k) {
-                    const Quat& q0 = nodeAnim.rotation.keys[k-1].value;
-                    const Quat& q1 = nodeAnim.rotation.keys[k].value;
-                    float dot = q0.x*q1.x + q0.y*q1.y + q0.z*q1.z + q0.w*q1.w;
-                    float absDot = fabsf(dot);
-                    if (absDot > 1.0f) absDot = 1.0f;
-                    cumulativeAngle += 2.0f * acosf(absDot);
-                }
-                bool isMultiRevolution = (cumulativeAngle > 6.28318f); // > 360°
-
-                if (isMultiRevolution) {
-                    ALOG << "    MULTI-REV detected: cumulative=" << (cumulativeAngle * 57.2958f)
-                         << " deg — skipping rotation reduction\n";
-                } else {
-                    // Tolerance 0.0001 rad ≈ 0.0057°. Tightened from the
-                    // original 0.01 rad (0.573°) which was too aggressive
-                    // for fine mechanical motion such as chain-link sway:
-                    // any animation whose largest delta was below ~0.5°
-                    // would be slerp-merged into the boundary keys, leaving
-                    // only Identity start/end keys. Anything below 0.0001
-                    // rad is true numeric noise (well under one quat-
-                    // component LSB at typical float precision).
-                    reduceRotationKeys(nodeAnim.rotation, 0.0001f);
-                }
+                // Tolerance 0.0001 rad ≈ 0.0057°. Tightened from the
+                // original 0.01 rad (0.573°) which was too aggressive
+                // for fine mechanical motion such as chain-link sway:
+                // any animation whose largest delta was below ~0.5°
+                // would be slerp-merged into the boundary keys, leaving
+                // only Identity start/end keys. Anything below 0.0001
+                // rad is true numeric noise (well under one quat-
+                // component LSB at typical float precision).
+                // Multi-revolution spins are safe to reduce: the optimizer
+                // never lets one segment reach a half turn.
+                reducer.optimize(nodeAnim.rotation, 0.0001f);
 
                 // Scale tolerance: 0.005 — 0.5% deviation allowed.
-                reduceTranslationKeys(nodeAnim.scale, 0.005f);
+                reducer.optimize(nodeAnim.scale, 0.005f);
 
                 if (trBefore > 2 || rtBefore > 2 || scBefore > 2) {
                     ALOG << "    REDUCE node[" << nodeIdx << "] '" << irNode.name << "'"
