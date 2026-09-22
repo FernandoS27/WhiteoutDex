@@ -40,6 +40,54 @@ global WhiteoutDexInstallRoot = undefined
     format "WhiteoutDex: install root = %\n" WhiteoutDexInstallRoot
 )
 
+-- Toolkit preferences are per user, in <plugcfg>\WhiteoutDex_Settings.ini.
+-- The copy beside PackageContents.xml is only a read fallback: the installer
+-- puts it under %ALLUSERSPROFILE% with Users = ReadAndExecute, so a write
+-- there is silently dropped. What it holds are the shipped defaults, plus
+-- anything an admin set there for every user of the machine.
+fn WdxGetUserSetting section key default =
+(
+    local v = getINISetting (getDir #plugcfg + "\\WhiteoutDex_Settings.ini") section key
+    if v == "" then
+        v = getINISetting (::WhiteoutDexInstallRoot + "\\WhiteoutDex_Settings.ini") section key
+    if v == "" then default else v
+)
+
+fn WdxSetUserSetting section key val =
+(
+    setINISetting (getDir #plugcfg + "\\WhiteoutDex_Settings.ini") section key val
+)
+
+-- The installed toolkit version, or undefined when it cannot be read. The
+-- installer stamps version.txt into the install root; the manifest's
+-- AppVersion carries the same number and exists in every layout, developer
+-- deploys included. Read by the About box and the auto-updater.
+fn WdxGetInstalledVersion =
+(
+    local ver = ""
+    local vf = ::WhiteoutDexInstallRoot + "\\version.txt"
+    if doesFileExist vf then
+    (
+        local f = openFile vf mode:"r"
+        if f != undefined then
+        (
+            if not (eof f) then ver = trimRight (trimLeft (readLine f))
+            close f
+        )
+    )
+    if ver == "" then
+    (
+        try
+        (
+            local xml = (dotNetClass "System.IO.File").ReadAllText (::WhiteoutDexInstallRoot + "\\PackageContents.xml")
+            local m = (dotNetClass "System.Text.RegularExpressions.Regex").Match xml "AppVersion=\"([^\"]+)\""
+            if m.Success then ver = m.Groups.Item[1].Value
+        )
+        catch ()
+    )
+    if ver == "" then undefined else ver
+)
+
 /* ============================================================================
    SECTION 0: ERROR REPORTER STUB
    Provides ::WdxErrorReporter.logError/logWarning/logInfo used by

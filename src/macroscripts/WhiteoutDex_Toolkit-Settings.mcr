@@ -306,7 +306,6 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 
 	rollout settingsRollout "WhiteoutDex Settings" width:340 height:540
 	(
-		local sidebarIni = (::WhiteoutDexInstallRoot) + "\\WhiteoutDex_Settings.ini"
 		local settingsIni = getDir #plugcfg + "\\WhiteoutDex_Settings.ini"
 
 		-- Deliberately multilingual and deliberately NOT listing all ten: this
@@ -518,13 +517,11 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				cascStatusLbl.text = ::WdxL.t "set_casc_status_not_found"
 		)
 
-		-- Sidebar: toggle show/hide immediately
+		-- Sidebar: toggle show/hide immediately. Per-user setting, see
+		-- WdxGetUserSetting in WhiteoutDexGlobals.ms.
 		on chk_sidebarEnabled changed state do
 		(
-			if (maxVersion())[1] >= 20000 then
-				setINISetting sidebarIni "Sidebar" "Enabled" (if state then "1" else "0") forceUTF16:false
-			else
-				setINISetting sidebarIni "Sidebar" "Enabled" (if state then "1" else "0")
+			::WdxSetUserSetting "Sidebar" "Enabled" (if state then "1" else "0")
 			if state then
 			(
 				if ::WhiteoutDexSidebar != undefined then ::WhiteoutDexSidebar.show()
@@ -539,10 +536,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 		on ddl_dockSide selected idx do
 		(
 			local side = if idx == 1 then "cui_dock_left" else "cui_dock_right"
-			if (maxVersion())[1] >= 20000 then
-				setINISetting sidebarIni "Sidebar" "DockState" side forceUTF16:false
-			else
-				setINISetting sidebarIni "Sidebar" "DockState" side
+			::WdxSetUserSetting "Sidebar" "DockState" side
 			-- Re-dock if sidebar is open
 			if ::WhiteoutDexSidebar != undefined and ::WhiteoutDexSidebar.isOpen then
 			(
@@ -551,29 +545,20 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 			)
 		)
 
-		-- Auto-Update: toggle
+		-- Auto-Update: toggle. ::WdxUpdater (WhiteoutDexAutoUpdater.ms) owns
+		-- where the setting lives.
 		on chk_autoUpdate changed state do
 		(
-			if (maxVersion())[1] >= 20000 then
-				setINISetting sidebarIni "Updater" "AutoCheck" (if state then "1" else "0") forceUTF16:false
-			else
-				setINISetting sidebarIni "Updater" "AutoCheck" (if state then "1" else "0")
+			if ::WdxUpdater != undefined then ::WdxUpdater.setAutoCheck state
 		)
 
-		-- Auto-Update: manual check
+		-- Auto-Update: manual check, regardless of the auto-check setting
 		on btn_checkNow pressed do
 		(
-			local updaterPath = (::WhiteoutDexInstallRoot) + "\\post-start-up scripts parts\\WhiteoutDexAutoUpdater.ms"
-			if doesFileExist updaterPath then
-			(
-				-- Force check regardless of auto-check setting
-				global _wdxForceUpdateCheck = true
-				fileIn updaterPath
-			)
+			if ::WdxUpdater != undefined then
+				::WdxUpdater.check manual:true
 			else
-			(
 				messageBox (::WdxL.t "set_updater_missing_msg") title:"WhiteoutDex" beep:false
-			)
 		)
 
 		on closeBtn pressed do destroyDialog settingsRollout
@@ -657,15 +642,24 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				lblDockSide.text = ::WdxL.t "set_sidebar_dock_lbl"
 				ddl_dockSide.items = #(::WdxL.t "set_sidebar_dock_left", ::WdxL.t "set_sidebar_dock_right")
 			)
-			-- Sidebar: load saved state
-			local sidebarOn = getINISetting sidebarIni "Sidebar" "Enabled"
-			chk_sidebarEnabled.checked = (sidebarOn == "1")
-			local dockSide = getINISetting sidebarIni "Sidebar" "DockState"
+			-- Sidebar: load saved state. Absent means shown, the same default
+			-- WhiteoutDexSidebar.ms starts with.
+			chk_sidebarEnabled.checked = (::WdxGetUserSetting "Sidebar" "Enabled" "1") != "0"
+			local dockSide = ::WdxGetUserSetting "Sidebar" "DockState" "cui_dock_left"
 			ddl_dockSide.selection = if dockSide == "cui_dock_right" then 2 else 1
 
+			-- Auto-Update: Max 2018+ only - the 2016/2017 loader never runs the
+			-- updater. There the group is hidden and OK moves up into its place;
+			-- `on execute` sizes the dialog to match.
+			if (maxVersion())[1] < 20000 then
+			(
+				updateGrp.visible = false
+				chk_autoUpdate.visible = false
+				btn_checkNow.visible = false
+				closeBtn.pos = [248, 428]
+			)
 			-- Auto-Update: load saved state (default: enabled)
-			local autoUpdateOn = getINISetting sidebarIni "Updater" "AutoCheck"
-			chk_autoUpdate.checked = (autoUpdateOn != "0")
+			chk_autoUpdate.checked = if ::WdxUpdater != undefined then ::WdxUpdater.getAutoCheck() else true
 			-- Auto-Update: localization
 			if ::WdxL != undefined then
 			(
@@ -681,9 +675,11 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 	on execute do
 	(
 		try (destroyDialog settingsRollout) catch ()
+		-- 2016/2017 lose the Auto-Update group (see `on settingsRollout open`)
+		local h = if (maxVersion())[1] >= 20000 then 540 else 462
 		if (maxVersion())[1] >= 19000 then
-			createDialog settingsRollout modal:true
+			createDialog settingsRollout 340 h modal:true
 		else
-			createDialog settingsRollout
+			createDialog settingsRollout 340 h
 	)
 )

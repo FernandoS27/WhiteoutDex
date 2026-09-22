@@ -42,20 +42,9 @@ internalCategory:"WhiteoutDex Toolkit"
 
 	fn getWhiteoutDexVersion =
 	(
-		local ver = "?.?.?"
-		try (
-			local p = undefined
-			local subKey = (dotNetClass "Microsoft.Win32.Registry").CurrentUser.OpenSubKey "Software\\WhiteoutDex"
-			if subKey != undefined then ( p = subKey.GetValue "InstallPath"; subKey.Close() )
-			if p == undefined then
-				p = (dotNetClass "System.Environment").GetFolderPath (dotNetClass "System.Environment+SpecialFolder").ApplicationData + "\\Autodesk\\ApplicationPlugins\\WhiteoutDex"
-			local vf = p + "\\version.txt"
-			if doesFileExist vf then (
-				local f = openFile vf mode:"r"
-				if f != undefined then ( ver = trimRight (trimLeft (readLine f)); close f )
-			)
-		) catch ()
-		ver
+		local ver = undefined
+		try (ver = ::WdxGetInstalledVersion()) catch ()
+		if ver == undefined then "?.?.?" else ver
 	)
 
 	fn imgToBase64 filePath =
