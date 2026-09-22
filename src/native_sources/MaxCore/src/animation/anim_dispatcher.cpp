@@ -98,6 +98,37 @@ static Quat extractRotation(const Matrix3& tm) {
     return Quat(Matrix3(r0, r1, r2, Point3(0,0,0)));
 }
 
+// A world TM with a zero-length row — scale 0 on the node or an ancestor —
+// carries no rotation: extractRotation would normalize the zero rows into a
+// junk quaternion. A row of length 1e-6 still extracts cleanly.
+static bool hasRotation(const Matrix3& tm) {
+    const float kMinRowLengthSq = 1e-12f;
+    return LengthSquared(tm.GetRow(0)) > kMinRowLengthSq &&
+           LengthSquared(tm.GetRow(1)) > kMinRowLengthSq &&
+           LengthSquared(tm.GetRow(2)) > kMinRowLengthSq;
+}
+
+// A Birth that grows from scale 0 samples such a TM at its start key, and
+// with no other key until the end the junk slerped across the whole visible
+// sequence (blabla3: root tilted ~66°, its attachments ~90°). The rotation
+// at a scale-0 instant never shows — only its continuity with the
+// neighbouring samples does — so evaluate the nearest time inside [lo, hi]
+// that has one: forward from the start, backward from the end. Steps double
+// because nested 0→1 scales multiply: a tick in can still be ~1e-20.
+// Returns false when the whole window is degenerate; otherwise the last
+// evaluateAt call is the one that succeeded.
+static bool evaluateNearestRotation(TimeValue t, TimeValue lo, TimeValue hi,
+                                    const std::function<bool(TimeValue)>& evaluateAt) {
+    if (evaluateAt(t)) return true;
+    for (TimeValue step = 1;; step *= 2) {
+        const TimeValue fwd = std::min(t + step, hi);
+        const TimeValue back = std::max(t - step, lo);
+        if (fwd > t && evaluateAt(fwd)) return true;
+        if (back < t && evaluateAt(back)) return true;
+        if (fwd == hi && back == lo) return false;
+    }
+}
+
 // ── Key-time sampling helpers ─────────────────────────────────────
 // Instead of sampling at every frame (160 ticks), FK nodes are sampled
 // only at their controller's key times. This matches NeoDex's approach
@@ -770,12 +801,30 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 Quat invWorldBind = Inverse(worldBindRot);
                 Quat invParentWorldBind = Inverse(parentWorldBindRot);
 
+                const bool hasParentTM = parentNode && !parentNode->IsRootNode();
                 auto localRotAt = [&](TimeValue t) {
-                    Quat worldRot = extractRotation(maxNode->GetNodeTM(t));
+                    Matrix3 nodeTM, parentTM;
+                    TimeValue evalTime = t;
+                    const auto evaluateAt = [&](TimeValue s) {
+                        evalTime = s;
+                        nodeTM = maxNode->GetNodeTM(s);
+                        if (hasParentTM) parentTM = parentNode->GetNodeTM(s);
+                        return hasRotation(nodeTM) &&
+                               (!hasParentTM || hasRotation(parentTM));
+                    };
+                    // Scale 0 for the whole window: the rotation never shows.
+                    if (!evaluateNearestRotation(t, seq.startTime, seq.endTime, evaluateAt))
+                        return Quat(0.0f, 0.0f, 0.0f, 1.0f);
+                    if (evalTime != t) {
+                        ALOG << "    ROT t=" << t << " scale-0 TM, rotation taken from t="
+                             << evalTime << "\n";
+                    }
+
+                    Quat worldRot = extractRotation(nodeTM);
 
                     Quat parentWorldRot(0.0f,0.0f,0.0f,1.0f);
-                    if (parentNode && !parentNode->IsRootNode()) {
-                        parentWorldRot = extractRotation(parentNode->GetNodeTM(t));
+                    if (hasParentTM) {
+                        parentWorldRot = extractRotation(parentTM);
                     }
 
                     // Bone convention (matches NeoDex GetRot): KGRT stores the
