@@ -564,8 +564,6 @@ INT_PTR Wc3Particles1DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
         {
             ICustEdit* cePrefix = GetICustEdit(GetDlgItem(hWnd, IDC_P1_EDIT_PATH_PREFIX));
             if (cePrefix) {
-                if (po->m_modelPrefix.isNull() || po->m_modelPrefix.length() == 0)
-                    po->m_modelPrefix = _M("");
                 cePrefix->SetText(po->m_modelPrefix.data());
                 ReleaseICustEdit(cePrefix);
             }
@@ -900,9 +898,9 @@ void Config1DlgProc::ImportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     // Model
     pb->SetValue(P1_PB_SCALE, t, IniGetFloat(ini, "Scale", 1.0f));
     {
-        std::string pfx = IniGetStr(ini, "PreFix");
-        if (!pfx.empty())
-            po->m_modelPrefix = WidenPath(pfx);
+        // "PreFix=" is a saved empty prefix, not a missing one.
+        if (ini.count("PreFix"))
+            po->m_modelPrefix = WidenPath(IniGetStr(ini, "PreFix"));
         std::string mdl = IniGetStr(ini, "File");
         if (!mdl.empty())
             po->m_modelPath = WidenPath(mdl);

@@ -979,12 +979,12 @@ INT_PTR Wc3Particles2DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
             ReleaseICustEdit(ce);
         }
 
-        /// Set texture path prefix edit control.
+        /// Set texture path prefix edit control. An empty prefix is a real
+        /// value — a texture at the archive root ("Fire.blp") — so show it as
+        /// is; new emitters get "Textures\" from the GenParticle constructor.
         {
             ICustEdit* cePrefix = GetICustEdit(GetDlgItem(hWnd, IDC_EDIT_PATH_PREFIX));
             if (cePrefix) {
-                if (po->m_texturePrefix.isNull() || po->m_texturePrefix.length() == 0)
-                    po->m_texturePrefix = _M("Textures\\");
                 cePrefix->SetText(po->m_texturePrefix.data());
                 ReleaseICustEdit(cePrefix);
             }
@@ -1452,9 +1452,9 @@ void ConfigDlgProc::ImportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     pb->SetValue(PB_UNFOGGED,  t, IniGetInt(ini, "Unfogged", 0));
     pb->SetValue(PB_REPLACEABLE_ID, t, IniGetInt(ini, "ReplaceableId", 0));
     {
-        std::string pfx = IniGetStr(ini, "PreFix");
-        if (!pfx.empty())
-            po->m_texturePrefix = WidenPath(pfx);
+        // "PreFix=" is a saved empty prefix, not a missing one.
+        if (ini.count("PreFix"))
+            po->m_texturePrefix = WidenPath(IniGetStr(ini, "PreFix"));
         std::string tex = IniGetStr(ini, "File");
         if (!tex.empty())
             po->m_particlePath = WidenPath(tex);

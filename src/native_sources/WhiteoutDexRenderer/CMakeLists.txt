@@ -54,6 +54,9 @@ add_library(WhiteoutDexRenderer SHARED
     # copy of those strings. The installer drops them in `{app}\lang`.
     "${_basic_viewer_dir}/localization.cpp"
     "${_tools_common_dir}/cubeb_sound_emitter.cpp"
+    # The emitter's sound-bytes → PCM decoder (WAV/FLAC/MP3 via dr_libs, Ogg
+    # via stb_vorbis), split out of cubeb_sound_emitter.cpp upstream.
+    "${_tools_common_dir}/audio_decode.cpp"
     "${_tools_common_dir}/imgui_theme.cpp"
 )
 
@@ -71,6 +74,7 @@ target_include_directories(WhiteoutDexRenderer PRIVATE
     "${_basic_viewer_dir}"
     "${_tools_common_dir}"
     "${WHITEOUTFLAKES_DIR}/externals/dr_libs"
+    "${WHITEOUTFLAKES_DIR}/externals/stb_vorbis"
     # asset_manager.h transitively pulls cornflakes interface headers
     # (Effect / PkbReader / IArena …) when ndxStart queries the renderer's
     # AssetManager for the cross-model texture-dedup hook.
