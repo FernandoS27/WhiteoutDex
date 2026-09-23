@@ -7,11 +7,27 @@
 #include <modstack.h>
 #include <maxtypes.h>
 
+#include <algorithm>
+#include <cmath>
+
 namespace core {
 
 // Quaternion dot product (not provided by Max SDK 2026)
 inline float quatDot(const Quat& a, const Quat& b) {
     return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+
+// Angle in radians between two rotations, as 4·asin(|a−b|/2) rather than
+// 2·acos(dot): for near-identical rotations dot rounds to exactly 1.0 in
+// float32, which reads any motion under ~0.03° as zero. |a+b| covers q ≡ −q.
+inline float quatAngle(const Quat& a, const Quat& b) {
+    float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z, dw = a.w - b.w;
+    float sx = a.x + b.x, sy = a.y + b.y, sz = a.z + b.z, sw = a.w + b.w;
+    float distSq = std::min(dx*dx + dy*dy + dz*dz + dw*dw,
+                            sx*sx + sy*sy + sz*sz + sw*sw);
+    float halfDist = std::sqrt(distSq) * 0.5f;
+    if (halfDist >= 1.0f) return 3.14159265f;
+    return 4.0f * std::asin(halfDist);
 }
 
 // Evaluate a node to a TriObject; set needDelete=true if caller must free

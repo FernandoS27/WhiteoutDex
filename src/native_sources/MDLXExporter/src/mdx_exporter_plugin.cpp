@@ -264,6 +264,32 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     for (auto& sn:sceneResult.nodes) {
         if(sn.category!=core::NodeCategory::Mesh) continue;
         auto mesh=meshEx.extract(sn.maxNode,sn.nodeIndex,0,reporter);
+        if (mesh.indices.empty()) {
+            // No faces at frame 0 (a tyFlow/particle object before its first
+            // birth, an emptied Editable Poly). A geoset with no vertices
+            // crashes Warcraft III on load, so the node exports as a plain
+            // helper instead: it keeps its place in the hierarchy, its
+            // animation still bakes, and the bone optimizer drops it when
+            // nothing needs it.
+            reporter.warning(L"Node has no faces at frame 0; exported without geometry.",
+                             sn.maxNode->GetName());
+            if (boneResult.nodeToIndex.find(sn.maxNode) == boneResult.nodeToIndex.end()) {
+                const int32_t ni = sn.nodeIndex;
+                ir::Bone hb;
+                hb.name = irModel.nodes[ni].name;
+                hb.nodeIndex = ni;
+                hb.pivotPoint = irModel.nodes[ni].pivotPoint;
+                hb.bindPose = irModel.nodes[ni].worldTM;
+                hb.nodeFlags = irModel.nodes[ni].nodeFlags;
+                hb.isHelper = true;
+                boneResult.nodeToIndex[sn.maxNode] = (int32_t)irModel.bones.size();
+                meshBoneIdxs.push_back((int32_t)irModel.bones.size());
+                irModel.bones.push_back(std::move(hb));
+            }
+            ELOG << "  mesh '" << wcharToUtf8(sn.maxNode->GetName())
+                 << "' has no faces -> helper, no geoset\n";
+            continue;
+        }
         ISkin* skin=core::ModifierReader::findSkin(sn.maxNode);
         if(skin) {
             resolveSkinIndices(sn.maxNode,mesh,boneResult.nodeToIndex,irModel.bones);
@@ -288,10 +314,10 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
             int32_t ni;
             auto selfIt = boneResult.nodeToIndex.find(sn.maxNode);
             if (selfIt != boneResult.nodeToIndex.end()) {
-                // Node is already a bone (e.g. it's referenced by another
-                // mesh's Skin modifier). Carry the influences on the bone's
-                // own nodeIndex — it can differ from sn.nodeIndex when the
-                // bone came in as an implicit skin reference.
+                // Node is already a bone: another mesh's Skin modifier
+                // references it, or a bone/helper is linked under it.
+                // BoneExtractor put that bone on this mesh's traversal node
+                // (sn.nodeIndex), so its children stay attached.
                 auto& b = irModel.bones[selfIt->second];
                 b.isHelper = false; // carries geometry → BONE chunk
                 ni = b.nodeIndex;
@@ -570,6 +596,19 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
                      << irModel.nodes[pe.nodeIndex].name
                      << "' worldRot=(" << worldRot.x << "," << worldRot.y
                      << "," << worldRot.z << "," << worldRot.w << ")";
+
+                // The rewrite below keys the sequence boundaries; a rotation
+                // on a global sequence runs on its own clock, and those keys
+                // would be spliced into its loop.
+                bool rotOnGlobalSeq = false;
+                for (const auto& na : irModel.nodeAnimations)
+                    if (na.nodeIndex == pe.nodeIndex &&
+                        na.rotation.globalSequenceIndex >= 0)
+                        rotOnGlobalSeq = true;
+                if (rotOnGlobalSeq) {
+                    ELOG << " → global-sequence rotation, skip\n";
+                    continue;
+                }
 
                 if (isQuatIdentity(worldRot)) {
                     ELOG << " → identity, skip\n";

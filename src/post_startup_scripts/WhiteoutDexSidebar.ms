@@ -15,7 +15,6 @@ try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
 
 rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:560
 (
-    local iniFile = (::WhiteoutDexInstallRoot) + "\\WhiteoutDex_Settings.ini"
     local iconPath = (::WhiteoutDexInstallRoot) + "\\whiteoutdex_icons\\"
     local btnSize = 28
     local btnW = 32
@@ -151,7 +150,8 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:560
         setupButton btn_about       "wdx_sb_about.png" "(?)" (::WdxL.t "about_title")
         
         -- Dock
-        local dockState = getINISetting iniFile "Sidebar" "DockState"
+        -- Per-user setting (WdxGetUserSetting, WhiteoutDexGlobals.ms)
+        local dockState = ::WdxGetUserSetting "Sidebar" "DockState" "cui_dock_left"
         local dockFlag = case dockState of
         (
             "cui_dock_left":  #cui_dock_left
@@ -171,10 +171,7 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:560
     (
         try (
             local state = cui.getDockState WhiteoutDexSidebarRollout
-            if (maxVersion())[1] >= 20000 then
-                setINISetting iniFile "Sidebar" "DockState" (state as string) forceUTF16:false
-            else
-                setINISetting iniFile "Sidebar" "DockState" (state as string)
+            ::WdxSetUserSetting "Sidebar" "DockState" (state as string)
         ) catch()
         try (cui.UnRegisterDialogBar WhiteoutDexSidebarRollout) catch()
     )
@@ -216,7 +213,5 @@ WhiteoutDexSidebar = WhiteoutDexSidebarStruct()
 
 -- Auto-show if enabled in settings
 (
-    local iniFile = (::WhiteoutDexInstallRoot) + "\\WhiteoutDex_Settings.ini"
-    local enabled = getINISetting iniFile "Sidebar" "Enabled"
-    if enabled != "0" then WhiteoutDexSidebar.show()
+    if (::WdxGetUserSetting "Sidebar" "Enabled" "1") != "0" then WhiteoutDexSidebar.show()
 )

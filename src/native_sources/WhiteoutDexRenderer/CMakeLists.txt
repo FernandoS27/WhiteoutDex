@@ -40,6 +40,9 @@ add_library(WhiteoutDexRenderer SHARED
     # theme (also pulls in the embedded Roboto font header).
     "${_imgui_backends}/imgui_impl_win32.cpp"
     "${_basic_viewer_dir}/settings_ini.cpp"
+    # The BoolSetting / FloatSetting Load/Save helpers settings_ini.cpp calls
+    # moved here in the upstream viewer refactor.
+    "${_basic_viewer_dir}/settings/setting_descriptors.cpp"
     # settings_io.cpp split out of settings_ini.cpp upstream: it owns
     # ExecutableDir / SettingsIniPath / AssetDir and the per-game IO path
     # overrides, which settings_ini.cpp, dllmain.cpp and max_plugin_ui.cpp
@@ -51,6 +54,9 @@ add_library(WhiteoutDexRenderer SHARED
     # copy of those strings. The installer drops them in `{app}\lang`.
     "${_basic_viewer_dir}/localization.cpp"
     "${_tools_common_dir}/cubeb_sound_emitter.cpp"
+    # The emitter's sound-bytes → PCM decoder (WAV/FLAC/MP3 via dr_libs, Ogg
+    # via stb_vorbis), split out of cubeb_sound_emitter.cpp upstream.
+    "${_tools_common_dir}/audio_decode.cpp"
     "${_tools_common_dir}/imgui_theme.cpp"
 )
 
@@ -68,6 +74,7 @@ target_include_directories(WhiteoutDexRenderer PRIVATE
     "${_basic_viewer_dir}"
     "${_tools_common_dir}"
     "${WHITEOUTFLAKES_DIR}/externals/dr_libs"
+    "${WHITEOUTFLAKES_DIR}/externals/stb_vorbis"
     # asset_manager.h transitively pulls cornflakes interface headers
     # (Effect / PkbReader / IArena …) when ndxStart queries the renderer's
     # AssetManager for the cross-model texture-dedup hook.

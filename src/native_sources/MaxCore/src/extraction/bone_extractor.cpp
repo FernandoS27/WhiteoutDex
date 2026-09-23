@@ -37,6 +37,21 @@ BoneExtractor::BoneResult BoneExtractor::extract(
     // Build a fast lookup set for skin-referenced bones
     std::unordered_set<INode*> skinRefSet(skinBoneNodes.begin(), skinBoneNodes.end());
 
+    // A mesh pulled in below (as a skin bone, or as the ancestor of a bone)
+    // keeps the IR node scene traversal gave it: the nodes linked under the
+    // mesh point at that one, and a fresh node (nodeIndex -1, minted by the
+    // exporter) would take the objectId and leave them parentless. Other
+    // content nodes (lights, emitters, …) get an objectId of their own, so
+    // their children already resolve through them.
+    std::unordered_map<INode*, int32_t> meshNodeIndex;
+    for (const auto& sn : sceneNodes)
+        if (sn.category == NodeCategory::Mesh)
+            meshNodeIndex[sn.maxNode] = sn.nodeIndex;
+    auto traversalIndexOf = [&](INode* node) {
+        auto it = meshNodeIndex.find(node);
+        return it != meshNodeIndex.end() ? it->second : -1;
+    };
+
     // 1. Collect all explicitly classified bones and helpers
     for (const auto& sn : sceneNodes) {
         if (sn.category == NodeCategory::Bone || sn.category == NodeCategory::Helper) {
@@ -155,7 +170,7 @@ BoneExtractor::BoneResult BoneExtractor::extract(
             bone.name.assign(wname.begin(), wname.end());
             reporter.warning(L"Implicit bone added from Skin modifier: '" + wname + L"'.");
         }
-        bone.nodeIndex = -1; // Not in scene traversal
+        bone.nodeIndex = traversalIndexOf(boneNode);
         bone.type = detectBoneType(boneNode);
         bone.isHelper = false; // Skin-referenced → always BONE
         bone.pivotPoint = boneNode->GetNodeTM(0).GetTrans();
@@ -202,7 +217,7 @@ BoneExtractor::BoneResult BoneExtractor::extract(
                 std::wstring wname(aname);
                 bone.name.assign(wname.begin(), wname.end());
             }
-            bone.nodeIndex = -1;
+            bone.nodeIndex = traversalIndexOf(anc);
             bone.type = detectBoneType(anc);
             // Same skin-based rule as Stage 1: only nodes referenced by a
             // Skin modifier go to the BONE chunk. Ancestors that happen to
