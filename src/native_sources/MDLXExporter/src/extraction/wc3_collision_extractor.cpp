@@ -97,10 +97,14 @@ void extractCollisions(const std::vector<core::SceneNode>& nodes,
 
         TimeValue t = 0;
 
-        // Get node position in world space (helper nodes aren't parented to
+        // World position of the shape itself (helper nodes aren't parented to
         // bones via TM inheritance in a way that requires local-space conversion;
-        // the importer placed them at the correct absolute location).
-        Matrix3 tm = sn.maxNode->GetNodeTM(t);
+        // the importer placed them at the correct absolute location). The
+        // object TM, not the node TM: the NeoDex importer moves the pivot to
+        // the MDX pivot point and leaves the shape where it was, and NeoDex
+        // exports the shape's own world bounds. Without a pivot offset the
+        // two are the same.
+        Matrix3 tm = sn.maxNode->GetObjectTM(t);
         Point3 pos = tm.GetTrans();
 
         const MCHAR* nm = sn.maxNode->GetName();

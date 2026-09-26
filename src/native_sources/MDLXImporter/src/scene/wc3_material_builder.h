@@ -16,6 +16,13 @@ namespace mdx_scene {
 /// or any texture slot besides diffuse and team colour, makes it one.
 bool isHdLayer(const ir::Material& irMat, const ir::MaterialLayer& layer);
 
+/// Switch on, at a CompositeMaterial built from `irMat`, the layer Nitrous
+/// shows in the viewport (it draws nothing else of a composite). The importer
+/// calls it again after its MAXScript viewport pass has settled the layers'
+/// showInViewport flags.
+void activateCompositeViewportLayer(Mtl* compMtl, const ir::Material& irMat,
+                                    const ir::IRModel& irModel, Interface* gi);
+
 class Wc3MaterialBuilder {
 public:
     /// Create Wc3Material instances for all IR materials.

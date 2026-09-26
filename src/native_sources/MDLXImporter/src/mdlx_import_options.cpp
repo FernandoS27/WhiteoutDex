@@ -5,6 +5,7 @@
 #include <MaxDirectories.h>
 // After max.h (which has already pulled in <windows.h>).
 #include "wdx_mpq_settings.h"
+#include <cstdlib>
 #include <string>
 
 namespace {
@@ -44,9 +45,22 @@ void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts) {
     if (haveImporterIni) {
 
     // ── Mode ──
+    // The import dialog writes "Merge"/"NewScene". Dialogs before the 2026
+    // redesign wrote true/false instead, which this never recognised; accept
+    // both so a saved Merge comes back.
     auto mode = iniGetString(iniPath.c_str(), sec, L"ImportMode");
-    if (mode == L"Merge") c.mode = ir::CoreImportOptions::ImportMode::Merge;
-    else                  c.mode = ir::CoreImportOptions::ImportMode::NewScene;
+    if (mode == L"Merge" || iniBool(mode)) c.mode = ir::CoreImportOptions::ImportMode::Merge;
+    else                                   c.mode = ir::CoreImportOptions::ImportMode::NewScene;
+
+    // ── Fast Settings (1-based: 1 = Custom ... 6 = All) ──
+    // Written by the dialog but not read until now, so the dialog always
+    // opened on All. Scripted (#noPrompt) imports keep All, see DoImport.
+    auto fast = iniGetString(iniPath.c_str(), sec, L"FastSettings");
+    if (!fast.empty()) {
+        const int v = _wtoi(fast.c_str());
+        if (v >= 1 && v <= 6)
+            c.preset = static_cast<ir::CoreImportOptions::Preset>(v - 1);
+    }
 
     // ── Geometry ──
     auto skin = iniGetString(iniPath.c_str(), sec, L"ImportSkinning");

@@ -605,6 +605,7 @@ void MdxModelDisassembler::mapGeosets(const wdx::Model& mdx, ir::IRModel& ir) {
 
         irMesh.materialIndex = static_cast<int32_t>(geo.materialId);
         irMesh.selectionGroup = geo.selectionGroup;
+        irMesh.unselectable = (geo.selectionFlags & 4) != 0;
 
         size_t vertCount = geo.vertexPositions.size();
         irMesh.vertices.resize(vertCount);

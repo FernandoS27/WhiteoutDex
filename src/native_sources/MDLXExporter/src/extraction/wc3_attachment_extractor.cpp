@@ -29,6 +29,7 @@
 #include "visibility_track_helper.h"
 #include <scene/paramblock_reader.h>
 #include <iparamb2.h>
+#include <modstack.h>
 #include <algorithm>
 #include <cwctype>
 #include <string>
@@ -187,7 +188,11 @@ void extractAttachments(const std::vector<core::SceneNode>& nodes,
         if (sn.customTag != "Wc3AttachPoint") continue;
         if (!sn.maxNode) continue;
 
-        auto* obj = sn.maxNode->GetObjectRef();
+        Object* obj = sn.maxNode->GetObjectRef();
+        // By-name reads look at the object's own param blocks, which a
+        // modifier on the node would hide behind its derived object.
+        while (obj && obj->SuperClassID() == GEN_DERIVOB_CLASS_ID)
+            obj = static_cast<IDerivedObject*>(obj)->GetObjRef();
         auto* ref = dynamic_cast<ReferenceTarget*>(obj);
         if (!ref) {
             ALOG_A << "  [SKIP] node has no ReferenceTarget\n";
@@ -249,6 +254,11 @@ void extractAttachments(const std::vector<core::SceneNode>& nodes,
         // The helper checks for animated keys; static 1.0 returns -1
         // so the builder writes no KATV chunk.
         attach.visibilityTrackIndex = extractVisibilityTrack(sn.maxNode, model);
+        // The NeoDex importer puts attachment visibility keys on the
+        // plug-in's A_Visibility parameter instead of the node.
+        if (attach.visibilityTrackIndex < 0)
+            attach.visibilityTrackIndex = extractVisibilityTrackFromController(
+                core::anim::getParamControllerDirect(ref, L"A_Visibility"), model);
 
         // ── Debug log ──
         ALOG_A << "    usesExternalModel=" << (usesExternalModel ? "true" : "false")

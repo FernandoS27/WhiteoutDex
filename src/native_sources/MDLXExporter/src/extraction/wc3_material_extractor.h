@@ -14,9 +14,11 @@ namespace mdx_extract {
 
 using MaterialMap = std::unordered_map<Mtl*, int32_t>;
 
+// formatVersion: the MDX version being written (800 Classic, 900+ Reforged).
 MaterialMap extractMaterials(const std::vector<core::SceneNode>& nodes,
                              ir::IRModel& model,
-                             core::ExportErrorReporter& reporter);
+                             core::ExportErrorReporter& reporter,
+                             int32_t formatVersion = 800);
 
 // Shared helpers — exported for use by particle/ribbon extractors that
 // need to add their own texture entries (e.g. PE2 particle texture).

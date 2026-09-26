@@ -8,8 +8,15 @@
 
 #define MDX_EXPORTER_CLASS_ID Class_ID(0x7A3B5C01, 0x4D2E6F00)
 
+class ExportDialog;
+
 class MdxExporterPlugin : public SceneExport {
 public:
+    // mdxExport() shows the options dialog itself (before the file is chosen)
+    // and runs DoExport without prompts; this hands that dialog over so the
+    // export's progress shows in it. DoExport closes it when done.
+    void setProgressDialog(ExportDialog* dialog) { progressDialog_ = dialog; }
+
     int ExtCount() override;
     const TCHAR* Ext(int n) override;
     const TCHAR* LongDesc() override;
@@ -24,6 +31,9 @@ public:
 
     int DoExport(const TCHAR* name, ExpInterface* ei, Interface* gi,
                  BOOL suppressPrompts = FALSE, DWORD options = 0) override;
+
+private:
+    ExportDialog* progressDialog_ = nullptr;
 };
 
 class MdxExporterClassDesc : public ClassDesc2 {

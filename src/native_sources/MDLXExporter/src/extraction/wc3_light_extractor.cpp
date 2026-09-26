@@ -38,6 +38,7 @@
 #include <iparamb2.h>
 #include <control.h>
 #include <decomp.h>
+#include <modstack.h>
 #include <fstream>
 #include <windows.h>
 
@@ -203,11 +204,25 @@ void extractLights(const std::vector<core::SceneNode>& nodes,
         if (!sn.maxNode) continue;
 
         auto* obj = sn.maxNode->GetObjectRef();
+        // By-name reads look at the object's own param blocks, which a
+        // modifier on the node would hide behind its derived object.
+        while (obj && obj->SuperClassID() == GEN_DERIVOB_CLASS_ID)
+            obj = static_cast<IDerivedObject*>(obj)->GetObjRef();
         auto* ref = dynamic_cast<ReferenceTarget*>(obj);
         if (!ref) {
             LLOG << "  [SKIP] node has no ReferenceTarget\n";
             continue;
         }
+
+        // NeoDex's Wc3Light uses the same parameter names the other way
+        // round: AmbColor / AmbValue (UI "Dif") is its primary light and
+        // ShadowColor / ShadowValue its ambient light (NeoDexSceneParser
+        // writes AmbColor as KLAC, ShadowColor as KLBC).
+        const bool neoDex = obj->ClassID() == mdx_ids::NEODEX_LIGHT;
+        const wchar_t* primaryColorName = neoDex ? L"AmbColor"    : L"ShadowColor";
+        const wchar_t* primaryValueName = neoDex ? L"AmbValue"    : L"ShadowValue";
+        const wchar_t* ambientColorName = neoDex ? L"ShadowColor" : L"AmbColor";
+        const wchar_t* ambientValueName = neoDex ? L"ShadowValue" : L"AmbValue";
 
         ir::Light light;
         light.nodeIndex = sn.nodeIndex;
@@ -244,16 +259,16 @@ void extractLights(const std::vector<core::SceneNode>& nodes,
         // against game/Magos rendering. NeoDex IOFixColor splits
         // identically (static = RGB, animated = BGR).
         Color primaryRGB(1.0f, 1.0f, 1.0f);
-        PBR::readColorByName(ref, L"ShadowColor", t, primaryRGB);
+        PBR::readColorByName(ref, primaryColorName, t, primaryRGB);
         light.color = primaryRGB;
 
-        PBR::readFloatByName(ref, L"ShadowValue", t, light.intensity);
+        PBR::readFloatByName(ref, primaryValueName, t, light.intensity);
 
         Color ambRGB(0.0f, 0.0f, 0.0f);
-        PBR::readColorByName(ref, L"AmbColor", t, ambRGB);
+        PBR::readColorByName(ref, ambientColorName, t, ambRGB);
         light.ambientColor = ambRGB;
 
-        PBR::readFloatByName(ref, L"AmbValue", t, light.ambientIntensity);
+        PBR::readFloatByName(ref, ambientValueName, t, light.ambientIntensity);
 
         // Each read leaves the IR default in place when the parameter is
         // missing, which is what a light saved before the plug-in grew them
@@ -295,13 +310,13 @@ void extractLights(const std::vector<core::SceneNode>& nodes,
         light.attEndTrackIndex =
             extractLightFloatTrack(ref, L"DecayEnd",    model, "KLAE");
         light.colorTrackIndex =
-            extractLightColorTrack(ref, L"ShadowColor", model, "KLAC");
+            extractLightColorTrack(ref, primaryColorName, model, "KLAC");
         light.intensityTrackIndex =
-            extractLightFloatTrack(ref, L"ShadowValue", model, "KLAI");
+            extractLightFloatTrack(ref, primaryValueName, model, "KLAI");
         light.ambColorTrackIndex =
-            extractLightColorTrack(ref, L"AmbColor",    model, "KLBC");
+            extractLightColorTrack(ref, ambientColorName, model, "KLBC");
         light.ambIntensityTrackIndex =
-            extractLightFloatTrack(ref, L"AmbValue",    model, "KLBI");
+            extractLightFloatTrack(ref, ambientValueName, model, "KLBI");
         light.shadowCastStartTrackIndex =
             extractLightFloatTrack(ref, L"ShadowCastingStart", model, "KLSS");
         light.shadowCastEndTrackIndex =

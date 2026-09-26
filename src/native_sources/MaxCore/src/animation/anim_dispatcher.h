@@ -7,6 +7,9 @@
 #include <max.h>
 #include <inode.h>
 
+#include <cstddef>
+#include <functional>
+
 namespace core {
 
 class AnimDispatcher {
@@ -14,6 +17,9 @@ public:
     struct Config {
         int tickInterval = 160;      // Default sampling interval
         float angleThreshold = 0.5f; // Degrees, for IK adaptive refinement
+        // Optional: called before each node with (nodes done, node count),
+        // so the exporter can show progress while it bakes.
+        std::function<void(size_t, size_t)> onNode;
     };
 
     /// Bake all node animations for the given sequences.

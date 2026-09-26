@@ -9,7 +9,7 @@ void IKSampler::sample(INode* node, INode* parent,
                         float angleThreshold,
                         ir::Vec3Track& outPos, ir::QuatTrack& outRot, ir::Vec3Track& outScl) {
     SubsampleEngine::SampleConfig config;
-    config.tickInterval = 160;        // Every frame at 30fps
+    config.tickInterval = GetTicksPerFrame();  // every frame of the scene
     config.adaptiveRefine = true;
     config.angleThreshold = angleThreshold;
     config.maxDepth = 4;

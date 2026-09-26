@@ -8,135 +8,88 @@ LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 #endif
 
 // ============================================================================
-// Export Options Dialog
-// File path is taken from Max's File→Export save dialog.
-// Two tabs: Options + Texture Conversion. The Texture Conversion tab swaps
-// its inner content depending on Format Version (BLP for v800, DDS for v1800).
-// Smoothgroups export is always on. Extents are always animation-dependent.
-// Uses dialog units (DLU). Approx conversion: 1 DLU ~ 1.5-1.75 px.
+// Export Options Dialog (redesign, September 2026)
+// File path is taken from Max's File→Export save dialog (mdxExport() lets the
+// user pick it after this dialog instead).
+// Two tabs: Geometry + Textures. The Textures tab swaps its inner content
+// depending on the format (BLP rows for v800, DDS row for v1800).
+//
+// All positions below are placeholders: layoutExportDialog() in
+// export_dialog.cpp sets the real rectangles in pixels (96-DPI values scaled
+// by the dialog's DPI). This template defines the controls, their styles and
+// the tab order (= order in this block).
+// Owner-drawn: format cards, tabs, banner buttons, footer check buttons, Export.
 // ============================================================================
-IDD_EXPORT_OPTIONS DIALOGEX 0, 0, 180, 319
-STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "WhiteoutDex MDX Exporter"
-FONT 8, "MS Sans Serif"
+IDD_EXPORT_OPTIONS DIALOGEX 0, 0, 241, 303
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN
+CAPTION "Export Settings"
+FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
-    // ── Model Name ──
-    GROUPBOX        "Model Name", IDC_GRP_MODEL_NAME, 7, 5, 166, 28
-    EDITTEXT        IDC_EDT_MODEL_NAME, 14, 17, 152, 12, ES_AUTOHSCROLL
+    // ── Model name / format ──
+    LTEXT           "Model name", IDC_LBL_MODEL_NAME, 0, 0, 10, 8
+    EDITTEXT        IDC_EDT_MODEL_NAME, 0, 0, 10, 12, ES_AUTOHSCROLL
+    LTEXT           "Format", IDC_LBL_FORMAT, 0, 0, 10, 8
+    CONTROL         "Classic", IDC_BTN_FORMAT_CLASSIC, "Button",
+                    BS_OWNERDRAW | BS_NOTIFY | WS_GROUP | WS_TABSTOP, 0, 0, 10, 10
+    CONTROL         "Reforged", IDC_BTN_FORMAT_REFORGED, "Button",
+                    BS_OWNERDRAW | BS_NOTIFY, 0, 0, 10, 10
 
-    // ── Format Version ──
-    GROUPBOX        "Format Version", IDC_GRP_FORMAT_VERSION, 7, 37, 166, 26
-    CONTROL         "Classic (v800)", IDC_RDO_CLASSIC, "Button",
-                    BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 14, 49, 72, 10
-    CONTROL         "Reforged (v1800)", IDC_RDO_REFORGED, "Button",
-                    BS_AUTORADIOBUTTON, 92, 49, 72, 10
+    // ── Tabs ──
+    CONTROL         "Geometry", IDC_BTN_TAB_GEOMETRY, "Button",
+                    BS_OWNERDRAW | BS_NOTIFY | WS_GROUP | WS_TABSTOP, 0, 0, 10, 10
+    CONTROL         "Textures", IDC_BTN_TAB_TEXTURES, "Button",
+                    BS_OWNERDRAW | BS_NOTIFY, 0, 0, 10, 10
 
-    // ── Tab Control (Options + Material Fix + Texture Conversion) ──
-    CONTROL         "", IDC_TAB_CONTROL, "SysTabControl32",
-                    WS_TABSTOP, 7, 67, 166, 124
-
-    // ── Tab 0: "Options" content ──
-    CONTROL         "Auto-increment filename", IDC_CHK_AUTO_INCREMENT, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 86, 152, 10
+    // ── Geometry tab ──
     CONTROL         "Merge similar meshes", IDC_CHK_MERGE_SIMILAR, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 99, 152, 10
+                    BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP, 0, 0, 10, 10
     CONTROL         "Fix shared normals", IDC_CHK_FIX_SHARED_NORMALS, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 112, 152, 10
-    CONTROL         "Keep unused Bones/Helpers", IDC_CHK_KEEP_UNUSED_BH, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 125, 152, 10
-    CONTROL         "Disable Skin Quantize", IDC_CHK_DISABLE_SKINQUANT, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 138, 152, 10
-    CONTROL         "Open folder after export", IDC_CHK_OPEN_FOLDER, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 151, 152, 10
-
-    // ── Tab 1: "Material Fix" content ──
-    // Basic Parameters (y=82..104, height 22)
-    GROUPBOX        "Basic Parameters", IDC_GRP_MAT_BASIC, 11, 82, 158, 22
-    CONTROL         "Unshaded",  IDC_CHK_MAT_UNSHADED, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 16, 92, 50, 10
-    CONTROL         "Unfogged",  IDC_CHK_MAT_UNFOGGED, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 70, 92, 50, 10
-    CONTROL         "Two Sided", IDC_CHK_MAT_TWOSIDED, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 122, 92, 45, 10
-    // Filter Mode (y=106..154, height 48) — 7 radios in 3 columns + 1 in row 3
-    GROUPBOX        "Filter Mode", IDC_GRP_MAT_FILTER, 11, 106, 158, 48
-    CONTROL         "None",        IDC_RDO_MAT_FILTER_NONE,   "Button",
-                    BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 16, 116, 48, 10
-    CONTROL         "Transparent", IDC_RDO_MAT_FILTER_TRANSP, "Button",
-                    BS_AUTORADIOBUTTON, 66, 116, 50, 10
-    CONTROL         "Blend",       IDC_RDO_MAT_FILTER_BLEND,  "Button",
-                    BS_AUTORADIOBUTTON, 118, 116, 50, 10
-    CONTROL         "Additive",    IDC_RDO_MAT_FILTER_ADD,    "Button",
-                    BS_AUTORADIOBUTTON, 16, 128, 48, 10
-    CONTROL         "Add 2x",      IDC_RDO_MAT_FILTER_ADD2X,  "Button",
-                    BS_AUTORADIOBUTTON, 66, 128, 50, 10
-    CONTROL         "Modulate",    IDC_RDO_MAT_FILTER_MOD,    "Button",
-                    BS_AUTORADIOBUTTON, 118, 128, 50, 10
-    CONTROL         "Mod 2x",      IDC_RDO_MAT_FILTER_MOD2X,  "Button",
-                    BS_AUTORADIOBUTTON, 16, 140, 50, 10
-    // Texture Parameters (y=158..190, height 32)
-    GROUPBOX        "Texture Parameters", IDC_GRP_MAT_TEXPARAMS, 11, 158, 158, 32
-    LTEXT           "Prefix:", IDC_LBL_MAT_PREFIX, 16, 168, 24, 8
-    EDITTEXT        IDC_EDT_MAT_PREFIX,  41, 166, 102, 12, ES_AUTOHSCROLL
-    PUSHBUTTON      "v", IDC_BTN_MAT_PREFIX_DROP, 145, 166, 10, 12
-    PUSHBUTTON      "+", IDC_BTN_MAT_PREFIX_EDIT, 156, 166, 10, 12
-    CONTROL         "U_Tile", IDC_CHK_MAT_UTILE, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 16, 180, 50, 10
-    CONTROL         "V_Tile", IDC_CHK_MAT_VTILE, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 80, 180, 50, 10
-
-    // ── Tab 2: "Texture Conversion" content ──
-    CONTROL         "Convert textures on export", IDC_CHK_TEX_CONVERT, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 86, 152, 10
-
-    LTEXT           "Compression:", IDC_LBL_BLP_COMPRESSION, 14, 102, 50, 8
-    COMBOBOX        IDC_CMB_BLP_COMPRESSION, 64, 100, 100, 60,
-                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "JPEG Quality:", IDC_LBL_BLP_JPEG_QUALITY, 14, 118, 50, 8
-    EDITTEXT        IDC_EDT_BLP_JPEG_QUALITY, 64, 116, 40, 12, ES_AUTOHSCROLL | ES_RIGHT | ES_NUMBER
-    CONTROL         "", IDC_SPIN_BLP_JPEG_QUALITY, "msctls_updown32",
-                    UDS_AUTOBUDDY | UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_SETBUDDYINT,
-                    92, 116, 11, 12
-    CONTROL         "Dithering (reduce color banding)", IDC_CHK_BLP_DITHERING, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 132, 152, 10
-
-    LTEXT           "Format:", IDC_LBL_DDS_FORMAT, 14, 102, 40, 8
-    COMBOBOX        IDC_CMB_DDS_FORMAT, 64, 100, 100, 60,
-                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-
-    CONTROL         "Regenerate Mipmaps", IDC_CHK_TEX_MIPMAPS, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 148, 152, 10
-    CONTROL         "Overwrite existing files", IDC_CHK_TEX_OVERWRITE, "Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP, 14, 161, 152, 10
-
-    // ── Extents ──
-    GROUPBOX        "Extents", IDC_GRP_EXTENTS, 7, 195, 166, 24
-    LTEXT           "Precision:", IDC_LBL_EXTENTS_PREC, 14, 205, 40, 8
-    EDITTEXT        IDC_EDT_EXTENTS_PREC, 58, 203, 30, 12, ES_AUTOHSCROLL | ES_RIGHT | ES_NUMBER
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
+    CONTROL         "Keep unused bones and helpers", IDC_CHK_KEEP_UNUSED_BH, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
+    CONTROL         "Quantize skin weights", IDC_CHK_QUANTIZE_SKIN, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
+    LTEXT           "Extents precision", IDC_LBL_EXTENTS_PREC, 0, 0, 10, 8
+    EDITTEXT        IDC_EDT_EXTENTS_PREC, 0, 0, 10, 12,
+                    ES_AUTOHSCROLL | ES_RIGHT | ES_NUMBER | WS_GROUP
     CONTROL         "", IDC_SPIN_EXTENTS_PREC, "msctls_updown32",
-                    UDS_AUTOBUDDY | UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_SETBUDDYINT,
-                    76, 203, 11, 12
+                    UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_SETBUDDYINT, 0, 0, 10, 12
 
-    // ── Scene Status (NEW) — colored bar + label + buttons ──
-    // Layout matches NeoDex: solid color band at top, status text below,
-    // action buttons on the right.
-    GROUPBOX        "Scene Status", IDC_GRP_SCENE_STATUS, 7, 223, 166, 45
-    // The colored panel — owner-drawn via WM_CTLCOLORSTATIC.
-    // SS_NOTIFY would only matter if we need clicks; we don't.
-    CONTROL         "", IDC_PNL_SCENE_STATUS_BAR, "Static",
-                    SS_OWNERDRAW | WS_BORDER, 14, 233, 152, 10
-    LTEXT           "All Clear", IDC_LBL_SCENE_STATUS, 14, 246, 75, 9
-    PUSHBUTTON      "Fix All",     IDC_BTN_SCENE_FIX_ALL,   90, 244, 38, 12
-    PUSHBUTTON      "Details...",  IDC_BTN_SCENE_DETAILS,  130, 244, 38, 12
+    // ── Textures tab ──
+    CONTROL         "Convert textures on export", IDC_CHK_TEX_CONVERT, "Button",
+                    BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP, 0, 0, 10, 10
+    LTEXT           "Compression", IDC_LBL_BLP_COMPRESSION, 0, 0, 10, 8
+    COMBOBOX        IDC_CMB_BLP_COMPRESSION, 0, 0, 10, 60,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "JPEG quality", IDC_LBL_BLP_JPEG_QUALITY, 0, 0, 10, 8
+    EDITTEXT        IDC_EDT_BLP_JPEG_QUALITY, 0, 0, 10, 12,
+                    ES_AUTOHSCROLL | ES_RIGHT | ES_NUMBER
+    CONTROL         "", IDC_SPIN_BLP_JPEG_QUALITY, "msctls_updown32",
+                    UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_SETBUDDYINT, 0, 0, 10, 12
+    CONTROL         "Dithering (reduces color banding)", IDC_CHK_BLP_DITHERING, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
+    LTEXT           "DDS format", IDC_LBL_DDS_FORMAT, 0, 0, 10, 8
+    COMBOBOX        IDC_CMB_DDS_FORMAT, 0, 0, 10, 60,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL         "Regenerate mipmaps", IDC_CHK_TEX_MIPMAPS, "Button",
+                    BS_AUTOCHECKBOX | WS_GROUP | WS_TABSTOP, 0, 0, 10, 10
+    CONTROL         "Overwrite existing files", IDC_CHK_TEX_OVERWRITE, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
 
-    // ── Progress ──
-    GROUPBOX        "Progress", IDC_GRP_PROGRESS, 7, 272, 166, 24
-    LTEXT           "Idle", IDC_LBL_STATUS, 14, 282, 60, 8
-    CONTROL         "", IDC_PROGRESS_BAR, "msctls_progress32", WS_BORDER, 76, 281, 90, 10
+    // ── Scene check banner buttons (the banner is painted by the dialog) ──
+    CONTROL         "Fix all", IDC_BTN_SCENE_FIX_ALL, "Button",
+                    BS_OWNERDRAW | WS_GROUP | WS_TABSTOP, 0, 0, 10, 10
+    CONTROL         "Details...", IDC_BTN_SCENE_DETAILS, "Button",
+                    BS_OWNERDRAW | WS_TABSTOP, 0, 0, 10, 10
 
-    // ── Buttons ──
-    DEFPUSHBUTTON   "Export", IDOK,     65, 300, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 120, 300, 50, 14
+    // ── Footer ──
+    CONTROL         "Auto-increment name", IDC_CHK_AUTO_INCREMENT, "Button",
+                    BS_OWNERDRAW | WS_GROUP | WS_TABSTOP, 0, 0, 10, 10
+    CONTROL         "Open folder afterwards", IDC_CHK_OPEN_FOLDER, "Button",
+                    BS_OWNERDRAW | WS_TABSTOP, 0, 0, 10, 10
+    CONTROL         "Export", IDOK, "Button",
+                    BS_OWNERDRAW | WS_GROUP | WS_TABSTOP, 0, 0, 10, 10
+    PUSHBUTTON      "Cancel", IDCANCEL, 0, 0, 10, 10, WS_TABSTOP
 END
 
 

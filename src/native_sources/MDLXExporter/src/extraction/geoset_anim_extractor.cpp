@@ -312,6 +312,48 @@ int32_t extractColorTrack(Modifier* mod, ir::IRModel& model,
                i, (int)t, val.x, val.y, val.z);
     }
 
+    // Bezier / Hermite keys carry tangents into the MDX, and zero ones are
+    // black control points the colour dips towards between keys. Rebuild
+    // them the way the material float tracks do (NeoDex FloatKeys /
+    // ProcessBezier): sample at 1/3 and 2/3 of each segment and solve for
+    // the cubic's control points, per channel. Sampling stays on the
+    // GetValue path above.
+    if (track.interpolation == ir::InterpolationType::Bezier ||
+        track.interpolation == ir::InterpolationType::Hermite) {
+        auto sample = [&](TimeValue t) {
+            Point3 v(1.0f, 1.0f, 1.0f);
+            Interval iv = FOREVER;
+            ctrl->GetValue(t, &v, iv);
+            return Color(v.z, v.y, v.x);  // same RGB→BGR swap as the keys
+        };
+        const size_t n = track.keys.size();
+        for (size_t i = 0; i < n; i++) {
+            auto& key = track.keys[i];
+            key.inTangent = key.outTangent = key.value;
+            if (i > 0) {
+                const auto& prev = track.keys[i - 1];
+                const TimeValue span = key.time - prev.time;
+                const Color pe = sample(prev.time + static_cast<TimeValue>(span / 3.0));
+                const Color pd = sample(prev.time + static_cast<TimeValue>(2.0 * span / 3.0));
+                for (int c = 0; c < 3; c++)
+                    key.inTangent[c] = 3.0f * pd[c] +
+                        (2.0f * prev.value[c] - 9.0f * pe[c] - 5.0f * key.value[c]) / 6.0f;
+            }
+            if (i + 1 < n) {
+                const auto& next = track.keys[i + 1];
+                const TimeValue span = next.time - key.time;
+                const Color pe = sample(key.time + static_cast<TimeValue>(span / 3.0));
+                const Color pd = sample(key.time + static_cast<TimeValue>(2.0 * span / 3.0));
+                for (int c = 0; c < 3; c++)
+                    key.outTangent[c] = 3.0f * pe[c] +
+                        (2.0f * next.value[c] - 5.0f * key.value[c] - 9.0f * pd[c]) / 6.0f;
+            }
+            key.hasTangents = true;
+        }
+        // Hermite would read these as derivatives, not control points.
+        track.interpolation = ir::InterpolationType::Bezier;
+    }
+
     ga_log("    [extractColorTrack] %d keys sampled\n", (int)track.keys.size());
 
     // ── Global Sequence detection (inline, Point3-safe) ────────────────

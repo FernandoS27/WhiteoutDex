@@ -5,6 +5,9 @@
 #include <whiteout/models/mdx/structures.h>
 #include "mdx_coord_transform.h"
 
+#include <cmath>
+#include <vector>
+
 namespace mdx_disasm {
 
 // ── Interpolation type mapping ──────────────────────────────
@@ -17,6 +20,37 @@ inline ir::InterpolationType mapInterpolation(whiteout::mdx::InterpolationType t
     case whiteout::mdx::InterpolationType::Bezier:  return ir::InterpolationType::Bezier;
     default:                                        return ir::InterpolationType::Linear;
     }
+}
+
+// ── Keys that snap onto one frame ───────────────────────────
+// msToTicks rounds key times to whole frames, so keys closer together than a
+// frame land on the same tick, and Max holds one key per tick. Keep the key
+// whose own time is nearest that frame (on a tie the later one). Keeping the
+// last one instead let a key just past a sequence end replace the sequence's
+// own closing key: PandarenBrewmaster's head spins in the gap after
+// Stand - 1 (keys at 4835..4841 ms), and 4841 ms took over frame 145, the
+// loop's last key at 4833 ms, so the head snapped around on every loop.
+template <typename T, typename Ms>
+void collapseSnappedKeys(std::vector<ir::Keyframe<T>>& keys, const std::vector<Ms>& ms)
+{
+    auto offFrame = [](Ms t, TimeValue tick) {
+        return std::abs(static_cast<double>(t) * 4.8 - static_cast<double>(tick));
+    };
+    size_t out = 0;
+    std::vector<Ms> outMs;
+    outMs.reserve(ms.size());
+    for (size_t i = 0; i < keys.size(); ++i) {
+        if (out > 0 && keys[out - 1].time == keys[i].time) {
+            if (offFrame(ms[i], keys[i].time) <= offFrame(outMs.back(), keys[i].time)) {
+                keys[out - 1] = keys[i];
+                outMs.back() = ms[i];
+            }
+            continue;
+        }
+        keys[out++] = keys[i];
+        outMs.push_back(ms[i]);
+    }
+    keys.resize(out);
 }
 
 // ── Generic track mapper ────────────────────────────────────
@@ -53,6 +87,7 @@ ir::Track<DstT> mapTrack(const whiteout::mdx::Track<SrcT>& src, Convert convert)
             dst.keys.push_back(kf);
         }
     }
+    collapseSnappedKeys(dst.keys, src.timestamps);
     return dst;
 }
 
@@ -96,6 +131,7 @@ inline ir::IntTrack mapIntTrack(const whiteout::mdx::Track<uint32_t>& src)
         kf.value = static_cast<int32_t>(keys[i]);
         dst.keys.push_back(kf);
     }
+    collapseSnappedKeys(dst.keys, src.timestamps);
     return dst;
 }
 

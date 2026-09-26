@@ -5,6 +5,7 @@
 #include "mdx_class_ids.h"
 #include "mdx_node_registration.h"
 #include "export_dialog.h"
+#include "export_paths.h"
 #include "mdx_export_debug.h"
 
 #include <scene/node_classifier.h>
@@ -200,11 +201,17 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     ELOG << "Options: version=" << opts.version << " merge=" << opts.mergeGeosets
          << " anim=" << opts.exportAnimations << " skinQuant=" << !opts.disableSkinQuantize << "\n";
 
+    // The options dialog stays open after Export and shows the progress of the
+    // steps below. mdxExport() brings its own (setProgressDialog); without a
+    // dialog (#noPrompt) the progress calls do nothing.
+    ExportDialog ownDialog(GetDllInstance(), gi->GetMAXHWnd());
+    ExportDialog& dialog = progressDialog_ ? *progressDialog_ : ownDialog;
     if (!suppressPrompts) {
-        if (!showExportDialog(GetDllInstance(), gi->GetMAXHWnd(), opts)) return IMPEXP_CANCEL;
+        if (!dialog.run(opts, name)) return IMPEXP_CANCEL;
         ELOG << "Dialog: version=" << opts.version << "\n";
     }
 
+    dialog.step(ExportStep::Scene);
     core::NodeClassifier classifier;
     registerMdxNodeTypes(classifier);
     core::SceneTraversal traversal;
@@ -228,6 +235,7 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     irModel.nodes = std::move(sceneResult.irNodes);
 
     ELOG << "\n==== Bone Extraction ====\n";
+    dialog.step(ExportStep::Bones);
     std::vector<INode*> skinBoneNodes;
     collectSkinBoneNodes(sceneResult.nodes, skinBoneNodes);
     core::BoneExtractor boneEx;
@@ -259,10 +267,14 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
 
     // Meshes
     ELOG << "\n==== Mesh Extraction ====\n";
+    dialog.step(ExportStep::Meshes);
     core::MeshExtractor meshEx;
     std::vector<int32_t> meshBoneIdxs; // bones minted for unskinned meshes
+    size_t meshTotal = 0, meshDone = 0;
+    for (auto& sn:sceneResult.nodes) if(sn.category==core::NodeCategory::Mesh) ++meshTotal;
     for (auto& sn:sceneResult.nodes) {
         if(sn.category!=core::NodeCategory::Mesh) continue;
+        dialog.items(meshDone++, meshTotal);
         auto mesh=meshEx.extract(sn.maxNode,sn.nodeIndex,0,reporter);
         if (mesh.indices.empty()) {
             // No faces at frame 0 (a tyFlow/particle object before its first
@@ -410,7 +422,8 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
 
     // MDX extractors
     ELOG << "\n==== MDX Extractors ====\n";
-    auto mtlMap=mdx_extract::extractMaterials(sceneResult.nodes,irModel,reporter);
+    dialog.step(ExportStep::Objects);
+    auto mtlMap=mdx_extract::extractMaterials(sceneResult.nodes,irModel,reporter,opts.version);
     mdx_extract::extractLights(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractAttachments(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractParticles1(sceneResult.nodes,irModel,reporter);
@@ -463,9 +476,11 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
 
     // Bake
     ELOG << "\n==== Animation Bake ====\n";
+    dialog.step(ExportStep::Animations);
     if(opts.exportAnimations && !irModel.sequences.empty()) {
         core::AnimDispatcher dispatcher;
-        core::AnimDispatcher::Config cfg; cfg.tickInterval=opts.animSampleInterval; cfg.angleThreshold=opts.ikRefinementThreshold;
+        core::AnimDispatcher::Config cfg; cfg.tickInterval=opts.animSampleInterval > 0 ? opts.animSampleInterval : GetTicksPerFrame(); cfg.angleThreshold=opts.ikRefinementThreshold;
+        cfg.onNode = [&dialog](size_t done, size_t total) { dialog.items(done, total); };
         dispatcher.bakeAll(irModel,irModel.sequences,cfg,reporter);
         ELOG << "Baked: " << irModel.nodeAnimations.size() << " node animations\n";
     } else {
@@ -512,6 +527,7 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     EFLUSH;
 
     // Optimize
+    dialog.step(ExportStep::Optimizing);
     if(opts.optimizeVertices){core::VertexOptimizer vo; for(auto& m:irModel.meshes) vo.optimize(m,opts.vertexMergeThreshold);}
     if(opts.optimizeKeyframes){
         // Collect floatTrack indices that are visibility/alpha tracks.
@@ -825,11 +841,13 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     // not captured (e.g. IFL frames, replaceable-only entries).
     if (opts.texConvertEnabled) {
         ELOG << "\n==== Texture Conversion ====\n"; EFLUSH;
+        dialog.step(ExportStep::Textures);
         mdx_export::convertExportTextures(irModel, wcharToUtf8(name), opts, reporter);
     }
 
     // Build
     ELOG << "\n==== Model Build ====\n"; EFLUSH;
+    dialog.step(ExportStep::Building);
     MdxModelBuilder builder;
     whiteout::mdx::Model mdxModel = builder.build(irModel, opts);
     ELOG << "Result: " << mdxModel.bones.size() << " bones, " << mdxModel.helpers.size() << " helpers, "
@@ -860,29 +878,10 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     };
 
     if (opts.autoIncrementFilename && fileExistsW(utf8ToWide(filePath))) {
-        // Strip an existing trailing _<digits> from the base name first, so
-        // running auto-increment twice doesn't yield base_1_1.mdx.
-        auto sl = filePath.find_last_of("/\\");
-        std::string dir  = (sl != std::string::npos) ? filePath.substr(0, sl + 1) : "";
-        std::string base = (sl != std::string::npos) ? filePath.substr(sl + 1)    : filePath;
-        std::string ext;
-        auto dt = base.rfind('.');
-        if (dt != std::string::npos) { ext = base.substr(dt); base = base.substr(0, dt); }
-
-        auto us = base.rfind('_');
-        if (us != std::string::npos && us + 1 < base.size()) {
-            bool allDigits = true;
-            for (size_t i = us + 1; i < base.size(); ++i)
-                if (base[i] < '0' || base[i] > '9') { allDigits = false; break; }
-            if (allDigits) base = base.substr(0, us);
-        }
-
-        int counter = 1;
-        std::string candidate = dir + base + "_" + std::to_string(counter) + ext;
-        while (fileExistsW(utf8ToWide(candidate))) {
-            ++counter;
-            candidate = dir + base + "_" + std::to_string(counter) + ext;
-        }
+        // Shared with the export dialog's header preview (export_paths.h), so
+        // the name shown there is the name written here.
+        const std::string candidate =
+            wcharToUtf8(mdx_export::AutoIncrementPath(utf8ToWide(filePath)).c_str());
         ELOG << "AutoIncrement: " << filePath << " -> " << candidate << "\n";
         filePath = candidate;
     }
@@ -904,9 +903,14 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     }
     ELOG << "MODL name: '" << mdxModel.modelName << "'\n";
 
+    dialog.step(ExportStep::Writing);
     whiteout::mdx::Writer writer;
     writer.write(filePath, mdxModel);
     ELOG << "\n==== Written: " << filePath << " ====\n";
+
+    // Close the progress window before the report, which would otherwise
+    // open behind it, and before the folder opens.
+    dialog.close();
 
     if (reporter.hasWarnings() || reporter.hasErrors())
         reporter.showSummaryDialog(gi->GetMAXHWnd());

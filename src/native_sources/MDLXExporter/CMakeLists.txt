@@ -3,6 +3,7 @@
 # Links: MaxCore (static, scene access + animation)
 #        whiteout_lib    (MDX writer)
 #        maxscrpt.lib    (Note track / CA access)
+#        assetmanagement.lib (texture source resolution)
 # ============================================================================
 cmake_minimum_required(VERSION 3.20...4.3)
 project(MDLXExporter LANGUAGES CXX)
@@ -24,6 +25,8 @@ target_link_libraries(MDLXExporter PRIVATE
     MaxCore
     whiteout_lib
     maxscrpt.lib
+    # IFileResolutionManager: finds missing texture sources in Max's map paths
+    assetmanagement.lib
 )
 
 target_compile_options(MDLXExporter PRIVATE

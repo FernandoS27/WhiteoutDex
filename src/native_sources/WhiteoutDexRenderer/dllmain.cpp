@@ -100,6 +100,19 @@ static i32 g_publishedSequenceIdx = -2;
 // Max's time cursor, and neither timer may re-enter it while that runs.
 static bool g_rebuilding = false;
 
+// True between NOTIFY_PRE_IMPORT and NOTIFY_POST_IMPORT / NOTIFY_IMPORT_FAILED.
+// An import pumps messages (progress bar, MAXScript), so both timers and the
+// TimeChanged callback can fire while it is still building nodes and
+// reassigning the Material Editor slots.
+static bool g_importInProgress = false;
+
+// The INode* / Mtl* pointers the adapter collected may no longer describe the
+// scene: a file is being imported, a node was added or deleted, or an undo /
+// redo changed the scene. Every eval and
+// material poll stands down while this is set, and the sync timer resyncs as
+// soon as no import is running. WhiteoutFlakesRebuild clears it.
+static bool g_sceneStale = false;
+
 // Convert Max time (TimeValue ticks) to milliseconds. Returns 0 if Max
 // reports a missing tick rate (rare; tested WhiteoutFlakesStart paths).
 static i32 MaxTimeToMs(TimeValue t) {
@@ -113,7 +126,7 @@ static i32 MaxTimeToMs(TimeValue t) {
 // only thread-safe to touch from Max's UI thread — the render-thread Tick
 // can't do this for us.
 static void EvalFromMax(i32 timeMs) {
-    if (!g_actor || !g_renderer || !g_scene)
+    if (g_sceneStale || !g_actor || !g_renderer || !g_scene)
         return;
     g_actor->animation.SetTimeMs(timeMs);
     g_scene->SetAnimationTime(timeMs);
@@ -250,6 +263,9 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
     }
     if (!g_renderer || !g_adapter || !g_actor || !g_renderWindow)
         return;
+    // The collected Mtl* may be dangling; the sync timer resyncs instead.
+    if (g_sceneStale)
+        return;
 
     // Hot-reload check.
     auto result = g_adapter->RefreshMaterials();
@@ -284,6 +300,40 @@ static void OnMaxSceneEvent(void* /*param*/, NotifyInfo* /*info*/) {
         WhiteoutFlakesCleanup();
 }
 
+// Import keeps the current scene, so unlike File > Open there is nothing to
+// tear down — but the scene changes underneath the collected pointers while
+// the importer runs (it also reassigns every Material Editor slot). Stand down
+// for the duration and resync against the result afterwards, which is also
+// what shows the freshly imported model in the preview.
+static void OnImportEvent(void* /*param*/, NotifyInfo* info) {
+    if (!info)
+        return;
+    switch (info->intcode) {
+    case NOTIFY_PRE_IMPORT:
+        g_importInProgress = true;
+        if (g_running)
+            g_sceneStale = true;
+        break;
+    case NOTIFY_POST_IMPORT:
+    case NOTIFY_IMPORT_FAILED: // failed or cancelled: may still have added nodes
+        g_importInProgress = false;
+        break;
+    default:
+        break;
+    }
+}
+
+// The set of nodes changed under the collected scene. Resync rather than
+// tracking which node it was:
+// - a deleted node may be one the adapter holds (a geoset, a bone, an
+//   emitter), and its Mtl* may go with it;
+// - an added node, or an undo / redo (which is how a deleted node comes back),
+//   is something the preview has not collected yet.
+static void OnSceneNodesChanged(void* /*param*/, NotifyInfo* /*info*/) {
+    if (g_running && !g_rebuilding)
+        g_sceneStale = true;
+}
+
 static void EnsureSceneNotificationsRegistered() {
     if (g_notificationsRegistered)
         return;
@@ -295,6 +345,13 @@ static void EnsureSceneNotificationsRegistered() {
     RegisterNotification(OnMaxSceneEvent, nullptr, NOTIFY_FILE_PRE_OPEN);
     RegisterNotification(OnMaxSceneEvent, nullptr, NOTIFY_FILE_PRE_MERGE);
     RegisterNotification(OnMaxSceneEvent, nullptr, NOTIFY_SYSTEM_SHUTDOWN);
+    RegisterNotification(OnImportEvent, nullptr, NOTIFY_PRE_IMPORT);
+    RegisterNotification(OnImportEvent, nullptr, NOTIFY_POST_IMPORT);
+    RegisterNotification(OnImportEvent, nullptr, NOTIFY_IMPORT_FAILED);
+    RegisterNotification(OnSceneNodesChanged, nullptr, NOTIFY_SCENE_PRE_DELETED_NODE);
+    RegisterNotification(OnSceneNodesChanged, nullptr, NOTIFY_SCENE_ADDED_NODE);
+    RegisterNotification(OnSceneNodesChanged, nullptr, NOTIFY_SCENE_UNDO);
+    RegisterNotification(OnSceneNodesChanged, nullptr, NOTIFY_SCENE_REDO);
 }
 
 // ============================================================================
@@ -540,6 +597,9 @@ static bool WhiteoutFlakesRebuild() {
 
     auto start = std::chrono::high_resolution_clock::now();
     g_rebuilding = true;
+    // Everything below re-collects from the live scene, so whatever made the
+    // old pointers stale is answered by this pass.
+    g_sceneStale = false;
     // Park the render thread: the reap below and the spawn that follows both
     // mutate the actor map RenderFrame walks every frame.
     g_renderWindow->SuspendRendering();
@@ -608,6 +668,18 @@ static UINT_PTR g_syncTimerId = 0;
 static void CALLBACK ViewportSyncTimer(HWND, UINT, UINT_PTR, DWORD) {
     if (!g_running || g_rebuilding || !g_renderWindow || !g_renderWindow->IsOpen())
         return;
+
+    // An import, an added / deleted node or an undo / redo invalidated the
+    // collected scene. Wait for
+    // the import to finish, then resync on its own tick — that both drops the
+    // dangling pointers and shows the newly imported model.
+    if (g_sceneStale) {
+        if (g_importInProgress)
+            return;
+        if (WhiteoutFlakesRebuild())
+            RefreshSequencesFromMaxScript();
+        return;
+    }
 
     // The View menu's Art Tier pick: write it onto the scene through the same
     // MaxScript writer the Settings dialog and the importer use, then rebuild,
@@ -704,6 +776,7 @@ static void WhiteoutFlakesCleanup() {
     g_timelineSequences.clear();
     g_publishedSequenceIdx = -2;
     g_rebuilding = false;
+    g_sceneStale = false;
     mprintf(_M("WhiteoutDex: === STOPPED ===\n"));
 }
 
@@ -1140,6 +1213,9 @@ def_visible_primitive(WhiteoutFlakesRefreshMaterials, "WhiteoutFlakesRefreshMate
 Value* WhiteoutFlakesRefreshMaterials_cf(Value** /*arg_list*/, i32 count) {
     check_arg_count(WhiteoutFlakesRefreshMaterials, 0, count);
     if (!g_running || !g_renderer || !g_adapter || !g_actor)
+        return &false_value;
+    // Can be called by a script mid-import; the pending resync re-reads them.
+    if (g_sceneStale)
         return &false_value;
 
     auto result = g_adapter->RefreshMaterials();

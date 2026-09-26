@@ -676,6 +676,9 @@ INode* createMeshNode(const ir::Mesh& irMesh, Interface* gi) {
     // Only written when set, so plain meshes keep a clean User Defined box.
     if (irMesh.selectionGroup != 0)
         node->SetUserPropInt(_T("Wc3SelectionGroup"), static_cast<int>(irMesh.selectionGroup));
+    // Object Settings' "Unselectable" checkbox reads and writes this (0 / 1).
+    if (irMesh.unselectable)
+        node->SetUserPropInt(_T("Unselectable"), 1);
 
     return node;
 }
@@ -799,13 +802,88 @@ bool applySkinModifier(INode* meshNode, const ir::Mesh& irMesh,
 // ── Animation key insertion ─────────────────────────────────
 // Matches WhiteoutDexSceneRebuilder.ms animation import logic.
 
-// Bezier constant: (3 * frameRate) / ticksPerFrame
-// At 30fps: 3*30/160 = 0.5625.  Converts raw MDX tangent offsets
-// into the slope form that Max's bezier controllers expect.
-float getBezierConstant() {
-    int tpf = GetTicksPerFrame();
-    float fps = 4800.0f / static_cast<float>(tpf);
-    return (3.0f * fps) / static_cast<float>(tpf);
+// Tangents of key i of an MDX Bezier or Hermite track on a Max bezier key
+// (float, Point3 or scale).
+//
+// The MDX Bezier segment from key a to key b is the cubic with control points
+// a.value, a.outTangent, b.inTangent, b.value, evenly spaced in time (what
+// the game and mdx-m3-viewer interpolate). A Hermite segment is the same
+// cubic with control points a.value + a.outTangent/3 and b.value -
+// b.inTangent/3: its tangents are derivatives. A Max bezier key stores each
+// tangent as a slope in value per tick, and its handle reaches the given
+// fraction of the way to the neighbouring key (istdplug.h, IBezPoint3Key;
+// MAXScript Help, "Bezier Controller Keys"). Both handles sit at
+// value + tangent * length * dt, the in handle too (measured in Max 2027: a
+// curve sampled per frame fits these control points to 1e-8). With handles a
+// third long, the slopes below put them exactly on those control points. The
+// in and out handles are unlocked (BEZKEY_*BROKEN): an MDX key's two
+// tangents differ.
+//
+// Keys without tangents are the sequence boundary keys the importer adds;
+// the game holds the value there, so they and the sides facing them are flat.
+static void prepareBezierHandles(IBezFloatKey& key)
+{
+    SetTangentLock(key.flags, 0, FALSE);
+    key.inLength = key.outLength = 1.0f / 3.0f;
+}
+
+template <class Key>   // IBezPoint3Key, IBezScaleKey
+static void prepareBezierHandles(Key& key)
+{
+    for (int axis = 0; axis < 3; ++axis) SetTangentLock(key.flags, axis, FALSE);
+    key.inLength = key.outLength = Point3(1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f);
+}
+
+template <class Key, class T>
+static void setMdxBezierTangents(Key& key, const std::vector<ir::Keyframe<T>>& keys,
+                                 int i, bool hermite)
+{
+    const auto& kf = keys[i];
+    const int n = static_cast<int>(keys.size());
+    prepareBezierHandles(key);
+
+    // Tangent types go through a variable: SetInTanType/SetOutTanType shift
+    // their argument unparenthesized, which would split a ?: expression.
+    const bool inCurve = kf.hasTangents && i > 0 && keys[i - 1].hasTangents;
+    const int inType = inCurve ? BEZKEY_USER : BEZKEY_FLAT;
+    SetInTanType(key.flags, inType);
+    if (inCurve) {
+        const float dt = static_cast<float>(kf.time - keys[i - 1].time);
+        if (dt > 0.0f) key.intan = hermite ? kf.inTangent * (-1.0f / dt)
+                                           : (kf.inTangent - kf.value) * (3.0f / dt);
+    }
+
+    const bool outCurve = kf.hasTangents && i + 1 < n && keys[i + 1].hasTangents;
+    const int outType = outCurve ? BEZKEY_USER : BEZKEY_FLAT;
+    SetOutTanType(key.flags, outType);
+    if (outCurve) {
+        const float dt = static_cast<float>(keys[i + 1].time - kf.time);
+        if (dt > 0.0f) key.outtan = hermite ? kf.outTangent * (1.0f / dt)
+                                             : (kf.outTangent - kf.value) * (3.0f / dt);
+    }
+}
+
+// A flat key (sequence stub): holds its value, like the game does there.
+template <class Key>
+static void setFlatBezierKey(Key& key)
+{
+    prepareBezierHandles(key);
+    SetInTanType(key.flags, BEZKEY_FLAT);
+    SetOutTanType(key.flags, BEZKEY_FLAT);
+}
+
+// Adds a rest value to a track's keys. Bezier tangents are control points and
+// move with the value; Hermite tangents are derivatives and do not.
+static void offsetTrack(ir::Vec3Track& track, const Point3& delta)
+{
+    const bool bezier = (track.interpolation == ir::InterpolationType::Bezier);
+    for (auto& k : track.keys) {
+        k.value += delta;
+        if (bezier && k.hasTangents) {
+            k.inTangent += delta;
+            k.outTangent += delta;
+        }
+    }
 }
 
 // ── Sequence boundary key insertion ─────────────────────────
@@ -879,8 +957,7 @@ void insertSequenceBoundaryKeys(ir::Track<T>& track,
 }
 
 void insertTranslationKeys(INode* node, const ir::Vec3Track& track,
-                           const Point3& stubVal,
-                           const std::set<TimeValue>& boundaryTimes)
+                           const Point3& stubVal)
 {
     if (track.empty()) return;
 
@@ -890,19 +967,12 @@ void insertTranslationKeys(INode* node, const ir::Vec3Track& track,
     // Replace the default Position XYZ controller with a typed Position
     // controller that matches the MDX interpolation. Position XYZ wraps
     // 3 float sub-controllers and routes SetValue per-channel, which
-    // discards the source interpolation type and tangents.
-    Class_ID cid;
-    switch (track.interpolation) {
-    case ir::InterpolationType::Linear:
-        cid = Class_ID(LININTERP_POSITION_CLASS_ID, 0);
-        break;
-    case ir::InterpolationType::Hermite:
-        cid = Class_ID(TCBINTERP_POSITION_CLASS_ID, 0);
-        break;
-    default: // Bezier and None both use Bezier Position (None = step tangents)
-        cid = Class_ID(HYBRIDINTERP_POSITION_CLASS_ID, 0);
-        break;
-    }
+    // discards the source interpolation type and tangents. Hermite goes on
+    // Bezier Position as well: TCB keys have no free tangents, bezier
+    // handles hold the file's curve exactly (setMdxBezierTangents).
+    const Class_ID cid = (track.interpolation == ir::InterpolationType::Linear)
+        ? Class_ID(LININTERP_POSITION_CLASS_ID, 0)
+        : Class_ID(HYBRIDINTERP_POSITION_CLASS_ID, 0);
 
     Control* posCtrl = static_cast<Control*>(
         CreateInstance(CTRL_POSITION_CLASS_ID, cid));
@@ -929,10 +999,8 @@ void insertTranslationKeys(INode* node, const ir::Vec3Track& track,
     // See insertRotationKeys for the full rationale.
     bool isGlobalSeq = (track.globalSequenceIndex >= 0);
     bool needStub = !isGlobalSeq && (numKeys == 0 || track.keys[0].time > 0);
-    float bezConst = getBezierConstant();
 
-    switch (track.interpolation) {
-    case ir::InterpolationType::Linear: {
+    if (track.interpolation == ir::InterpolationType::Linear) {
         if (needStub) {
             ILinPoint3Key k;
             memset(&k, 0, sizeof(k));
@@ -947,114 +1015,19 @@ void insertTranslationKeys(INode* node, const ir::Vec3Track& track,
             k.val = track.keys[i].value;
             ikc->AppendKey(&k);
         }
-        break;
-    }
-    case ir::InterpolationType::Hermite: {
-        // Reconstruct TCB tens/cont/bias from MDX Hermite tangent vectors.
-        //
-        // Max TCB tangent formulas (from SDK docs):
-        //   DS_i = K1·(P_i - P_{i-1}) + K2·(P_{i+1} - P_i)   (outgoing)
-        //   DD_i = K3·(P_i - P_{i-1}) + K4·(P_{i+1} - P_i)   (incoming)
-        // where K1..K4 are functions of t/c/b. Catmull-Rom (t=c=b=0) gives
-        // K1=K2=K3=K4=½, so DS_def = DD_def = (chord_in + chord_out)/2.
-        //
-        // 3D tangents → scalar t/c/b is underdetermined (6 equations, 3
-        // unknowns). Best-effort:
-        //   tension     ← average tangent magnitude vs Catmull-Rom default
-        //   continuity  ← signed split between incoming/outgoing magnitudes
-        //   bias        ← projection asymmetry along chord direction
-        // This recovers the most salient curve shape (stiffness, in/out
-        // skew) without inventing values that the data can't justify.
-        auto reconstructTCB = [&](int i, float& outT, float& outC, float& outB) {
-            outT = outC = outB = 0.0f;
-            const auto& kf = track.keys[i];
-            if (!kf.hasTangents) return;
-
-            Point3 chordIn  = (i > 0)
-                ? (kf.value - track.keys[i-1].value)
-                : (kf.value - stubVal);
-            Point3 chordOut = (i < numKeys - 1)
-                ? (track.keys[i+1].value - kf.value)
-                : Point3(0.0f, 0.0f, 0.0f);
-
-            Point3 catmull = (chordIn + chordOut) * 0.5f;
-            float catmullLen = catmull.Length();
-            if (catmullLen < 1e-6f) return;
-
-            // MDX hermite stores in/out tangents as control-point positions
-            // adjacent to the key value (same convention as the bezier path
-            // above). Take magnitudes — sign convention doesn't affect the
-            // ratio used for tension reconstruction.
-            Point3 inRel  = kf.inTangent  - kf.value;
-            Point3 outRel = kf.outTangent - kf.value;
-            float inLen   = inRel.Length();
-            float outLen  = outRel.Length();
-            float avgLen  = 0.5f * (inLen + outLen);
-
-            // tension: 1 - (actual / Catmull-Rom default), clamped.
-            // |tangent| > default → t < 0 (looser/longer handles)
-            // |tangent| < default → t > 0 (tighter handles)
-            float scale = avgLen / catmullLen;
-            outT = std::max(-1.0f, std::min(1.0f, 1.0f - scale));
-
-            // continuity: signed asymmetry of incoming vs outgoing magnitude.
-            // |in| == |out| → c = 0 (smooth).  |in| ≠ |out| → kink.
-            float magSum = inLen + outLen;
-            if (magSum > 1e-6f) {
-                float c = (outLen - inLen) / magSum;
-                outC = std::max(-1.0f, std::min(1.0f, c));
-            }
-
-            // bias: projection asymmetry along the chord direction.
-            // Average tangent leans toward chordOut → b > 0; toward chordIn → b < 0.
-            Point3 catmullN = catmull / catmullLen;
-            // Flip inRel so both vectors point "forward in time" (toward the
-            // outgoing chord direction); MDX inTan handle sits behind the key.
-            float dotIn  = DotProd(-inRel, catmullN);
-            float dotOut = DotProd( outRel, catmullN);
-            float dotSum = std::abs(dotIn) + std::abs(dotOut);
-            if (dotSum > 1e-6f) {
-                float b = (dotOut - dotIn) / dotSum;
-                outB = std::max(-1.0f, std::min(1.0f, b));
-            }
-        };
-
-        if (needStub) {
-            ITCBPoint3Key k;
-            memset(&k, 0, sizeof(k));
-            k.time = 0;
-            k.val = stubVal;
-            ikc->AppendKey(&k);
-        }
-        for (int i = 0; i < numKeys; ++i) {
-            ITCBPoint3Key k;
-            memset(&k, 0, sizeof(k));
-            k.time = track.keys[i].time;
-            k.val = track.keys[i].value;
-            reconstructTCB(i, k.tens, k.cont, k.bias);
-
-            // Lock TCB tangents at sequence boundaries so the curve does
-            // not bleed across sequence transitions. Matches MaxScript
-            // fixRotationTCB tension=50 (= SDK tens=1.0). Continuity stays
-            // at 0 (smooth), bias stays at 0 (no skew).
-            if (boundaryTimes.count(track.keys[i].time) > 0) {
-                k.tens = 1.0f;
-                k.cont = 0.0f;
-                k.bias = 0.0f;
-            }
-            ikc->AppendKey(&k);
-        }
-        break;
-    }
-    default: { // Bezier and None
+    } else { // Bezier, Hermite, None (step)
+        const bool step = (track.interpolation == ir::InterpolationType::None);
+        const bool hermite = (track.interpolation == ir::InterpolationType::Hermite);
         if (needStub) {
             IBezPoint3Key k;
             memset(&k, 0, sizeof(k));
             k.time = 0;
             k.val = stubVal;
-            if (track.interpolation == ir::InterpolationType::None) {
+            if (step) {
                 SetInTanType(k.flags, BEZKEY_STEP);
                 SetOutTanType(k.flags, BEZKEY_STEP);
+            } else {
+                setFlatBezierKey(k);
             }
             ikc->AppendKey(&k);
         }
@@ -1064,26 +1037,14 @@ void insertTranslationKeys(INode* node, const ir::Vec3Track& track,
             memset(&k, 0, sizeof(k));
             k.time = kf.time;
             k.val = kf.value;
-
-            if (track.interpolation == ir::InterpolationType::None) {
+            if (step) {
                 SetInTanType(k.flags, BEZKEY_STEP);
                 SetOutTanType(k.flags, BEZKEY_STEP);
-            } else if (kf.hasTangents) {
-                SetInTanType(k.flags, BEZKEY_USER);
-                SetOutTanType(k.flags, BEZKEY_USER);
-                if (i > 0) {
-                    float dt = static_cast<float>(kf.time - track.keys[i-1].time);
-                    if (dt > 0.0f) k.intan = bezConst * (kf.inTangent - kf.value) / dt;
-                }
-                if (i < numKeys - 1) {
-                    float dt = static_cast<float>(track.keys[i+1].time - kf.time);
-                    if (dt > 0.0f) k.outtan = bezConst * (kf.outTangent - kf.value) / dt;
-                }
+            } else {
+                setMdxBezierTangents(k, track.keys, i, hermite);
             }
             ikc->AppendKey(&k);
         }
-        break;
-    }
     }
 
     ikc->SortKeys();
@@ -1281,9 +1242,19 @@ void insertScaleKeys(INode* node, const ir::Vec3Track& track,
     Control* tmCtrl = node->GetTMController();
     if (!tmCtrl) return;
 
-    // Use existing scale controller + SetValue (same approach as position)
-    Control* scaleCtrl = tmCtrl->GetScaleController();
+    // A typed scale controller written through IKeyControl, like position:
+    // SetValue on the default Bezier Scale let Max pick its own tangents for
+    // every key, so Linear, DontInterp and the file's Bezier/Hermite curves
+    // all played as auto-smooth curves. Hermite sits on bezier handles.
+    const bool linear = (track.interpolation == ir::InterpolationType::Linear);
+    const Class_ID cid = linear ? Class_ID(LININTERP_SCALE_CLASS_ID, 0)
+                                : Class_ID(HYBRIDINTERP_SCALE_CLASS_ID, 0);
+    Control* scaleCtrl = static_cast<Control*>(CreateInstance(CTRL_SCALE_CLASS_ID, cid));
     if (!scaleCtrl) return;
+    tmCtrl->SetScaleController(scaleCtrl);
+
+    IKeyControl* ikc = GetKeyControlInterface(scaleCtrl);
+    if (!ikc) return;
 
     int numKeys = static_cast<int>(track.keys.size());
 
@@ -1293,52 +1264,60 @@ void insertScaleKeys(INode* node, const ir::Vec3Track& track,
     bool isGlobalSeq = (track.globalSequenceIndex >= 0);
     bool needStub = !isGlobalSeq && (numKeys == 0 || track.keys[0].time > 0);
 
-    // For gseq tracks: clear any pre-existing keys on the existing scale
-    // controller (matches rotation handling — the default scale controller
-    // may have a Frame-0 key inherited from SetNodeTM(0) that would alongside
-    // our real key cause unwanted interpolation).
-    if (isGlobalSeq) {
-        IKeyControl* ikc = GetKeyControlInterface(scaleCtrl);
-        if (ikc && ikc->GetNumKeys() > 0) {
-            ikc->SetNumKeys(0);
+    if (linear) {
+        if (needStub) {
+            ILinScaleKey k;
+            memset(&k, 0, sizeof(k));
+            k.time = 0;
+            k.val = ScaleValue(stubVal);
+            ikc->AppendKey(&k);
+        }
+        for (int i = 0; i < numKeys; ++i) {
+            ILinScaleKey k;
+            memset(&k, 0, sizeof(k));
+            k.time = track.keys[i].time;
+            k.val = ScaleValue(track.keys[i].value);
+            ikc->AppendKey(&k);
+        }
+    } else { // Bezier, Hermite, None (step)
+        const bool step = (track.interpolation == ir::InterpolationType::None);
+        const bool hermite = (track.interpolation == ir::InterpolationType::Hermite);
+        if (needStub) {
+            IBezScaleKey k;
+            memset(&k, 0, sizeof(k));
+            k.time = 0;
+            k.val = ScaleValue(stubVal);
+            if (step) {
+                SetInTanType(k.flags, BEZKEY_STEP);
+                SetOutTanType(k.flags, BEZKEY_STEP);
+            } else {
+                setFlatBezierKey(k);
+            }
+            ikc->AppendKey(&k);
+        }
+        for (int i = 0; i < numKeys; ++i) {
+            IBezScaleKey k;
+            memset(&k, 0, sizeof(k));
+            k.time = track.keys[i].time;
+            k.val = ScaleValue(track.keys[i].value);
+            if (step) {
+                SetInTanType(k.flags, BEZKEY_STEP);
+                SetOutTanType(k.flags, BEZKEY_STEP);
+            } else {
+                setMdxBezierTangents(k, track.keys, i, hermite);
+            }
+            ikc->AppendKey(&k);
         }
     }
+    ikc->SortKeys();
 
-    if (needStub) {
-        ScaleValue sv(stubVal);
-        scaleCtrl->SetValue(0, &sv, 1, CTRL_ABSOLUTE);
-    }
-
-    // Set animation keys
-    for (int i = 0; i < numKeys; ++i) {
-        ScaleValue sv(track.keys[i].value);
-        scaleCtrl->SetValue(track.keys[i].time, &sv, 1, CTRL_ABSOLUTE);
-    }
-
-    if (isGlobalSeq) {
-        // The first SetValue on a still-unkeyed controller makes Max seed an
-        // extra Frame-0 key holding the previous (bind-pose) value — the same
-        // thing Auto Key does in the UI. Position and rotation never see it
-        // because they write through IKeyControl::AppendKey; scale writes
-        // through SetValue, so the phantom has to be deleted here.
-        //
-        // On a sequence-driven track it is harmless (the Frame-0 stub lands on
-        // it anyway), but on a global-sequence track it becomes the first key
-        // of the ORT_CYCLE range. fm-zhaoyundg's head bone 'tou223' carries a
-        // single KGSC key of 0.333 at 333 ms; the phantom turned that into a
-        // 1.0 -> 0.333 cycle repeating every 10 frames, so the head pulsed
-        // between its correct size and 3x while the engine holds it at 0.333.
-        if (track.keys[0].time > 0)
-            scaleCtrl->DeleteKeyAtTime(0);
-
-        // A lone key is constant by definition, and its key range is
-        // zero-length — cycling over it is degenerate. Max's default
-        // (constant both ways) is already what the engine does.
-        if (numKeys > 1) {
-            scaleCtrl->SetORT(ORT_CONSTANT, ORT_BEFORE);
-            scaleCtrl->SetORT(ORT_CYCLE,    ORT_AFTER);
-            scaleCtrl->EnableORTs(TRUE);
-        }
+    // A lone global-sequence key is constant by definition, and its key range
+    // is zero-length — cycling over it is degenerate. Max's default (constant
+    // both ways) is already what the engine does.
+    if (isGlobalSeq && numKeys > 1) {
+        scaleCtrl->SetORT(ORT_CONSTANT, ORT_BEFORE);
+        scaleCtrl->SetORT(ORT_CYCLE,    ORT_AFTER);
+        scaleCtrl->EnableORTs(TRUE);
     }
 }
 
@@ -1376,12 +1355,11 @@ PBParam findPBParam(ReferenceTarget* target, const wchar_t* name) {
 Control* createFloatController(const ir::FloatTrack& track) {
     if (track.empty()) return nullptr;
 
-    Class_ID cid;
-    switch (track.interpolation) {
-    case ir::InterpolationType::Linear:  cid = Class_ID(LININTERP_FLOAT_CLASS_ID, 0); break;
-    case ir::InterpolationType::Hermite: cid = Class_ID(TCBINTERP_FLOAT_CLASS_ID, 0); break;
-    default:                             cid = Class_ID(HYBRIDINTERP_FLOAT_CLASS_ID, 0); break;
-    }
+    // Hermite goes on a bezier controller too: a TCB key has no free
+    // tangents, so only bezier handles can hold the file's curve exactly.
+    const Class_ID cid = (track.interpolation == ir::InterpolationType::Linear)
+        ? Class_ID(LININTERP_FLOAT_CLASS_ID, 0)
+        : Class_ID(HYBRIDINTERP_FLOAT_CLASS_ID, 0);
 
     Control* ctrl = static_cast<Control*>(CreateInstance(CTRL_FLOAT_CLASS_ID, cid));
     if (!ctrl) return nullptr;
@@ -1389,7 +1367,6 @@ Control* createFloatController(const ir::FloatTrack& track) {
     IKeyControl* ikc = GetKeyControlInterface(ctrl);
     if (!ikc) { ctrl->DeleteThis(); return nullptr; }
 
-    float bezConst = getBezierConstant();
     int numKeys = static_cast<int>(track.keys.size());
 
     for (int i = 0; i < numKeys; ++i) {
@@ -1403,15 +1380,7 @@ Control* createFloatController(const ir::FloatTrack& track) {
             ikc->AppendKey(&key);
             break;
         }
-        case ir::InterpolationType::Hermite: {
-            ITCBFloatKey key;
-            memset(&key, 0, sizeof(key));
-            key.time = kf.time;
-            key.val = kf.value;
-            ikc->AppendKey(&key);
-            break;
-        }
-        default: { // Bezier (also used for None/DontInterp on float params)
+        default: { // Bezier and Hermite; step-keyed for None (DontInterp)
             IBezFloatKey key;
             memset(&key, 0, sizeof(key));
             key.time = kf.time;
@@ -1420,44 +1389,9 @@ Control* createFloatController(const ir::FloatTrack& track) {
             if (track.interpolation == ir::InterpolationType::None) {
                 SetInTanType(key.flags, BEZKEY_STEP);
                 SetOutTanType(key.flags, BEZKEY_STEP);
-            } else if (kf.hasTangents) {
-                // V3 strategy: when adjacent keys hold the same value (e.g. an
-                // opacity that fades to 0, holds at 0, then fades back up), use
-                // BEZKEY_FLAT on the matching side so the curve plateaus instead
-                // of overshooting through Auto-Smooth or following extreme MDX
-                // tangents into negative territory. Only use BEZKEY_USER (with
-                // the bezConst slope) where the value actually changes.
-                //
-                // Empirically verified against box_export_2.mdx — without this,
-                // the imported opacity curve overshoots both above 100 and below
-                // 0 between equal-value keys (variant test V1 "CURRENT" produced
-                // visible waves; V3 "FLAT_AT_REPEATS" produces a clean plateau).
-                constexpr float kEpsilon = 1e-4f;
-                bool prevSameValue = (i > 0)
-                    && (fabsf(track.keys[i-1].value - kf.value) < kEpsilon);
-                bool nextSameValue = (i < numKeys - 1)
-                    && (fabsf(track.keys[i+1].value - kf.value) < kEpsilon);
-
-                if (prevSameValue) {
-                    SetInTanType(key.flags, BEZKEY_FLAT);
-                    // intan stays 0 from memset
-                } else {
-                    SetInTanType(key.flags, BEZKEY_USER);
-                    if (i > 0) {
-                        float dt = static_cast<float>(kf.time - track.keys[i-1].time);
-                        if (dt > 0.0f) key.intan = bezConst * (kf.inTangent - kf.value) / dt;
-                    }
-                }
-                if (nextSameValue) {
-                    SetOutTanType(key.flags, BEZKEY_FLAT);
-                    // outtan stays 0 from memset
-                } else {
-                    SetOutTanType(key.flags, BEZKEY_USER);
-                    if (i < numKeys - 1) {
-                        float dt = static_cast<float>(track.keys[i+1].time - kf.time);
-                        if (dt > 0.0f) key.outtan = bezConst * (kf.outTangent - kf.value) / dt;
-                    }
-                }
+            } else {
+                setMdxBezierTangents(key, track.keys, i,
+                                     track.interpolation == ir::InterpolationType::Hermite);
             }
             ikc->AppendKey(&key);
             break;
@@ -1477,8 +1411,8 @@ Control* createFloatController(const ir::FloatTrack& track) {
 Control* createColorController(const ir::ColorTrack& track) {
     if (track.empty()) return nullptr;
 
-    // All color interpolation types use Bezier Color (HYBRIDINTERP_COLOR_CLASS_ID).
-    // Max has no separate Linear or TCB color controller classes.
+    // All color interpolation types use Bezier Color (HYBRIDINTERP_COLOR_CLASS_ID):
+    // Max has no Linear color controller, and TCB keys have no free tangents.
     Control* ctrl = static_cast<Control*>(
         CreateInstance(CTRL_POINT3_CLASS_ID, Class_ID(HYBRIDINTERP_COLOR_CLASS_ID, 0)));
     if (!ctrl) return nullptr;
@@ -1486,73 +1420,38 @@ Control* createColorController(const ir::ColorTrack& track) {
     IKeyControl* ikc = GetKeyControlInterface(ctrl);
     if (!ikc) { ctrl->DeleteThis(); return nullptr; }
 
-    float bezConst = getBezierConstant();
-    int numKeys = static_cast<int>(track.keys.size());
+    // Colour keys as Point3 keyframes, so they share the bezier conversion.
+    std::vector<ir::Keyframe<Point3>> keys;
+    keys.reserve(track.keys.size());
+    for (const auto& kf : track.keys) {
+        ir::Keyframe<Point3> k;
+        k.time = kf.time;
+        k.value = Point3(kf.value.r, kf.value.g, kf.value.b);
+        k.inTangent = Point3(kf.inTangent.r, kf.inTangent.g, kf.inTangent.b);
+        k.outTangent = Point3(kf.outTangent.r, kf.outTangent.g, kf.outTangent.b);
+        k.hasTangents = kf.hasTangents;
+        keys.push_back(k);
+    }
+    const bool hermite = (track.interpolation == ir::InterpolationType::Hermite);
 
-    for (int i = 0; i < numKeys; ++i) {
-        const auto& kf = track.keys[i];
-        Point3 val(kf.value.r, kf.value.g, kf.value.b);
+    for (int i = 0; i < static_cast<int>(keys.size()); ++i) {
+        IBezPoint3Key key;
+        memset(&key, 0, sizeof(key));
+        key.time = keys[i].time;
+        key.val = keys[i].value;
 
-        if (track.interpolation == ir::InterpolationType::Hermite) {
-            ITCBPoint3Key key;
-            memset(&key, 0, sizeof(key));
-            key.time = kf.time;
-            key.val = val;
-            ikc->AppendKey(&key);
-        } else {
-            // Bezier, Linear, None all use IBezPoint3Key
-            IBezPoint3Key key;
-            memset(&key, 0, sizeof(key));
-            key.time = kf.time;
-            key.val = val;
-
-            if (track.interpolation == ir::InterpolationType::None) {
-                SetInTanType(key.flags, BEZKEY_STEP);
-                SetOutTanType(key.flags, BEZKEY_STEP);
-            } else if (track.interpolation == ir::InterpolationType::Linear) {
-                // No linear colour controller exists; LINEAR tangents play the
-                // same and tell the exporter the track was Linear.
-                SetInTanType(key.flags, BEZKEY_LINEAR);
-                SetOutTanType(key.flags, BEZKEY_LINEAR);
-            } else if (kf.hasTangents && track.interpolation == ir::InterpolationType::Bezier) {
-                // V3 strategy: BEZKEY_FLAT on the side with a same-value neighbour
-                // (per RGB component, but we treat the whole color as stable only
-                // when ALL three components match, otherwise fall through to USER).
-                // See createFloatController for the rationale.
-                constexpr float kEpsilon = 1e-4f;
-                auto sameColor = [&](const Color& a, const Color& b) {
-                    return fabsf(a.r - b.r) < kEpsilon
-                        && fabsf(a.g - b.g) < kEpsilon
-                        && fabsf(a.b - b.b) < kEpsilon;
-                };
-                bool prevSameValue = (i > 0)
-                    && sameColor(track.keys[i-1].value, kf.value);
-                bool nextSameValue = (i < numKeys - 1)
-                    && sameColor(track.keys[i+1].value, kf.value);
-                Point3 inT(kf.inTangent.r, kf.inTangent.g, kf.inTangent.b);
-                Point3 outT(kf.outTangent.r, kf.outTangent.g, kf.outTangent.b);
-
-                if (prevSameValue) {
-                    SetInTanType(key.flags, BEZKEY_FLAT);
-                } else {
-                    SetInTanType(key.flags, BEZKEY_USER);
-                    if (i > 0) {
-                        float dt = static_cast<float>(kf.time - track.keys[i-1].time);
-                        if (dt > 0.0f) key.intan = bezConst * (inT - val) / dt;
-                    }
-                }
-                if (nextSameValue) {
-                    SetOutTanType(key.flags, BEZKEY_FLAT);
-                } else {
-                    SetOutTanType(key.flags, BEZKEY_USER);
-                    if (i < numKeys - 1) {
-                        float dt = static_cast<float>(track.keys[i+1].time - kf.time);
-                        if (dt > 0.0f) key.outtan = bezConst * (outT - val) / dt;
-                    }
-                }
-            }
-            ikc->AppendKey(&key);
+        if (track.interpolation == ir::InterpolationType::None) {
+            SetInTanType(key.flags, BEZKEY_STEP);
+            SetOutTanType(key.flags, BEZKEY_STEP);
+        } else if (track.interpolation == ir::InterpolationType::Linear) {
+            // No linear colour controller exists; LINEAR tangents play the
+            // same and tell the exporter the track was Linear.
+            SetInTanType(key.flags, BEZKEY_LINEAR);
+            SetOutTanType(key.flags, BEZKEY_LINEAR);
+        } else { // Bezier, Hermite: the file's curve on bezier handles
+            setMdxBezierTangents(key, keys, i, hermite);
         }
+        ikc->AppendKey(&key);
     }
     ikc->SortKeys();
 
@@ -1993,44 +1892,10 @@ void insertVisibilityKeys(INode* node, const ir::FloatTrack& track,
         ikc->SortKeys();
         break;
     }
-    case ir::InterpolationType::Hermite: {
-        visCtrl = static_cast<Control*>(
-            CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(TCBINTERP_FLOAT_CLASS_ID, 0)));
-        if (!visCtrl) return;
-        node->SetVisController(visCtrl);
-
-        IKeyControl* ikc = GetKeyControlInterface(visCtrl);
-        if (!ikc) return;
-
-        if (!hasFrameZero) {
-            ITCBFloatKey stubKey;
-            memset(&stubKey, 0, sizeof(stubKey));
-            stubKey.time = 0;
-            stubKey.val = track.keys[0].value;
-            stubKey.tens = 0.0f;
-            stubKey.cont = 0.0f;
-            stubKey.bias = 0.0f;
-            stubKey.easeIn = 0.0f;
-            stubKey.easeOut = 0.0f;
-            ikc->AppendKey(&stubKey);
-        }
-
-        for (int i = 0; i < numKeys; ++i) {
-            ITCBFloatKey key;
-            memset(&key, 0, sizeof(key));
-            key.time = track.keys[i].time;
-            key.val = track.keys[i].value;
-            key.tens = 0.0f;
-            key.cont = 0.0f;
-            key.bias = 0.0f;
-            key.easeIn = 0.0f;
-            key.easeOut = 0.0f;
-            ikc->AppendKey(&key);
-        }
-        ikc->SortKeys();
-        break;
-    }
+    case ir::InterpolationType::Hermite:
     case ir::InterpolationType::Bezier: {
+        // The file's curve on bezier handles (setMdxBezierTangents); Hermite
+        // too, since TCB keys have no free tangents.
         visCtrl = static_cast<Control*>(
             CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(HYBRIDINTERP_FLOAT_CLASS_ID, 0)));
         if (!visCtrl) return;
@@ -2044,50 +1909,17 @@ void insertVisibilityKeys(INode* node, const ir::FloatTrack& track,
             memset(&stubKey, 0, sizeof(stubKey));
             stubKey.time = 0;
             stubKey.val = track.keys[0].value;
-            stubKey.intan = 0.0f;
-            stubKey.outtan = 0.0f;
+            setFlatBezierKey(stubKey);
             ikc->AppendKey(&stubKey);
         }
 
-        float bezConst = getBezierConstant();
-
+        const bool hermite = (track.interpolation == ir::InterpolationType::Hermite);
         for (int i = 0; i < numKeys; ++i) {
             IBezFloatKey key;
             memset(&key, 0, sizeof(key));
             key.time = track.keys[i].time;
             key.val = track.keys[i].value;
-
-            // V3 strategy: BEZKEY_FLAT on the side with a same-value neighbour,
-            // BEZKEY_USER (with bezConst slope) elsewhere. See createFloatController
-            // for rationale. Visibility tracks frequently hold at 0 or 1 between
-            // keys, so the flat handling is even more important here.
-            constexpr float kEpsilon = 1e-4f;
-            bool prevSameValue = (i > 0)
-                && (fabsf(track.keys[i-1].value - key.val) < kEpsilon);
-            bool nextSameValue = (i < numKeys - 1)
-                && (fabsf(track.keys[i+1].value - key.val) < kEpsilon);
-
-            if (prevSameValue) {
-                SetInTanType(key.flags, BEZKEY_FLAT);
-            } else {
-                SetInTanType(key.flags, BEZKEY_USER);
-                if (track.keys[i].hasTangents && i > 0) {
-                    float dt = static_cast<float>(track.keys[i].time - track.keys[i-1].time);
-                    if (dt > 0.0f)
-                        key.intan = bezConst * (track.keys[i].inTangent - key.val) / dt;
-                }
-            }
-            if (nextSameValue) {
-                SetOutTanType(key.flags, BEZKEY_FLAT);
-            } else {
-                SetOutTanType(key.flags, BEZKEY_USER);
-                if (track.keys[i].hasTangents && i < numKeys - 1) {
-                    float dt = static_cast<float>(track.keys[i+1].time - track.keys[i].time);
-                    if (dt > 0.0f)
-                        key.outtan = bezConst * (track.keys[i].outTangent - key.val) / dt;
-                }
-            }
-
+            setMdxBezierTangents(key, track.keys, i, hermite);
             ikc->AppendKey(&key);
         }
         ikc->SortKeys();
@@ -2514,17 +2346,41 @@ void remapTimeline(ir::IRModel& irModel) {
     for (const auto& ga : irModel.geosetAnims)
         addIfValid(ga.alphaTrackIndex);
 
+    // Layer alpha (KMTA) and texture animation (KTAT/KTAR/KTAS) tracks: like
+    // bone tracks, a sequence without keys plays the track's default, not
+    // the previous sequence's last value (mdx-m3-viewer sd.ts: KMTA 1, KTAT
+    // 0, KTAR identity, KTAS 1). Holding would show, say, the last frame of a
+    // sprite sheet keyed only in Attack for the rest of the sequences.
+    std::set<int32_t> layerAlphaTracks, uvTranslationTracks, uvRotationTracks, uvScaleTracks;
+    for (const auto& mat : irModel.materials)
+        for (const auto& layer : mat.layers)
+            if (layer.alphaTrackIndex >= 0) layerAlphaTracks.insert(layer.alphaTrackIndex);
+    for (const auto& ta : irModel.textureAnimations) {
+        if (ta.translationTrackIndex >= 0) uvTranslationTracks.insert(ta.translationTrackIndex);
+        if (ta.rotationTrackIndex >= 0)    uvRotationTracks.insert(ta.rotationTrackIndex);
+        if (ta.scaleTrackIndex >= 0)       uvScaleTracks.insert(ta.scaleTrackIndex);
+    }
+
     for (size_t i = 0; i < irModel.floatTracks.size(); ++i) {
-        if (visTrackIndices.count(static_cast<int32_t>(i))) {
+        const int32_t idx = static_cast<int32_t>(i);
+        if (visTrackIndices.count(idx)) {
             remapVisibilityTrack(irModel.floatTracks[i], ranges);
         } else {
-            remapTrackKeys(irModel.floatTracks[i], ranges, 1.0f, true);
+            remapTrackKeys(irModel.floatTracks[i], ranges, 1.0f, true,
+                           layerAlphaTracks.count(idx) > 0);
         }
     }
-    for (auto& t : irModel.vec3Tracks)
-        remapTrackKeys(t, ranges, Point3(0.0f, 0.0f, 0.0f), false);
-    for (auto& t : irModel.quatTracks)
-        remapTrackKeys(t, ranges, Quat(0.0f, 0.0f, 0.0f, 1.0f), false);
+    for (size_t i = 0; i < irModel.vec3Tracks.size(); ++i) {
+        const int32_t idx = static_cast<int32_t>(i);
+        if (uvScaleTracks.count(idx))
+            remapTrackKeys(irModel.vec3Tracks[i], ranges, Point3(1.0f, 1.0f, 1.0f), false, true);
+        else
+            remapTrackKeys(irModel.vec3Tracks[i], ranges, Point3(0.0f, 0.0f, 0.0f), false,
+                           uvTranslationTracks.count(idx) > 0);
+    }
+    for (size_t i = 0; i < irModel.quatTracks.size(); ++i)
+        remapTrackKeys(irModel.quatTracks[i], ranges, Quat(0.0f, 0.0f, 0.0f, 1.0f), false,
+                       uvRotationTracks.count(static_cast<int32_t>(i)) > 0);
     for (auto& t : irModel.colorTracks)
         remapTrackKeys(t, ranges, Color(1.0f, 1.0f, 1.0f), false);
     for (auto& t : irModel.intTracks)
@@ -2636,21 +2492,50 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     // fall back to the parser's value (e.g. for .mdl text files).
     opts.detectedVersion = (trueMdxVersion != 0) ? trueMdxVersion : mdxModel.version;
 
-    // 3. Show import options dialog (unless suppressed)
+    // 3. Show import options dialog (unless suppressed). After Import it stays
+    // open and shows the progress of the steps below; without a dialog
+    // (#noPrompt) the progress calls do nothing.
+    ImportDialog dialog(hInstance, gi->GetMAXHWnd());
     if (!suppressPrompts) {
         // Use the TRUE MDX version (pre-upgrade) so v800/v1000/v1100
         // models get the Classic MPQ dialog and only true v1200+ models
         // get the Reforged CASC dialog. mdxModel.version cannot be used
         // here because the parser auto-upgrades it to 1200.
-        bool isReforged = (opts.detectedVersion >= 900);
-        bool hasCornEmitters = !mdxModel.cornEmitters.empty();
-        if (!showImportDialog(hInstance, gi->GetMAXHWnd(), opts, isReforged, hasCornEmitters))
+        // The dialog also shows what the file contains and disables every
+        // category it does not.
+        ImportFileInfo info;
+        info.path = name;
+        info.version = opts.detectedVersion;
+        info.isReforged = (opts.detectedVersion >= 900);
+        info.geosets = static_cast<int>(mdxModel.geosets.size());
+        info.materials = static_cast<int>(mdxModel.materials.size());
+        info.textures = static_cast<int>(mdxModel.textures.size());
+        info.sequences = static_cast<int>(mdxModel.sequences.size());
+        info.bones = static_cast<int>(mdxModel.bones.size());
+        info.helpers = static_cast<int>(mdxModel.helpers.size());
+        info.lights = static_cast<int>(mdxModel.lights.size());
+        info.attachments = static_cast<int>(mdxModel.attachments.size());
+        info.particleEmitters1 = static_cast<int>(mdxModel.particleEmitters.size());
+        info.particleEmitters2 = static_cast<int>(mdxModel.particleEmitters2.size());
+        info.ribbonEmitters = static_cast<int>(mdxModel.ribbonEmitters.size());
+        info.collisionShapes = static_cast<int>(mdxModel.collisionShapes.size());
+        info.eventObjects = static_cast<int>(mdxModel.eventObjects.size());
+        info.cameras = static_cast<int>(mdxModel.cameras.size());
+        info.cornEmitters = static_cast<int>(mdxModel.cornEmitters.size());
+        info.faceEffects = static_cast<int>(mdxModel.faceEffects.size());
+        if (!dialog.run(opts, info))
             return IMPEXP_CANCEL;
+    } else {
+        // Scripted imports (#noPrompt) have always run with the All preset:
+        // FastSettings was never read from the INI before, so keep them there
+        // now that the loader reads it for the dialog.
+        opts.core.preset = ir::CoreImportOptions::Preset::All;
     }
 
     applyFastPreset(opts);
 
     // 4. Disassemble: mdx::Model → ir::IRModel
+    dialog.step(ImportStep::Preparing);
     mdx_disasm::MdxModelDisassembler disassembler;
     ir::IRModel irModel = disassembler.disassemble(mdxModel, opts);
 
@@ -2700,6 +2585,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     }
 
     // 7. Build skeleton (bones and helpers)
+    dialog.step(ImportStep::Skeleton);
     // SuspendAnimate prevents auto-keying during SetNodeTM + AttachChild
     SuspendAnimate();
     AnimateOff();
@@ -2743,7 +2629,9 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             }
         }
 
+        size_t bonesDone = 0;
         for (const auto& bone : irModel.bones) {
+            dialog.items(bonesDone++, irModel.bones.size());
             if (bone.nodeIndex < 0 || bone.nodeIndex >= static_cast<int32_t>(mustImport.size()))
                 continue;
             if (!mustImport[bone.nodeIndex]) continue;
@@ -2881,10 +2769,12 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     dumpBoneState(boneNodes, "after-create");
 
     // 8. Build meshes
+    dialog.step(ImportStep::Meshes);
     std::vector<INode*> meshNodes;
     meshNodes.reserve(irModel.meshes.size());
 
     for (const auto& irMesh : irModel.meshes) {
+        dialog.items(meshNodes.size(), irModel.meshes.size());
         INode* meshNode = createMeshNode(irMesh, gi);
         meshNodes.push_back(meshNode);  // may be nullptr for empty meshes
     }
@@ -2960,9 +2850,12 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     // the archive handles. PE1 model files are parsed recursively to
     // extract their textures and any nested PE1 model references (with
     // cycle detection).
+    dialog.step(ImportStep::Textures);
     if (resolver) {
         // Resolve all textures from the main model.
+        size_t texDone = 0;
         for (const auto& irTex : irModel.textures) {
+            dialog.items(texDone++, irModel.textures.size());
             if (!irTex.filePath.empty()) {
                 std::wstring wpath(irTex.filePath.begin(), irTex.filePath.end());
                 resolver->Resolve(wpath);
@@ -3072,6 +2965,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     }
 
     // 10. Build materials and assign to meshes
+    dialog.step(ImportStep::Materials);
     std::vector<Mtl*> materials;
     if (opts.core.importMaterials) {
         mdx_scene::Wc3MaterialBuilder matBuilder;
@@ -3089,6 +2983,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     }
 
     // 11. Build format-specific scene objects (scripted plugins)
+    dialog.step(ImportStep::Objects);
     std::vector<mdx_scene::Wc3CameraBuilder::CameraNodePair> cameraPairs;
     if (opts.core.importObjects) {
         if (opts.core.importLights) {
@@ -3154,6 +3049,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     }
 
     // 12. Apply skin modifiers BEFORE animation (MaxScript order)
+    dialog.step(ImportStep::Skin);
     ILOG << "\n==== Skinning (before animation) ====\n";
 
     // DEBUG: dump bones RIGHT BEFORE skin is applied — these are the transforms
@@ -3164,6 +3060,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
     if (opts.core.importSkinning) {
         for (size_t mi = 0; mi < irModel.meshes.size(); ++mi) {
+            dialog.items(mi, irModel.meshes.size());
             if (meshNodes[mi])
                 applySkinModifier(meshNodes[mi], irModel.meshes[mi], nodeMap, gi);
         }
@@ -3181,20 +3078,13 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     // SuspendAnimate()/AnimateOn() is required for SetValue() to create keys.
     // SDK docs: "the animate button should be turned on"
     //
+    dialog.step(ImportStep::Animations);
     ILOG << "\n==== Animation Keys ====\n";
     if (opts.core.importAnimations) {
         SuspendAnimate();
         AnimateOn();  // ← CRITICAL: SetValue needs this to create keys
 
         const Quat stubRot(0.0f, 0.0f, 0.0f, 1.0f);
-
-        // Sequence boundary times — used for synthetic boundary key insertion
-        // and TCB tension lock at sequence borders. See insertSequenceBoundaryKeys.
-        std::set<TimeValue> boundaryTimes;
-        for (const auto& seq : irModel.sequences) {
-            boundaryTimes.insert(seq.startTime);
-            boundaryTimes.insert(seq.endTime);
-        }
 
         // Read local positions from actual Max node transforms after hierarchy
         // setup.  This matches MaxScript's "in coordsys parent subPos = obj.pos"
@@ -3215,13 +3105,15 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             }
         }
 
+        size_t animsDone = 0;
         for (const auto& na : irModel.nodeAnimations) {
+            dialog.items(animsDone++, irModel.nodeAnimations.size());
             if (na.nodeIndex < 0 || na.nodeIndex >= static_cast<int32_t>(nodeMap.size()))
                 continue;
             INode* node = nodeMap[na.nodeIndex];
             if (!node) continue;
 
-            Point3 localPos = (na.nodeIndex < static_cast<int32_t>(nodeLocalPos.size()))
+            Point3 localPos =(na.nodeIndex < static_cast<int32_t>(nodeLocalPos.size()))
                 ? nodeLocalPos[na.nodeIndex] : Point3(0,0,0);
 
             ILOG << "  ANIM node[" << na.nodeIndex << "]"
@@ -3282,15 +3174,9 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             // Translation: add localPos to every key value + stub
             if (opts.core.importTranslation && !na.translation.empty()) {
                 ir::Vec3Track adjustedTrack = na.translation;
-                for (auto& k : adjustedTrack.keys) {
-                    k.value += localPos;
-                    if (k.hasTangents) {
-                        k.inTangent += localPos;
-                        k.outTangent += localPos;
-                    }
-                }
+                offsetTrack(adjustedTrack, localPos);
                 insertSequenceBoundaryKeys(adjustedTrack, irModel.sequences);
-                insertTranslationKeys(node, adjustedTrack, localPos, boundaryTimes);
+                insertTranslationKeys(node, adjustedTrack, localPos);
             }
 
             // Scale: write raw keys
@@ -3314,17 +3200,15 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 // MDX camera Translation tracks are offsets from rest Position
                 // (same convention as node Translation tracks relative to pivot).
                 // Convert to absolute positions for Max by adding the rest position.
-                // Tangents are derivatives — they must NOT be offset.
                 if (opts.core.importTranslation && irCam.positionTrackIndex >= 0 &&
                     irCam.positionTrackIndex < static_cast<int32_t>(irModel.vec3Tracks.size())) {
                     const auto& track = irModel.vec3Tracks[irCam.positionTrackIndex];
                     if (!track.empty()) {
                         ir::Vec3Track adjustedTrack = track;
                         Point3 startPos = irCam.position;
-                        for (auto& k : adjustedTrack.keys)
-                            k.value += startPos;
+                        offsetTrack(adjustedTrack, startPos);
                         insertSequenceBoundaryKeys(adjustedTrack, irModel.sequences);
-                        insertTranslationKeys(pair.cameraNode, adjustedTrack, startPos, boundaryTimes);
+                        insertTranslationKeys(pair.cameraNode, adjustedTrack, startPos);
                         ILOG << "  cam[" << ci << "] KCTR keys=" << track.keys.size() << "\n";
                     }
                 }
@@ -3337,10 +3221,9 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                     if (!track.empty()) {
                         ir::Vec3Track adjustedTrack = track;
                         Point3 startPos = irCam.targetPosition;
-                        for (auto& k : adjustedTrack.keys)
-                            k.value += startPos;
+                        offsetTrack(adjustedTrack, startPos);
                         insertSequenceBoundaryKeys(adjustedTrack, irModel.sequences);
-                        insertTranslationKeys(pair.targetNode, adjustedTrack, startPos, boundaryTimes);
+                        insertTranslationKeys(pair.targetNode, adjustedTrack, startPos);
                         ILOG << "  cam[" << ci << "] KTTR keys=" << track.keys.size() << "\n";
                     }
                 }
@@ -3497,7 +3380,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                                 switch (srcTrack.interpolation) {
                                 case ir::InterpolationType::None:    ctrlType = 1; break;
                                 case ir::InterpolationType::Linear:  ctrlType = 2; break;
-                                case ir::InterpolationType::Hermite: ctrlType = 4; break;
+                                case ir::InterpolationType::Hermite: ctrlType = 3; break; // held on bezier handles
                                 default:                             ctrlType = 3; break; // Bezier
                                 }
                                 auto pCtrl = findPBParam(ref, L"opacityCtrl");
@@ -3802,10 +3685,14 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                                 if (!t.empty()) { interpType = t.interpolation; found = true; }
                             }
                             if (found) {
+                                // None must stay 1: Wc3Bitmap's uvCtrlType handler
+                                // turns every U/V key #smooth for 3 (Bezier), which
+                                // would undo the STEP keys of a DontInterp track.
                                 int ctrlType = 1; // None
                                 switch (interpType) {
+                                case ir::InterpolationType::None:    ctrlType = 1; break;
                                 case ir::InterpolationType::Linear:  ctrlType = 2; break;
-                                case ir::InterpolationType::Hermite: ctrlType = 4; break;
+                                case ir::InterpolationType::Hermite: ctrlType = 3; break; // held on bezier handles
                                 default:                             ctrlType = 3; break; // Bezier
                                 }
                                 auto pUV = findPBParam(texAnimRef, L"uvCtrlType");
@@ -3996,6 +3883,14 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                         L")"
                       L")"
                     L");"
+                    // Phase B2: a Wc3Bitmap's own wrap params are the file's
+                    // flags. Replaceable textures (Team Glow) have no file name
+                    // for the lookup above, and Wc3Material's filter-mode
+                    // handler switched tiling on for additive opacity maps.
+                    L"for tx in (try(getClassInstances Wc3Bitmap)catch(#())) do ("
+                      L"try(tx.delegate.coords.U_Tile = tx.wrapU)catch();"
+                      L"try(tx.delegate.coords.V_Tile = tx.wrapV)catch()"
+                    L");"
                     // Phase C1: restore bitmap coords controllers
                     L"for entry in savedBmpCtrls do ("
                       L"local bm = entry[1];"
@@ -4130,6 +4025,17 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 #endif
                 TRUE, nullptr);
 
+            // The layer display above rewrites the composite layers'
+            // showInViewport flags, so switch on the layer each composite
+            // shows in the viewport once more, now that they are final.
+            for (size_t mi = 0; mi < irModel.materials.size() && mi < materials.size(); ++mi) {
+                Mtl* mtl = materials[mi];
+                if (mtl && mtl->ClassID() == COMPOSITE_MATERIAL_CLASS_ID)
+                    mdx_scene::activateCompositeViewportLayer(
+                        mtl, irModel.materials[mi], irModel, gi);
+            }
+            gi->RedrawViews(gi->GetTime());
+
             ILOG << "==== end material animations ====\n";
             ILOG.flush();
         }
@@ -4174,7 +4080,31 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 if (ga.usesColor && ga.colorTrackIndex >= 0 &&
                     ga.colorTrackIndex < static_cast<int32_t>(irModel.colorTracks.size())) {
                     const auto& track = irModel.colorTracks[ga.colorTrackIndex];
+                    // Preferred: the modifier's VertexColor param found by name
+                    // (the wrapped ClassID does not match, a param name does),
+                    // keyed by createColorController: exact values and the
+                    // file's Bezier/Hermite curve. The MaxScript path below
+                    // stays as the fallback.
+                    bool colorDone = false;
                     if (!track.empty()) {
+                        Object* obj = meshNode->GetObjectRef();
+                        if (obj && obj->SuperClassID() == GEN_DERIVOB_CLASS_ID) {
+                            auto* dobj = static_cast<IDerivedObject*>(obj);
+                            for (int mi = 0; mi < dobj->NumModifiers() && !colorDone; ++mi) {
+                                auto p = findPBParam(dobj->GetModifier(mi), L"VertexColor");
+                                if (!p) continue;
+                                if (Control* ctrl = createColorController(track)) {
+                                    p.pb->SetControllerByID(p.id, 0, ctrl, FALSE);
+                                    colorDone = true;
+                                }
+                            }
+                        }
+                        if (colorDone)
+                            ILOG << "  geosetAnim mesh[" << ga.meshIndex << "] '"
+                                 << narrow(meshNode->GetName()) << "' color keys="
+                                 << track.keys.size() << "\n";
+                    }
+                    if (!colorDone && !track.empty()) {
                         // Tangent type per MaxScript key: maps IR interpolation
                         //   None    → #step   (hard toggles, no interp)
                         //   Linear  → #linear (straight lines between keys)
@@ -4545,6 +4475,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     }
 
     // 14. Build sequences (Note Track entries)
+    dialog.step(ImportStep::Finishing);
     {
         mdx_scene::Wc3SequenceBuilder seqBuilder;
         seqBuilder.buildSequences(irModel, gi, reporter);
@@ -4571,10 +4502,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     //  Collision Shapes, Helpers / Dummies) — matches WdxNodeManager.
     organizeNodesIntoLayers(gi);
 
-    // 16. Report
-    if (reporter.hasWarnings() || reporter.hasErrors()) {
-        reporter.showSummaryDialog(gi->GetMAXHWnd(), core::Operation::Import);
-    }
+    // 16. The report moved to the end of DoImport: it shows once the import
+    // dialog, which stays open for the progress, has closed.
 
     // 17. Populate Material Editor with imported materials
     // Done at the very end so all materials, textures, and animation
@@ -4729,7 +4658,15 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 #endif
         TRUE, nullptr);
 
+    // Close the progress window before Max redraws the scene and before the
+    // report, which would otherwise open behind it.
+    dialog.close();
     gi->ForceCompleteRedraw();
+
+    // 16. Report
+    if (reporter.hasWarnings() || reporter.hasErrors()) {
+        reporter.showSummaryDialog(gi->GetMAXHWnd(), core::Operation::Import);
+    }
 
     // TextureResolver (in resolverOpt) closes its CASC + MPQ handles
     // when it goes out of scope at the end of DoImport — nothing to do

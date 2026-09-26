@@ -39,7 +39,7 @@ macroScript WhiteoutDex_AnimGeneral
 	on execute do
 	(
 		try (destroyDialog ::WdxAnimTools.generalRoll) catch()
-		try (createDialog ::WdxAnimTools.generalRoll width:440 height:202) catch()
+		try (createDialog ::WdxAnimTools.generalRoll width:440 height:254) catch()
 	)
 )
 
@@ -207,5 +207,23 @@ macroScript WhiteoutDex_CellShadeCreator
 			)
 			::wdxOpenCellShadeDialog()
 		) catch (messageBox ((::WdxL.t "tools_cellshade_error_msg") + "\n" + (getCurrentException())))
+	)
+)
+
+macroScript WhiteoutDex_MaterialFix
+	category:"WhiteoutDex Toolkit"
+	toolTip:"Material Fix Settings"
+	buttonText:"Material Fix"
+(
+	on execute do
+	(
+		try
+		(
+			-- MaterialFix.ms is a post-startup script; load it defensively in
+			-- case the toolkit was installed mid-session.
+			if ::WdxMaterialFix == undefined do
+				fileIn ((::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\MaterialFix.ms")
+			::WdxMaterialFix.open()
+		) catch (messageBox ((::WdxL.t "matfix_open_error_msg") + "\n" + (getCurrentException())))
 	)
 )

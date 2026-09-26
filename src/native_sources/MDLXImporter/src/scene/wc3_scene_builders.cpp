@@ -1314,15 +1314,13 @@ void Wc3FaceFxBuilder::buildFaceFX(
         name.printf(_T("%hs"), irAtt.name.c_str());
         node->SetName(name);
 
-        // Paramblock setup: ParamID 0 = facefxName, ParamID 1 = facefxPath
-        IParamBlock2* pb = PBR::findParamBlock(
-            dynamic_cast<ReferenceTarget*>(obj), 0);
-        if (pb) {
-            auto wname = toWstr(irAtt.name);
-            auto wpath = toWstr(irAtt.path);
-            pb->SetValue(0, 0, wname.c_str());
-            pb->SetValue(1, 0, wpath.c_str());
-        }
+        // By name: the plug-in's first parameter is "adsorption" (General
+        // rollout), so fixed ParamIDs 0/1 wrote the name into it and the
+        // path into facefxName.
+        auto wname = toWstr(irAtt.name);
+        auto wpath = toWstr(irAtt.path);
+        pbSetString(obj, L"facefxName", wname.c_str());
+        pbSetString(obj, L"facefxPath", wpath.c_str());
     }
 }
 

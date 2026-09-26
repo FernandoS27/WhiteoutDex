@@ -14,11 +14,34 @@ struct WdxGlobalSequenceManager
 	savedEditKeys = #(),
 	
 	-- Stores all key data of a controller (time + value, incl. sub-controllers + ORT)
+	-- One key as data: time, value and, where the key has them, its tangent
+	-- types and tangents. Read and written through the key (not the
+	-- controller's value): the two use different conventions for rotation
+	-- keys, and a value write only makes a key where the value changes.
+	fn keyRecord k =
+	(
+		local rec = #(k.time, k.value, undefined, undefined, undefined, undefined)
+		try (rec[3] = k.inTangentType; rec[4] = k.outTangentType) catch()
+		try (rec[5] = k.inTangent; rec[6] = k.outTangent) catch()
+		rec
+	),
+
+	-- Recreates a key from keyRecord's data on a keyframe controller.
+	fn addKeyFromRecord c rec =
+	(
+		local k = addNewKey c rec[1]
+		if k == undefined or k == ok then return false
+		k.value = rec[2]
+		-- Tangent values first: setting one may switch the type to #custom
+		try (if rec[5] != undefined do (k.inTangent = rec[5]; k.outTangent = rec[6])) catch()
+		try (if rec[3] != undefined do (k.inTangentType = rec[3]; k.outTangentType = rec[4])) catch()
+		true
+	),
+
 	fn backupControllerKeys ctrl =
 	(
 		local data = #()
-		format "DEBUG backup ctrl=% class=%\n" ctrl (classOf ctrl)
-		-- Sub-Controller (Euler_XYZ, Position_XYZ etc.)
+		-- Sub-controllers (Euler_XYZ, Position_XYZ etc.)
 		for i = 1 to 3 do
 		(
 			try
@@ -26,11 +49,8 @@ struct WdxGlobalSequenceManager
 				local sc = ctrl[i].controller
 				if sc != undefined and (isProperty sc #keys) and sc.keys != undefined then
 				(
-					local subKeys = #()
-					for k = 1 to sc.keys.count do
-						append subKeys #(sc.keys[k].time, sc.keys[k].value)
+					local subKeys = for k = 1 to sc.keys.count collect (this.keyRecord sc.keys[k])
 					append data #("sub", i, subKeys, try(getAfterORT sc)catch(#constant))
-					format "DEBUG   sub[%]: % keys, ort=%\n" i subKeys.count (try(getAfterORT sc)catch(#constant))
 				)
 			)
 			catch()
@@ -40,56 +60,31 @@ struct WdxGlobalSequenceManager
 		(
 			if (isProperty ctrl #keys) and ctrl.keys != undefined and ctrl.keys.count > 0 then
 			(
-				local mainKeys = #()
-				for k = 1 to ctrl.keys.count do
-					append mainKeys #(ctrl.keys[k].time, ctrl.keys[k].value)
+				local mainKeys = for k = 1 to ctrl.keys.count collect (this.keyRecord ctrl.keys[k])
 				append data #("main", 0, mainKeys, try(getAfterORT ctrl)catch(#constant))
-				format "DEBUG   main: % keys, ort=%\n" mainKeys.count (try(getAfterORT ctrl)catch(#constant))
 			)
 		)
 		catch()
-		format "DEBUG   backup total entries=%\n" data.count
 		data
 	),
 	
 	-- Restores key data onto a controller
 	fn restoreControllerKeys ctrl data =
 	(
-		format "DEBUG restore ctrl=% data entries=%\n" (classOf ctrl) data.count
 		-- Delete all keys first
 		this.forceDeleteAllKeys ctrl
-		format "DEBUG   after forceDelete: keys=%\n" (this.countControllerKeys ctrl)
-		-- Restore the keys
 		for entry in data do
 		(
-			local entryType = entry[1]
-			local idx = entry[2]
-			local keyData = entry[3]
-			local ort = entry[4]
-			format "DEBUG   restoring type=% idx=% keyCount=% ort=%\n" entryType idx keyData.count ort
-			
-			if entryType == "sub" then
+			local c = if entry[1] == "sub" then (try (ctrl[entry[2]].controller) catch (undefined)) else ctrl
+			if c == undefined then
 			(
-				try
-				(
-					local sc = ctrl[idx].controller
-					format "DEBUG     sub ctrl class=%\n" (classOf sc)
-					for kd in keyData do
-						with animate on at time kd[1] (sc.value = kd[2])
-					try (setAfterORT sc ort) catch()
-					format "DEBUG     sub keys after restore=%\n" (try(sc.keys.count)catch("?"))
-				)
-				catch(format "DEBUG     sub RESTORE ERROR: %\n" (getCurrentException()))
+				format "GlobalSeqMgr: no sub-controller % to restore keys onto\n" entry[2]
+				continue
 			)
-			else
-			(
-				for kd in keyData do
-					with animate on at time kd[1] (ctrl.value = kd[2])
-				try (setAfterORT ctrl ort) catch()
-				format "DEBUG     main keys after restore=%\n" (this.countControllerKeys ctrl)
-			)
+			for rec in entry[3] do
+				try (this.addKeyFromRecord c rec) catch (format "GlobalSeqMgr: key restore failed: %\n" (getCurrentException()))
+			try (setAfterORT c entry[4]) catch()
 		)
-		format "DEBUG   FINAL keys=%\n" (this.countControllerKeys ctrl)
 	),
 	
 	fn classifyUVController ctrl =
@@ -696,6 +691,43 @@ struct WdxGlobalSequenceManager
 		)
 	),
 	
+	-- Backs up an object selected only after recording started. beginRecording
+	-- backs up "selection as array", so without this, keys set on a bone
+	-- picked during the recording survive Cancel.
+	fn ensureBackedUp obj =
+	(
+		if obj == undefined then return false
+		for e in this.savedTransforms do (if e[1] == obj then return false)
+		try
+		(
+			append this.savedEditKeys #(obj, "pos", this.backupControllerKeys obj.pos.controller)
+			append this.savedEditKeys #(obj, "rot", this.backupControllerKeys obj.rotation.controller)
+			append this.savedEditKeys #(obj, "scl", this.backupControllerKeys obj.scale.controller)
+			append this.savedTransforms #(obj, (at time 0 obj.transform), \
+			                              (classOf obj.pos.controller), \
+			                              (classOf obj.rotation.controller), \
+			                              (classOf obj.scale.controller))
+			appendIfUnique this.recordedObjects obj
+		)
+		catch (return false)
+		true
+	),
+
+	-- #selectionSetChanged callback while recording: backs up every newly
+	-- selected object, so Cancel also removes keys set after the start.
+	fn onRecordingSelectionChanged =
+	(
+		if not this.isRecording then return ok
+		for o in (selection as array) do (try (this.ensureBackedUp o) catch())
+		ok
+	),
+
+	-- Stops following the selection (Finish, Cancel, dialog closed).
+	fn stopSelectionTracking =
+	(
+		try (callbacks.removeScripts id:#WdxGlobalSeqRec) catch()
+	),
+
 	fn beginRecording duration ctrlType doPos doRot doScale editMode:false =
 	(
 		this.savedAnimRange = animationRange
@@ -723,7 +755,14 @@ struct WdxGlobalSequenceManager
 			local sclClass = classOf obj.scale.controller
 			append this.savedTransforms #(obj, tm, posClass, rotClass, sclClass)
 		)
-		
+
+		-- Follow selection changes while recording. Not saved with the scene:
+		-- persistent defaults to false (MAXScript Help, "General Event
+		-- Callback Mechanism").
+		this.stopSelectionTracking()
+		local trackScript = "try(::WdxGlobalSequenceManager.onRecordingSelectionChanged())catch()"
+		try (callbacks.addScript #selectionSetChanged trackScript id:#WdxGlobalSeqRec) catch()
+
 		if not editMode then
 		(
 			this.assignControllers ctrlType doPos doRot doScale
@@ -822,7 +861,11 @@ struct WdxGlobalSequenceManager
 		(
 			return #(#(), #())
 		)
-		
+
+		-- Take in the last selection, then stop following it
+		for o in (selection as array) do (try (this.ensureBackedUp o) catch())
+		this.stopSelectionTracking()
+
 		local newGlobals = #()
 		local warnings = #()
 		
@@ -996,7 +1039,11 @@ struct WdxGlobalSequenceManager
 		format "\n===== DEBUG cancelRecording mode=% =====\n" (if this.isEditMode then "EDIT" else "NEW")
 		format "DEBUG savedEditKeys count=%\n" this.savedEditKeys.count
 		sliderTime = 0
-		
+
+		-- Take in the last selection, then stop following it
+		for o in (selection as array) do (try (this.ensureBackedUp o) catch())
+		this.stopSelectionTracking()
+
 		-- ALWAYS restore the original controllers (Spin/assignControllers may have changed them)
 		for entry in this.savedTransforms do
 		(
@@ -1048,7 +1095,36 @@ struct WdxGlobalSequenceManager
 			)
 			catch(format "DEBUG   RESTORE ERROR: %\n" (getCurrentException()))
 		)
-		
+
+		-- Rest pose of objects that had no keys before recording: the key
+		-- restore above leaves their controllers empty, holding whatever value
+		-- they had when Cancel was pressed, so the next recording would start
+		-- from a moved pose. Objects with keys keep the pose their keys give.
+		for entry in this.savedTransforms do
+		(
+			try
+			(
+				local obj = entry[1]
+				local tm = entry[2]
+				if tm != undefined then
+				(
+					local hasKeys = false
+					for ch in #("pos", "rotation", "scale") while not hasKeys do
+					(
+						try
+						(
+							local c = getProperty obj ch
+							if c != undefined and (this.countControllerKeys c.controller) > 0 then hasKeys = true
+						)
+						catch()
+					)
+					if not hasKeys then
+						with animate off at time 0 (obj.transform = tm)
+				)
+			)
+			catch(format "DEBUG   rest pose restore ERROR: %\n" (getCurrentException()))
+		)
+
 		animationRange = this.savedAnimRange
 		this.isRecording = false
 		this.isEditMode = false
@@ -1103,13 +1179,18 @@ struct WdxGlobalSequenceManager
 					-- Back up the pos/scale keys (a controller swap / animate on disturbs them)
 					local posBak = this.backupControllerKeys obj.pos.controller
 					local sclBak = this.backupControllerKeys obj.scale.controller
-					
+
+					-- Base rotation in the PARENT's space, taken before the
+					-- controller is replaced: that is what a rotation
+					-- controller holds. savedTM.rotation is the world rotation
+					-- (and stored left-handed), so a bone inside a chain
+					-- jumped to a different orientation.
+					local baseQ = (quat 0 0 0 1)
+					try (baseQ = at time 0 (in coordsys parent obj.rotation)) catch (baseQ = (quat 0 0 0 1))
+
 					obj.rotation.controller = Linear_Rotation()
 					local rc = obj.rotation.controller
 					try (deleteKeys rc #allKeys) catch()
-					
-					-- Base rotation as a quaternion
-					local baseQ = savedTM.rotation
 					format "DEBUG baseQ=%\n" baseQ
 					
 					-- 5 keys: 0°, 90°, 180°, 270°, 359.5° (4 segments, each < 180°)
@@ -1766,6 +1847,7 @@ struct WdxGlobalSequenceManager
 				recording = false
 				spinApplied = false
 			)
+			try (self.stopSelectionTracking()) catch()
 			notifySequenceManager()
 		)
 	),

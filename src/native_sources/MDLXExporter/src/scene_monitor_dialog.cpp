@@ -45,8 +45,9 @@ const wchar_t* problemTypeName(ProblemType t) {
     static const wchar_t* kFallback[] = {
         L"Duplicate Name",     L"Empty Mesh",          L"Editable Poly",
         L"Edit_Mesh ↑ Skin",   L"Invalid Controller",  L"Unsupported Material",
+        L"Multi/Sub-Object Material",
     };
-    static std::wstring cached[6];
+    static std::wstring cached[7];
     static bool loaded = false;
     if (!loaded) {
         loaded = true;
@@ -54,8 +55,9 @@ const wchar_t* problemTypeName(ProblemType t) {
             "exp_problem_duplicate_name", "exp_problem_empty_mesh",
             "exp_problem_editable_poly",  "exp_problem_editmesh_above_skin",
             "exp_problem_invalid_controller", "exp_problem_unsupported_material",
+            "exp_problem_multi_material",
         });
-        for (size_t i = 0; i < 6 && i < v.size(); ++i)
+        for (size_t i = 0; i < 7 && i < v.size(); ++i)
             cached[i] = v[i];
     }
     int idx = -1;
@@ -66,6 +68,7 @@ const wchar_t* problemTypeName(ProblemType t) {
     case ProblemType::EditMeshAboveSkin:    idx = 3; break;
     case ProblemType::InvalidController:    idx = 4; break;
     case ProblemType::UnsupportedMaterial:  idx = 5; break;
+    case ProblemType::MultiMaterialMesh:    idx = 6; break;
     }
     if (idx < 0)
         return L"?";
@@ -127,7 +130,8 @@ void updateStatusLabel(HWND hDlg, const ScanResult& result) {
     int dup = result.countByType(ProblemType::DuplicateName);
     int em  = result.countByType(ProblemType::EmptyMesh);
     int ep  = result.countByType(ProblemType::EditablePoly);
-    int es  = result.countByType(ProblemType::EditMeshAboveSkin);
+    int es  = result.countByType(ProblemType::EditMeshAboveSkin)
+            + result.countByType(ProblemType::MultiMaterialMesh);
     int ic  = result.countByType(ProblemType::InvalidController);
     int um  = result.countByType(ProblemType::UnsupportedMaterial);
 
@@ -173,6 +177,8 @@ void runFixForSelectedTypes(HWND hDlg, DialogState* ds,
 
     if (types.count(ProblemType::DuplicateName))
         fixDuplicateNames(subset);
+    if (types.count(ProblemType::MultiMaterialMesh))
+        fixMultiMaterialMeshes(subset);
     if (types.count(ProblemType::EmptyMesh) ||
         types.count(ProblemType::EditablePoly) ||
         types.count(ProblemType::EditMeshAboveSkin))

@@ -182,6 +182,51 @@ std::wstring tryDiskAtTier(const std::wstring& dirWithSlash,
 } // anonymous
 
 // ============================================================================
+// Archive paths with a mod chain
+// ============================================================================
+
+// Reforged models can name a texture by its full CASC path, mod chain and
+// all: "_hd.w3mod:textures\fx\flare\flaresimple02_bw.blp" (or with a leading
+// "war3.w3mod:"). A ':' cannot be part of a Windows file name, so such a path
+// is placed on disk the way the Model Browser extracts it
+// (WhiteoutDexModelBrowser.ms extractToTemp): the `_XX.w3mod` overlay becomes
+// a folder, the `war3.w3mod` root is dropped -
+// "_hd.w3mod\textures\fx\flare\flaresimple02_bw.blp". A path without a mod
+// chain comes back unchanged.
+std::wstring diskPathFromArchivePath(const std::wstring& relPath) {
+    if (relPath.find(L':') == std::wstring::npos) return relPath;
+    std::wstring out;
+    std::size_t start = 0;
+    while (true) {
+        const std::size_t colon = relPath.find(L':', start);
+        std::wstring seg = relPath.substr(start, colon == std::wstring::npos
+                                                     ? std::wstring::npos
+                                                     : colon - start);
+        std::wstring lower = seg;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+        if (colon == std::wstring::npos) {
+            out += seg;
+            break;
+        }
+        if (lower != L"war3.w3mod" && !seg.empty())
+            out += seg + L"\\";
+        start = colon + 1;
+    }
+    return out;
+}
+
+namespace {
+
+// The archive path without any mod chain ("textures\fx\...") - what an MPQ
+// or a tier prefix expects.
+std::string stripModChain(const std::string& archiveRel) {
+    const std::size_t colon = archiveRel.find_last_of(':');
+    return colon == std::string::npos ? archiveRel : archiveRel.substr(colon + 1);
+}
+
+} // anonymous
+
+// ============================================================================
 // Local-disk-only resolver (free function for use outside TextureResolver)
 // ============================================================================
 
@@ -191,7 +236,7 @@ std::wstring resolveTexturePath(const std::wstring& modelDir,
 
     // Normalize separators, trim trailing whitespace/nulls, strip leading
     // slashes so `\Textures\x.blp` doesn't look absolute.
-    std::wstring normRel = relPath;
+    std::wstring normRel = diskPathFromArchivePath(relPath);
     std::replace(normRel.begin(), normRel.end(), L'/', L'\\');
     while (!normRel.empty() && (normRel.back() <= L' ' || normRel.back() == L'\0'))
         normRel.pop_back();
@@ -587,6 +632,12 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
     std::string archiveStem = mdxExt.empty() ? archiveRel
                                               : archiveRel.substr(0, archiveRel.size() - mdxExt.size());
     auto orderedExts = buildOrderedExts(mdxExt);
+    // A path that names its own mod chain ("_hd.w3mod:textures\...") keeps
+    // it for CASC; MPQs and the tier prefixes take the path without it, and
+    // the extracted file goes where diskPathFromArchivePath puts it.
+    const bool explicitChain = archiveStem.find(':') != std::string::npos;
+    const std::string plainStem = stripModChain(archiveStem);
+    const std::wstring diskRel = diskPathFromArchivePath(relPath);
 
 #if defined(WHITEOUT_HAS_CASC)
     // 2) CASC. The overlay the MODEL came from goes first when we know it:
@@ -608,17 +659,24 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
             if (prefixes.empty() || prefixes.front() != p)
                 prefixes.push_back(p);
         }
+        // The model's own mod chain first, then the tiers as for any path.
+        std::vector<std::string> cascStems;
+        if (explicitChain)
+            cascStems.push_back((archiveStem.rfind("war3.w3mod:", 0) == 0 ? "" : "war3.w3mod:") +
+                                archiveStem);
+        for (const std::string& prefix : prefixes)
+            cascStems.push_back(prefix + plainStem);
         RLOG << "[CASC] Searching for: '" << archiveStem
              << "' (mdxExt='" << mdxExt << "')" << std::endl;
-        for (const std::string& prefix : prefixes) {
+        for (const std::string& stem : cascStems) {
             for (const std::string& ext : orderedExts) {
-                std::string cascPath = prefix + archiveStem + ext;
+                std::string cascPath = stem + ext;
                 auto data = impl_->casc->readFile(cascPath);
                 if (!data || data->empty()) continue;
                 RLOG << "[CASC] Found: '" << cascPath << "' (" << data->size() << " bytes)" << std::endl;
 
                 // Write to <modelDir>/<original-subdir>/<stem>.<actualExt>.
-                std::wstring outRel = swapExtension(relPath, narrowToWide(ext));
+                std::wstring outRel = swapExtension(diskRel, narrowToWide(ext));
                 fs::path outPath = fs::path(impl_->modelDir) / outRel;
                 std::error_code ec;
                 if (fs::exists(outPath, ec)) {
@@ -641,12 +699,12 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
         for (const auto& storage : impl_->mpqArchives) {
             if (!storage) continue;
             for (const std::string& ext : orderedExts) {
-                std::string mpqPath = archiveStem + ext;
+                std::string mpqPath = plainStem + ext;
                 auto data = storage.readFile(mpqPath);
                 if (!data || data->empty()) continue;
                 RLOG << "[MPQ] Found: " << mpqPath << " (" << data->size() << " bytes)" << std::endl;
 
-                std::wstring outRel = swapExtension(relPath, narrowToWide(ext));
+                std::wstring outRel = swapExtension(diskRel, narrowToWide(ext));
                 fs::path outPath = fs::path(impl_->modelDir) / outRel;
                 std::error_code ec;
                 if (fs::exists(outPath, ec)) {

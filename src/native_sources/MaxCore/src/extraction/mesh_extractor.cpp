@@ -65,6 +65,11 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
         if (node->GetUserPropInt(_T("Wc3SelectionGroup"), selectionGroup) && selectionGroup > 0)
             result.selectionGroup = static_cast<uint32_t>(selectionGroup);
 
+        // Object Settings' "Unselectable" checkbox (setUserProp ... 0 / 1).
+        int unselectable = 0;
+        result.unselectable =
+            node->GetUserPropInt(_T("Unselectable"), unselectable) && unselectable != 0;
+
         // DEDICATED LOD DEBUG LOG — writes to %TEMP%\mdlx_lod_debug.log so we
         // can trace exactly which UserProps were found on each mesh.
         {
@@ -306,12 +311,15 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
         MFLUSH;
     }
 
-    // Extract UV sets (channels 1-4)
+    // Extract UV sets (channels 1-4). Map channel N is always MDX set N-1,
+    // because a layer's coordId names the set by that number: packing the
+    // present channels together turned a lone channel 2 into set 0 and left
+    // coordId 1 pointing past the end. A skipped channel stays at (0, 0).
     int uvSetCount = 0;
     for (int ch = 1; ch <= 4; ++ch) {
         if (mesh.getNumMapVerts(ch) > 0) {
-            extractUVSet(mesh, ch, uvSetCount, result);
-            uvSetCount++;
+            extractUVSet(mesh, ch, ch - 1, result);
+            uvSetCount = ch;
         }
     }
     for (auto& vert : result.vertices) {
