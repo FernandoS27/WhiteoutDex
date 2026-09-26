@@ -1224,15 +1224,19 @@ void Wc3PopcornBuilder::buildPopcorn(
         auto* ref = dynamic_cast<ReferenceTarget*>(obj);
         if (ref) {
             if (!irPE.modelPath.empty()) {
-                // Canonicalize extension + try to resolve through
-                // disk → CASC → MPQ. When the file actually exists on disk
-                // (resolver hit), store the absolute path so 3ds Max users
-                // can see / edit it. When the resolver only returned a
-                // best-guess (CASC/MPQ closed or miss), keep the canonical
-                // relative path instead so the renderer's content provider
-                // can try its own CASC/MPQ at draw time and round-tripping
-                // back through the exporter writes the original game path
-                // rather than a local disk leak.
+                // Same split as the Wc3Particles2 texture above: the MDX
+                // directory goes to popcornPrefix, and popcornPath gets the
+                // resolved file on disk (disk → CASC → MPQ, extension
+                // canonicalized first) so 3ds Max users can see / edit it,
+                // or the MDX file name when nothing resolved. The exporter
+                // writes prefix + file name back. Storing the disk path with
+                // no prefix is what used to leak
+                // "...\WhiteoutDexCASC\_de.w3mod\...\Hero_Glow.pkb" into the
+                // re-exported MDX.
+                std::wstring prefix, filename;
+                splitMdxPath(irPE.modelPath, prefix, filename);
+                pbSetString(ref, L"popcornPrefix", prefix.c_str());
+
                 const std::wstring rel = ensurePopcornExtension(toWstr(irPE.modelPath));
                 std::wstring resolved;
                 try {
@@ -1247,7 +1251,7 @@ void Wc3PopcornBuilder::buildPopcorn(
                 std::error_code ec;
                 const bool resolvedExists =
                     !resolved.empty() && std::filesystem::exists(resolved, ec);
-                const std::wstring& finalPath = resolvedExists ? resolved : rel;
+                const std::wstring& finalPath = resolvedExists ? resolved : filename;
                 pbSetString(ref, L"popcornPath", finalPath.c_str());
             }
             pbSetFloat(ref, L"LifeSpan", irPE.lifespan);

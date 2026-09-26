@@ -10,29 +10,30 @@ category:"Warcraft III Plugins"
 	-- catalog loads and long before the user can change the language.
 	------------------------------------- Parameter Registration -------------------------------------
 
-	parameters main rollout:General
+	-- ONE block named `main`, holding what used to be six blocks that were all
+	-- named `main`, one per rollout. Keep it that way: an old scene's saved
+	-- blocks are matched to the current definition BY NAME, so with six
+	-- `main` blocks every saved one landed on the first (adsorption alone) and
+	-- all the others reset to defaults as soon as the definition changed at
+	-- all. A block binds to one rollout; this one binds to params3, whose
+	-- animated spinners need the binding most. Every other rollout reads and
+	-- writes its parameters by hand, through controls named apart from them.
+	parameters main rollout:params3
 	(
-		adsorption  type:#string	ui:Temp_adsorption
-	)
+		adsorption		type:#string						default:""
 
-	parameters main rollout:params1
-	(
-		popcornPath		type:#string	ui:popcornPath		animatable:false	default:""
-	)
+		-- A game path, or the file on disk when popcornPrefix holds the
+		-- game directory — see the pathInfo block.
+		popcornPath		type:#string						animatable:false	default:""
 
-parameters main rollout:params2
-	(
 		-- Always = default visibility state. rawFlags carries the
 		-- whole guide string (e.g. "Always=On, Stand 1=Off, Death=Off")
 		-- — it's the round-trip ground truth; flagAlways and the
 		-- exceptions listbox are derived from it on rollout open
 		-- and re-emitted into it on any UI change.
-		flagAlways		type:#boolean	ui:flagAlways		animatable:false	default:true
+		flagAlways		type:#boolean						animatable:false	default:true
 		rawFlags		type:#string						animatable:false	default:""
-	)
 
-	parameters main rollout:params3
-	(
 		-- alpha / emissionRate / lifeSpan / speed carry MDX KPPA / KPPE /
 		-- KPPL / KPPS. All four must stay animatable: the importer assigns
 		-- bezier_float controllers to them and the renderer samples every
@@ -41,28 +42,34 @@ parameters main rollout:params2
 		emissionRate	type:#float		ui:emissionRate		default:0.0
 		lifeSpan		type:#float		ui:lifeSpan			default:0.0
 		speed			type:#float		ui:speed			default:0.0
-	)
 
-	parameters main rollout:params4
-	(
 		-- baseColor carries KPPC and is animated the same way. YS_baseColor
 		-- is only the rollout's hidden mirror, so it stays static.
-		baseColor		type:#color		ui:baseColor		default:[255,255,255]
-		YS_baseColor	type:#color		ui:YS_baseColor		default:[255,255,255]	animatable:false
-		colorMultiplier	type:#float		ui:colorMultiplier	default:1.0				animatable:false
+		baseColor		type:#color							default:[255,255,255]
+		YS_baseColor	type:#color							default:[255,255,255]	animatable:false
+		colorMultiplier	type:#float							default:1.0				animatable:false
+
+		-- Render flags map to MDX Node bits 0x8000 (Unshaded), 0x20000
+		-- (PopcornUnfogged) and 0x40000 (PopcornScaling). Engine semantics:
+		--   * Unshaded — particles ignore the scene light, full albedo.
+		--   * Unfogged — particles are not faded by world fog.
+		--   * Scaling  — corn-fx particle scale follows the host actor's
+		--                uniform world-scale (off = world-fixed size).
+		flagUnshaded	type:#boolean						animatable:false	default:false
+		flagUnfogged	type:#boolean						animatable:false	default:false
+		flagScaling		type:#boolean						animatable:false	default:false
 	)
 
-	-- Render flags map to MDX Node bits 0x8000 (Unshaded), 0x20000
-	-- (PopcornUnfogged) and 0x40000 (PopcornScaling). Engine semantics:
-	--   * Unshaded — particles ignore the scene light, full albedo.
-	--   * Unfogged — particles are not faded by world fog.
-	--   * Scaling  — corn-fx particle scale follows the host actor's
-	--                uniform world-scale (off = world-fixed size).
-	parameters main rollout:params5
+	-- The effect's game directory ("SharedFX\Hero_Glow\"), the prefix
+	-- Wc3Particles1 / Wc3Particles2 keep for their model and texture. Export
+	-- writes popcornPrefix + the file name of popcornPath, so popcornPath can
+	-- hold the file on disk that the importer extracted (or the file dialog
+	-- picked) and the MDX still gets the game path. Scenes saved before this
+	-- block load it as "", and the exporter then recovers the directory from
+	-- the disk path.
+	parameters pathInfo rollout:params1
 	(
-		flagUnshaded	type:#boolean	ui:flagUnshaded		animatable:false	default:false
-		flagUnfogged	type:#boolean	ui:flagUnfogged		animatable:false	default:false
-		flagScaling		type:#boolean	ui:flagScaling		animatable:false	default:false
+		popcornPrefix	type:#string	ui:edtPrefix		animatable:false	default:""
 	)
 
 	------------------------------------- Utility Functions -------------------------------------
@@ -91,8 +98,12 @@ parameters main rollout:params2
 		local d17 = getINISetting input_file "Popcorn" "Unfogged"
 		local d18 = getINISetting input_file "Popcorn" "Scaling"
 		local d19 = getINISetting input_file "Popcorn" "Guide"
+		local d20 = getINISetting input_file "Popcorn" "Prefix"
 		----------------------------------------------------------------------------------------------------------------------
 		if (d01 != undefined and d01 != "") do (obj.popcornPath = d01)
+		-- A file saved before the prefix existed has none; getINISetting
+		-- answers "" for it, which is exactly an empty prefix.
+		if (d20 != undefined) do (obj.popcornPrefix = d20)
 		if (d02 != undefined) do (obj.flagAlways    = (d02 == "True"))
 		if (d07 != undefined and d07 != "") do (obj.alpha         = d07 as float)
 		if (d08 != undefined and d08 != "") do (obj.emissionRate  = d08 as float)
@@ -103,8 +114,8 @@ parameters main rollout:params2
 			local ci = findString d12 ")"
 			local cs = substring d12 1 (ci-1)
 			local cz = filterString cs " "
-			obj.params4.baseColor.color    = color (cz[2] as float) (cz[3] as float) (cz[4] as float)
-			obj.params4.YS_baseColor.color = obj.params4.baseColor.color
+			obj.baseColor    = color (cz[2] as float) (cz[3] as float) (cz[4] as float)
+			obj.YS_baseColor = obj.baseColor
 		)
 		if (d13 != undefined and d13 != "") do (obj.colorMultiplier = d13 as float)
 		if (d16 != undefined) do (obj.flagUnshaded = (d16 == "True"))
@@ -115,6 +126,20 @@ parameters main rollout:params2
 		-- booleans (which we no longer expose individually).
 		if (d19 != undefined) do (obj.rawFlags = d19)
 		----------------------------------------------------------------------------------------------------------------------
+		-- Only params3 and edtPrefix are ui:-bound; bring the other open
+		-- rollouts' controls up to date the way a binding would have.
+		try (obj.params1.edtPath.text = obj.popcornPath) catch ()
+		try (obj.params2.chkAlways.checked = obj.flagAlways) catch ()
+		try (
+			obj.params4.cpBaseColor.color   = obj.baseColor
+			obj.params4.cpYSBaseColor.color = obj.YS_baseColor
+			obj.params4.spnColorMult.value  = obj.colorMultiplier
+		) catch ()
+		try (
+			obj.params5.chkUnshaded.checked = obj.flagUnshaded
+			obj.params5.chkUnfogged.checked = obj.flagUnfogged
+			obj.params5.chkScaling.checked  = obj.flagScaling
+		) catch ()
 		messagebox (::WdxL.t "common_import_complete_msg")
 	)
 
@@ -126,6 +151,7 @@ parameters main rollout:params2
 		local obj = selection[1]
 		----------------------------------------------------------------------------------------------------------------------
 		setINISetting output_file "Popcorn" "Path"				obj.popcornPath
+		setINISetting output_file "Popcorn" "Prefix"			obj.popcornPrefix
 		setINISetting output_file "Popcorn" "Always"			(obj.flagAlways    as string)
 		setINISetting output_file "Popcorn" "Alpha"				(obj.alpha         as string)
 		setINISetting output_file "Popcorn" "EmissionRate"		(obj.emissionRate  as string)
@@ -155,12 +181,18 @@ parameters main rollout:params2
 			(
 				selection[1].pos = obj.pos
 				selection[1].parent = obj
+				adsorption = obj.name
 				Temp_adsorption.text = obj.name
 				btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
 			)catch()
 		)
 		on General open do
 		(
+			-- Not ui:-bound any more (see the parameters block), so seed the
+			-- hidden field from the parameter the way the binding used to. An
+			-- emitter saved before the parameter had a default carries
+			-- undefined here, which an edittext refuses.
+			Temp_adsorption.text = if adsorption == undefined then "" else adsorption
 			if ::WdxL != undefined then
 			(
 				General.title = ::WdxL.t "popcorn_general_functions_title"
@@ -192,30 +224,56 @@ parameters main rollout:params2
 	rollout params1 "Popcorn FX File"
 	(
 		label l1 "- Popcorn FX Path -" pos:[29,7] align:#center
-		edittext popcornPath pos:[8,25] height:20 width:142
-		button btnBrowseArchive "Browse Game Archives" pos:[12,53] height:24 width:138 tooltip:"Pick a .pkb / .pkfx straight out of the CASC or MPQ archives"
-		button btnBrowse "Browse Popcorn FX File" pos:[12,82] height:24 width:138
-		button btnInfo "Popcorn FX Explanation" pos:[12,111] height:24 width:138
+		edittext edtPath pos:[8,25] height:20 width:142
+		label lPrefix "- Path Prefix -" pos:[43,51] align:#center
+		edittext edtPrefix pos:[8,69] height:20 width:142
+		button btnBrowseArchive "Browse Game Archives" pos:[12,97] height:24 width:138 tooltip:"Pick a .pkb / .pkfx straight out of the CASC or MPQ archives"
+		button btnBrowse "Browse Popcorn FX File" pos:[12,126] height:24 width:138
+		button btnInfo "Popcorn FX Explanation" pos:[12,155] height:24 width:138
 
-		-- Archive-relative pick. This is the form MDX stores and the renderer's
-		-- content provider resolves ("effects\...\foo.pkb"); the disk path the
-		-- file dialog below produces only works while that file stays put.
+		-- popcornPath is not ui:-bound (see the parameters block).
+		on edtPath changed txt do popcornPath = txt
+
+		-- Archive-relative pick ("SharedFX/Hero_Glow/Hero_Glow.pkb"). Split
+		-- at its last separator the way Wc3Particles2's ApplyTexturePath
+		-- does: the directory is the prefix, the rest the file. Slashes fold
+		-- first so the prefix is spelled the way MDX stores it.
 		on btnBrowseArchive pressed do
 		(
+			local prefix = if popcornPrefix == undefined then "" else popcornPrefix
+			local initial = prefix + (if popcornPath == undefined then "" else popcornPath)
+			-- A disk path is nothing the archive picker can open on; let it
+			-- resume where it left off instead.
+			if (findString initial ":") != undefined do initial = ""
 			local picked = undefined
 			try (
-				picked = ::WhiteoutDexModelBrowser.pickEffect initial:popcornPath.text \
+				picked = ::WhiteoutDexModelBrowser.pickEffect initial:initial \
 					caption:(::WdxL.t "popcorn_select_effect_cap")
 			) catch (
 				messageBox (::WdxL.t "common_asset_browser_unavailable_msg") title:"WhiteoutDex" beep:false
 			)
-			if picked != undefined and picked != "" do popcornPath.text = picked
+			if picked != undefined and picked != "" do
+			(
+				local full = substituteString picked "/" "\\"
+				local sep = 0
+				for i = full.count to 1 by -1 while sep == 0 do
+					if full[i] == "\\" do sep = i
+				popcornPrefix = substring full 1 sep
+				popcornPath = substring full (sep + 1) -1
+				edtPath.text = popcornPath
+			)
 		)
 
+		-- A file on disk goes into the path as it is, like Wc3Particles2's
+		-- "Import Particle Texture"; the prefix keeps its game directory.
 		on btnBrowse pressed do
 		(
 			local f = getOpenFileName caption:(::WdxL.t "popcorn_select_popcorn_fx_file_cap") types:"Popcorn FX (*.pkfx)|*.pkfx|PKB File (*.pkb)|*.pkb|All Files|*.*|" historyCategory:"PopcornFXFile"
-			if f != undefined then popcornPath.text = f
+			if f != undefined do
+			(
+				popcornPath = f
+				edtPath.text = f
+			)
 		)
 		on btnInfo pressed do
 		(
@@ -223,10 +281,12 @@ parameters main rollout:params2
 		)
 		on params1 open do
 		(
+			edtPath.text = if popcornPath == undefined then "" else popcornPath
 			if ::WdxL != undefined then
 			(
 				params1.title = ::WdxL.t "popcorn_popcorn_fx_file_title"
 				l1.text = ::WdxL.t "popcorn__popcorn_fx_path_lbl"
+				lPrefix.text = ::WdxL.t "popcorn__path_prefix_lbl"
 				btnBrowseArchive.text = ::WdxL.t "popcorn_browse_game_archives_btn"
 				btnBrowseArchive.tooltip = ::WdxL.t "popcorn_browse_archives_tip"
 				btnBrowse.text = ::WdxL.t "popcorn_browse_popcorn_fx_file_btn"
@@ -239,7 +299,7 @@ parameters main rollout:params2
 	(
 		-- ── UI ──────────────────────────────────────────────
 		label        lblDefault   "Default Visibility:"  pos:[12,8]   align:#left width:124
-		checkbox     flagAlways   "Always On"             pos:[110,8]  tooltip:"When checked, Always=On. Exceptions below take the opposite state."
+		checkbox     chkAlways    "Always On"             pos:[110,8]  tooltip:"When checked, Always=On. Exceptions below take the opposite state."
 
 		label        lblExc       "Exceptions:"           pos:[12,32]  align:#left width:120
 		listbox      exceptionsLB ""                      pos:[12,48]  width:190 height:7
@@ -251,7 +311,7 @@ parameters main rollout:params2
 
 		-- ── State (mirror of rawFlags, kept in sync) ────────
 		local localExceptions = #()
-		-- Suppress `on flagAlways changed` while we restore UI from rawFlags
+		-- Suppress `on chkAlways changed` while we restore UI from rawFlags
 		-- on rollout open. Without it, programmatically setting the
 		-- checkbox's .checked would re-fire encodeGuide and rewrite
 		-- rawFlags before localExceptions is in sync.
@@ -292,14 +352,11 @@ parameters main rollout:params2
 		)
 
 		-- Rebuild rawFlags from current UI state. Exceptions are
-		-- emitted with the opposite of `flagAlways`, which is what
+		-- emitted with the opposite of the default, which is what
 		-- makes them "exceptions" in the first place.
-		-- We must read the checkbox via `.checked` because the param and
-		-- the control share the name `flagAlways`; bare reads inside the
-		-- rollout resolve to the control object (always truthy).
 		fn encodeGuide =
 		(
-			local always = flagAlways.checked
+			local always = chkAlways.checked
 			local s = "Always=" + (if always then "On" else "Off")
 			local excState = if always then "Off" else "On"
 			for nm in localExceptions do
@@ -340,10 +397,11 @@ parameters main rollout:params2
 		)
 
 		-- ── Events ──────────────────────────────────────────
-		on flagAlways changed state do
+		on chkAlways changed state do
 		(
 			-- Default flipped → every exception's effective state flips
 			-- as well; rawFlags re-emits with the new opposite-of-default.
+			flagAlways = state
 			if not suppressEvents do rawFlags = encodeGuide()
 		)
 
@@ -387,15 +445,13 @@ parameters main rollout:params2
 
 		on params2 open do
 		(
-			-- `flagAlways` is both the parameter name and the checkbox
-			-- control name — direct assignment to a control reference is
-			-- illegal in MaxScript, so we restore the state via the
-			-- control's `.checked` property. The ui: binding propagates
-			-- the change back to the parameter automatically.
+			-- rawFlags decides the default; flagAlways (not ui:-bound, see
+			-- the parameters block) follows it.
 			suppressEvents = true
 			local decoded   = decodeGuide rawFlags
 			localExceptions = decoded[2]
-			flagAlways.checked = decoded[1]
+			chkAlways.checked = decoded[1]
+			if flagAlways != decoded[1] do flagAlways = decoded[1]
 			suppressEvents = false
 			refreshListbox()
 			refreshAvailable()
@@ -403,7 +459,7 @@ parameters main rollout:params2
 			(
 				try (params2.title       = ::WdxL.t "popcorn_anim_guide_title")  catch ()
 				try (lblDefault.text     = ::WdxL.t "popcorn_default_visibility_lbl") catch ()
-				try (flagAlways.tooltip  = ::WdxL.t "popcorn_default_visibility_tip") catch ()
+				try (chkAlways.tooltip   = ::WdxL.t "popcorn_default_visibility_tip") catch ()
 				try (lblExc.text         = ::WdxL.t "popcorn_exceptions_lbl")    catch ()
 				try (btnAddExc.tooltip   = ::WdxL.t "popcorn_add_exception_tip") catch ()
 				try (btnDelExc.tooltip   = ::WdxL.t "popcorn_remove_exception_tip") catch ()
@@ -441,27 +497,37 @@ parameters main rollout:params2
 
 	rollout params4 "Color Settings"
 	(
+		-- None of these is ui:-bound (see the parameters block): the rollout
+		-- reads the parameters on open and writes them back on every change.
 		label       l12             "—— - Base Color - ——"      align:#center
-		colorPicker baseColor                                   height:32 width:89   pos:[8,25]   enabled:false color:(color 255 255 255)
-		colorPicker YS_baseColor                                height:1  width:1    pos:[8,25]   visible:false color:(color 255 255 255)
+		colorPicker cpBaseColor                                 height:32 width:89   pos:[8,25]   enabled:false color:(color 255 255 255)
+		colorPicker cpYSBaseColor                               height:1  width:1    pos:[8,25]   visible:false color:(color 255 255 255)
 		button      btn_baseColor   "..."                       height:32 width:32   pos:[118,25] tooltip:"Change Color"
 		label       l13             "Color Multiplier ........"  width:85             pos:[12,64]  align:#left
-		spinner     colorMultiplier                              height:16 scale:0.1  pos:[94,64]  range:[0,100,1.0]    fieldwidth:44
+		spinner     spnColorMult                                 height:16 scale:0.1  pos:[94,64]  range:[0,100,1.0]    fieldwidth:44
 
 		on btn_baseColor pressed do
 		(
-			local c = (dotNetClass "System.Windows.Forms.ColorDialog")
 			local dlg = dotNetObject "System.Windows.Forms.ColorDialog"
-			dlg.color = (dotNetObject "System.Drawing.Color").FromArgb (baseColor.color.r as integer) (baseColor.color.g as integer) (baseColor.color.b as integer)
+			dlg.color = (dotNetObject "System.Drawing.Color").FromArgb (cpBaseColor.color.r as integer) (cpBaseColor.color.g as integer) (cpBaseColor.color.b as integer)
 			dlg.FullOpen = true
 			if (dlg.ShowDialog() == (dotNetClass "System.Windows.Forms.DialogResult").OK) then
 			(
-				baseColor.color    = color dlg.Color.R dlg.Color.G dlg.Color.B
-				YS_baseColor.color = baseColor.color
+				local c = color dlg.Color.R dlg.Color.G dlg.Color.B
+				-- baseColor is animated (KPPC): key it under Auto Key, the
+				-- way the ui: binding did.
+				if animButtonState then (with animate on baseColor = c) else baseColor = c
+				YS_baseColor = c
+				cpBaseColor.color   = c
+				cpYSBaseColor.color = c
 			)
 		)
+		on spnColorMult changed val do colorMultiplier = val
 		on params4 open do
 		(
+			cpBaseColor.color   = baseColor
+			cpYSBaseColor.color = YS_baseColor
+			spnColorMult.value  = colorMultiplier
 			if ::WdxL != undefined then
 			(
 				params4.title = ::WdxL.t "popcorn_color_settings_title"
@@ -474,23 +540,30 @@ parameters main rollout:params2
 
 	rollout params5 "Render Flags"
 	(
+		-- Not ui:-bound (see the parameters block).
 		label    lu1 "Unshaded ........................" height:16 pos:[12,8]  align:#left width:124
-		checkbox flagUnshaded height:16 pos:[137,8]  tooltip:"Ignore scene lighting (NodeFlag 0x8000)"
+		checkbox chkUnshaded height:16 pos:[137,8]  tooltip:"Ignore scene lighting (NodeFlag 0x8000)"
 		label    lu2 "Unfogged ........................." height:16 pos:[12,29] align:#left width:124
-		checkbox flagUnfogged height:16 pos:[137,29] tooltip:"Particles not faded by world fog (NodeFlag 0x20000)"
+		checkbox chkUnfogged height:16 pos:[137,29] tooltip:"Particles not faded by world fog (NodeFlag 0x20000)"
 		label    lu3 "Scaling ............................" height:16 pos:[12,50] align:#left width:124
-		checkbox flagScaling  height:16 pos:[137,50] tooltip:"Particle scale follows host actor's world scale (NodeFlag 0x40000)"
+		checkbox chkScaling  height:16 pos:[137,50] tooltip:"Particle scale follows host actor's world scale (NodeFlag 0x40000)"
+		on chkUnshaded changed state do flagUnshaded = state
+		on chkUnfogged changed state do flagUnfogged = state
+		on chkScaling  changed state do flagScaling  = state
 		on params5 open do
 		(
+			chkUnshaded.checked = flagUnshaded
+			chkUnfogged.checked = flagUnfogged
+			chkScaling.checked  = flagScaling
 			if ::WdxL != undefined then
 			(
 				try (params5.title       = ::WdxL.t "popcorn_render_flags_title")       catch ()
 				try (lu1.text            = ::WdxL.t "popcorn_unshaded_lbl")             catch ()
-				try (flagUnshaded.tooltip= ::WdxL.t "popcorn_unshaded_tip")             catch ()
+				try (chkUnshaded.tooltip = ::WdxL.t "popcorn_unshaded_tip")             catch ()
 				try (lu2.text            = ::WdxL.t "popcorn_unfogged_lbl")             catch ()
-				try (flagUnfogged.tooltip= ::WdxL.t "popcorn_unfogged_tip")             catch ()
+				try (chkUnfogged.tooltip = ::WdxL.t "popcorn_unfogged_tip")             catch ()
 				try (lu3.text            = ::WdxL.t "popcorn_scaling_lbl")              catch ()
-				try (flagScaling.tooltip = ::WdxL.t "popcorn_scaling_tip")              catch ()
+				try (chkScaling.tooltip  = ::WdxL.t "popcorn_scaling_tip")              catch ()
 			)
 		)
 	)

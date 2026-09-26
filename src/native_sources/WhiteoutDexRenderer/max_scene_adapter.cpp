@@ -1001,6 +1001,27 @@ static std::string ArchivePathFromTexturePath(const std::wstring& filePath) {
     return out;
 }
 
+// PopcornFX paths in MDX are sometimes authored without an extension (the
+// engine appends one at load time), or with an unrelated one (".xml"). The
+// content provider's .pkb <-> .pkfx alias swap only runs for a path ending in
+// one of those two, so read any other as .pkb, the Reforged runtime payload.
+// The scene keeps the path as authored; this is only the name we ask for.
+static std::string EnsurePopcornExtension(const std::string& path) {
+    if (path.empty())
+        return path;
+    const std::size_t lastSlash = path.find_last_of("/\\");
+    const std::size_t lastDot = path.find_last_of('.');
+    if (lastDot == std::string::npos || (lastSlash != std::string::npos && lastDot < lastSlash))
+        return path + ".pkb";
+    std::string ext = path.substr(lastDot);
+    for (char& c : ext)
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a');
+    if (ext == ".pkb" || ext == ".pkfx")
+        return path;
+    return path.substr(0, lastDot) + ".pkb";
+}
+
 i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId,
                                  u32 wrapFlags, bool skipMaxBitmapManager) {
     if (replaceableId != 0) {
@@ -1914,12 +1935,14 @@ void MaxSceneAdapter::CollectParticleEmitters() {
                 isPopcorn = true;
         }
         if (isPopcorn) {
-            // BlizzPopcorn (Reforged corn emitter). The popcornPath string is
-            // either the resolved local-disk .pkb / .pkfx the importer
-            // extracted, or — when extraction failed — the canonical relative
-            // path like "Effects\Foo.pkb"; the renderer's content provider
-            // handles both. animVisibilityGuide comes from rawFlags (engine's
-            // raw passthrough); empty means "always on".
+            // BlizzPopcorn (Reforged corn emitter). Like Wc3Particles2's
+            // texture, popcornPrefix holds the game directory and popcornPath
+            // the file: the one on disk the importer extracted or the file
+            // dialog picked, or just a name after an archive pick (a whole
+            // game path from before the prefix existed). The content provider
+            // reads either a disk file or a game path. animVisibilityGuide
+            // comes from rawFlags (engine's raw passthrough); empty means
+            // "always on".
             PopcornEmitterInfo pi;
             pi.emitterId = popcornEmitterId++;
             pi.node = node;
@@ -1928,21 +1951,41 @@ void MaxSceneAdapter::CollectParticleEmitters() {
             // the field defaulted to 0 in PopcornEmitterInfo.
             pi.cornEffectsScaling = PB2BoolOr(baseObj, L"flagScaling", 0, false);
 
-            // TYPE_STRING isn't covered by the typed PB2 helpers — read both
+            // TYPE_STRING isn't covered by the typed PB2 helpers — read the
             // string params through the FindPB2Param scaffold.
-            auto readStr = [&](const wchar_t* name, std::string& out) {
+            auto readWStr = [&](const wchar_t* name, std::wstring& out) {
                 FindPB2Param(static_cast<Animatable*>(baseObj), name,
                              [&](IParamBlock2* pblock, ParamID pid, ParamDef&) {
                                  const MCHAR* sv = nullptr;
                                  Interval iv = FOREVER;
                                  pblock->GetValue(pid, 0, sv, iv);
-                                 if (sv && sv[0]) {
-                                     std::wstring wp(sv);
-                                     out.assign(wp.begin(), wp.end());
-                                 }
+                                 if (sv && sv[0])
+                                     out = sv;
                              });
             };
-            readStr(L"popcornPath", pi.pkbPath);
+            auto readStr = [&](const wchar_t* name, std::string& out) {
+                std::wstring wp;
+                readWStr(name, wp);
+                if (!wp.empty())
+                    out.assign(wp.begin(), wp.end());
+            };
+            std::wstring pathW, prefixW;
+            readWStr(L"popcornPath", pathW);
+            readWStr(L"popcornPrefix", prefixW);
+            const bool onDisk =
+                (pathW.size() >= 3 && pathW[1] == L':') ||
+                (pathW.size() >= 2 && (pathW[0] == L'\\' || pathW[0] == L'/') &&
+                 (pathW[1] == L'\\' || pathW[1] == L'/'));
+            if (!pathW.empty() && !onDisk) {
+                pathW = prefixW + pathW;
+            } else if (onDisk && !prefixW.empty()) {
+                // The extracted file is gone (the scene moved machines, the
+                // temp folder was cleared): read the game path instead.
+                std::error_code existsEc;
+                if (!std::filesystem::is_regular_file(std::filesystem::path(pathW), existsEc))
+                    pathW = prefixW + pathW.substr(pathW.find_last_of(L"\\/") + 1);
+            }
+            pi.pkbPath = EnsurePopcornExtension(std::string(pathW.begin(), pathW.end()));
             readStr(L"rawFlags", pi.animVisibilityGuide);
             // NeoDex rebuilds an empty rawFlags from its flag checkboxes, as
             // the exporter does (NeoDexSceneParser LoadCornEmitter).

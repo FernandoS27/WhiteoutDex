@@ -98,6 +98,52 @@ int32_t extractCornColorTrack(ReferenceTarget* ref, const wchar_t* paramName,
     return idx;
 }
 
+// ── Effect path ──
+//
+// CORN carries a game path ("SharedFX/Hero_Glow/Hero_Glow.pkfx"). As with
+// Wc3Particles1's model and Wc3Particles2's texture, the plugin keeps the
+// game directory in popcornPrefix and the file in popcornPath — a file on
+// disk after an import (the effect the importer extracted) or after "Browse
+// Popcorn FX File" — so the MDX gets prefix + its file name.
+
+bool isDiskPath(const std::wstring& p) {
+    const bool drive = p.size() >= 3 && p[1] == L':' && (p[2] == L'\\' || p[2] == L'/');
+    const bool unc = p.size() >= 2 && (p[0] == L'\\' || p[0] == L'/') &&
+                     (p[1] == L'\\' || p[1] == L'/');
+    return drive || unc;
+}
+
+// The game path a disk path stands for when there is no prefix: every scene
+// imported before popcornPrefix existed. The importer extracted to
+// <model folder>\<MDX path>, and a model folder is itself a game path:
+//   ...\WhiteoutDexCASC\_de.w3mod\units\forsaken\hero_putress\SharedFX/Hero_Glow/Hero_Glow.pkb
+//   ...\WhiteoutDexCASC\units\human\rifleman\Units\Human\Rifleman\RiflemanAttack.pkb
+// so the path starts at the LAST game root folder, not the first. Nothing
+// matching leaves the file name, which at least is not a disk path.
+std::wstring gamePathFromDiskPath(const std::wstring& p) {
+    static const wchar_t* const kRoots[] = {
+        L"abilities", L"buildings", L"doodads", L"environment", L"objects",
+        L"replaceabletextures", L"sharedfx", L"splats", L"terrainart",
+        L"textures", L"ui", L"units",
+    };
+    const std::size_t lastSep = p.find_last_of(L"\\/");
+    if (lastSep == std::wstring::npos) return p;
+    // Directory segments back to front; `end` is the separator after one.
+    std::size_t end = lastSep;
+    while (end > 0) {
+        const std::size_t sep = p.find_last_of(L"\\/", end - 1);
+        const std::size_t begin = sep == std::wstring::npos ? 0 : sep + 1;
+        std::wstring seg = p.substr(begin, end - begin);
+        for (wchar_t& c : seg)
+            if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+        for (const wchar_t* root : kRoots)
+            if (seg == root) return p.substr(begin);
+        if (sep == std::wstring::npos) break;
+        end = sep;
+    }
+    return p.substr(lastSep + 1);
+}
+
 } // anonymous namespace
 
 // Popcorn data is stored in ir::ParticleEmitter with variant=3.
@@ -161,10 +207,35 @@ void extractPopcorn(const std::vector<core::SceneNode>& nodes,
             return u8;
         };
 
-        // Effect file path
-        std::wstring pathW;
-        if (PBR::readStringByName(ref, L"popcornPath", t, pathW) && !pathW.empty())
-            pe.modelPath = wideToUtf8(pathW);
+        // Effect file path: prefix + file name, never a file on disk.
+        std::wstring pathW, prefixW;
+        if (PBR::readStringByName(ref, L"popcornPath", t, pathW) && !pathW.empty()) {
+            PBR::readStringByName(ref, L"popcornPrefix", t, prefixW);
+            std::wstring gamePath;
+            if (!isDiskPath(pathW)) {
+                // A game path, whole ("SharedFX\Hero_Glow\Hero_Glow.pkfx" from
+                // an archive pick made before the prefix existed) or just the
+                // file name after the prefix.
+                gamePath = prefixW + pathW;
+            } else if (!prefixW.empty()) {
+                gamePath = prefixW + pathW.substr(pathW.find_last_of(L"\\/") + 1);
+            } else {
+                gamePath = gamePathFromDiskPath(pathW);
+                reporter.warning(
+                    L"Popcorn FX path is a file on disk with no path prefix, exported as " +
+                    gamePath + L" (set the prefix, or pick it with Browse Game Archives, "
+                    L"if that is wrong): " + pathW,
+                    sn.maxNode->GetName());
+            }
+            // Every Blizzard CORN names the .pkfx, and CASC ships only the
+            // baked .pkb — which is what the importer extracted, and what
+            // the archive picker lists. Write the name the game's own models
+            // use.
+            if (gamePath.size() > 4 &&
+                _wcsicmp(gamePath.c_str() + gamePath.size() - 4, L".pkb") == 0)
+                gamePath.replace(gamePath.size() - 4, 4, L".pkfx");
+            pe.modelPath = wideToUtf8(gamePath);
+        }
 
         // PopcornFX anim-visibility gate. The scripted plugin's `rawFlags`
         // carries the raw comma-separated guide string (e.g. "Stand=on,
