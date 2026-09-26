@@ -380,6 +380,20 @@ void collectMeshProblems(INode* root, std::vector<Problem>& out) {
         if (n == root) return;
         if (!isMeshGeometryNode(n)) return;
 
+        // 0) Multi/Sub-Object material. The exporter writes one material per
+        //    mesh (one geoset each), so the mesh has to be split per
+        //    sub-material first. Other checks still run: the split pieces
+        //    inherit whatever else is wrong and are re-scanned afterwards.
+        if (Mtl* m = n->GetMtl(); m && m->ClassID() == MULTI_MATERIAL_CLASS_ID) {
+            Problem p;
+            p.type = ProblemType::MultiMaterialMesh;
+            p.node = n;
+            p.mtl  = m;
+            p.displayName = std::wstring(n->GetName()) + L"  [Multi/Sub-Object: " +
+                            std::to_wstring(m->NumSubMtls()) + L"]";
+            out.push_back(p);
+        }
+
         // 1) Edit_Mesh above Skin
         if (hasEditMeshAboveSkin(n)) {
             Problem p;

@@ -944,7 +944,13 @@ add_custom_target(deploy_output
 #   scripts/{macroscripts,pre_startup_scripts,post_startup_scripts,scripted_plugins}/
 #   shaders/ lang/
 #   native plugins/Max<year>/*.{dle,dlo,dlx,bmi,dll}
-set(_appdata_root "$ENV{APPDATA}/Autodesk/ApplicationPlugins/WhiteoutDex")
+#
+# Override with -DWDX_DEPLOY_DIR=<path> to deploy elsewhere, e.g. the per-machine
+# C:/ProgramData/Autodesk/ApplicationPlugins/WhiteoutDex the installer uses.
+file(TO_CMAKE_PATH "$ENV{APPDATA}/Autodesk/ApplicationPlugins/WhiteoutDex" _appdata_default)
+set(WDX_DEPLOY_DIR "${_appdata_default}" CACHE PATH
+    "Target directory of the deploy_appdata target")
+file(TO_CMAKE_PATH "${WDX_DEPLOY_DIR}" _appdata_root)
 
 set(_appdata_cmds
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_appdata_root}/native plugins"

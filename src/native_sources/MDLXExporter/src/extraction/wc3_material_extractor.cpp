@@ -1,6 +1,9 @@
 // MDLXExporter — Wc3Material extractor implementation
 #include "wc3_material_extractor.h"
 #include "../mdx_class_ids.h"
+#include "../material_fix_settings.h"
+
+#include <wdx_foreign_material.h>
 
 #include <scene/paramblock_reader.h>
 #include <animation/global_sequence_helper.h>
@@ -12,9 +15,12 @@
 #include <istdplug.h>
 #include <control.h>
 #include <iparamb2.h>
+#include <IFileResolutionManager.h>
+#include <modstack.h>
 #include <tchar.h>
 #include <windows.h>
 
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <algorithm>
@@ -165,12 +171,148 @@ std::string extractBitmapDiskPath(Texmap* tex) {
     return {};
 }
 
+// ── Texture source resolution ──────────────────────────────────────
+// A bitmap whose file is gone cannot be converted. NeoDex scenes are the
+// common case: the NeoDex importer decodes every BLP to
+// %TEMP%\BLP_Textures\<name>.tga and empties that folder on the next import,
+// or, when it found no texture at all, points the bitmap at a <name>.tga next
+// to the model that never existed. The texture itself usually still sits near
+// the scene, under its own name with another extension (the original .blp).
+
+namespace fs = std::filesystem;
+
+std::wstring utf8ToWide(const std::string& s) {
+    if (s.empty()) return {};
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (len <= 0) return {};
+    std::wstring w(static_cast<size_t>(len - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), len);
+    return w;
+}
+
+std::wstring lowerWide(std::wstring s) {
+    std::transform(s.begin(), s.end(), s.begin(), ::towlower);
+    return s;
+}
+
+// Formats texture conversion can decode, in the order a lookup prefers them.
+const wchar_t* const kTextureExts[] = {
+    L".blp", L".dds", L".tga", L".png", L".bmp", L".jpg", L".jpeg"
+};
+
+bool isTextureExt(const std::wstring& lowerExt) {
+    for (const wchar_t* e : kTextureExts)
+        if (lowerExt == e) return true;
+    return false;
+}
+
+// Texture files under the scene folder by lower-case name without extension.
+// Built on the first miss of an export and reused until the scene folder
+// changes; extractMaterials() clears it at the start of every export.
+struct SceneTextureIndex {
+    fs::path root;
+    bool built = false;
+    std::unordered_map<std::wstring, std::vector<fs::path>> byStem;
+};
+SceneTextureIndex g_sceneTextures;
+
+void buildSceneTextureIndex(const fs::path& root) {
+    g_sceneTextures = {};
+    g_sceneTextures.root = root;
+    g_sceneTextures.built = true;
+    // Bounded: a scene saved at a drive root or in Downloads must not stall
+    // the export. Four folder levels cover "Textures\", "units\x\y\" and the
+    // like; the entry cap stops runaway trees.
+    constexpr int    kMaxDepth   = 4;
+    constexpr size_t kMaxEntries = 50000;
+    std::error_code ec;
+    fs::recursive_directory_iterator it(
+        root, fs::directory_options::skip_permission_denied, ec);
+    size_t visited = 0;
+    for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (++visited > kMaxEntries) break;
+        std::error_code fec;
+        if (it->is_directory(fec)) {
+            if (it.depth() + 1 >= kMaxDepth) it.disable_recursion_pending();
+            continue;
+        }
+        if (!it->is_regular_file(fec)) continue;
+        const fs::path& p = it->path();
+        if (!isTextureExt(lowerWide(p.extension().wstring()))) continue;
+        g_sceneTextures.byStem[lowerWide(p.stem().wstring())].push_back(p);
+    }
+}
+
+// The file a missing texture source most likely is, or `diskPath` unchanged.
+// Looks, in order, beside the missing file, in the scene folder under the MDX
+// sub path and directly, then asks Max's own asset resolution (project
+// folder, scene folder, user map paths — IFileResolutionManager), and last
+// searches the scene folder tree. Each place is tried with the original
+// extension first, then every other format conversion can read.
+std::string resolveTextureSource(const std::string& diskPath,
+                                 const std::string& mdxPath) {
+    if (diskPath.empty()) return diskPath;
+    const fs::path given(utf8ToWide(diskPath));
+    std::error_code ec;
+    if (fs::exists(given, ec)) return diskPath;
+
+    const std::wstring stem = given.stem().wstring();
+    if (stem.empty()) return diskPath;
+    std::vector<std::wstring> exts;
+    const std::wstring givenExt = lowerWide(given.extension().wstring());
+    if (isTextureExt(givenExt)) exts.push_back(givenExt);
+    for (const wchar_t* e : kTextureExts)
+        if (givenExt != e) exts.push_back(e);
+
+    fs::path sceneDir;
+    if (Interface* ip = GetCOREInterface()) {
+        const MSTR scene = ip->GetCurFilePath();
+        if (scene.Length() > 0) sceneDir = fs::path(scene.data()).parent_path();
+    }
+
+    std::vector<fs::path> dirs;
+    if (given.has_parent_path()) dirs.push_back(given.parent_path());
+    if (!sceneDir.empty()) {
+        std::wstring rel = utf8ToWide(mdxPath);
+        std::replace(rel.begin(), rel.end(), L'\\', L'/');
+        const fs::path relDir = fs::path(rel).parent_path();
+        if (!relDir.empty()) dirs.push_back(sceneDir / relDir);
+        dirs.push_back(sceneDir);
+    }
+    for (const fs::path& dir : dirs)
+        for (const std::wstring& ext : exts) {
+            const fs::path p = dir / (stem + ext);
+            if (fs::is_regular_file(p, ec)) return wstrToUtf8(p.wstring().c_str());
+        }
+
+    if (IFileResolutionManager* frm = IFileResolutionManager::GetInstance())
+        for (const std::wstring& ext : exts) {
+            const MSTR found = frm->GetFullFilePath((stem + ext).c_str(),
+                                   MaxSDK::AssetManagement::kBitmapAsset);
+            if (found.Length() > 0 && fs::is_regular_file(fs::path(found.data()), ec))
+                return wstrToUtf8(found.data());
+        }
+
+    if (!sceneDir.empty()) {
+        if (!g_sceneTextures.built || g_sceneTextures.root != sceneDir)
+            buildSceneTextureIndex(sceneDir);
+        auto hit = g_sceneTextures.byStem.find(lowerWide(stem));
+        if (hit != g_sceneTextures.byStem.end())
+            for (const std::wstring& ext : exts)
+                for (const fs::path& p : hit->second)
+                    if (lowerWide(p.extension().wstring()) == ext)
+                        return wstrToUtf8(p.wstring().c_str());
+    }
+    return diskPath;
+}
+
 } // end anonymous namespace — findOrAddTexture is exported via header
 
 int32_t findOrAddTexture(ir::IRModel& model, const std::string& path,
                          int32_t replaceableId, bool wrapU, bool wrapV,
-                         const std::string& sourceDiskPath)
+                         const std::string& sourceDiskPathIn)
 {
+    const std::string sourceDiskPath = resolveTextureSource(sourceDiskPathIn, path);
     // Look for an existing match
     for (size_t i = 0; i < model.textures.size(); i++) {
         auto& t = model.textures[i];
@@ -317,11 +459,9 @@ static bool findAnimParam(ReferenceTarget* ref, const wchar_t* name,
                           IParamBlock2*& outPB, ParamID& outPID)
 {
     if (!ref) return false;
-    for (int i = 0; i < ref->NumParamBlocks(); i++) {
-        IParamBlock2* pb = ref->GetParamBlock(i);
-        if (!pb) continue;
-        ParamBlockDesc2* desc = pb->GetDesc();
-        if (!desc) continue;
+    auto search = [&](IParamBlock2* pb) {
+        ParamBlockDesc2* desc = pb ? pb->GetDesc() : nullptr;
+        if (!desc) return false;
         for (int j = 0; j < desc->Count(); j++) {
             ParamID pid = desc->IndextoID(j);
             const ParamDef& pd = desc->GetParamDef(pid);
@@ -331,7 +471,16 @@ static bool findAnimParam(ReferenceTarget* ref, const wchar_t* name,
                 return true;
             }
         }
-    }
+        return false;
+    };
+    for (int i = 0; i < ref->NumParamBlocks(); i++)
+        if (search(ref->GetParamBlock(i))) return true;
+    // Some classes keep their IParamBlock2 as a plain reference without
+    // exposing it through GetParamBlock — StdUVGen, whose U_Offset / V_Offset
+    // / W_Angle / tiling tracks a bitmap's texture animation lives on, among
+    // them. Without this a UV animation keyed on the bitmap alone was lost.
+    for (int i = 0; i < ref->NumRefs(); i++)
+        if (search(dynamic_cast<IParamBlock2*>(ref->GetReference(i)))) return true;
     return false;
 }
 
@@ -366,17 +515,25 @@ static BitmapTex* unwrapBitmapTex(Texmap* tex) {
 }
 
 // Controller on a StdUVGen track, looked up by PB2 internal name with a
-// sub-anim index fallback for older Max versions. Sub-anim indices (stable
-// across Max versions): 0=U_Offset, 1=V_Offset, 2=U_Tiling, 3=V_Tiling,
-// 4=U_Angle, 5=V_Angle, 6=W_Angle.
+// sub-anim index fallback. Track indices: 0=U_Offset, 1=V_Offset,
+// 2=U_Tiling, 3=V_Tiling, 4=U_Angle, 5=V_Angle, 6=W_Angle.
+// StdUVGen keeps these in an old-style (non-PB2) parameter block that is its
+// single sub-anim, so the tracks are one level down: uvGen->SubAnim(0) is the
+// block, and the block's sub-anim i is param i's controller (null while the
+// param is not animated). MAXScript flattens that level, which is why
+// `coords[1]` there is U_Offset. Measured in Max 2027: NumSubs() == 1.
 static Control* getUVGenController(StdUVGen* uvGen, const wchar_t* name,
                                    int subAnimIdx) {
     if (!uvGen) return nullptr;
     if (Control* c = getParamController(uvGen, name)) return c;
-    if (subAnimIdx >= 0 && subAnimIdx < uvGen->NumSubs()) {
-        Animatable* anim = uvGen->SubAnim(subAnimIdx);
-        if (anim) return GetControlInterface(anim);
-    }
+    if (subAnimIdx < 0) return nullptr;
+    Animatable* holder = uvGen;
+    if (uvGen->NumSubs() == 1 && uvGen->SubAnim(0) &&
+        uvGen->SubAnim(0)->NumSubs() > subAnimIdx)
+        holder = uvGen->SubAnim(0);
+    if (subAnimIdx < holder->NumSubs())
+        if (Animatable* anim = holder->SubAnim(subAnimIdx))
+            return GetControlInterface(anim);
     return nullptr;
 }
 
@@ -424,7 +581,7 @@ static UVAnimControllers resolveUVAnimControllers(ReferenceTarget* mtlRef,
 
     uv.uOffset = pick(L"anim_UOffset", L"U_Offset", 0, L"Wc3_U_Offset");
     uv.vOffset = pick(L"anim_VOffset", L"V_Offset", 1, L"Wc3_V_Offset");
-    uv.wOffset = pick(L"anim_WOffset", nullptr,    -1, nullptr);
+    uv.wOffset = pick(L"anim_WOffset", nullptr,    -1, L"Wc3_W_Offset");
     uv.wAngle  = pick(L"anim_WAngle",  L"W_Angle",  6, L"Wc3_W_Angle");
     uv.uTiling = pick(L"anim_UTiling", L"U_Tiling", 2, L"Wc3_U_Tiling");
     uv.vTiling = pick(L"anim_VTiling", L"V_Tiling", 3, L"Wc3_V_Tiling");
@@ -503,9 +660,9 @@ static bool isStepBezierController(Control* ctrl) {
 }
 
 // Read a float controller's keys into parallel vectors: time, value, in-tangent,
-// out-tangent. hasTangents is set to true iff the controller is Hermite or
-// Bezier (only those have meaningful tangents). For Linear/TCB/other, tangents
-// are zero-filled.
+// out-tangent. hasTangents is set to true iff the controller is Bezier (MDX
+// Bezier control points) or TCB (MDX Hermite tangents). For Linear/other,
+// tangents are zero-filled.
 static void readFloatKeys(Control* ctrl,
                           std::vector<TimeValue>& times,
                           std::vector<float>& values,
@@ -524,23 +681,27 @@ static void readFloatKeys(Control* ctrl,
     times.reserve(n); values.reserve(n);
     inTans.reserve(n); outTans.reserve(n);
 
-    if (cidA == HYBRIDINTERP_FLOAT_CLASS_ID) {
+    const bool tcb = (cidA == TCBINTERP_FLOAT_CLASS_ID);
+    if (cidA == HYBRIDINTERP_FLOAT_CLASS_ID || tcb) {
         // NeoDex-compatible Bezier tangent extraction (Wc3Animation.ms FloatKeys +
         // ProcessBezier). Max's IBezFloatKey.intan/.outtan are internal tangent
         // SLOPES (value/tick), NOT the control-point values that MDX expects.
         // NeoDex solves this by sampling the controller at 1/3 and 2/3 points
         // between each pair of keys, then applying BezierInTan/BezierOutTan
         // formulas to reconstruct the cubic Bezier control points.
+        //
+        // A TCB segment without ease is a cubic in time as well, so the same
+        // control points hold it exactly; MDX Hermite wants them as
+        // derivatives: out = 3*(P1 - P0), in = 3*(P3 - P2).
         hasTangents = true;
 
         // ── Pass 1: read key times and evaluate values ──
         struct TempKey { TimeValue time; float value; float sampleIn; float sampleOut; };
         std::vector<TempKey> tk(n);
         for (int i = 0; i < n; i++) {
-            IBezFloatKey k; ikc->GetKey(i, &k);
-            tk[i].time = k.time;
+            tk[i].time = ctrl->GetKeyTime(i);
             Interval valid = FOREVER;
-            ctrl->GetValue(k.time, &tk[i].value, valid);
+            ctrl->GetValue(tk[i].time, &tk[i].value, valid);
         }
 
         // ── Pass 2: sample at 1/3 and 2/3 points between adjacent keys ──
@@ -601,27 +762,19 @@ static void readFloatKeys(Control* ctrl,
                 outTan = val;
             }
 
-            // Snap tangents near value (NeoDex ProcessBezier lines 293-296)
-            if (fabsf(inTan - val) < 0.01f) inTan = val;
-            if (fabsf(outTan - val) < 0.01f) outTan = val;
+            if (tcb) {
+                inTan  = 3.0f * (val - inTan);
+                outTan = 3.0f * (outTan - val);
+            } else {
+                // Snap tangents near value (NeoDex ProcessBezier lines 293-296)
+                if (fabsf(inTan - val) < 0.01f) inTan = val;
+                if (fabsf(outTan - val) < 0.01f) outTan = val;
+            }
 
             times.push_back(tk[i].time);
             values.push_back(val);
             inTans.push_back(inTan);
             outTans.push_back(outTan);
-        }
-    } else if (cidA == TCBINTERP_FLOAT_CLASS_ID) {
-        // TCB: store as Hermite-style tangents (tens/cont/bias converted)
-        hasTangents = true;
-        for (int i = 0; i < n; i++) {
-            ITCBFloatKey k; ikc->GetKey(i, &k);
-            times.push_back(k.time);
-            values.push_back(k.val);
-            // Use zero tangents — TCB→Bezier conversion is non-trivial;
-            // MDX readers that receive Hermite with zero tangents will
-            // interpolate smoothly which is visually close enough.
-            inTans.push_back(0.0f);
-            outTans.push_back(0.0f);
         }
     } else if (cidA == LININTERP_FLOAT_CLASS_ID) {
         // Linear: no tangents used
@@ -722,8 +875,9 @@ static int32_t extractVec3FromTwoCtrls(Control* ctrlU, Control* ctrlV,
 }
 
 // Extract UV rotation from the W-angle controller (degrees → quaternion
-// around Z). Always uses Linear interpolation; Bezier tangent→quat
-// conversion is non-trivial and rarely needed for UV rotation.
+// around Z). Uses Linear interpolation, or DontInterp for step keys;
+// Bezier tangent→quat conversion is non-trivial and rarely needed for UV
+// rotation.
 static int32_t extractQuatFromAngleCtrl(Control* ctrl, ir::IRModel& model)
 {
     if (!ctrl) return -1;
@@ -731,7 +885,8 @@ static int32_t extractQuatFromAngleCtrl(Control* ctrl, ir::IRModel& model)
     if (keyTimes.empty()) return -1;
 
     ir::Track<Quat> track;
-    track.interpolation = ir::InterpolationType::Linear;
+    track.interpolation = isStepBezierController(ctrl) ? ir::InterpolationType::None
+                                                       : ir::InterpolationType::Linear;
 
     for (TimeValue t : keyTimes) {
         float angleDeg = evalFloat(ctrl, t, 0.0f);
@@ -748,13 +903,22 @@ static int32_t extractQuatFromAngleCtrl(Control* ctrl, ir::IRModel& model)
     return idx;
 }
 
+// The layer alpha controller: "opacity" on Wc3Material, "Alpha" on the NeoDex
+// material (same 0..100 range).
+static Control* opacityController(ReferenceTarget* mtlRef)
+{
+    if (Control* c = getParamController(mtlRef, L"opacity")) return c;
+    return getParamController(mtlRef, L"Alpha");
+}
+
 // Extract the opacity track (KMTA) from the "opacity" param. Values are
 // stored 0..100 in the Wc3Material; MDX expects 0..1.
+
 static int32_t extractOpacityTrack(ReferenceTarget* mtlRef,
                                    ir::InterpolationType interp,
                                    ir::IRModel& model)
 {
-    Control* ctrl = getParamController(mtlRef, L"opacity");
+    Control* ctrl = opacityController(mtlRef);
     if (!ctrl) return -1;
 
     std::vector<TimeValue> times;
@@ -1068,6 +1232,29 @@ static int32_t extractVec3FromThreeCtrls(Control* ctrlA, Control* ctrlB,
 // Reset at the start of each top-level extractMaterials() call.
 static std::unordered_map<Texmap*, int32_t> g_texAnimCache;
 
+// Interpolation for a TXAN track built from several UV controllers. The
+// importer splits an MDX DontInterp track (sprite-sheet flip-books) into
+// step-keyed bezier controllers, so the track is DontInterp when every keyed
+// controller is step-keyed. Otherwise the first controller decides, and
+// anything unrecognised is sampled linearly.
+static ir::InterpolationType uvTrackInterp(std::initializer_list<Control*> ctrls)
+{
+    bool anyKeyed = false, allStep = true;
+    Control* first = nullptr;
+    for (Control* c : ctrls) {
+        if (!c) continue;
+        if (!first) first = c;
+        if (c->NumKeys() <= 0) continue;
+        anyKeyed = true;
+        if (!isStepBezierController(c)) allStep = false;
+    }
+    if (anyKeyed && allStep) return ir::InterpolationType::None;
+    ir::InterpolationType interp = detectInterpFromController(first);
+    if (interp == ir::InterpolationType::None)
+        interp = ir::InterpolationType::Linear;
+    return interp;
+}
+
 // Extract TextureAnimation for a Wc3Material layer. The controllers are
 // resolved from the layer's diffuse texmap (Wc3Bitmap anim_* params, with
 // StdUVGen / legacy-material fallbacks — see resolveUVAnimControllers).
@@ -1096,12 +1283,8 @@ static int32_t extractTextureAnimationFromMaterial(ReferenceTarget* mtlRef,
 
     // Translation: U offset + V offset + W offset → Vec3(U, V, W), U negated
     if (uv.uOffset || uv.vOffset || uv.wOffset) {
-        ir::InterpolationType interp =
-            uv.uOffset ? detectInterpFromController(uv.uOffset)
-          : uv.vOffset ? detectInterpFromController(uv.vOffset)
-                       : detectInterpFromController(uv.wOffset);
-        if (interp == ir::InterpolationType::None)
-            interp = ir::InterpolationType::Linear;
+        const ir::InterpolationType interp =
+            uvTrackInterp({uv.uOffset, uv.vOffset, uv.wOffset});
 
         ta.translationTrackIndex = extractVec3FromThreeCtrls(
             uv.uOffset, uv.vOffset, uv.wOffset,
@@ -1128,11 +1311,8 @@ static int32_t extractTextureAnimationFromMaterial(ReferenceTarget* mtlRef,
 
     // Scale: U tiling + V tiling → Vec3(U, V, 1)
     if (uv.uTiling || uv.vTiling) {
-        ir::InterpolationType interp =
-            uv.uTiling ? detectInterpFromController(uv.uTiling)
-                       : detectInterpFromController(uv.vTiling);
-        if (interp == ir::InterpolationType::None)
-            interp = ir::InterpolationType::Linear;
+        const ir::InterpolationType interp =
+            uvTrackInterp({uv.uTiling, uv.vTiling});
 
         ta.scaleTrackIndex = extractVec3FromTwoCtrls(
             uv.uTiling, uv.vTiling,
@@ -1243,10 +1423,13 @@ std::string filenameOnly(const std::string& path) {
 // On success, `outFirstTexIndex` receives the first IFL texture's index so
 // the caller can still set a static `layer.textureRefs[0]` to something
 // sensible (most tools ignore it when a KMTF is present, but some validate it).
+// `prefix` is the material's MDX folder for the frames (NeoDex keeps it in
+// the material's `path`); each frame's IFL line is also its conversion source.
 int32_t extractIflAnimation(BitmapTex* bmpTex, ir::IRModel& model,
                              int32_t defaultReplaceableId,
                              bool defaultWrapU, bool defaultWrapV,
-                             int32_t& outFirstTexIndex)
+                             int32_t& outFirstTexIndex,
+                             const std::string& prefix = std::string())
 {
     outFirstTexIndex = -1;
     if (!bmpTex) return -1;
@@ -1262,13 +1445,25 @@ int32_t extractIflAnimation(BitmapTex* bmpTex, ir::IRModel& model,
 
     // Read the .ifl file's contents — one texture path per line
     std::vector<std::string> lines = readIflLines(iflPath);
+    // A frame as the MDX names it, and the file it comes from (IFL lines may
+    // be relative to the IFL's own folder).
+    auto mdxPathOf = [&](const std::string& line) {
+        return buildTexturePath(prefix, filenameOnly(line));
+    };
+    auto diskPathOf = [&](const std::string& line) {
+        const std::filesystem::path p(utf8ToWide(line));
+        if (p.is_absolute()) return line;
+        return wstrToUtf8((std::filesystem::path(utf8ToWide(iflPath)).parent_path() / p)
+                              .wstring().c_str());
+    };
     if (lines.size() < 2) {
         // Not an animated IFL — fall back to static texture using the
         // first line if any, otherwise caller's static path.
         if (lines.size() == 1) {
             outFirstTexIndex = findOrAddTexture(model,
-                filenameOnly(lines[0]),
-                defaultReplaceableId, defaultWrapU, defaultWrapV);
+                mdxPathOf(lines[0]),
+                defaultReplaceableId, defaultWrapU, defaultWrapV,
+                diskPathOf(lines[0]));
         }
         return -1;
     }
@@ -1282,8 +1477,9 @@ int32_t extractIflAnimation(BitmapTex* bmpTex, ir::IRModel& model,
     if (playbackRate <= 0.0001f) {
         // Invalid / unset — can't reconstruct timing. Fall back to 1 key.
         outFirstTexIndex = findOrAddTexture(model,
-            filenameOnly(lines[0]),
-            defaultReplaceableId, defaultWrapU, defaultWrapV);
+            mdxPathOf(lines[0]),
+            defaultReplaceableId, defaultWrapU, defaultWrapV,
+            diskPathOf(lines[0]));
         return -1;
     }
 
@@ -1299,9 +1495,8 @@ int32_t extractIflAnimation(BitmapTex* bmpTex, ir::IRModel& model,
     std::vector<uint32_t> texIndices;
     texIndices.reserve(lines.size());
     for (const std::string& raw : lines) {
-        std::string fn = filenameOnly(raw);
-        int32_t idx = findOrAddTexture(model, fn,
-            defaultReplaceableId, defaultWrapU, defaultWrapV);
+        int32_t idx = findOrAddTexture(model, mdxPathOf(raw),
+            defaultReplaceableId, defaultWrapU, defaultWrapV, diskPathOf(raw));
         texIndices.push_back(static_cast<uint32_t>(idx));
     }
     outFirstTexIndex = static_cast<int32_t>(texIndices[0]);
@@ -1419,31 +1614,49 @@ static int32_t extractExactFlipbook(ReferenceTarget* mtlRef, ir::IRModel& model,
     return idx;
 }
 
+// `textureLayerOnly`: export the diffuse as an ordinary texture even when the
+// material is a Team Color replaceable — the upper layer of the NeoDex Team
+// Color split (see extractWc3Material).
+// The Wc3Material "filterMode" dropdown (and Material Fix's FilterMode):
+// 1 None, 2 Transparent, 3 Blend, 4 Additive, 5 Add Alpha, 6 Modulate,
+// 7 Modulate 2x.
+static ir::BlendMode blendModeFromFilterDropdown(int filterMode) {
+    switch (filterMode) {
+    case 2: return ir::BlendMode::Transparent;
+    case 3: return ir::BlendMode::Blend;
+    case 4: return ir::BlendMode::Additive;
+    case 5: return ir::BlendMode::AddAlpha;
+    case 6: return ir::BlendMode::Modulate;
+    case 7: return ir::BlendMode::Modulate2x;
+    default: return ir::BlendMode::None;
+    }
+}
+
 ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
-                                  MaterialLevelProps& matProps)
+                                  MaterialLevelProps& matProps,
+                                  bool textureLayerOnly = false)
 {
     using PBR = core::ParamBlockReader;
     TimeValue t = 0;
+    // The NeoDex "Warcraft 3" material keeps several settings under other
+    // names or in another place than Wc3Material; those are read below
+    // only for it, so a Wc3Material never picks up a stray NeoDex name.
+    const bool neoDex = mtlRef->ClassID() == mdx_ids::NEODEX_MATERIAL;
 
     ir::MaterialLayer layer;
 
     // Filter mode (1-based: 1=None..7=Modulate2x)
     int filterMode = 1;
     PBR::readIntByName(mtlRef, L"filterMode", t, filterMode);
-    switch (filterMode) {
-    case 1: layer.blendMode = ir::BlendMode::None; break;
-    case 2: layer.blendMode = ir::BlendMode::Transparent; break;
-    case 3: layer.blendMode = ir::BlendMode::Blend; break;
-    case 4: layer.blendMode = ir::BlendMode::Additive; break;
-    case 5: layer.blendMode = ir::BlendMode::AddAlpha; break;
-    case 6: layer.blendMode = ir::BlendMode::Modulate; break;
-    case 7: layer.blendMode = ir::BlendMode::Modulate2x; break;
-    default: layer.blendMode = ir::BlendMode::None; break;
-    }
+    // NeoDex's own Team Color split draws the texture over the team colour,
+    // so an opaque texture layer becomes Transparent (NeoDexSceneParser
+    // LoadLayers).
+    if (textureLayerOnly && filterMode == 1) filterMode = 2;
+    layer.blendMode = blendModeFromFilterDropdown(filterMode);
 
     // Opacity (0–100 → 0.0–1.0)
     float opacity = 100.0f;
-    PBR::readFloatByName(mtlRef, L"opacity", t, opacity);
+    readFloatFB(mtlRef, L"opacity", L"Alpha", t, opacity);
     layer.alpha = opacity / 100.0f;
 
     // Flags (NeoDex: twosides, NoDephTest, NoDephSet — different spelling)
@@ -1491,9 +1704,19 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     PBR::readIntByName(mtlRef, L"priorityPlane", t, priority);
     matProps.priorityPlane = priority;
 
-    // Coord ID (-1 = default → 0)
+    // Coord ID. -1 is the default of a material made in Max, where the UV set
+    // is chosen on the bitmap instead (Map Channel 2 = the second unwrap), so
+    // take it from there — the same rule the preview renderer follows. The
+    // importer always writes an explicit value, so round trips are unaffected.
     int coordId = -1;
     PBR::readIntByName(mtlRef, L"coordId", t, coordId);
+    if (coordId < 0) {
+        Texmap* diffuseTex = nullptr;
+        readTexmapFB(mtlRef, L"diffuseMap", L"texture", diffuseTex);
+        if (BitmapTex* bmt = unwrapBitmapTex(diffuseTex))
+            if (StdUVGen* uv = bmt->GetUVGen())
+                coordId = uv->GetMapChannel() - 1;
+    }
     layer.uvSetIndex = (coordId >= 0) ? coordId : 0;
 
     // Material flags — ConstantColor
@@ -1538,6 +1761,7 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
             // Dropdown is 1-based; convert to MDX 0-based. Clamp negatives.
             matReplaceableId = std::max(0, dropdownVal - 1);
         }
+        if (textureLayerOnly) matReplaceableId = 0;
 
         // Debug log — write to %TEMP%\mdlx_replaceable_debug.log
         {
@@ -1572,8 +1796,20 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
 
         // Material-level replaceableId wins over bitmap-level (new scheme).
         // Only fall back to bitmap value if material didn't override.
-        if (matReplaceableId > 0) {
+        if (matReplaceableId > 0 || textureLayerOnly) {
             bmpProps.replaceableId = matReplaceableId;
+        }
+        // NeoDex keeps the wrap flags and SphereEnvMap on the material, and
+        // its bitmap tiling is crossed (U_Tile holds Wrap_Height), so the
+        // material params are the truth.
+        if (neoDex) {
+            BOOL wrap = FALSE;
+            if (PBR::readBoolByName(mtlRef, L"Wrap_Width", t, wrap))  bmpProps.wrapU = wrap != 0;
+            wrap = FALSE;
+            if (PBR::readBoolByName(mtlRef, L"Wrap_Height", t, wrap)) bmpProps.wrapV = wrap != 0;
+            BOOL env = FALSE;
+            if (PBR::readBoolByName(mtlRef, L"SphereEnvMap", t, env) && env)
+                bmpProps.sphereEnvMap = true;
         }
 
         // For Team Color / Team Glow / Cliff the MDX convention is an empty
@@ -1588,6 +1824,7 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         // (new scheme), but fall back to the bitmap's own prefixPath
         // for legacy materials that still carry it on the bitmap.
         std::string matPrefix = readMaterialPrefix(mtlRef, L"diffusePrefix");
+        if (matPrefix.empty() && neoDex) matPrefix = readMaterialPrefix(mtlRef, L"path");
         std::string prefix = !matPrefix.empty() ? matPrefix : bmpProps.prefixPath;
         std::string texPath = (matReplaceableId >= 1 && matReplaceableId <= 4)
                                   ? std::string()  // empty path for replaceables
@@ -1652,7 +1889,7 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         if (iflTrackIdx < 0 && bmpTexForIfl) {
             iflTrackIdx = extractIflAnimation(bmpTexForIfl, model,
                 bmpProps.replaceableId, bmpProps.wrapU, bmpProps.wrapV,
-                iflFirstTex);
+                iflFirstTex, prefix);
         }
 
         if (iflTrackIdx >= 0) {
@@ -1701,7 +1938,7 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
 
     // KMTA — opacity animation (0..100 → 0..1)
     {
-        Control* opacCtrl = getParamController(mtlRef, L"opacity");
+        Control* opacCtrl = opacityController(mtlRef);
         if (opacCtrl) {
             ir::InterpolationType interp = detectInterpFromController(opacCtrl);
             if (interp == ir::InterpolationType::Bezier &&
@@ -1712,6 +1949,12 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
             int32_t trackIdx = extractOpacityTrack(mtlRef, interp, model);
             if (trackIdx >= 0) {
                 layer.alphaTrackIndex = trackIdx;
+                // A keyed layer's static alpha is never shown: KMTA drives
+                // alpha, and a sequence without keys falls back to 1, not to
+                // the static value (mdx-m3-viewer sd.ts). An MDL layer has a
+                // static Alpha or an Alpha track, never both, and 1.0 is what
+                // Blizzard models carry, so write that rather than frame 0.
+                layer.alpha = 1.0f;
                 // Global sequence detection for the opacity track
                 int32_t gsIdx = detectAndRegisterGlobalSeq(opacCtrl, model);
                 if (gsIdx >= 0)
@@ -1737,44 +1980,50 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     // Writing them in a different order causes the shader to bind wrong
     // textures to wrong samplers → visual artifacts (wrong colors, broken
     // lighting). DO NOT reorder these blocks.
-    Texmap* normalMap = nullptr;
-    if (PBR::readTexmapByName(mtlRef, L"normalMap", normalMap) && normalMap) {
-        std::string prefix = readMaterialPrefix(mtlRef, L"normalPrefix");
-        std::string path = buildTexturePath(prefix, extractBitmapFileName(normalMap));
-        BitmapProperties bp = extractBitmapProperties(normalMap);
+    // NeoDex names its maps normal_map / orm_map / emissive_map /
+    // reflection_map with <kind>PrefixPath, keeps the MDX path its importer
+    // read in orig<Kind>Path, and shares the diffuse's Wrap_Width/Height.
+    auto addPbrMap = [&](const wchar_t* mapName, const wchar_t* prefixName,
+                         const wchar_t* neoMapName, const wchar_t* neoPrefixName,
+                         const wchar_t* neoOrigName, ir::TextureSlot slot) {
+        Texmap* map = nullptr;
+        const bool found = PBR::readTexmapByName(mtlRef, mapName, map) && map;
+        if (!found && !(neoDex && PBR::readTexmapByName(mtlRef, neoMapName, map) && map))
+            return;
+        BitmapProperties bp = extractBitmapProperties(map);
+        std::string path;
+        if (found) {
+            path = buildTexturePath(readMaterialPrefix(mtlRef, prefixName),
+                                    extractBitmapFileName(map));
+        } else {
+            // orig<Kind>Path is an MDX path after an import, but a disk path
+            // after a drag & drop onto the slot; only the former is usable.
+            const std::string orig = readMaterialPrefix(mtlRef, neoOrigName);
+            if (!orig.empty() && orig.find(':') == std::string::npos &&
+                orig.rfind("\\\\", 0) != 0)
+                path = orig;
+            else
+                path = buildTexturePath(readMaterialPrefix(mtlRef, neoPrefixName),
+                                        extractBitmapFileName(map));
+            BOOL wrap = FALSE;
+            if (PBR::readBoolByName(mtlRef, L"Wrap_Width", t, wrap))  bp.wrapU = wrap != 0;
+            wrap = FALSE;
+            if (PBR::readBoolByName(mtlRef, L"Wrap_Height", t, wrap)) bp.wrapV = wrap != 0;
+        }
         ir::TextureRef ref;
         ref.textureIndex = findOrAddTexture(model, path, bp.replaceableId,
                                             bp.wrapU, bp.wrapV,
-                                            extractBitmapDiskPath(normalMap));
-        ref.slot = ir::TextureSlot::Normal;
+                                            extractBitmapDiskPath(map));
+        ref.slot = slot;
         layer.textureRefs.push_back(ref);
-    }
+    };
 
-    Texmap* ormMap = nullptr;
-    if (PBR::readTexmapByName(mtlRef, L"ormMap", ormMap) && ormMap) {
-        std::string prefix = readMaterialPrefix(mtlRef, L"ormPrefix");
-        std::string path = buildTexturePath(prefix, extractBitmapFileName(ormMap));
-        BitmapProperties bp = extractBitmapProperties(ormMap);
-        ir::TextureRef ref;
-        ref.textureIndex = findOrAddTexture(model, path, bp.replaceableId,
-                                            bp.wrapU, bp.wrapV,
-                                            extractBitmapDiskPath(ormMap));
-        ref.slot = ir::TextureSlot::ORM;
-        layer.textureRefs.push_back(ref);
-    }
-
-    Texmap* emissiveMap = nullptr;
-    if (PBR::readTexmapByName(mtlRef, L"emissiveMap", emissiveMap) && emissiveMap) {
-        std::string prefix = readMaterialPrefix(mtlRef, L"emissivePrefix");
-        std::string path = buildTexturePath(prefix, extractBitmapFileName(emissiveMap));
-        BitmapProperties bp = extractBitmapProperties(emissiveMap);
-        ir::TextureRef ref;
-        ref.textureIndex = findOrAddTexture(model, path, bp.replaceableId,
-                                            bp.wrapU, bp.wrapV,
-                                            extractBitmapDiskPath(emissiveMap));
-        ref.slot = ir::TextureSlot::Emissive;
-        layer.textureRefs.push_back(ref);
-    }
+    addPbrMap(L"normalMap", L"normalPrefix", L"normal_map", L"normalPrefixPath",
+              L"origNormalPath", ir::TextureSlot::Normal);
+    addPbrMap(L"ormMap", L"ormPrefix", L"orm_map", L"ormPrefixPath",
+              L"origOrmPath", ir::TextureSlot::ORM);
+    addPbrMap(L"emissiveMap", L"emissivePrefix", L"emissive_map", L"emissivePrefixPath",
+              L"origEmissivePath", ir::TextureSlot::Emissive);
 
     // HD TeamColor Mask (slot position 4 — must come AFTER Emissive, BEFORE Env).
     // teamColorMap is the authoritative carrier for HD Team Color masks.
@@ -1812,32 +2061,37 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
                         << "\n";
                 }
             }
+        } else if (neoDex) {
+            // NeoDex marks the HD Team Color slot with teamColorTexId > 0.
+            int tcId = 0;
+            if (PBR::readIntByName(mtlRef, L"teamColorTexId", t, tcId) && tcId > 0) {
+                BOOL wrapU = FALSE, wrapV = FALSE;
+                PBR::readBoolByName(mtlRef, L"Wrap_Width", t, wrapU);
+                PBR::readBoolByName(mtlRef, L"Wrap_Height", t, wrapV);
+                ir::TextureRef tcRef;
+                tcRef.textureIndex = findOrAddTexture(model, std::string(), 1,
+                                                      wrapU != 0, wrapV != 0);
+                tcRef.slot = ir::TextureSlot::TeamColor;
+                layer.textureRefs.push_back(tcRef);
+            }
         }
     }
 
-    Texmap* envMap = nullptr;
-    if (PBR::readTexmapByName(mtlRef, L"environmentMap", envMap) && envMap) {
-        std::string prefix = readMaterialPrefix(mtlRef, L"environmentPrefix");
-        std::string path = buildTexturePath(prefix, extractBitmapFileName(envMap));
-        BitmapProperties bp = extractBitmapProperties(envMap);
-        ir::TextureRef ref;
-        ref.textureIndex = findOrAddTexture(model, path, bp.replaceableId,
-                                            bp.wrapU, bp.wrapV,
-                                            extractBitmapDiskPath(envMap));
-        ref.slot = ir::TextureSlot::Environment;
-        layer.textureRefs.push_back(ref);
-    }
+    addPbrMap(L"environmentMap", L"environmentPrefix", L"reflection_map",
+              L"reflectionPrefixPath", L"origReflectionPath",
+              ir::TextureSlot::Environment);
 
-    // Fresnel properties
+    // Fresnel properties (emissiveGain / fresnelOpacity match NeoDex's
+    // EmissiveGain / FresnelOpacity: names compare case-insensitively)
     PBR::readFloatByName(mtlRef, L"emissiveGain", t, layer.emissiveGain);
     PBR::readFloatByName(mtlRef, L"fresnelOpacity", t, layer.fresnelOpacity);
-    PBR::readFloatByName(mtlRef, L"fresnelTeamCol", t, layer.fresnelTeamColor);
+    readFloatFB(mtlRef, L"fresnelTeamCol", L"FresnelTeamColor", t, layer.fresnelTeamColor);
 
     // Fresnel color
     float fR = 1.0f, fG = 1.0f, fB = 1.0f;
-    PBR::readFloatByName(mtlRef, L"fresnelR", t, fR);
-    PBR::readFloatByName(mtlRef, L"fresnelG", t, fG);
-    PBR::readFloatByName(mtlRef, L"fresnelB", t, fB);
+    readFloatFB(mtlRef, L"fresnelR", L"FresnelColorR", t, fR);
+    readFloatFB(mtlRef, L"fresnelG", L"FresnelColorG", t, fG);
+    readFloatFB(mtlRef, L"fresnelB", L"FresnelColorB", t, fB);
     layer.fresnelColor = Point3(fR, fG, fB);
 
     // KMTE / KFC3 / KFCA / KFTC
@@ -1849,17 +2103,48 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     return layer;
 }
 
+// A NeoDex material set to Team Color that also carries a texture stands for
+// two MDX layers: the NeoDex importer folds an opaque Team Color layer and the
+// texture drawn over it into one material, and NeoDex's Classic exporter
+// splits it back (NeoDexSceneParser LoadLayers). Reforged binds the team
+// colour through teamColorTexId instead, so the split is Classic only.
+static bool isNeoDexTeamColorOverTexture(ReferenceTarget* mtlRef, int32_t formatVersion)
+{
+    if (formatVersion >= 900 || mtlRef->ClassID() != mdx_ids::NEODEX_MATERIAL)
+        return false;
+    int retexture = 1;
+    if (!core::ParamBlockReader::readIntByName(mtlRef, L"retexture", 0, retexture) ||
+        retexture != 2)
+        return false;
+    Texmap* tex = nullptr;
+    return core::ParamBlockReader::readTexmapByName(mtlRef, L"texture", tex) && tex;
+}
+
 void extractWc3Material(ReferenceTarget* mtlRef, ir::IRModel& model,
-                        core::ExportErrorReporter& /*reporter*/)
+                        core::ExportErrorReporter& /*reporter*/,
+                        int32_t formatVersion)
 {
     MaterialLevelProps matProps;
-    ir::MaterialLayer layer = extractWc3Layer(mtlRef, model, matProps);
-
     ir::Material mat;
+
+    if (isNeoDexTeamColorOverTexture(mtlRef, formatVersion)) {
+        // Layer 0: the team colour, opaque and unshaded, as NeoDex writes it.
+        ir::MaterialLayer tcLayer;
+        tcLayer.blendMode = ir::BlendMode::None;
+        tcLayer.unshaded = true;
+        ir::TextureRef tcRef;
+        tcRef.textureIndex = findOrAddTexture(model, std::string(), 1, false, false);
+        tcRef.slot = ir::TextureSlot::Diffuse;
+        tcLayer.textureRefs.push_back(tcRef);
+        mat.layers.push_back(std::move(tcLayer));
+        mat.layers.push_back(extractWc3Layer(mtlRef, model, matProps, true));
+    } else {
+        mat.layers.push_back(extractWc3Layer(mtlRef, model, matProps));
+    }
+
     mat.priorityPlane = matProps.priorityPlane;
     mat.flags = matProps.flags;
     mat.shaderName = std::move(matProps.shaderName);
-    mat.layers.push_back(std::move(layer));
     model.materials.push_back(std::move(mat));
 }
 
@@ -1909,25 +2194,62 @@ void extractCompositeMaterial(Mtl* mtl, ir::IRModel& model,
     model.materials.push_back(std::move(mat));
 }
 
-void extractStdMaterial(Mtl* mtl, ir::IRModel& model) {
-    if (!mtl) return;
-    auto* stdMat = dynamic_cast<StdMat2*>(mtl);
-    if (!stdMat) return;
+// Material Fix's texHasAlpha: alpha below 250 somewhere on a 5 x 5 grid. An
+// alpha channel that is opaque everywhere (common in BLP and TGA) does not
+// count. False when the bitmap is not loaded, as in the tool.
+static bool bitmapShowsAlpha(Texmap* tex) {
+    BitmapTex* bmt = unwrapBitmapTex(tex);
+    Bitmap* bm = bmt ? bmt->GetBitmap(0) : nullptr;
+    if (!bm || bm->Width() <= 0 || bm->Height() <= 0) return false;
+    const int w = bm->Width(), h = bm->Height();
+    for (int iy = 0; iy <= 4; ++iy)
+        for (int ix = 0; ix <= 4; ++ix) {
+            BMM_Color_64 px;
+            if (bm->GetPixels(ix * (w - 1) / 4, iy * (h - 1) / 4, 1, &px) &&
+                px.a < 250 * 257)
+                return true;
+        }
+    return false;
+}
+
+// A material that is not a Wc3 material - Standard, Physical, OpenPBR, ...,
+// as old scenes keep them (NeoDex imports once left Physical materials on
+// meshes). Exported the way Material Fix (MaterialFix.ms convertMaterial)
+// converts it with the profile Fix all uses: one layer with its colour
+// texture and opacity, and the profile's filter mode, flags, path prefix and
+// wrapping - so the export is the same with or without Fix all. Always adds
+// a material, textured or not: the caller has already handed its index out.
+void extractForeignMaterial(Mtl* mtl, ir::IRModel& model) {
+    const MaterialFixSettings fix = loadMaterialFixSettings();
+    Texmap* colorTex = wdx::material::ColorTexmap(mtl);
 
     ir::Material mat;
     ir::MaterialLayer layer;
-    layer.blendMode = ir::BlendMode::None;
-    layer.alpha = stdMat->GetOpacity(0);
-    layer.twoSided = stdMat->GetTwoSided() != 0;
+    int filterMode = fix.filterMode;
+    if (fix.autoFilter)
+        filterMode = (wdx::material::OpacityTexmap(mtl) || bitmapShowsAlpha(colorTex)) ? 2 : 1;
+    layer.blendMode = blendModeFromFilterDropdown(filterMode);
+    layer.alpha = mtl ? wdx::material::Opacity(mtl, 0) : 1.0f;
+    layer.unshaded = fix.unshaded;
+    layer.unfogged = fix.unfogged;
+    layer.twoSided = fix.twoSided;
+    layer.noDepthTest = fix.noDepthTest;
+    layer.noDepthWrite = fix.noDepthSet && filterMode >= 3;
+    if (fix.constantColor) mat.flags |= 0x01;
 
-    Texmap* diffTex = stdMat->GetSubTexmap(ID_DI);
-    if (diffTex) {
-        std::string path = extractBitmapPath(diffTex);
-        ir::TextureRef ref;
-        ref.textureIndex = findOrAddTexture(model, path, 0, true, true,
-                                            extractBitmapDiskPath(diffTex));
-        ref.slot = ir::TextureSlot::Diffuse;
-        layer.textureRefs.push_back(ref);
+    if (colorTex) {
+        const std::string fileName = extractBitmapPath(colorTex);
+        if (!fileName.empty()) {
+            bool wrapU = fix.uTile, wrapV = fix.vTile;       // WrapMode 2-5
+            if (fix.wrapMode == 1)                           // keep the bitmap's
+                readWrapFromBitmapTex(unwrapBitmapTex(colorTex), wrapU, wrapV);
+            ir::TextureRef ref;
+            ref.textureIndex = findOrAddTexture(
+                model, buildTexturePath(wstrToUtf8(fix.prefixPath.c_str()), fileName), 0,
+                wrapU, wrapV, extractBitmapDiskPath(colorTex));
+            ref.slot = ir::TextureSlot::Diffuse;
+            layer.textureRefs.push_back(ref);
+        }
     }
 
     mat.layers.push_back(std::move(layer));
@@ -1938,11 +2260,14 @@ void extractStdMaterial(Mtl* mtl, ir::IRModel& model) {
 
 MaterialMap extractMaterials(const std::vector<core::SceneNode>& nodes,
                              ir::IRModel& model,
-                             core::ExportErrorReporter& reporter)
+                             core::ExportErrorReporter& reporter,
+                             int32_t formatVersion)
 {
     // Reset the per-export dedup cache. The cache deduplicates TextureAnimation
     // entries across composite-material layers that share controllers.
     g_texAnimCache.clear();
+    // Files may have been added since the last export.
+    g_sceneTextures = {};
 
     // Banner the replaceable-debug log (trunc so each export starts fresh)
     {
@@ -1964,7 +2289,7 @@ MaterialMap extractMaterials(const std::vector<core::SceneNode>& nodes,
 
     // ── Helper: run the appropriate extractor for a Max material ─────
     // Dispatches by ClassID (Wc3Material → Wc3 extractor; Wc3Composite →
-    // composite extractor; anything else → stdMat fallback). Called from
+    // composite extractor; anything else → extractForeignMaterial). Called from
     // both the mesh-material pass below and the ribbon-material pass
     // after it, so the logic stays in sync.
     auto addMaterial = [&](Mtl* mtl) -> int32_t {
@@ -1976,11 +2301,11 @@ MaterialMap extractMaterials(const std::vector<core::SceneNode>& nodes,
         auto* ref = dynamic_cast<ReferenceTarget*>(mtl);
         if (ref && (mtl->ClassID() == mdx_ids::WC3_MATERIAL ||
                     mtl->ClassID() == mdx_ids::NEODEX_MATERIAL)) {
-            extractWc3Material(ref, model, reporter);
+            extractWc3Material(ref, model, reporter, formatVersion);
         } else if (isWc3Composite(mtl)) {
             extractCompositeMaterial(mtl, model, reporter);
         } else {
-            extractStdMaterial(mtl, model);
+            extractForeignMaterial(mtl, model);
         }
         mtlToIndex[mtl] = idx;
         return idx;
@@ -2018,10 +2343,22 @@ MaterialMap extractMaterials(const std::vector<core::SceneNode>& nodes,
         auto* ref = dynamic_cast<ReferenceTarget*>(obj);
         if (!ref) continue;
 
-        IParamBlock2* pb = core::ParamBlockReader::findParamBlock(ref, 0);
-        if (!pb) continue;
+        Object* baseObj = obj;
+        while (baseObj && baseObj->SuperClassID() == GEN_DERIVOB_CLASS_ID)
+            baseObj = static_cast<IDerivedObject*>(baseObj)->GetObjRef();
 
-        Mtl* mtl = pb->GetMtl(kRibbonMaterialParamID, 0);
+        Mtl* mtl = nullptr;
+        if (baseObj && baseObj->ClassID() == mdx_ids::NEODEX_RIBBON) {
+            // NeoDex BlizRibbon: the material param is "rmaterial" — the same
+            // lookup wc3_ribbon_extractor does, which must find it here.
+            IParamBlock2* pb = nullptr;
+            ParamID pid = 0;
+            if (findAnimParam(baseObj, L"rmaterial", pb, pid) &&
+                pb->GetParamDef(pid).type == TYPE_MTL)
+                mtl = pb->GetMtl(pid, 0);
+        } else if (IParamBlock2* pb = core::ParamBlockReader::findParamBlock(ref, 0)) {
+            mtl = pb->GetMtl(kRibbonMaterialParamID, 0);
+        }
         if (!mtl) continue;
         addMaterial(mtl);
     }

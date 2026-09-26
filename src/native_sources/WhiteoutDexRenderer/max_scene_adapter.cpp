@@ -10,6 +10,7 @@
 #include "whiteout/flakes/util/coordinate_system.h"
 #include "whiteout/flakes/util/team_glow_data.h"
 #include "whiteout/flakes/util/texture_image_usage.h"
+#include "wdx_foreign_material.h"
 
 #include <algorithm>
 #include <cctype>
@@ -179,12 +180,16 @@ void ForEachSceneNode(Fn fn) {
 // otherwise iterate sub-materials and invoke `fn(sub, layerIdx)` for each
 // Wc3Material sub-material (non-Wc3 sub-materials are skipped, matching
 // CollectMaterials' Wc3-only layer list).
+bool IsNeoDexTeamColorSplit(Mtl* mtl);
+
 template <typename Fn>
 void ForEachWc3SubMtl(Mtl* mtl, Fn fn) {
     if (!mtl)
         return;
-    if (mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
-        fn(mtl, 0);
+    if (IsWc3MaterialClass(mtl->ClassID())) {
+        // A split NeoDex Team Color material is drawn as two layers; the
+        // material itself is the second (see CollectMaterials).
+        fn(mtl, IsNeoDexTeamColorSplit(mtl) ? 1 : 0);
         return;
     }
     if (mtl->NumSubMtls() <= 0)
@@ -192,7 +197,7 @@ void ForEachWc3SubMtl(Mtl* mtl, Fn fn) {
     i32 layerIdx = 0;
     for (i32 si = 0; si < mtl->NumSubMtls(); si++) {
         Mtl* sub = mtl->GetSubMtl(si);
-        if (sub && sub->ClassID() == WARCRAFT3_MAT_CLASS_ID)
+        if (sub && IsWc3MaterialClass(sub->ClassID()))
             fn(sub, layerIdx++);
     }
 }
@@ -296,6 +301,65 @@ inline const MCHAR* GetObjectClassName(Object* obj, [[maybe_unused]] MSTR& scrat
 // DFS over an Animatable's param blocks, invoking `fn(pblock, pid, paramDef)`
 // for the first param whose int_name matches `name` (case-insensitive). Returns
 // true if the param was found. The five typed PB2 getters share this scan.
+// NeoDex's plug-ins name some parameters differently from WhiteoutDex's
+// (NeoDex Wc3Material.ms, BlizzPart1/2.ms, BlizzRibbon.ms). Only consulted for
+// the NeoDex class, and only when the WhiteoutDex name itself is missing.
+// Parameters that differ in meaning, not just name (1-based dropdowns, units,
+// interval order), are handled where they are read.
+struct ParamAlias {
+    const wchar_t* wdx;
+    const wchar_t* neo;
+};
+
+const wchar_t* NeoDexAlias(const Class_ID& cid, const wchar_t* name) {
+    static constexpr ParamAlias kMaterial[] = {
+        {L"diffuseMap", L"texture"},        {L"opacity", L"Alpha"},
+        {L"replaceableId", L"retexture"},   {L"twoSided", L"twosides"},
+        {L"noDepthTest", L"NoDephTest"},    {L"noDepthSet", L"NoDephSet"},
+        {L"sortOrder", L"SortPrimsFarZ"},   {L"normalMap", L"normal_map"},
+        {L"ormMap", L"orm_map"},            {L"emissiveMap", L"emissive_map"},
+        {L"fresnelTeamCol", L"FresnelTeamColor"},
+        {L"fresnelR", L"FresnelColorR"},    {L"fresnelG", L"FresnelColorG"},
+        {L"fresnelB", L"FresnelColorB"},
+    };
+    static constexpr ParamAlias kParticles2[] = {
+        {L"TextureRows", L"rows"},          {L"TextureCols", L"cols"},
+        {L"ColorStart", L"startcolor"},     {L"ColorMid", L"middlecolor"},
+        {L"ColorEnd", L"endcolor"},         {L"AlphaStart", L"startalpha"},
+        {L"AlphaMid", L"middlealpha"},      {L"AlphaEnd", L"endalpha"},
+        {L"ScaleStart", L"startscale"},     {L"ScaleMid", L"middlescale"},
+        {L"ScaleEnd", L"endscale"},         {L"ModelSpace", L"ParticleSpace"},
+        {L"XYQuad", L"XYQuads"},            {L"SortPrimitives", L"SortZ"},
+        {L"EmissionRate", L"PartsEmit"},
+        // WhiteoutDex's "Height" is the MDX length (KP2N); "Width" matches.
+        {L"Height", L"length"},
+    };
+    static constexpr ParamAlias kParticles1[] = {
+        {L"Speed", L"radius"},              {L"EmissionRate", L"PartEmit"},
+    };
+    static constexpr ParamAlias kRibbon[] = {
+        {L"Texture Rows", L"rows"},         {L"Texture Columns", L"columns"},
+        {L"Edges Per Second", L"emission"}, {L"Edge Lifetime", L"life"},
+        {L"Height Above", L"Above"},        {L"Height Below", L"Below"},
+        {L"Texture Slot", L"slots"},        {L"Color", L"vertexcolor"},
+    };
+    auto find = [&](const auto& table) -> const wchar_t* {
+        for (const auto& a : table)
+            if (_wcsicmp(a.wdx, name) == 0)
+                return a.neo;
+        return nullptr;
+    };
+    if (cid == NEODEX_MAT_CLASS_ID)
+        return find(kMaterial);
+    if (cid == NEODEX_PARTICLES2_CLASS_ID)
+        return find(kParticles2);
+    if (cid == NEODEX_PARTICLES1_CLASS_ID)
+        return find(kParticles1);
+    if (cid == NEODEX_RIBBON_CLASS_ID)
+        return find(kRibbon);
+    return nullptr;
+}
+
 template <typename Fn>
 bool FindPB2Param(Animatable* anim, const wchar_t* name, Fn fn) {
     if (!anim)
@@ -313,7 +377,75 @@ bool FindPB2Param(Animatable* anim, const wchar_t* name, Fn fn) {
             }
         }
     }
+    if (const wchar_t* alias = NeoDexAlias(anim->ClassID(), name))
+        return FindPB2Param(anim, alias, fn);
     return false;
+}
+
+// A NeoDex material set to Team Color that also carries a texture stands for
+// two MDX layers: the NeoDex importer folds an opaque Team Color layer and the
+// texture drawn over it into one material, and NeoDex's Classic exporter
+// splits it back (NeoDexSceneParser LoadLayers) — as does WhiteoutDex's.
+bool IsNeoDexTeamColorSplit(Mtl* mtl) {
+    if (!mtl || mtl->ClassID() != NEODEX_MAT_CLASS_ID)
+        return false;
+    i32 retexture = 1;
+    FindPB2Param(mtl, L"retexture", [&](IParamBlock2* pb, ParamID pid, ParamDef&) {
+        Interval iv = FOREVER;
+        pb->GetValue(pid, 0, retexture, iv);
+    });
+    if (retexture != 2)
+        return false;
+    Texmap* tex = nullptr;
+    FindPB2Param(mtl, L"texture", [&](IParamBlock2* pb, ParamID pid, ParamDef&) {
+        Interval iv = FOREVER;
+        pb->GetValue(pid, 0, tex, iv);
+    });
+    return tex != nullptr;
+}
+
+// One of StdUVGen's tracks (0=U_Offset 1=V_Offset 2=U_Tiling 3=V_Tiling
+// 4=U_Angle 5=V_Angle 6=W_Angle), or null. StdUVGen keeps them in an old-style
+// (non-PB2) parameter block that is its single sub-anim, so they sit one level
+// down: uvg->SubAnim(0) is the block and its sub-anim i is param i's
+// controller. MAXScript flattens that level (`coords[1]` is U_Offset there).
+// Measured in Max 2027: StdUVGen::NumSubs() == 1.
+Control* StdUVGenTrack(StdUVGen* uvg, int idx) {
+    if (!uvg || idx < 0)
+        return nullptr;
+    Animatable* holder = uvg;
+    if (uvg->NumSubs() == 1 && uvg->SubAnim(0) && uvg->SubAnim(0)->NumSubs() > idx)
+        holder = uvg->SubAnim(0);
+    if (idx >= holder->NumSubs())
+        return nullptr;
+    Animatable* sub = holder->SubAnim(idx);
+    return sub ? GetControlInterface(sub) : nullptr;
+}
+
+// A TYPE_STRING param (the typed PB2 helpers don't cover strings); empty
+// when missing.
+std::wstring PB2String(Animatable* anim, const wchar_t* name) {
+    std::wstring out;
+    FindPB2Param(anim, name, [&](IParamBlock2* pblock, ParamID pid, ParamDef&) {
+        const MCHAR* sv = nullptr;
+        Interval iv = FOREVER;
+        pblock->GetValue(pid, 0, sv, iv);
+        if (sv)
+            out = sv;
+    });
+    return out;
+}
+
+// NeoDex BlizRibbon keeps its material in "rmaterial"; null for anything
+// else (WhiteoutDex's Wc3Ribbon is read by ParamID 7 at the call site).
+Mtl* RibbonMaterial(Animatable* ribbon) {
+    Mtl* mtl = nullptr;
+    if (ribbon && ribbon->ClassID() == NEODEX_RIBBON_CLASS_ID)
+        FindPB2Param(ribbon, L"rmaterial", [&](IParamBlock2* pblock, ParamID pid, ParamDef& def) {
+            if (def.type == TYPE_MTL)
+                mtl = pblock->GetMtl(pid, 0);
+        });
+    return mtl;
 }
 
 } // namespace
@@ -651,6 +783,26 @@ i32 MaxSceneAdapter::ReadWc3MaterialFlags(Mtl* mtl) {
 }
 
 // ============================================================================
+// ReadWc3CoordId — which UV set a Wc3Material layer samples.
+// The importer stores the MDX coordId on the material and routes the bitmap to
+// map channel coordId + 1; GetMeshes() hands map channel 2 over as uvs1.
+// A material made in Max keeps the default -1, so the diffuse bitmap's map
+// channel decides instead. The renderer knows two sets: anything but 1 is 0.
+// ============================================================================
+
+i32 MaxSceneAdapter::ReadWc3CoordId(Mtl* mtl) {
+    i32 coordId = PB2IntOr(mtl, L"coordId", 0, -1);
+    if (coordId < 0) {
+        Texmap* diffuse = nullptr;
+        PB2Texmap(mtl, L"diffuseMap", diffuse);
+        if (BitmapTex* bmt = UnwrapBitmapTex(diffuse))
+            if (StdUVGen* uv = bmt->GetUVGen())
+                coordId = uv->GetMapChannel() - 1;
+    }
+    return coordId == 1 ? 1 : 0;
+}
+
+// ============================================================================
 // SnapshotMaterial / UpdateMaterialSnapshots — drive the material-change
 // detection used by RefreshMaterials. Both CollectScene and RefreshMaterials
 // previously duplicated this property read; now they share one implementation.
@@ -679,6 +831,7 @@ MaxSceneAdapter::MaterialSnapshot MaxSceneAdapter::SnapshotMaterial(Mtl* mtl) {
         PB2Texmap(mtl, L"diffuseMap", diffTex);
         snap.hasUvAnim = FindUvAnimSource(mtl, diffTex).any();
     }
+    snap.coordId = ReadWc3CoordId(mtl);
     return snap;
 }
 
@@ -786,6 +939,12 @@ static std::optional<MaxBitmapRGBA> LoadMaxBitmapRGBA(
     long long* sumG = nullptr, long long* sumB = nullptr, long long* sumA = nullptr) {
     Bitmap* bmp = nullptr;
     BMMRES status = BMMRES_IOERROR;
+    // Silent: a file the bitmap manager cannot read must not post its modal
+    // "Bitmap Manager Error" box. That box stops Max's main thread - which
+    // this runs on - until someone clicks OK, and the renderer window, which
+    // waits on the main thread, freezes with it. BitmapManager::SetSilentMode
+    // returns the previous state (bitmap.h), which is put back afterwards.
+    const BOOL wasSilent = TheManager->SetSilentMode(TRUE);
     try {
         BitmapInfo bi;
         bi.SetName(filePath.c_str());
@@ -793,6 +952,7 @@ static std::optional<MaxBitmapRGBA> LoadMaxBitmapRGBA(
     } catch (...) {
         mprintf(_M("  %s [exception in TheManager->Load] '%s'\n"), logPrefix, filePath.c_str());
     }
+    TheManager->SetSilentMode(wasSilent);
     if (!bmp || status != BMMRES_SUCCESS) {
         mprintf(_M("  %s [Max bitmap failed, status=%d] '%s'\n"), logPrefix, (i32)status,
                 filePath.c_str());
@@ -803,6 +963,41 @@ static std::optional<MaxBitmapRGBA> LoadMaxBitmapRGBA(
     out.height = bmp->Height();
     out.rgba = BitmapToRGBA8(bmp, out.width, out.height, sumR, sumG, sumB, sumA);
     bmp->DeleteThis();
+    return out;
+}
+
+// The archive path a texture path names, for the content provider: a path
+// that carries a Warcraft III mod chain - as an MDX states it
+// ("..\_hd.w3mod:textures\x.blp", which older imports left behind under the
+// model folder) or as the importer places it on disk ("..\_hd.w3mod\textures\
+// x.dds") - comes back as the full chain "war3.w3mod:_hd.w3mod:textures\x.blp",
+// which CascSource reads as it is. Empty for any other path.
+static std::string ArchivePathFromTexturePath(const std::wstring& filePath) {
+    std::wstring p = filePath;
+    std::replace(p.begin(), p.end(), L'/', L'\\');
+    std::wstring lower = p;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+    std::size_t at = lower.find(L".w3mod:");
+    const std::size_t atDir = lower.find(L".w3mod\\");
+    if (at == std::wstring::npos || (atDir != std::wstring::npos && atDir < at))
+        at = atDir;
+    if (at == std::wstring::npos)
+        return {};
+    const std::size_t sep = lower.rfind(L'\\', at);
+    std::wstring rel = p.substr(sep == std::wstring::npos ? 0 : sep + 1);
+    // Folder form back to the chain form
+    for (std::size_t i = 0; (i = rel.find(L".w3mod\\", i)) != std::wstring::npos;)
+        rel.replace(i, 7, L".w3mod:");
+    std::string out;
+    for (wchar_t c : rel) {
+        if (c > 0x7F)
+            return {}; // archive paths are ASCII
+        out += static_cast<char>(c);
+    }
+    std::string outLower = out;
+    std::transform(outLower.begin(), outLower.end(), outLower.begin(), ::tolower);
+    if (outLower.rfind("war3.w3mod:", 0) != 0)
+        out = "war3.w3mod:" + out;
     return out;
 }
 
@@ -855,12 +1050,20 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
                                wrapFlags);
     }
 
+    // Only a file that is there goes to the bitmap manager or the decoders:
+    // a missing one is looked up in the game's archives below and otherwise
+    // reported once, instead of the bitmap manager being asked for it.
+    std::error_code existsEc;
+    const bool onDisk = std::filesystem::is_regular_file(std::filesystem::path(filePath), existsEc);
+
     // Primary path: delegate to 3ds Max's bitmap manager — unless the caller
     // asked to skip it (normal maps). Max's bitmap manager loses the raw
     // R/G channels on BC5 / DXT5n normal maps and hands us a flat-grey
     // RGBA8, which the HD shader then samples as a wrong tangent-space
     // normal. Direct-decode preserves the encoded channels.
-    if (!skipMaxBitmapManager) {
+    if (!onDisk) {
+        mprintf(_M("  Texture: [not on disk] '%s'\n"), filePath.c_str());
+    } else if (!skipMaxBitmapManager) {
         long long sumR = 0, sumG = 0, sumB = 0, sumA = 0;
         if (auto bmp = LoadMaxBitmapRGBA(filePath, L"Texture:", &sumR, &sumG, &sumB, &sumA)) {
             const i32 total = bmp->width * bmp->height;
@@ -877,7 +1080,7 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
     }
 
     // Fallback 1: direct decode with our own parsers.
-    {
+    if (onDisk) {
         std::vector<u8> fileBytes;
         std::string ext;
         std::vector<u8> pixels;
@@ -891,7 +1094,19 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
         }
     }
 
-    // Fallback 2: CASC/MPQ by filename.
+    // Fallback 2: CASC by the archive path a mod-chain path names
+    // ("_hd.w3mod:textures\..."), which a bare filename cannot find.
+    if (const std::string archivePath = ArchivePathFromTexturePath(filePath);
+        !archivePath.empty()) {
+        mprintf(_M("  Texture: [ContentProvider archive path] '%S'\n"), archivePath.c_str());
+        i32 id = LoadTextureFromContentProvider(archivePath, replaceableId, wrapFlags);
+        if (id >= 0) {
+            texPathToId_[filePath] = id;
+            return id;
+        }
+    }
+
+    // Fallback 3: CASC/MPQ by filename.
     {
         std::string narrowName = std::filesystem::path(filePath).filename().string();
         mprintf(_M("  Texture: [ContentProvider fallback] '%S'\n"), narrowName.c_str());
@@ -908,6 +1123,8 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
     FillSolidRGBA(rgba, 4, 4, 255, 0, 255, 255);
     i32 id = RegisterTexture(filePath, 0, std::move(rgba), 4, 4, L"", {}, wrapFlags);
     mprintf(_M("  Texture %d: [missing] %s\n"), id, filePath.c_str());
+    missingTextures_.push_back(filePath);
+    g_wdxMissingTextureCount.store(static_cast<i32>(missingTextures_.size()));
     return id;
 }
 
@@ -930,6 +1147,8 @@ void MaxSceneAdapter::CollectScene() {
     nextTexId_ = 0;
     nextMatId_ = 0;
     texPathToId_.clear();
+    missingTextures_.clear();
+    g_wdxMissingTextureCount.store(0);
     mtlToId_.clear();
     loadedTextures_.clear();
     texEntries_.clear();
@@ -957,7 +1176,18 @@ void MaxSceneAdapter::CollectScene() {
     // Capture the initial material-state snapshot so RefreshMaterials can
     // detect per-property changes on subsequent frames.
     UpdateMaterialSnapshots();
+
+    // Textures found nowhere, once, in the Listener (the window title shows
+    // the count). They render magenta.
+    if (!missingTextures_.empty()) {
+        mprintf(_M("WhiteoutFlakes: %d texture(s) not found (on disk, in CASC or MPQ):\n"),
+                (i32)missingTextures_.size());
+        for (const auto& p : missingTextures_)
+            mprintf(_M("  %s\n"), p.c_str());
+    }
 }
+
+std::atomic<int> g_wdxMissingTextureCount{0};
 
 // ============================================================================
 // Collect geometry (identical logic to old extract.cpp)
@@ -983,16 +1213,20 @@ void MaxSceneAdapter::CollectGeometry() {
         if (!baseObj->CanConvertToType(triObjectClassID))
             return;
 
-        MSTR classNameBuf;
-        const MCHAR* className = GetObjectClassName(baseObj, classNameBuf);
-        if (_wcsicmp(className, L"Editable Mesh") != 0 &&
-            _wcsicmp(className, L"Editable Poly") != 0)
+        // Match on ClassID, not the class name: before Max 2022 GetClassName
+        // returns the LOCALIZED name ("Bearbeitbares Netz" in a German Max),
+        // so a name compare silently dropped every geoset on non-English
+        // 2016-2021 installs. Editable Mesh is EDITTRIOBJ_CLASS_ID, a
+        // subclass with its own id; triObjectClassID (0x0009) is the plain
+        // TriObject base and does NOT match it.
+        const Class_ID cid = baseObj->ClassID();
+        if (cid != Class_ID(EDITTRIOBJ_CLASS_ID, 0) && cid != EPOLYOBJ_CLASS_ID)
             return;
 
         // Skip geometry whose only material slot is a high-index replaceable
         // with no actual bitmap bound — these are placeholder meshes.
         Mtl* mtl = node->GetMtl();
-        if (mtl && mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
+        if (mtl && IsWc3MaterialClass(mtl->ClassID())) {
             Texmap* diffTex = nullptr;
             PB2Texmap(mtl, L"diffuseMap", diffTex);
             i32 retex = 0;
@@ -1016,16 +1250,37 @@ void MaxSceneAdapter::CollectGeometry() {
 // Extract a single Wc3Material into a MaterialLayerInfo
 // ============================================================================
 
-MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
+MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textureLayerOnly) {
     MaterialLayerInfo layer;
+    const bool neoDex = mtl->ClassID() == NEODEX_MAT_CLASS_ID;
 
-    layer.filterMode = MapFilterMode(PB2IntOr(mtl, L"filterMode", 0, 1) - 1);
+    i32 filterMode = PB2IntOr(mtl, L"filterMode", 0, 1);
+    // NeoDex's Team Color split draws the texture over the team colour, so
+    // an opaque texture layer becomes Transparent (NeoDexSceneParser
+    // LoadLayers; the exporter writes the same two layers).
+    if (textureLayerOnly && filterMode == 1)
+        filterMode = 2;
+    layer.filterMode = MapFilterMode(filterMode - 1);
     layer.alpha = std::min(PB2FloatOr(mtl, L"opacity", 0, 100.0f) / 100.0f, 1.0f);
-    layer.replaceableTexture = std::max(0, PB2IntOr(mtl, L"replaceableId", 0, 1) - 1);
+    layer.replaceableTexture =
+        textureLayerOnly ? 0 : std::max(0, PB2IntOr(mtl, L"replaceableId", 0, 1) - 1);
+    // NeoDex keeps the wrap flags on the material; its bitmap tiling is
+    // crossed (U_Tile holds Wrap_Height), so the material is the truth.
+    auto wrapFlagsFor = [&](Texmap* tex) -> u32 {
+        if (!neoDex)
+            return ReadWrapFlagsFromTexmap(tex);
+        u32 flags = 0;
+        if (PB2BoolOr(mtl, L"Wrap_Width", 0, false))
+            flags |= 0x1;
+        if (PB2BoolOr(mtl, L"Wrap_Height", 0, false))
+            flags |= 0x2;
+        return flags;
+    };
     // Shader dropdown is 1-based (1=SD, 2=HD, 3=SDOnHD, 4=Crystal → renderer 24).
     i32 shaderType = PB2IntOr(mtl, L"shaderType", 0, 1);
     layer.shaderId = (shaderType == 4) ? 24 : std::max(0, shaderType - 1);
     layer.flags = ReadWc3MaterialFlags(mtl);
+    layer.coordId = ReadWc3CoordId(mtl);
 
     // Reforged PBR knobs. The fresnelColor trio is only written when at least
     // one component was authored — zero defaults mean "classic MDX, no fresnel".
@@ -1052,7 +1307,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
         const MCHAR* fn = bmt ? bmt->GetMapName() : nullptr;
         if (!fn || !fn[0])
             return -1;
-        return LoadTexture(std::wstring(fn), 0, ReadWrapFlagsFromTexmap(slotTex), skipMaxBitmap);
+        return LoadTexture(std::wstring(fn), 0, wrapFlagsFor(slotTex), skipMaxBitmap);
     };
     // Normal maps go straight to direct-decode: Max's bitmap manager
     // collapses BC5 / DXT5n normals into a flat-grey RGBA8 and the HD
@@ -1130,7 +1385,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
         // frames per-tick via FrameState::layerTextureIds using the timing
         // the importer stored on the BitmapTex (startTime / playbackRate /
         // endCondition).
-        const u32 wrapFlags = ReadWrapFlagsFromTexmap(diffuseTexmap);
+        const u32 wrapFlags = wrapFlagsFor(diffuseTexmap);
         const std::vector<std::wstring> frames = ReadIflFrames(baseTexPath);
         IflAnim anim;
         for (const auto& f : frames) {
@@ -1157,7 +1412,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
         }
     } else if (!baseTexPath.empty()) {
         mprintf(_M("    \x2192 diffuse path: '%s'\n"), baseTexPath.c_str());
-        baseTexId = LoadTexture(baseTexPath, 0, ReadWrapFlagsFromTexmap(diffuseTexmap));
+        baseTexId = LoadTexture(baseTexPath, 0, wrapFlagsFor(diffuseTexmap));
     } else {
         // Diagnostic: distinguish "no texmap" from "texmap but not a BitmapTex".
         if (diffuseTexmap)
@@ -1258,10 +1513,7 @@ MaxSceneAdapter::UvAnimSource MaxSceneAdapter::FindUvAnimSource(Mtl* mtl, Texmap
         if (StdUVGen* uvg = bmt->GetUVGen()) {
             static const int kSubs[] = {0, 1, 2, 3, 6};
             for (int si : kSubs) {
-                if (si >= uvg->NumSubs())
-                    continue;
-                Animatable* sub = uvg->SubAnim(si);
-                Control* c = sub ? GetControlInterface(sub) : nullptr;
+                Control* c = StdUVGenTrack(uvg, si);
                 if (c && c->IsAnimated()) {
                     src.texmap = diffuseTex;
                     break;
@@ -1306,14 +1558,16 @@ void MaxSceneAdapter::CollectMaterials() {
         mi.sortOrder = std::max(0, PB2IntOr(src, L"sortOrder", 0, 1) - 1);
         mi.priorityPlane = PB2IntOr(src, L"priorityPlane", 0, 0);
     };
-    // Generic fallback: treat the material as a single-layer Std mat, binding
-    // its first SubTexmap if it's a BitmapTex. Shared by the "composite with no
-    // Wc3 sub-materials" and "plain non-Wc3 material" code paths.
+    // Generic fallback: a material that is not a Wc3 material (Standard,
+    // Physical, OpenPBR, ...) as one layer with its colour texture and opacity,
+    // the way the exporter writes it (wdx_foreign_material.h). Shared by the
+    // "composite with no Wc3 sub-materials" and "plain non-Wc3 material" paths.
     auto pushGenericLayer = [&](MaterialInfo& mi, Mtl* src) {
         MaterialLayerInfo layer;
         layer.flags = 1;
-        if (src->NumSubTexmaps() > 0) {
-            Texmap* sub = src->GetSubTexmap(0);
+        layer.alpha = wdx::material::Opacity(src, GetCOREInterface()->GetTime());
+        {
+            Texmap* sub = wdx::material::ColorTexmap(src);
             if (BitmapTex* bmt = UnwrapBitmapTex(sub)) {
                 const MCHAR* fname = bmt->GetMapName();
                 if (fname && fname[0]) {
@@ -1349,12 +1603,24 @@ void MaxSceneAdapter::CollectMaterials() {
         gs.materialId = mi.materialId;
         mtlToId_[mtl] = mi.materialId;
 
-        if (mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
+        if (IsWc3MaterialClass(mtl->ClassID())) {
             // Single Wc3Material — one layer, material-level sort comes from
             // the same Wc3Material.
             mprintf(_M("  Mat %d '%s': Wc3Material\n"), mi.materialId, gs.node->GetName());
             fillMaterialSort(mi, mtl);
-            mi.layers.push_back(ExtractWc3MaterialLayer(mtl));
+            if (IsNeoDexTeamColorSplit(mtl)) {
+                // Layer 0: the opaque, unshaded team colour NeoDex's split
+                // puts under the texture.
+                MaterialLayerInfo tc;
+                tc.textureId = LoadTexture(L"", 1);
+                tc.filterMode = 0;
+                tc.alpha = 1.0f;
+                tc.flags = MAT_UNSHADED;
+                mi.layers.push_back(tc);
+                mi.layers.push_back(ExtractWc3MaterialLayer(mtl, /*textureLayerOnly=*/true));
+            } else {
+                mi.layers.push_back(ExtractWc3MaterialLayer(mtl));
+            }
         } else if (mtl->NumSubMtls() > 0) {
             // Composite / multi-material: take sort + priority from the first
             // Wc3 sub-material; subsequent Wc3 layers contribute per-layer blend.
@@ -1366,7 +1632,7 @@ void MaxSceneAdapter::CollectMaterials() {
                 Mtl* subMtl = mtl->GetSubMtl(si);
                 if (!subMtl)
                     continue;
-                if (subMtl->ClassID() != WARCRAFT3_MAT_CLASS_ID) {
+                if (!IsWc3MaterialClass(subMtl->ClassID())) {
                     mprintf(_M("    Layer %d: non-Wc3 material '%s' (skipped)\n"), si,
                             subMtl->GetName().data());
                     continue;
@@ -1506,20 +1772,42 @@ void MaxSceneAdapter::CollectParticleEmitters() {
         if (!baseObj)
             return;
 
-        if (baseObj->ClassID() == WC3PARTICLES2_CLASS_ID) {
+        const bool neoPE2 = baseObj->ClassID() == NEODEX_PARTICLES2_CLASS_ID;
+        if (baseObj->ClassID() == WC3PARTICLES2_CLASS_ID || neoPE2) {
             ParticleEmitterInfo pi;
             pi.emitterId = emitterId++;
             pi.node = node;
 
             // Texture path/prefix come from cross-DLL GetInterface calls.
             std::wstring texPath, texFile;
-            if (auto* p = static_cast<const MSTR*>(baseObj->GetInterface(WC3P2_TEXTURE_PATH_IID));
-                p && p->Length() > 0)
-                texFile = p->data();
-            if (auto* p = static_cast<const MSTR*>(baseObj->GetInterface(WC3P2_TEXTURE_PREFIX_IID));
-                p && p->Length() > 0)
-                texPath = p->data();
-            const i32 replId = PB2IntOr(baseObj, L"ReplaceableId", 0, 0);
+            i32 replId = 0;
+            if (neoPE2) {
+                // NeoDex: "texture" is the bitmap file its importer loaded
+                // (often a %TEMP% .tga decoded from the game's .blp), "path"
+                // the MDX folder, "rtexture" a 1-based dropdown.
+                texFile = PB2String(baseObj, L"texture");
+                texPath = PB2String(baseObj, L"path");
+                replId = std::max(0, PB2IntOr(baseObj, L"rtexture", 0, 1) - 1);
+                if (!texFile.empty() && existsOnDisk(texFile)) {
+                    pi.textureId = LoadTexture(texFile, replId);
+                    pi.replaceableId = replId;
+                    particles_.push_back(pi);
+                    return;
+                }
+                // Gone: look it up as NeoDex exports it, path + name + .blp.
+                if (const size_t sep = texFile.find_last_of(L"\\/"); sep != std::wstring::npos)
+                    texFile = texFile.substr(sep + 1);
+                if (const size_t dot = texFile.rfind(L'.'); dot != std::wstring::npos)
+                    texFile = texFile.substr(0, dot) + L".blp";
+            } else {
+                if (auto* p = static_cast<const MSTR*>(baseObj->GetInterface(WC3P2_TEXTURE_PATH_IID));
+                    p && p->Length() > 0)
+                    texFile = p->data();
+                if (auto* p = static_cast<const MSTR*>(baseObj->GetInterface(WC3P2_TEXTURE_PREFIX_IID));
+                    p && p->Length() > 0)
+                    texPath = p->data();
+                replId = PB2IntOr(baseObj, L"ReplaceableId", 0, 0);
+            }
 
             if (!texFile.empty()) {
                 mprintf(_M("  [Particle '%s'] prefix='%s' file='%s'\n"), node->GetName(),
@@ -1553,6 +1841,16 @@ void MaxSceneAdapter::CollectParticleEmitters() {
                         if (c == '/')
                             c = '\\';
                     std::string archivePath = narrowPrefix + narrowFile;
+                    // A prefix naming its own overlay ("_hd.w3mod:textures\fx\")
+                    // gets the war3.w3mod: root, so CascSource reads that
+                    // overlay rather than trying it under every tier prefix.
+                    {
+                        std::string lower = archivePath;
+                        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+                        if (lower.find(".w3mod:") != std::string::npos &&
+                            lower.rfind("war3.w3mod:", 0) != 0)
+                            archivePath = "war3.w3mod:" + archivePath;
+                    }
                     mprintf(_M("    Try4 (ContentProvider): '%S'\n"), archivePath.c_str());
                     pi.textureId = LoadTextureFromContentProvider(archivePath, replId);
                     if (pi.textureId < 0) {
@@ -1576,12 +1874,22 @@ void MaxSceneAdapter::CollectParticleEmitters() {
             return;
         }
 
-        if (baseObj->ClassID() == WC3PARTICLES1_CLASS_ID) {
+        if (baseObj->ClassID() == WC3PARTICLES1_CLASS_ID ||
+            baseObj->ClassID() == NEODEX_PARTICLES1_CLASS_ID) {
             PE1EmitterInfo pi;
             pi.emitterId = pe1EmitterId++;
             pi.node = node;
-            if (auto* p = static_cast<const MSTR*>(baseObj->GetInterface(WC3P1_MODEL_PATH_IID));
-                p && p->Length() > 0) {
+            if (baseObj->ClassID() == NEODEX_PARTICLES1_CLASS_ID) {
+                // NeoDex: "path" + "Part", any .mdl dropped and .MDL added —
+                // the path NeoDex (and the exporter) writes.
+                std::wstring wp = PB2String(baseObj, L"path") + PB2String(baseObj, L"Part");
+                if (wp.size() > 4 && (_wcsicmp(wp.c_str() + wp.size() - 4, L".mdl") == 0 ||
+                                      _wcsicmp(wp.c_str() + wp.size() - 4, L".mdx") == 0))
+                    wp.resize(wp.size() - 4);
+                if (!wp.empty())
+                    pi.modelPath = std::string(wp.begin(), wp.end()) + ".MDL";
+            } else if (auto* p = static_cast<const MSTR*>(baseObj->GetInterface(WC3P1_MODEL_PATH_IID));
+                       p && p->Length() > 0) {
                 std::wstring wp = p->data();
                 pi.modelPath = std::string(wp.begin(), wp.end());
             }
@@ -1596,8 +1904,9 @@ void MaxSceneAdapter::CollectParticleEmitters() {
         // opaquely — same reason WC3ATTACHPOINT_CLASS_ID above points at
         // a NeoDex GUID). Match on the SuperClassID + class name, mirroring
         // how CollectCollisionShapes picks up Wc3CollisionSphere / Box.
-        bool isPopcorn = false;
-        if (baseObj->SuperClassID() == HELPER_CLASS_ID) {
+        bool isPopcorn = baseObj->ClassID() == NEODEX_POPCORN_CLASS_ID ||
+                         baseObj->ClassID() == BLIZZ_POPCORN_CLASS_ID;
+        if (!isPopcorn && baseObj->SuperClassID() == HELPER_CLASS_ID) {
             MSTR cnBuf;
             const MCHAR* cn = GetObjectClassName(baseObj, cnBuf);
             if (cn && (wcsstr(cn, L"Wc3 Popcorn") || wcsstr(cn, L"Wdx_Wc3Popcorn") ||
@@ -1635,6 +1944,20 @@ void MaxSceneAdapter::CollectParticleEmitters() {
             };
             readStr(L"popcornPath", pi.pkbPath);
             readStr(L"rawFlags", pi.animVisibilityGuide);
+            // NeoDex rebuilds an empty rawFlags from its flag checkboxes, as
+            // the exporter does (NeoDexSceneParser LoadCornEmitter).
+            if (pi.animVisibilityGuide.empty() && baseObj->ClassID() == NEODEX_POPCORN_CLASS_ID) {
+                static const std::pair<const wchar_t*, const char*> kFlags[] = {
+                    {L"flagAlways", "Always"}, {L"flagBirth", "Birth"}, {L"flagDeath", "Death"},
+                    {L"flagDissipate", "Dissipate"}, {L"flagPortrait", "Portrait"}};
+                for (const auto& [param, word] : kFlags) {
+                    if (!PB2BoolOr(baseObj, param, 0, false))
+                        continue;
+                    if (!pi.animVisibilityGuide.empty())
+                        pi.animVisibilityGuide += ',';
+                    pi.animVisibilityGuide += word;
+                }
+            }
 
             mprintf(_M("  [Popcorn '%s'] pkb='%S' replId=%d guide='%S'\n"),
                     node->GetName(), pi.pkbPath.c_str(), pi.replaceableId,
@@ -1657,7 +1980,8 @@ void MaxSceneAdapter::CollectRibbonEmitters() {
         if (node->IsNodeHidden())
             return;
         Object* baseObj = GetBaseObject(node);
-        if (!baseObj || baseObj->ClassID() != WC3RIBBON_CLASS_ID)
+        if (!baseObj || (baseObj->ClassID() != WC3RIBBON_CLASS_ID &&
+                         baseObj->ClassID() != NEODEX_RIBBON_CLASS_ID))
             return;
 
         RibbonEmitterInfo ri;
@@ -1666,8 +1990,8 @@ void MaxSceneAdapter::CollectRibbonEmitters() {
 
         // Wc3Ribbon stores its material in PB2 param "Material" (pb_material=7).
         // Fall back to the node material if the emitter didn't wire one.
-        Mtl* mtl = nullptr;
-        for (i32 pb = 0; pb < baseObj->NumParamBlocks(); pb++) {
+        Mtl* mtl = RibbonMaterial(baseObj);
+        for (i32 pb = 0; !mtl && pb < baseObj->NumParamBlocks(); pb++) {
             IParamBlock2* pblock = static_cast<Animatable*>(baseObj)->GetParamBlock(pb);
             if (!pblock)
                 continue;
@@ -1681,11 +2005,11 @@ void MaxSceneAdapter::CollectRibbonEmitters() {
         if (mtl) {
             std::wstring path;
             Texmap* srcTex = nullptr;
-            if (mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
+            if (IsWc3MaterialClass(mtl->ClassID())) {
                 PB2Texmap(mtl, L"diffuseMap", srcTex);
                 path = ResolveBitmapPath(mtl, L"diffuseMap");
             } else {
-                srcTex = mtl->GetSubTexmap(ID_DI);
+                srcTex = wdx::material::ColorTexmap(mtl);
                 if (BitmapTex* bmt = UnwrapBitmapTex(srcTex)) {
                     const MCHAR* fname = bmt->GetMapName();
                     if (fname && fname[0])
@@ -1906,6 +2230,29 @@ std::vector<MeshData> MaxSceneAdapter::GetMeshes() {
 // ============================================================================
 
 std::vector<TextureData> MaxSceneAdapter::GetTextures() {
+    // The formats stamped below only reach the GPU for textures WITHOUT a
+    // shared key — the ones whose path is not narrow-safe (a CJK folder, an
+    // umlaut) and are therefore uploaded from the Max-decoded pixels. Keyed
+    // textures are re-read by the AssetManager, which latches the colour-space
+    // policy of the loading mode itself. So these must follow that same
+    // policy, or an SD model under a non-ASCII folder samples its UNORM
+    // pixels through an _SRGB view and renders roughly ^2.2 too dark.
+    //
+    // The render mode is decided after the spawn (dllmain's BuildSceneAndSpawn
+    // picks HD as soon as any layer has a shaderId != 0), so derive the same
+    // answer from the collected materials here.
+    bool gammaColorPipeline = true;
+    for (const auto& mi : materials_) {
+        for (const auto& li : mi.layers) {
+            if (li.shaderId != 0) {
+                gammaColorPipeline = false;
+                break;
+            }
+        }
+        if (!gammaColorPipeline)
+            break;
+    }
+
     std::vector<TextureData> result;
     result.reserve(loadedTextures_.size());
     for (auto& lt : loadedTextures_) {
@@ -1922,7 +2269,23 @@ std::vector<TextureData> MaxSceneAdapter::GetTextures() {
         // file-backed textures; procedural / sentinel textures have
         // an empty key and get the default-sRGB policy. Mirrors
         // `CImageFile::DetermineImageUsage` @ Preview 0x7ff609bad260.
-        td.format = ApplyTextureSrgbPolicy(gfx::Format::R8G8B8A8_UNORM, lt.sharedKey);
+        //
+        // A non-narrow-safe path has no shared key, so classify it by its
+        // file path instead — with every non-ASCII character masked, which
+        // leaves the `_normal` / `_orm` suffixes the policy looks at intact.
+        std::string usagePath = lt.sharedKey;
+        if (usagePath.empty()) {
+            for (const auto& te : texEntries_) {
+                if (te.textureId != lt.textureId)
+                    continue;
+                usagePath.reserve(te.filePath.size());
+                for (wchar_t c : te.filePath)
+                    usagePath += (c >= 0x20 && c <= 0x7E) ? static_cast<char>(c) : '_';
+                break;
+            }
+        }
+        td.format = ApplyTextureSrgbPolicy(gfx::Format::R8G8B8A8_UNORM, usagePath,
+                                           gammaColorPipeline);
         td.width = lt.width;
         td.height = lt.height;
         // Wrap-flag bits (0x1 = WrapWidth, 0x2 = WrapHeight) are lifted at
@@ -1968,6 +2331,7 @@ std::vector<MaterialData> MaxSceneAdapter::GetMaterials() {
             ld.fresnelTeamColor = li.fresnelTeamColor;
             ld.fresnelColor = li.fresnelColor;
             ld.textureAnimationId = li.textureAnimationId;
+            ld.coordId = li.coordId;
             md.layers.push_back(ld);
         }
         result.push_back(std::move(md));
@@ -2141,7 +2505,10 @@ std::vector<ParticleEmitterConfig> MaxSceneAdapter::GetParticleConfigs() {
         ParticleEmitterConfig cfg;
         cfg.textureId = pi.textureId >= 0 ? pi.textureId : 0;
         cfg.replaceableId = pi.replaceableId;
-        cfg.filterMode = MapPE2BlendMode(PB2IntOr(obj, L"BlendMode", 0, 0));
+        const bool neoDex = obj->ClassID() == NEODEX_PARTICLES2_CLASS_ID;
+        // NeoDex's filtermode dropdown is 1-based.
+        cfg.filterMode = MapPE2BlendMode(neoDex ? std::max(0, PB2IntOr(obj, L"filtermode", 0, 1) - 1)
+                                                : PB2IntOr(obj, L"BlendMode", 0, 0));
 
         cfg.rows = PB2IntOr(obj, L"TextureRows", 0, cfg.rows);
         cfg.cols = PB2IntOr(obj, L"TextureCols", 0, cfg.cols);
@@ -2168,27 +2535,49 @@ std::vector<ParticleEmitterConfig> MaxSceneAdapter::GetParticleConfigs() {
         cfg.midTime = PB2FloatOr(obj, L"MidTime", 0, cfg.midTime);
 
         // ParticleType: Wc3Particles2 0=Head,1=Tail,2=Both → renderer 1=Head,2=Tail,3=Both.
+        // NeoDex's particletype is already 1-based.
         if (i32 pt; PB2Int(obj, L"ParticleType", 0, pt))
-            cfg.particleType = pt + 1;
+            cfg.particleType = neoDex ? pt : pt + 1;
         cfg.tailLength = PB2FloatOr(obj, L"TailLength", 0, cfg.tailLength);
 
         cfg.modelSpace = PB2BoolOr(obj, L"ModelSpace", 0, cfg.modelSpace);
         cfg.xyQuad = PB2BoolOr(obj, L"XYQuad", 0, cfg.xyQuad);
-        cfg.lineEmitter = PB2BoolOr(obj, L"LineEmitter", 0, cfg.lineEmitter);
+        // NeoDex's LineEmitter is a dropdown: 1 = default, 2 = line.
+        cfg.lineEmitter = neoDex ? PB2IntOr(obj, L"LineEmitter", 0, 1) == 2
+                                 : PB2BoolOr(obj, L"LineEmitter", 0, cfg.lineEmitter);
 
-        // Head/tail UV animation frames.
+        // Head/tail UV animation frames. Match the MDX upload
+        // (MdxModelAdapter: interval[0]=start, [1]=end, [2]=repeat): the
+        // importer stores interval[1] in the *Repeat param and interval[2] in
+        // the *End param (and the exporter reads them back the same way), so
+        // those two params are swapped relative to what the renderer expects.
         cfg.headLifeStart = PB2IntOr(obj, L"HeadLifeStart", 0, cfg.headLifeStart);
-        cfg.headLifeEnd = PB2IntOr(obj, L"HeadLifeEnd", 0, cfg.headLifeEnd);
-        cfg.headLifeRepeat = PB2IntOr(obj, L"HeadLifeRepeat", 0, cfg.headLifeRepeat);
+        cfg.headLifeEnd = PB2IntOr(obj, L"HeadLifeRepeat", 0, cfg.headLifeEnd);
+        cfg.headLifeRepeat = PB2IntOr(obj, L"HeadLifeEnd", 0, cfg.headLifeRepeat);
         cfg.headDecayStart = PB2IntOr(obj, L"HeadDecayStart", 0, cfg.headDecayStart);
-        cfg.headDecayEnd = PB2IntOr(obj, L"HeadDecayEnd", 0, cfg.headDecayEnd);
-        cfg.headDecayRepeat = PB2IntOr(obj, L"HeadDecayRepeat", 0, cfg.headDecayRepeat);
+        cfg.headDecayEnd = PB2IntOr(obj, L"HeadDecayRepeat", 0, cfg.headDecayEnd);
+        cfg.headDecayRepeat = PB2IntOr(obj, L"HeadDecayEnd", 0, cfg.headDecayRepeat);
         cfg.tailLifeStart = PB2IntOr(obj, L"TailLifeStart", 0, cfg.tailLifeStart);
-        cfg.tailLifeEnd = PB2IntOr(obj, L"TailLifeEnd", 0, cfg.tailLifeEnd);
-        cfg.tailLifeRepeat = PB2IntOr(obj, L"TailLifeRepeat", 0, cfg.tailLifeRepeat);
+        cfg.tailLifeEnd = PB2IntOr(obj, L"TailLifeRepeat", 0, cfg.tailLifeEnd);
+        cfg.tailLifeRepeat = PB2IntOr(obj, L"TailLifeEnd", 0, cfg.tailLifeRepeat);
         cfg.tailDecayStart = PB2IntOr(obj, L"TailDecayStart", 0, cfg.tailDecayStart);
-        cfg.tailDecayEnd = PB2IntOr(obj, L"TailDecayEnd", 0, cfg.tailDecayEnd);
-        cfg.tailDecayRepeat = PB2IntOr(obj, L"TailDecayRepeat", 0, cfg.tailDecayRepeat);
+        cfg.tailDecayEnd = PB2IntOr(obj, L"TailDecayRepeat", 0, cfg.tailDecayEnd);
+        cfg.tailDecayRepeat = PB2IntOr(obj, L"TailDecayEnd", 0, cfg.tailDecayRepeat);
+        if (neoDex) {
+            // NeoDex names them start / end / repeat in MDX order.
+            cfg.headLifeStart = PB2IntOr(obj, L"startLifespanHead", 0, cfg.headLifeStart);
+            cfg.headLifeEnd = PB2IntOr(obj, L"endLifespanHead", 0, cfg.headLifeEnd);
+            cfg.headLifeRepeat = PB2IntOr(obj, L"repeatLifespanHead", 0, cfg.headLifeRepeat);
+            cfg.headDecayStart = PB2IntOr(obj, L"startDecayHead", 0, cfg.headDecayStart);
+            cfg.headDecayEnd = PB2IntOr(obj, L"endDecayHead", 0, cfg.headDecayEnd);
+            cfg.headDecayRepeat = PB2IntOr(obj, L"repeatDecayHead", 0, cfg.headDecayRepeat);
+            cfg.tailLifeStart = PB2IntOr(obj, L"startLifespanTail", 0, cfg.tailLifeStart);
+            cfg.tailLifeEnd = PB2IntOr(obj, L"endLifespanTail", 0, cfg.tailLifeEnd);
+            cfg.tailLifeRepeat = PB2IntOr(obj, L"repeatLifespanTail", 0, cfg.tailLifeRepeat);
+            cfg.tailDecayStart = PB2IntOr(obj, L"startDecayTail", 0, cfg.tailDecayStart);
+            cfg.tailDecayEnd = PB2IntOr(obj, L"endDecayTail", 0, cfg.tailDecayEnd);
+            cfg.tailDecayRepeat = PB2IntOr(obj, L"repeatDecayTail", 0, cfg.tailDecayRepeat);
+        }
 
         cfg.sortZ = PB2BoolOr(obj, L"SortPrimitives", 0, cfg.sortZ);
         cfg.unfogged = PB2BoolOr(obj, L"Unfogged", 0, cfg.unfogged);
@@ -2218,8 +2607,15 @@ std::vector<RibbonEmitterConfig> MaxSceneAdapter::GetRibbonConfigs() {
 
         // Wc3Ribbon has no filterMode param of its own; derive from the node
         // material when it's a Wc3Material, otherwise fall back to Additive.
-        if (Mtl* mtl = ri.node->GetMtl(); mtl && mtl->ClassID() == WARCRAFT3_MAT_CLASS_ID) {
+        const bool neoDex = obj->ClassID() == NEODEX_RIBBON_CLASS_ID;
+        Mtl* mtl = neoDex ? RibbonMaterial(obj) : nullptr;
+        if (!mtl)
+            mtl = ri.node->GetMtl();
+        if (mtl && IsWc3MaterialClass(mtl->ClassID())) {
             cfg.filterMode = MapFilterMode(PB2IntOr(mtl, L"filterMode", 0, 1) - 1);
+        } else if (neoDex) {
+            // No material: the BlizRibbon's own 1-based filtermode.
+            cfg.filterMode = MapFilterMode(PB2IntOr(obj, L"filtermode", 0, 4) - 1);
         } else {
             cfg.filterMode = MapFilterMode(3);
         }
@@ -2233,6 +2629,11 @@ std::vector<RibbonEmitterConfig> MaxSceneAdapter::GetRibbonConfigs() {
         // double-sided + unshaded by convention.
         cfg.unshaded = true;
         cfg.twoSided = true;
+        if (neoDex) {
+            // BlizRibbon does carry them (defaults on).
+            cfg.unshaded = PB2BoolOr(obj, L"unshaded", 0, true);
+            cfg.twoSided = PB2BoolOr(obj, L"twosides", 0, true);
+        }
 
         mprintf(_M("  Ribbon %d: '%s' tex=%d fm=%d\n"), ri.emitterId, ri.node->GetName(),
                 ri.textureId, cfg.filterMode);
@@ -2544,20 +2945,30 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
                 break;
             }
 
+            // NeoDex's Wc3Light uses the names the other way round:
+            // AmbColor / AmbValue (UI "Dif") is its primary light
+            // (NeoDexSceneParser writes AmbColor as KLAC) — so does the
+            // exporter.
+            const bool neoDex = obj->ClassID() == NEODEX_LIGHT_CLASS_ID;
+            const wchar_t* primaryColor = neoDex ? L"AmbColor" : L"ShadowColor";
+            const wchar_t* primaryValue = neoDex ? L"AmbValue" : L"ShadowValue";
+            const wchar_t* ambientColor = neoDex ? L"ShadowColor" : L"AmbColor";
+            const wchar_t* ambientValue = neoDex ? L"ShadowValue" : L"AmbValue";
+
             Color c(1.0f, 1.0f, 1.0f);
-            if (PB2Color(obj, L"ShadowColor", t, c))
+            if (PB2Color(obj, primaryColor, t, c))
                 color = {c.r, c.g, c.b};
-            intensity = PB2FloatOr(obj, L"ShadowValue", t, 0.0f);
+            intensity = PB2FloatOr(obj, primaryValue, t, 0.0f);
 
             // SetLightColor clamps the ambient track to 0..1 and
             // SetLightIntensity floors both intensities at 0
             // (Engine/Source/Anim/Anim.cpp), so do the same here.
             Color amb(0.0f, 0.0f, 0.0f);
-            if (PB2Color(obj, L"AmbColor", t, amb)) {
+            if (PB2Color(obj, ambientColor, t, amb)) {
                 ls.ambientColor = {std::clamp(amb.r, 0.0f, 1.0f), std::clamp(amb.g, 0.0f, 1.0f),
                                    std::clamp(amb.b, 0.0f, 1.0f)};
             }
-            ls.ambIntensity = std::max(0.0f, PB2FloatOr(obj, L"AmbValue", t, 0.0f));
+            ls.ambIntensity = std::max(0.0f, PB2FloatOr(obj, ambientValue, t, 0.0f));
             ls.attenStart = PB2FloatOr(obj, L"DecayStart", t, 0.0f);
             ls.attenEnd = PB2FloatOr(obj, L"DecayEnd", t, 0.0f);
             ls.enabled = visible;
@@ -2629,8 +3040,14 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
     // Attachment transforms
     for (usize i = 0; i < attachments_.size(); i++) {
         auto& ai = attachments_[i];
+        f32 visibility = ai.node->GetVisibility(t);
+        // The NeoDex importer keys attachment visibility on the plug-in's
+        // A_Visibility param, not the node (the exporter reads it the same way).
+        if (!ai.node->GetVisController())
+            if (Object* obj = GetBaseObject(ai.node))
+                PB2Float(obj, L"A_Visibility", t, visibility);
         state.attachmentStates.push_back(
-            {(i32)i, PackMatrix(ai.node->GetNodeTM(t)), ai.node->GetVisibility(t)});
+            {(i32)i, PackMatrix(ai.node->GetNodeTM(t)), visibility});
     }
 
     // PE1 emitter states
@@ -2643,8 +3060,12 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
         ps.transform = PackMatrix(pi.node->GetNodeTM(t));
         ps.speed = PB2FloatOr(obj, L"Speed", t);
         ps.emissionRate = PB2FloatOr(obj, L"EmissionRate", t);
-        ps.latitude = PB2FloatOr(obj, L"Latitude", t) * kDegToRad;
-        ps.longitude = PB2FloatOr(obj, L"Longitude", t) * kDegToRad;
+        // NeoDex keeps the MDX values themselves, no degrees (its importer
+        // and exporter copy them unconverted — so does the exporter).
+        const f32 angleScale =
+            obj->ClassID() == NEODEX_PARTICLES1_CLASS_ID ? 1.0f : kDegToRad;
+        ps.latitude = PB2FloatOr(obj, L"Latitude", t) * angleScale;
+        ps.longitude = PB2FloatOr(obj, L"Longitude", t) * angleScale;
         ps.gravity = PB2FloatOr(obj, L"Gravity", t);
         ps.visibility = pi.node->GetVisibility(t);
         state.pe1States.push_back(ps);
@@ -2860,7 +3281,8 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
                a.replaceableTexture == b.replaceableTexture && a.shaderId == b.shaderId &&
                a.texturePath == b.texturePath && a.normalTexPath == b.normalTexPath &&
                a.ormTexPath == b.ormTexPath && a.emissiveTexPath == b.emissiveTexPath &&
-               a.teamColorTexPath == b.teamColorTexPath && a.hasUvAnim == b.hasUvAnim;
+               a.teamColorTexPath == b.teamColorTexPath && a.hasUvAnim == b.hasUvAnim &&
+               a.coordId == b.coordId;
     };
 
     bool anyChanged = false;

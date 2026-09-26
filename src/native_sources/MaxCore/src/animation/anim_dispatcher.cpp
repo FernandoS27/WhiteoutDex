@@ -95,12 +95,56 @@ static Quat extractRotation(const Matrix3& tm) {
     // Absorb the mirror into scale by flipping one axis.
     float det = DotProd(r0, CrossProd(r1, r2));
     if (det < 0.0f) r0 = -r0;
-    return Quat(Matrix3(r0, r1, r2, Point3(0,0,0)));
+    Quat q(Matrix3(r0, r1, r2, Point3(0,0,0)));
+    q.Normalize();
+    return q;
 }
 
 // A world TM with a zero-length row — scale 0 on the node or an ancestor —
 // carries no rotation: extractRotation would normalize the zero rows into a
 // junk quaternion. A row of length 1e-6 still extracts cleanly.
+// The rotation/scale part of `tm`, divided by its longest row: relative row
+// lengths and directions are kept, magnitudes stay near 1 for an inverse.
+static Matrix3 unitSized(const Matrix3& tm) {
+    Matrix3 m = tm;
+    m.NoTrans();
+    const float len = (std::max)({Length(m.GetRow(0)), Length(m.GetRow(1)),
+                                Length(m.GetRow(2))});
+    if (len > 0.0f)
+        for (int i = 0; i < 3; ++i) m.SetRow(i, m.GetRow(i) / len);
+    return m;
+}
+
+// Whether a TM mirrors: negative determinant of its rotation/scale part
+// (measured at unit size, so a tiny scale cannot underflow it to 0).
+static bool isMirrored(const Matrix3& tm) {
+    const Matrix3 m = unitSized(tm);
+    return DotProd(CrossProd(m.GetRow(0), m.GetRow(1)), m.GetRow(2)) < 0.0f;
+}
+
+// A node can mirror only for a while: a scale curve that crosses zero
+// (Carrot's Bone_tail001 runs its uniform scale 1.5% -> -5.4% -> 0.6% in
+// frames 6-10 of Attack 1). extractRotation absorbs a mirror into a flipped
+// axis, which for a point reflection is a half turn, and the exported scale is
+// a row length, always positive: the node was exported turned 180° and not
+// mirrored, and the tail pointed the wrong way (8.7 units off at the tip).
+// Whenever the local TM's mirroring differs from the bind pose's, the whole
+// TM is negated before the rotation is read and the scale exported negative:
+// L = R * S  ->  -L = R * |S|, so L = R * (-|S|). The game and the renderer
+// multiply by KGSC as is (mdx-m3-viewer fromRotationTranslationScale,
+// WhiteoutFlakes MdxHierarchy), so a negative KGSC mirrors there too. A node
+// mirrored at bind and throughout (Max's mirrored bones) is unaffected.
+static Matrix3 negated(const Matrix3& tm) {
+    Matrix3 m = tm;
+    for (int i = 0; i < 3; ++i) m.SetRow(i, -m.GetRow(i));
+    return m;
+}
+
+static bool isFiniteQuat(const Quat& q) {
+    return std::isfinite(q.x) && std::isfinite(q.y) &&
+           std::isfinite(q.z) && std::isfinite(q.w);
+}
+
 static bool hasRotation(const Matrix3& tm) {
     const float kMinRowLengthSq = 1e-12f;
     return LengthSquared(tm.GetRow(0)) > kMinRowLengthSq &&
@@ -130,7 +174,7 @@ static bool evaluateNearestRotation(TimeValue t, TimeValue lo, TimeValue hi,
 }
 
 // ── Key-time sampling helpers ─────────────────────────────────────
-// Instead of sampling at every frame (160 ticks), FK nodes are sampled
+// Instead of sampling at every frame (GetTicksPerFrame ticks), FK nodes are sampled
 // only at their controller's key times. This matches NeoDex's approach
 // and reduces key count from ~257 to ~8-33 per bone per sequence.
 
@@ -162,7 +206,7 @@ static std::vector<TimeValue> collectKeyTimes(Control* ctrl,
                     if (expected > 5 && times.size() <= 2) {
                         // GetKeyTime is likely broken — fall back to per-frame
                         times.clear();
-                        for (TimeValue t = seqStart; t <= seqEnd; t += 160)
+                        for (TimeValue t = seqStart; t <= seqEnd; t += GetTicksPerFrame())
                             times.push_back(t);
                         if (times.back() != seqEnd)
                             times.push_back(seqEnd);
@@ -210,7 +254,7 @@ static std::vector<TimeValue> collectEulerKeyTimes(Control* rotCtrl,
 // Generate per-frame times (fallback for IK/Biped/CAT/Link/procedural)
 static std::vector<TimeValue> generateFrameTimes(TimeValue seqStart,
                                                   TimeValue seqEnd,
-                                                  int frameInterval = 160) {
+                                                  int frameInterval = GetTicksPerFrame()) {
     std::vector<TimeValue> times;
     for (TimeValue t = seqStart; t <= seqEnd; t += frameInterval)
         times.push_back(t);
@@ -247,6 +291,7 @@ static std::vector<TimeValue> densifyRotationTimes(
     const float maxTravel = 2.0f * acosf(KeyframeOptimizer::kHalfTurnDot);
     std::vector<TimeValue> out;
     std::vector<TimeValue> probes;
+    const TimeValue tpf = GetTicksPerFrame();
     Quat q0 = localRotAt(times.front());
     for (size_t i = 0; i + 1 < times.size(); ++i) {
         const TimeValue t0 = times[i], t1 = times[i + 1];
@@ -255,9 +300,22 @@ static std::vector<TimeValue> densifyRotationTimes(
         // Per frame, but at least 8 probes so a spin between keys one frame
         // apart is still seen; >= 10 ticks (~2 ms) apart so MDX times stay
         // distinct after rounding to milliseconds.
+        //
+        // Not between two keys on whole frames, though: Max shows an animation
+        // keyed that way only on whole frames, so a turn between two of them
+        // is nothing the animator ever saw. The chicken man's baked CAT rig
+        // has linear_rotation keys every frame, one of which turns the hand
+        // ~355° the long way between frames 453 and 454 of Stand 3 - probed
+        // at sub-frames, the export spun the hand once around in the game.
+        // Those spans are probed per whole frame only, so a spin over several
+        // frames still counts. Keys between frames (an imported MDX's
+        // millisecond times) keep the fine probes.
         const TimeValue span = t1 - t0;
-        const int n = std::min(std::max(8, static_cast<int>((span + 159) / 160)),
-                               static_cast<int>(span / 10));
+        const bool wholeFrames = tpf > 0 && t0 % tpf == 0 && t1 % tpf == 0;
+        const int n = wholeFrames
+            ? static_cast<int>(span / tpf)
+            : std::min(std::max(8, static_cast<int>((span + tpf - 1) / std::max<TimeValue>(tpf, 1))),
+                       static_cast<int>(span / 10));
         probes.clear();
         float travel = 0.0f;
         Quat prev = q0;
@@ -278,6 +336,65 @@ static std::vector<TimeValue> densifyRotationTimes(
     out.push_back(times.back());
     return out;
 }
+
+// Key-time sampling of position and scale assumes the curve runs straight
+// from key to key, which is how the game plays the exported Linear track. A
+// Bezier or TCB curve does not: it eases, overshoots and bulges between its
+// keys. Carrot's Bone_tail001 has scale keys 1.0 and 1.0 whose tangents lift
+// the curve to 1.13 in between, and the export kept a flat 1.0 - the tail
+// tip ended up 26 units off. Every span is probed per frame; where the
+// straight line misses the curve by more than |tolerance|, the probes needed
+// to follow it are added (greedy from the last kept probe, the way
+// KeyframeOptimizer reduces). Straight spans - linear controllers, holds,
+// most tangents - gain nothing.
+static std::vector<TimeValue> densifyCurveTimes(
+        const std::vector<TimeValue>& times,
+        const std::function<Point3(TimeValue)>& valueAt,
+        float tolerance) {
+    if (times.size() < 2) return times;
+    const TimeValue kFrame = std::max<TimeValue>(GetTicksPerFrame(), 1);  // one frame of the scene
+    std::vector<TimeValue> out;
+    std::vector<TimeValue> st;
+    std::vector<Point3> sv;
+    for (size_t i = 0; i + 1 < times.size(); ++i) {
+        const TimeValue t0 = times[i], t1 = times[i + 1];
+        out.push_back(t0);
+        if (t1 - t0 <= kFrame) continue;
+
+        st.clear();
+        sv.clear();
+        for (TimeValue t = t0; t < t1; t += kFrame) {
+            st.push_back(t);
+            sv.push_back(valueAt(t));
+        }
+        st.push_back(t1);
+        sv.push_back(valueAt(t1));
+
+        size_t anchor = 0;
+        for (size_t j = 1; j + 1 < st.size(); ++j) {
+            const size_t to = j + 1;
+            const float dt = static_cast<float>(st[to] - st[anchor]);
+            bool straight = true;
+            for (size_t k = anchor + 1; straight && k <= j; ++k) {
+                const float u = static_cast<float>(st[k] - st[anchor]) / dt;
+                straight = Length(sv[k] - (sv[anchor] + (sv[to] - sv[anchor]) * u)) <= tolerance;
+            }
+            if (!straight) {
+                out.push_back(st[j]);
+                anchor = j;
+            }
+        }
+    }
+    out.push_back(times.back());
+    return out;
+}
+
+// How far the exported straight line may miss a Bezier/TCB curve between
+// keys before densifyCurveTimes follows it: 0.01 units of translation (the
+// models are ~100-300 units tall) and 0.5% of scale, the scale reducer's own
+// tolerance.
+constexpr float kCurveTolTranslation = 0.01f;
+constexpr float kCurveTolScale = 0.005f;
 
 // ─── Global-sequence transform channels ──────────────────────────────
 //
@@ -467,6 +584,7 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
     }
 
     for (size_t nodeIdx = 0; nodeIdx < irModel.nodes.size(); ++nodeIdx) {
+        if (config.onNode) config.onNode(nodeIdx, irModel.nodes.size());
         auto& irNode = irModel.nodes[nodeIdx];
         INode* maxNode = irNode.maxNode;
         if (!maxNode) continue;
@@ -548,6 +666,15 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 parentWorldBindRot = extractRotation(pb);
             }
         }
+
+        // Whether the local TM mirrors at bind (see negated): a sample that
+        // differs is a temporary mirror, exported as a negative scale.
+        const bool bindMirrored = [&] {
+            const Matrix3 nodeTM0 = maxNode->GetNodeTM(0);
+            if (parentNode && !parentNode->IsRootNode())
+                return isMirrored(unitSized(nodeTM0) * Inverse(unitSized(parentNode->GetNodeTM(0))));
+            return isMirrored(nodeTM0);
+        }();
 
         // Emitter-like nodes export absolute rotation AND scale instead of
         // the bind delta/ratio (see isOrientationAbsoluteNode) — nothing
@@ -703,7 +830,7 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
 
                 nodeAnim.translation.keys.clear();
                 nodeAnim.translation.interpolation = ir::InterpolationType::Linear;
-                const int frameInterval = 160;
+                const int frameInterval = GetTicksPerFrame();
 
                 // ── Bind-time setup (NeoDex constants) ─────────────────────────
                 Point3 parentScale_bind(1.0f, 1.0f, 1.0f);
@@ -743,21 +870,14 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                      << " evalLocalBind=(" << bindPos.x << "," << bindPos.y << "," << bindPos.z << ")"
                      << "\n";
 
-                int transLogCount = 0;
-                auto transTimes = isIKNode
-                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
-                    : (!needsPerFrame && isFKPosNode)
-                        ? collectKeyTimes(posCtrlFK, seq.startTime, seq.endTime)
-                        : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
-                for (TimeValue t : transTimes) {
+                // KGTR value at t (NeoDex PositionKeys, see above).
+                auto translationAt = [&](TimeValue t) {
                     Point3 cValue_t;
-                    Point3 worldPos = maxNode->GetNodeTM(t).GetTrans();
-
                     if (parentNode && !parentNode->IsRootNode()) {
                         Matrix3 parentTM_t_full = parentNode->GetNodeTM(t);
                         cValue_t = (maxNode->GetNodeTM(t) * Inverse(parentTM_t_full)).GetTrans();
                     } else {
-                        cValue_t = worldPos;
+                        cValue_t = maxNode->GetNodeTM(t).GetTrans();
                     }
 
                     Point3 delta = cValue_t - cValue_0;
@@ -766,7 +886,20 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                     delta.y *= parentScale_bind.y;
                     delta.z *= parentScale_bind.z;
 
-                    delta = delta * parentRot_bind;
+                    return delta * parentRot_bind;
+                };
+
+                int transLogCount = 0;
+                const bool transAtKeys = !isIKNode && !needsPerFrame && isFKPosNode;
+                auto transTimes = isIKNode
+                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    : transAtKeys
+                        ? collectKeyTimes(posCtrlFK, seq.startTime, seq.endTime)
+                        : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
+                if (transAtKeys)
+                    transTimes = densifyCurveTimes(transTimes, translationAt, kCurveTolTranslation);
+                for (TimeValue t : transTimes) {
+                    Point3 delta = translationAt(t);
 
                     if (fabsf(delta.x) < 0.0001f) delta.x = 0.0f;
                     if (fabsf(delta.y) < 0.0001f) delta.y = 0.0f;
@@ -774,8 +907,6 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
 
                     if (transLogCount < 5 || (t % (frameInterval * 100)) == 0) {
                         ALOG << "      t=" << t
-                             << " world=(" << worldPos.x << "," << worldPos.y << "," << worldPos.z << ")"
-                             << " cValue_t=(" << cValue_t.x << "," << cValue_t.y << "," << cValue_t.z << ")"
                              << " delta=(" << delta.x << "," << delta.y << "," << delta.z << ")"
                              << "\n";
                     }
@@ -799,18 +930,46 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 nodeAnim.rotation.interpolation = ir::InterpolationType::Linear;
 
                 Quat invWorldBind = Inverse(worldBindRot);
-                Quat invParentWorldBind = Inverse(parentWorldBindRot);
 
                 const bool hasParentTM = parentNode && !parentNode->IsRootNode();
                 auto localRotAt = [&](TimeValue t) {
-                    Matrix3 nodeTM, parentTM;
+                    // The node's rotation relative to its parent, taken from
+                    // the local TM. Differencing the two world rotations
+                    // instead (worldRot * Inverse(parentWorldRot)) only works
+                    // while no ancestor scales non-uniformly: Max composes a
+                    // child's world TM through the parent's scale, so under a
+                    // parent scaled (0.73, 0.69, 0.73) the child's world TM is
+                    // sheared, its extracted "rotation" is not a unit
+                    // quaternion and points the wrong way. Mandrake's Death
+                    // shrinks its root like that and every bone below it
+                    // drifted, up to 3 units at the toes. nodeTM *
+                    // Inverse(parentTM) is exactly the local controller TM,
+                    // which holds only the node's own scale, so no shear —
+                    // translation and scale are already read from it.
+                    //
+                    // Both TMs are brought to unit size before the inverse. A
+                    // chain that shrinks to 0 together (Mandrake's last Death
+                    // frame) leaves a deep bone's parent TM near 1e-8 per
+                    // axis; its determinant underflows float and the inverse
+                    // came out NaN. Uniform rescaling does not change the
+                    // rotation extractRotation reads from normalized rows.
+                    Quat localRot(0.0f, 0.0f, 0.0f, 1.0f);
                     TimeValue evalTime = t;
                     const auto evaluateAt = [&](TimeValue s) {
                         evalTime = s;
-                        nodeTM = maxNode->GetNodeTM(s);
-                        if (hasParentTM) parentTM = parentNode->GetNodeTM(s);
-                        return hasRotation(nodeTM) &&
-                               (!hasParentTM || hasRotation(parentTM));
+                        const Matrix3 nodeTM = maxNode->GetNodeTM(s);
+                        if (!hasRotation(nodeTM)) return false;
+                        Matrix3 local = nodeTM;
+                        if (hasParentTM) {
+                            const Matrix3 parentTM = parentNode->GetNodeTM(s);
+                            if (!hasRotation(parentTM)) return false;
+                            local = unitSized(nodeTM) * Inverse(unitSized(parentTM));
+                        }
+                        // A temporary mirror is carried by a negative KGSC.
+                        if (isMirrored(local) != bindMirrored)
+                            local = negated(local);
+                        localRot = extractRotation(local);
+                        return isFiniteQuat(localRot);
                     };
                     // Scale 0 for the whole window: the rotation never shows.
                     if (!evaluateNearestRotation(t, seq.startTime, seq.endTime, evaluateAt))
@@ -820,13 +979,6 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                              << evalTime << "\n";
                     }
 
-                    Quat worldRot = extractRotation(nodeTM);
-
-                    Quat parentWorldRot(0.0f,0.0f,0.0f,1.0f);
-                    if (hasParentTM) {
-                        parentWorldRot = extractRotation(parentTM);
-                    }
-
                     // Bone convention (matches NeoDex GetRot): KGRT stores the
                     // rotation CHANGE from bind pose — the bind orientation
                     // itself is baked into the world-space skinned vertices.
@@ -834,17 +986,24 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                     // attachments) have nothing that bakes the bind
                     // orientation, so their KGRT must reproduce the absolute
                     // Max world orientation instead.
-                    Quat parentDelta = invParentWorldBind * parentWorldRot;
-                    if (useAbsoluteRotScale) {
-                        Quat parentGameRot = parentIsAbsolute ? parentWorldRot
-                                                              : parentDelta;
-                        return worldRot * Inverse(parentGameRot);
-                    }
-                    return (invWorldBind * worldRot) * Inverse(parentDelta);
+                    //
+                    // With localRot == worldRot * Inverse(parentWorldRot) these
+                    // are the old formulas expanded:
+                    //   bone:     (invWorldBind * worldRot) * Inverse(parentDelta)
+                    //   absolute: worldRot * Inverse(parentWorldRot | parentDelta)
+                    // where parentDelta = invParentWorldBind * parentWorldRot.
+                    Quat q;
+                    if (useAbsoluteRotScale)
+                        q = parentIsAbsolute ? localRot
+                                             : localRot * parentWorldBindRot;
+                    else
+                        q = invWorldBind * localRot * parentWorldBindRot;
+                    q.Normalize();
+                    return q;
                 };
 
                 int logCount = 0;
-                const int frameInterval = 160; // 1 frame at 30fps
+                const int frameInterval = GetTicksPerFrame(); // one frame of the scene
                 const bool keyTimeRot = isIKNode || (!needsPerFrame && isFKRotNode);
                 auto rotTimes = isIKNode
                     ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
@@ -910,7 +1069,7 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
             {
                 nodeAnim.scale.keys.clear();
                 nodeAnim.scale.interpolation = ir::InterpolationType::Linear;
-                const int frameInterval = 160;
+                const int frameInterval = GetTicksPerFrame();
 
                 // Bind-time local scale (row lengths of local TM)
                 Matrix3 bindNodeTM = maxNode->GetNodeTM(0);
@@ -937,22 +1096,32 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                     bindSz = 1.0f;
                 }
 
-                auto sclTimes = isIKNode
-                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
-                    : (!needsPerFrame)
-                        ? collectKeyTimes(sclCtrlFK, seq.startTime, seq.endTime)
-                        : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
-                for (TimeValue t : sclTimes) {
+                // KGSC value at t: local scale relative to the bind scale.
+                auto scaleAt = [&](TimeValue t) {
                     Matrix3 nodeTM = maxNode->GetNodeTM(t);
                     Matrix3 parTM;
                     parTM.IdentityMatrix();
                     if (parentNode && !parentNode->IsRootNode())
                         parTM = parentNode->GetNodeTM(t);
                     Matrix3 localTM = nodeTM * Inverse(parTM);
+                    // A temporary mirror is a negative scale (see negated).
+                    const float sign = isMirrored(localTM) != bindMirrored ? -1.0f : 1.0f;
+                    return Point3(sign * Length(localTM.GetRow(0)) / bindSx,
+                                  sign * Length(localTM.GetRow(1)) / bindSy,
+                                  sign * Length(localTM.GetRow(2)) / bindSz);
+                };
 
-                    float sx = Length(localTM.GetRow(0)) / bindSx;
-                    float sy = Length(localTM.GetRow(1)) / bindSy;
-                    float sz = Length(localTM.GetRow(2)) / bindSz;
+                const bool sclAtKeys = !isIKNode && !needsPerFrame;
+                auto sclTimes = isIKNode
+                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    : sclAtKeys
+                        ? collectKeyTimes(sclCtrlFK, seq.startTime, seq.endTime)
+                        : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
+                if (sclAtKeys)
+                    sclTimes = densifyCurveTimes(sclTimes, scaleAt, kCurveTolScale);
+                for (TimeValue t : sclTimes) {
+                    const Point3 s = scaleAt(t);
+                    float sx = s.x, sy = s.y, sz = s.z;
 
                     if (fabsf(sx - 1.0f) < 0.001f) sx = 1.0f;
                     if (fabsf(sy - 1.0f) < 0.001f) sy = 1.0f;

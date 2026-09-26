@@ -32,7 +32,7 @@ struct MdxExportOptions {
     // DDS-specific (used for Reforged, version >= 1200)
     int32_t ddsFormat = 0;                // 0 = BC3, 1 = BC7
 
-    int32_t animSampleInterval = 160; // ticks (160 = ~30fps subsample)
+    int32_t animSampleInterval = 0;   // ticks; 0 = one frame of the scene (160 at 30 fps)
     float ikRefinementThreshold = 0.5f; // degrees
     float vertexMergeThreshold = 0.001f;
     uint32_t blendTime = 150;

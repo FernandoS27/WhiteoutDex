@@ -140,9 +140,16 @@ inline float snapBoolValue(float v) {
 // its duration (time of last key) is registered in the IR model's
 // globalSequenceDurations and the resulting track's globalSequenceIndex
 // is set to the 0-based index.
+inline int32_t extractVisibilityTrackFromController(Control* ctrl, ir::IRModel& model);
+
 inline int32_t extractVisibilityTrack(INode* node, ir::IRModel& model) {
     if (!node) return -1;
-    Control* ctrl = node->GetVisController();
+    return extractVisibilityTrackFromController(node->GetVisController(), model);
+}
+
+// Same for any float controller that holds visibility keys (e.g. the NeoDex
+// attachment point's A_Visibility parameter).
+inline int32_t extractVisibilityTrackFromController(Control* ctrl, ir::IRModel& model) {
     if (!ctrl) return -1;
 
     ULONG cidA = ctrl->ClassID().PartA();

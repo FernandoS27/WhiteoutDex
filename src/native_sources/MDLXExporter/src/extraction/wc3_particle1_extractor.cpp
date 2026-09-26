@@ -13,6 +13,8 @@
 #include <animation/global_sequence_helper.h>
 #include <control.h>
 #include <modstack.h>
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 
@@ -96,6 +98,9 @@ void extractParticles1(const std::vector<core::SceneNode>& nodes,
             baseObj = static_cast<IDerivedObject*>(baseObj)->GetObjRef();
         Class_ID cid = baseObj ? baseObj->ClassID() : Class_ID(0,0);
         const bool isNeoDex = (cid == mdx_ids::NEODEX_PARTICLES1);
+        // By-name reads look at the object's own param blocks, which a
+        // modifier on the node would hide behind its derived object.
+        if (isNeoDex) ref = baseObj;
 
         TimeValue t = 0;
         ir::ParticleEmitter pe;
@@ -141,35 +146,46 @@ void extractParticles1(const std::vector<core::SceneNode>& nodes,
 
         } else {
             // ═══ NEODEX — name-based with BlizzPart1.ms names ═══
-            // BlizzPart1 has no "speed" param — only PartEmit, Life, Gravity, lat, lon
+            // The speed is "radius" (UI label "Speed:"); latitude/longitude
+            // hold the MDX values as they are — NeoDex's importer and
+            // exporter copy them without a unit conversion
+            // (NeoDexSceneRebuilder / NeoDexSceneParser, PE1).
+            PBR::readFloatByName(ref, L"radius",     t, pe.speed);
             PBR::readFloatByName(ref, L"PartEmit",   t, pe.emissionRate);
             PBR::readFloatByName(ref, L"Life",       t, pe.lifespan);
             PBR::readFloatByName(ref, L"Gravity",    t, pe.gravity);
+            PBR::readFloatByName(ref, L"latitude",   t, pe.latitude);
+            PBR::readFloatByName(ref, L"longitude",  t, pe.longitude);
 
-            float latDeg = 0, lonDeg = 0;
-            PBR::readFloatByName(ref, L"latitude",   t, latDeg);
-            PBR::readFloatByName(ref, L"longitude",  t, lonDeg);
-            pe.latitude  = latDeg * kDegToRad;
-            pe.longitude = lonDeg * kDegToRad;
-
-            // Model path: NeoDex BlizzPart1 uses "path" (prefix) + "Part" (filename)
-            std::string modelName, modelPrefix;
+            // Model path, as NeoDex builds it: "path" (prefix, default
+            // war3mapImported\) + "Part" (file name, stored without extension
+            // by the importer), any .mdl dropped, then ".MDL" appended; an
+            // empty name becomes war3mapImported\dummy.MDL.
+            std::string modelName, modelPrefix = "war3mapImported\\";
             { std::wstring w; PBR::readStringByName(ref, L"Part", t, w);
               if (!w.empty()) modelName = wcharToUtf8(w.c_str()); }
-            { std::wstring w; PBR::readStringByName(ref, L"path", t, w);
-              if (!w.empty()) modelPrefix = wcharToUtf8(w.c_str()); }
-            if (!modelName.empty()) {
-                size_t ls = modelName.find_last_of("\\/");
-                if (ls != std::string::npos) modelName = modelName.substr(ls + 1);
-                pe.modelPath = modelPrefix + modelName;
+            { std::wstring w;
+              if (PBR::readStringByName(ref, L"path", t, w)) modelPrefix = wcharToUtf8(w.c_str()); }
+            {
+                std::string combined = modelPrefix + modelName;
+                if (combined.size() > 4) {
+                    std::string ext = combined.substr(combined.size() - 4);
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (ext == ".mdl" || ext == ".mdx") combined.resize(combined.size() - 4);
+                }
+                if (combined.empty() || combined == "war3mapImported\\")
+                    combined = "war3mapImported\\dummy";
+                pe.modelPath = combined + ".MDL";
             }
 
             pe.flags = 0;
 
+            pe.speedTrackIndex        = extractTrackByName(ref, L"radius",    model, "KPES");
             pe.emissionRateTrackIndex = extractTrackByName(ref, L"PartEmit",  model, "KPEE");
             pe.gravityTrackIndex      = extractTrackByName(ref, L"Gravity",   model, "KPEG");
-            pe.latitudeTrackIndex     = extractTrackByName(ref, L"latitude",  model, "KPLT", kDegToRad);
-            pe.longitudeTrackIndex    = extractTrackByName(ref, L"longitude", model, "KPLN", kDegToRad);
+            pe.latitudeTrackIndex     = extractTrackByName(ref, L"latitude",  model, "KPLT");
+            pe.longitudeTrackIndex    = extractTrackByName(ref, L"longitude", model, "KPLN");
             pe.lifespanTrackIndex     = extractTrackByName(ref, L"Life",      model, "KPEL");
         }
 

@@ -65,6 +65,9 @@ void extractRibbons(const std::vector<core::SceneNode>& nodes,
             baseObj = static_cast<IDerivedObject*>(baseObj)->GetObjRef();
         Class_ID cid = baseObj ? baseObj->ClassID() : Class_ID(0,0);
         const bool isNeoDex = (cid == mdx_ids::NEODEX_RIBBON);
+        // The by-name reads below look at the object's own param blocks, which
+        // a modifier on the node would hide behind its derived object.
+        if (isNeoDex) ref = baseObj;
 
         TimeValue t = 0;
         ir::RibbonEmitter rib;

@@ -73,6 +73,11 @@ private:
 std::wstring resolveTexturePath(const std::wstring& modelDir,
                                 const std::wstring& relPath);
 
+/// Where an archive path with a mod chain ("_hd.w3mod:textures\x.blp") is
+/// placed on disk: the overlay becomes a folder ("_hd.w3mod\textures\x.blp"),
+/// `war3.w3mod:` is dropped. Paths without ':' come back unchanged.
+std::wstring diskPathFromArchivePath(const std::wstring& relPath);
+
 /// The `_XX.w3mod` overlay segment (lowercase, e.g. "_de.w3mod") the model
 /// browser recorded in a model's extraction directory, or empty when the model
 /// did not come out of CASC that way.

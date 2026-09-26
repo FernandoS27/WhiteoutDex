@@ -4,6 +4,7 @@
 // of any change. Returns the number of problems addressed.
 
 #include "scene_monitor.h"
+#include "material_fix_settings.h"
 #include "mdx_class_ids.h"
 #include "mdx_export_debug.h"
 
@@ -338,65 +339,6 @@ int fixBoneControllers(const ScanResult& result) {
 
 namespace {
 
-// ── Material Fix Settings (read from MDLXExporter.ini [MaterialFix]) ──
-//
-// Mirrors the dialog's Material Fix tab. Loaded once per fixUnsupported
-// call and applied to each newly created Wdx_Wc3Material.
-struct MaterialFixSettings {
-    bool         unshaded   = false;
-    bool         unfogged   = false;
-    bool         twoSided   = false;
-    int          filterMode = 1;     // 1=None, 2=Transparent, 3=Blend, 4=Add,
-                                      // 5=Add2x, 6=Modulate, 7=Modulate2x
-    std::wstring prefixPath;
-    bool         uTile      = false;
-    bool         vTile      = false;
-};
-
-// Locate the same INI path the dialog uses. Duplicated from export_dialog.cpp
-// to avoid pulling that whole file's includes here.
-std::wstring matFixINIPath() {
-    Interface* gi = GetCOREInterface();
-    MSTR dir;
-    if (gi) dir = gi->GetDir(APP_PLUGCFG_DIR);
-    return std::wstring(dir.data() ? dir.data() : L"") + L"\\MDLXExporter.ini";
-}
-
-MaterialFixSettings loadMaterialFixSettings() {
-    MaterialFixSettings s;
-    std::wstring path = matFixINIPath();
-    wchar_t buf[512];
-
-    // Disambiguate Win32 GetPrivateProfileStringW from MaxSDK::Util's
-    // overload by taking a function pointer to the exact Win32 signature.
-    // (Same trick the export dialog uses for the same conflict.)
-    static auto Win32_GetPrivateProfileStringW =
-        static_cast<DWORD(WINAPI*)(LPCWSTR, LPCWSTR, LPCWSTR, LPWSTR, DWORD, LPCWSTR)>(
-            &::GetPrivateProfileStringW);
-
-    auto getStr = [&](const wchar_t* key, const wchar_t* def = L"") -> std::wstring {
-        Win32_GetPrivateProfileStringW(L"MaterialFix", key, def, buf, 512, path.c_str());
-        return buf;
-    };
-    auto getBool = [&](const wchar_t* key) -> bool {
-        auto v = getStr(key);
-        return v == L"true" || v == L"True" || v == L"1";
-    };
-
-    s.unshaded   = getBool(L"Unshaded");
-    s.unfogged   = getBool(L"Unfogged");
-    s.twoSided   = getBool(L"Twosided");
-    s.uTile      = getBool(L"UTile");
-    s.vTile      = getBool(L"VTile");
-    s.prefixPath = getStr(L"PrefixPath");
-
-    auto fmStr = getStr(L"FilterMode", L"1");
-    s.filterMode = _wtoi(fmStr.c_str());
-    if (s.filterMode < 1 || s.filterMode > 7) s.filterMode = 1;
-
-    return s;
-}
-
 // Apply the settings to a Wdx_Wc3Material. The material is a scripted
 // plugin — we access its parameters by name. ParamBlockDesc2 doesn't
 // have a NameToID method (Max 2025), so we walk paramdefs and match by
@@ -708,6 +650,49 @@ void replaceMaterialOnAllNodes(Mtl* oldMtl, Mtl* newMtl) {
 
 } // anonymous
 
+// Hand the flagged materials to MaterialFix.ms (the Material Fix Settings
+// tool), so Fix all converts exactly the way the user set the tool up: SD or
+// HD profile, flags, map transfer, Multi/Sub sub-materials, one undo step.
+// Materials go over as AnimHandles (Animatable::GetHandleByAnim, read back
+// with MAXScript's getAnimByHandle). Returns the number of converted
+// materials, or -1 when the script is not loaded or failed to run; the
+// caller then falls back to the C++ conversion.
+static int fixMaterialsViaScript(const ScanResult& result) {
+    std::wstring handles;
+    std::unordered_set<Mtl*> seen;
+    for (auto& p : result.problems) {
+        if (p.type != ProblemType::UnsupportedMaterial || !p.mtl) continue;
+        if (!seen.insert(p.mtl).second) continue;
+        const AnimHandle h = Animatable::GetHandleByAnim(p.mtl);
+        if (!handles.empty()) handles += L", ";
+        handles += std::to_wstring(static_cast<unsigned long long>(h));
+        if (h > 0x7FFFFFFFull) handles += L"L";  // MAXScript Integer64 literal
+    }
+    if (seen.empty()) return 0;
+
+    const std::wstring script =
+        L"if ::WdxMaterialFix == undefined then -1 else ::WdxMaterialFix.fixHandles #(" +
+        handles + L")";
+    FPValue value;
+    value.type = TYPE_VOID;
+    BOOL ok = FALSE;
+    try {
+        ok = ExecuteMAXScriptScript(const_cast<MCHAR*>(script.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+                                    MAXScript::ScriptSource::NotSpecified,
+#endif
+                                    TRUE, // quietErrors
+                                    &value);
+    } catch (...) {
+        ok = FALSE;
+    }
+    int converted = -1;
+    if (ok && value.type == TYPE_INT) converted = value.i;
+    ELOG << "[matFix] MaterialFix.ms: ok=" << (ok ? 1 : 0) << " type=" << (int)value.type
+         << " converted=" << converted << " of " << seen.size() << "\n"; EFLUSH;
+    return converted;
+}
+
 int fixUnsupportedMaterials(const ScanResult& result) {
     Interface* gi = GetCOREInterface();
     if (!gi) {
@@ -723,6 +708,13 @@ int fixUnsupportedMaterials(const ScanResult& result) {
     }
     ELOG << "[matFix] Unsupported material problems: " << unsupportedCount << "\n";
     EFLUSH;
+    if (unsupportedCount == 0) return 0;
+
+    // The Material Fix Settings tool owns the conversion. The C++ path below
+    // only runs when that script is missing (e.g. a partial install).
+    if (const int viaScript = fixMaterialsViaScript(result); viaScript >= 0)
+        return viaScript;
+    ELOG << "[matFix] MaterialFix.ms unavailable, using the built-in conversion\n"; EFLUSH;
 
     // Read settings once before the loop so we don't hit the INI per material
     MaterialFixSettings settings = loadMaterialFixSettings();
@@ -823,12 +815,165 @@ int fixUnsupportedMaterials(const ScanResult& result) {
 }
 
 // ============================================================================
+// Fix: Multi/Sub-Object material meshes
+//
+// A geoset carries one material, so a mesh with a Multi/Sub-Object material
+// (an OBJ import with several usemtl groups arrives as one such mesh) is
+// split into one object per sub-material: each piece is a copy of the node
+// with the other faces deleted, so UVs, normals, transform, controllers,
+// parent and layer carry over. Face IDs map to sub-materials the way Max
+// does: through the material's ID list, and an ID that is not listed wraps
+// modulo the sub-material count, as the SDK tells renderers and exporters to
+// do ("Accessing Material Properties", Max Developer Help). IDs that land on
+// the same sub-material share a piece; a mesh that uses one sub-material
+// only just gets that material.
+//
+// Unskinned meshes have their modifiers collapsed first, which is what
+// splitting by hand needs too. A skinned mesh (Skin, Physique, Skin Wrap)
+// keeps its stack: only faces are deleted from its base object and every
+// vertex stays, because the weights are stored per vertex index; the
+// exporter builds its vertices from face corners, so the unused ones never
+// reach the MDX. A skinned mesh with other modifiers as well is left alone.
+// The whole pass is one undo step. Afterwards the new materials replace the
+// Multi/Sub in the Material Editor (see the script's end).
+// ============================================================================
+
+namespace {
+
+const wchar_t* kSplitMultiScript =
+    L"(\n"
+    L"  fn wdxSubFor mm id = (\n"
+    L"    local idx = findItem mm.materialIDList id\n"
+    L"    if idx == 0 and mm.numsubs > 0 do idx = ((mod (id - 1) mm.numsubs) as integer) + 1\n"
+    L"    if idx > 0 then mm.materialList[idx] else undefined\n"
+    L"  )\n"
+    L"  fn wdxSplit n multis newMats = (\n"
+    L"    if n == undefined or isDeleted n do return 0\n"
+    L"    local mm = n.material\n"
+    L"    if classOf mm != Multimaterial do return 0\n"
+    L"    local skinned = false, other = false\n"
+    L"    for m in n.modifiers do\n"
+    L"      if classOf m == Skin or classOf m == Physique or classOf m == Skin_Wrap then skinned = true else other = true\n"
+    L"    if skinned and other do return 0\n"
+    L"    if not skinned and n.modifiers.count > 0 do collapseStack n\n"
+    L"    local b = n.baseObject\n"
+    L"    local poly = classOf b == Editable_Poly\n"
+    L"    if not poly and classOf b != Editable_mesh do (\n"
+    L"      if skinned do return 0\n"
+    L"      convertToPoly n; poly = true; b = n.baseObject\n"
+    L"    )\n"
+    L"    local nf = if poly then polyop.getNumFaces b else b.mesh.numfaces\n"
+    L"    if nf == 0 do return 0\n"
+    L"    local subs = #(), sets = #()\n"
+    L"    for f = 1 to nf do (\n"
+    L"      local id = if poly then polyop.getFaceMatID b f else getFaceMatID b.mesh f\n"
+    L"      local sm = wdxSubFor mm id\n"
+    L"      local k = findItem subs sm\n"
+    L"      if k == 0 do (append subs sm; append sets #{}; k = subs.count)\n"
+    L"      sets[k][f] = true\n"
+    L"    )\n"
+    L"    appendIfUnique multis mm\n"
+    L"    for s in subs where s != undefined do appendIfUnique newMats s\n"
+    L"    if subs.count == 1 do (n.material = subs[1]; return 1)\n"
+    L"    local all = #{1..nf}\n"
+    L"    local pieces = #()\n"
+    L"    for k = 1 to subs.count do (\n"
+    L"      local c = copy n\n"
+    L"      -- Under a Skin the vertices stay: its weights are per vertex index.\n"
+    L"      -- The exporter builds vertices from faces, so unused ones never ship.\n"
+    L"      if poly then polyop.deleteFaces c.baseObject (all - sets[k]) delIsoVerts:(not skinned)\n"
+    L"      else meshop.deleteFaces c.baseObject (all - sets[k]) delIsoVerts:(not skinned)\n"
+    L"      c.material = subs[k]\n"
+    L"      local sn = if subs[k] != undefined then subs[k].name else \"NoMaterial\"\n"
+    L"      local base = if findString sn n.name == 1 then sn else n.name + \"_\" + sn\n"
+    L"      c.name = if getNodeByName base == undefined then base else uniqueName (base + \"_\")\n"
+    L"      c.parent = n.parent\n"
+    L"      n.layer.addNode c\n"
+    L"      append pieces c\n"
+    L"    )\n"
+    L"    for ch in (for x in n.children collect x) do ch.parent = pieces[1]\n"
+    L"    delete n\n"
+    L"    1\n"
+    L"  )\n"
+    L"  local done = 0, multis = #(), newMats = #()\n"
+    L"  undo \"Split Multi/Sub-Object Meshes\" on (\n"
+    L"    for h in #(%HANDLES%) do done += wdxSplit (maxOps.getNodeByHandle h) multis newMats\n"
+    L"  )\n"
+    L"  -- Material Editor: the new materials take the split Multi/Sub's own\n"
+    L"  -- slot, then empty default slots (\"01 - Default\"... used by nothing).\n"
+    L"  -- Other slots are the user's and stay. Materials already in a slot are\n"
+    L"  -- not added twice. Fix all's material conversion later swaps them for\n"
+    L"  -- their Wc3 versions (MaterialFix.ms does that per slot).\n"
+    L"  try (\n"
+    L"    local want = for s in newMats where (for i = 1 to 24 where meditMaterials[i] == s collect i).count == 0 collect s\n"
+    L"    local slots = for i = 1 to 24 where findItem multis meditMaterials[i] > 0 and (refs.dependentNodes meditMaterials[i]).count == 0 collect i\n"
+    L"    local first = if slots.count > 0 then slots[1] else 0\n"
+    L"    for i = 1 to 24 where findItem slots i == 0 do (\n"
+    L"      local m = meditMaterials[i], nm = m.name\n"
+    L"      local isDefault = nm.count > 5 and (nm[1] as integer) != undefined and (nm[2] as integer) != undefined and substring nm 3 3 == \" - \"\n"
+    L"      if isDefault and (refs.dependentNodes m).count == 0 do append slots i\n"
+    L"    )\n"
+    L"    for k = 1 to amin want.count slots.count do meditMaterials[slots[k]] = want[k]\n"
+    L"    if first > 0 do activeMeditSlot = first\n"
+    L"  ) catch ()\n"
+    L"  done\n"
+    L")\n";
+
+} // anonymous
+
+int fixMultiMaterialMeshes(const ScanResult& result) {
+    std::wstring handles;
+    std::unordered_set<INode*> seen;
+    for (auto& p : result.problems) {
+        if (p.type != ProblemType::MultiMaterialMesh || !p.node) continue;
+        if (!seen.insert(p.node).second) continue;
+        if (!handles.empty()) handles += L", ";
+        handles += std::to_wstring(static_cast<unsigned long>(p.node->GetHandle()));
+    }
+    if (seen.empty()) return 0;
+
+    std::wstring script = kSplitMultiScript;
+    script.replace(script.find(L"%HANDLES%"), 9, handles);
+
+    FPValue value;
+    value.type = TYPE_VOID;
+    BOOL ok = FALSE;
+    try {
+        ok = ExecuteMAXScriptScript(const_cast<MCHAR*>(script.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+                                    MAXScript::ScriptSource::NotSpecified,
+#endif
+                                    TRUE, // quietErrors
+                                    &value);
+    } catch (...) {
+        ok = FALSE;
+    }
+    const int split = (ok && value.type == TYPE_INT) ? value.i : 0;
+    ELOG << "[multiSplit] ok=" << (ok ? 1 : 0) << " split " << split << " of " << seen.size()
+         << " Multi/Sub-Object meshes\n"; EFLUSH;
+
+    if (Interface* gi = GetCOREInterface())
+        gi->RedrawViews(gi->GetTime(), REDRAW_NORMAL);
+    return split;
+}
+
+// ============================================================================
 // Fix all
 // ============================================================================
 
 int fixAll(const ScanResult& result) {
     int n = 0;
     n += fixDuplicateNames(result);
+    // The split replaces nodes and hands the pieces sub-materials the first
+    // scan never flagged as a node's material, so scan again for the rest.
+    if (result.countByType(ProblemType::MultiMaterialMesh) > 0) {
+        n += fixMultiMaterialMeshes(result);
+        const ScanResult after = scanScene();
+        n += fixMeshProblems(after);
+        n += fixBoneControllers(after);
+        n += fixUnsupportedMaterials(after);
+        return n;
+    }
     n += fixMeshProblems(result);
     n += fixBoneControllers(result);
     n += fixUnsupportedMaterials(result);

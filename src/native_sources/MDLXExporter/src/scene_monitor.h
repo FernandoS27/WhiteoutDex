@@ -8,6 +8,8 @@
 //     allowed; Biped/CAT/IK/Wdx_-plugins exempt — they're baked at export)
 //   • Material problems (Physical, Standard, OpenPBR/PBR — all incompatible
 //     with the MDX format; only Wdx_Wc3Material and NeoDex Warcraft3 are supported)
+//   • Meshes with a Multi/Sub-Object material: a geoset has one material, so
+//     such a mesh is split into one object per sub-material
 //
 // Modeled on the NeoDex SceneMonitor, but rewritten in C++ and restricted
 // to the WhiteoutDex Wdx_* and NeoDex Warcraft3 plugin families.
@@ -29,6 +31,7 @@ enum class ProblemType {
     EditMeshAboveSkin,   // Edit_Mesh modifier sitting above a Skin modifier
     InvalidController,   // Non-baseline P/R/S controller on a bone/helper
     UnsupportedMaterial, // Physical / Standard / OpenPBR / PBR
+    MultiMaterialMesh,   // Mesh carrying a Multi/Sub-Object material
 };
 
 // One detected problem entry.
@@ -72,8 +75,13 @@ int fixDuplicateNames     (const ScanResult& result);
 int fixMeshProblems       (const ScanResult& result);
 int fixBoneControllers    (const ScanResult& result);
 int fixUnsupportedMaterials(const ScanResult& result);
+// Splits every flagged mesh into one object per sub-material of its
+// Multi/Sub-Object material. Skinned meshes are left alone (see the .cpp).
+int fixMultiMaterialMeshes(const ScanResult& result);
 
-// Convenience: run all four fixers in order, returns total count fixed.
+// Convenience: run all fixers, returns total count fixed. The Multi/Sub split
+// runs first and the scene is re-scanned after it, so the new objects' mesh
+// and material problems are fixed in the same pass.
 int fixAll(const ScanResult& result);
 
 // ── Standalone problem-details dialog ─────────────────────────────────

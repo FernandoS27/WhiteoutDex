@@ -120,29 +120,67 @@ extends:Standard replaceUI:true version:13
 		) catch()
 	)
 	
+	-- A bezier_float whose keys all hold (STEP out-tangents) is how
+	-- DontInterp is stored; the importer writes it and the exporter reads it.
+	fn isStepBezier ctrl =
+	(
+		if classof ctrl != Bezier_Float or ctrl.keys.count == 0 do return false
+		for i = 1 to ctrl.keys.count do
+			if ctrl.keys[i].outTangentType != #step do return false
+		true
+	)
+
 	fn setBezierTangents ctrl tangentType =
 	(
-		if classof ctrl == Bezier_Float do
-			for i = 1 to ctrl.keys.count do
-			( ctrl.keys[i].inTangentType = tangentType; ctrl.keys[i].outTangentType = tangentType )
+		for i = 1 to ctrl.keys.count do
+		( ctrl.keys[i].inTangentType = tangentType; ctrl.keys[i].outTangentType = tangentType )
 	)
-	
-	-- CONTROLLER SWITCHING: actually changes the controller class on the track
-	-- ctrlType: 1=None, 2=Linear, 3=Bezier, 4=Hermite
+
+	-- The keyed opacity controller, or undefined.
+	fn keyedOpacityController =
+	(
+		local c = try ( this.opacity.controller ) catch ( undefined )
+		if c != undefined and (try ( numKeys c ) catch ( 0 )) > 0 then c else undefined
+	)
+
+	-- Dropdown index (1=None, 2=Linear, 3=Bezier, 4=Hermite) of the opacity
+	-- keys, or 0 when opacity is not keyed.
+	fn detectOpacityInterp =
+	(
+		local c = keyedOpacityController()
+		if c == undefined then 0
+		else if isStepBezier c then 1
+		else if classof c == Linear_Float then 2
+		else if classof c == TCB_Float then 4
+		else 3
+	)
+
+	-- Converts the opacity keys to the picked interpolation. Called only from
+	-- the dropdown's selected event: opacityCtrl's set handler also runs on
+	-- create and load (MAXScript Help, "Scripted Plug-in Clauses"), where the
+	-- keys must never change. Assigning a new controller class to a keyed
+	-- param keeps the key times and values; a bezier that already has its
+	-- own tangents keeps them.
 	fn switchOpacityController ctrlType =
 	(
+		local c = keyedOpacityController()
+		if c == undefined do return()
 		try (
-			if this.opacity.isAnimated == false do return()
 			case ctrlType of
 			(
-				1: () -- None: leave as is
-				2: ( this.opacity.controller = Linear_Float() )
-				3: (
-					if classof this.opacity.controller != Bezier_Float do
-						this.opacity.controller = Bezier_Float()
-					setBezierTangents this.opacity.controller #smooth
+				1: ( -- None (DontInterp): hold every key
+					if classof c != Bezier_Float do
+					( this.opacity.controller = Bezier_Float(); c = this.opacity.controller )
+					setBezierTangents c #step
 				)
-				4: ( this.opacity.controller = TCB_Float() )
+				2: ( if classof c != Linear_Float do this.opacity.controller = Linear_Float() )
+				3: ( -- Bezier: smooth tangents only for keys that had none
+					local fresh = (classof c != Bezier_Float) or (isStepBezier c)
+					if classof c != Bezier_Float do
+					( this.opacity.controller = Bezier_Float(); c = this.opacity.controller )
+					if fresh do setBezierTangents c #smooth
+				)
+				4: ( if classof c != TCB_Float do this.opacity.controller = TCB_Float() )
 			)
 		) catch()
 	)
@@ -271,7 +309,8 @@ extends:Standard replaceUI:true version:13
 		flipbookFrame		type:#integer	animatable:true		default:0
 
 		on opacity set val do ( try ( delegate.opacity = val ) catch() )
-		on opacityCtrl set val do ( switchOpacityController val )
+		-- opacityCtrl has no set handler: it would also run on create and load.
+		-- The dropdown's selected event converts the keys (layerAnimRollout).
 	)
 	
 	---------------------------------------------------------------------------
@@ -441,7 +480,14 @@ extends:Standard replaceUI:true version:13
 				ddOpacCtrl.selection	= savCtrl
 				this.opacityCtrl		= savCtrl
 			)
+
+			-- Show what the keys are, not what was last picked: tangents can
+			-- change in the curve editor without the dropdown knowing.
+			local detected = detectOpacityInterp()
+			if detected > 0 and detected != this.opacityCtrl do this.opacityCtrl = detected
 		)
+
+		on ddOpacCtrl selected i do ( switchOpacityController i )
 	)
 	
 	---------------------------------------------------------------------------

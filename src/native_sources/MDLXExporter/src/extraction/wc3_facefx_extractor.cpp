@@ -2,6 +2,7 @@
 #include "wc3_facefx_extractor.h"
 #include "../mdx_class_ids.h"
 #include <scene/paramblock_reader.h>
+#include <modstack.h>
 
 namespace mdx_extract {
 
@@ -28,7 +29,9 @@ void extractFaceFX(const std::vector<core::SceneNode>& nodes,
         if (sn.customTag != "Wc3FaceFX") continue;
         if (!sn.maxNode) continue;
 
-        auto* obj = sn.maxNode->GetObjectRef();
+        Object* obj = sn.maxNode->GetObjectRef();
+        while (obj && obj->SuperClassID() == GEN_DERIVOB_CLASS_ID)
+            obj = static_cast<IDerivedObject*>(obj)->GetObjRef();
         auto* ref = dynamic_cast<ReferenceTarget*>(obj);
         if (!ref) continue;
 
@@ -36,20 +39,14 @@ void extractFaceFX(const std::vector<core::SceneNode>& nodes,
 
         auto ext = std::make_unique<FaceFXExtensionData>();
 
-        // Read facefxName and facefxPath from ParamBlock
-        std::wstring facefxNameW, facefxPathW;
-        // These are string params in the FaceFX scripted plugin
-        IParamBlock2* pb = PBR::findParamBlock(ref, 0);
-        if (pb) {
-            const MCHAR* nameStr = nullptr;
-            Interval valid = FOREVER;
-            pb->GetValue(0, t, nameStr, valid); // facefxName at ParamID 0
-            ext->facefxName = wstrToUtf8(nameStr);
-
-            const MCHAR* pathStr = nullptr;
-            pb->GetValue(1, t, pathStr, valid); // facefxPath at ParamID 1
-            ext->facefxPath = wstrToUtf8(pathStr);
-        }
+        // facefxName / facefxPath by name, in both the WhiteoutDex and the
+        // NeoDex FaceFX plug-in: the first parameter of either is
+        // "adsorption" (General rollout), not the name.
+        std::wstring nameW, pathW;
+        PBR::readStringByName(ref, L"facefxName", t, nameW);
+        PBR::readStringByName(ref, L"facefxPath", t, pathW);
+        ext->facefxName = wstrToUtf8(nameW.c_str());
+        ext->facefxPath = wstrToUtf8(pathW.c_str());
 
         // Store on the IR node
         if (sn.nodeIndex >= 0 && sn.nodeIndex < static_cast<int32_t>(model.nodes.size())) {

@@ -40,17 +40,20 @@ Value* mdxExport_cf(Value** arg_list, int count)
     if (!gi)
         return &false_value;
 
-    // 1. Show the export options dialog (loads/saves INI internally)
+    // 1. Show the export options dialog (loads/saves INI internally). It stays
+    //    open after Export and shows the export's progress in step 3.
     MdxExportOptions opts;
-    if (!showExportDialog(GetDllInstance(), gi->GetMAXHWnd(), opts))
+    ExportDialog dialog(GetDllInstance(), gi->GetMAXHWnd());
+    if (!dialog.run(opts))
         return &false_value;
 
-    // 2. Show save-file dialog
+    // 2. Show save-file dialog, owned by the still open options dialog so
+    //    that one cannot be clicked meanwhile.
     OPENFILENAMEW ofn{};
     wchar_t szFile[MAX_PATH]{};
 
     ofn.lStructSize  = sizeof(ofn);
-    ofn.hwndOwner    = gi->GetMAXHWnd();
+    ofn.hwndOwner    = dialog.window() ? dialog.window() : gi->GetMAXHWnd();
     ofn.hInstance    = GetDllInstance();
     ofn.lpstrFile    = szFile;
     ofn.nMaxFile     = MAX_PATH;
@@ -67,6 +70,7 @@ Value* mdxExport_cf(Value** arg_list, int count)
     // 3. Run the export with prompts suppressed — the dialog already saved
     //    settings to INI, and DoExport will reload them.
     MdxExporterPlugin exporter;
+    exporter.setProgressDialog(&dialog);
     int result = exporter.DoExport(szFile, nullptr, gi, TRUE, 0);
 
     return (result == IMPEXP_SUCCESS) ? &true_value : &false_value;

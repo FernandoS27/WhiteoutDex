@@ -287,20 +287,24 @@ void convertExportTextures(ir::IRModel& model,
             continue;
         }
 
-        // Verify source exists before doing anything. If the bitmap was
-        // never resolved on disk, skip silently — the user will see the
-        // unconverted reference in the MDX which is still valid.
-        std::error_code ec;
-        if (!fs::exists(widen(tex.sourceDiskPath), ec)) {
-            ELOG << "    skip: source not on disk\n";
-            reporter.warning(
-                L"Texture source not found: " + widen(tex.sourceDiskPath));
-            continue;
-        }
-
         // Compute MDX-relative path with the target extension, and the
         // matching on-disk destination next to the .mdx file.
         std::string mdxRel = swapExt(tex.filePath, targetExt);
+
+        // The extractor already searched for a missing source (same name,
+        // any readable format, near the scene and in Max's map paths). What
+        // is still missing cannot be converted, but the model must still
+        // name the texture in the game's format: a NeoDex scene points at a
+        // decoded .tga copy of an in-game .blp, and the game has no .tga.
+        std::error_code ec;
+        if (!fs::exists(widen(tex.sourceDiskPath), ec)) {
+            ELOG << "    skip: source not on disk; mdx ref -> " << mdxRel << "\n";
+            tex.filePath = mdxRel;
+            reporter.warning(
+                L"Texture source not found, not converted (the model refers to " +
+                widen(mdxRel) + L"): " + widen(tex.sourceDiskPath));
+            continue;
+        }
 
         // The MDX-relative path uses backslashes; build a filesystem path
         // that mirrors that structure under mdxDir.
@@ -309,6 +313,15 @@ void convertExportTextures(ir::IRModel& model,
         fs::path dstPath = mdxDir / widen(mdxRelFwd);
         dstPath = dstPath.make_preferred();
         ELOG << "    dst=" << wlog(dstPath) << "\n";
+
+        // The source may be the destination itself (a scene whose texture
+        // was found as the .blp next to the export): re-encoding it would
+        // only lose quality.
+        if (fs::equivalent(widen(tex.sourceDiskPath), dstPath, ec)) {
+            ELOG << "    skip: source is the destination; mdx ref updated\n";
+            tex.filePath = mdxRel;
+            continue;
+        }
 
         // Skip if destination exists and overwrite is off — but still
         // update the in-MDX path to the converted extension so the model

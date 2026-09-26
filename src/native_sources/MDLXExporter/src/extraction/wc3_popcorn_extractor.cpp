@@ -5,6 +5,9 @@
 #include <scene/paramblock_reader.h>
 #include <animation/global_sequence_helper.h>
 #include <control.h>
+#include <modstack.h>
+#include <algorithm>
+#include <utility>
 
 namespace mdx_extract {
 
@@ -110,9 +113,12 @@ void extractPopcorn(const std::vector<core::SceneNode>& nodes,
         if (sn.customTag != "Wc3Popcorn") continue;
         if (!sn.maxNode) continue;
 
-        auto* obj = sn.maxNode->GetObjectRef();
+        Object* obj = sn.maxNode->GetObjectRef();
+        while (obj && obj->SuperClassID() == GEN_DERIVOB_CLASS_ID)
+            obj = static_cast<IDerivedObject*>(obj)->GetObjRef();
         auto* ref = dynamic_cast<ReferenceTarget*>(obj);
         if (!ref) continue;
+        const bool neoDex = obj->ClassID() == mdx_ids::NEODEX_POPCORN;
 
         TimeValue t = 0;
         ir::ParticleEmitter pe;
@@ -124,7 +130,13 @@ void extractPopcorn(const std::vector<core::SceneNode>& nodes,
         PBR::readFloatByName(ref, L"Speed", t, pe.speed);
         // ReplaceableId / team color used to be on the Popcorn plugin but
         // the engine ignores both — the plugin no longer exposes them, and
-        // we don't read them on export.
+        // we don't read them on export. NeoDex's plug-in still has the
+        // dropdown and writes it as value - 1, so do the same for it.
+        if (neoDex) {
+            int repl = 0;
+            if (PBR::readIntByName(ref, L"replaceableId", t, repl))
+                pe.replaceableId = std::max(0, repl - 1);
+        }
 
         // Render flags: pack the Wc3Popcorn bool params into pe.flags using
         // the same bit positions the disassembler uses. The model builder
@@ -161,6 +173,22 @@ void extractPopcorn(const std::vector<core::SceneNode>& nodes,
         std::wstring guideW;
         if (PBR::readStringByName(ref, L"rawFlags", t, guideW) && !guideW.empty())
             pe.animVisibilityGuide = wideToUtf8(guideW);
+        // NeoDex rebuilds an empty rawFlags from its flag checkboxes
+        // (NeoDexSceneParser LoadCornEmitter).
+        if (neoDex && pe.animVisibilityGuide.empty()) {
+            static const std::pair<const wchar_t*, const char*> kFlags[] = {
+                { L"flagAlways", "Always" }, { L"flagBirth", "Birth" },
+                { L"flagDeath", "Death" }, { L"flagDissipate", "Dissipate" },
+                { L"flagPortrait", "Portrait" },
+            };
+            for (const auto& [param, word] : kFlags) {
+                BOOL on = FALSE;
+                if (PBR::readBoolByName(ref, param, t, on) && on) {
+                    if (!pe.animVisibilityGuide.empty()) pe.animVisibilityGuide += ',';
+                    pe.animVisibilityGuide += word;
+                }
+            }
+        }
 
         // Base color (stored in segmentColors[0] + segmentAlpha[0] for variant==3)
         Color baseColor(1, 1, 1);
@@ -168,6 +196,9 @@ void extractPopcorn(const std::vector<core::SceneNode>& nodes,
         pe.segmentColors[0] = baseColor;
         float alpha = 1.0f;
         PBR::readFloatByName(ref, L"alpha", t, alpha);
+        // Older NeoDex imports stored alpha as 0..100; NeoDex's exporter
+        // scales such values back.
+        if (neoDex && alpha > 1.0f) alpha /= 100.0f;
         pe.segmentAlpha[0] = alpha;
 
         // Animation tracks. The static values above are the t=0 samples of

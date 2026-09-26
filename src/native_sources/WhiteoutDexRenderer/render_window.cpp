@@ -1,8 +1,13 @@
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <string>
+
+// max_scene_adapter.cpp: textures the last scene collection found nowhere.
+extern std::atomic<int> g_wdxMissingTextureCount;
 
 // clang-format off
 #include <windows.h>
@@ -267,9 +272,17 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
             i32 nGeo = 0, nTex = 0, nNodes = 0, nParts = 0, nSegs = 0;
             service_.Pipeline().GetFrameStats(nGeo, nTex, nNodes, nParts, nSegs);
             wchar_t title[300];
+            // The dash as an escape: MSVC reads this file as ANSI (no /utf-8),
+            // so a literal UTF-8 dash turned into three characters in the title.
             swprintf_s(title,
-                       L"WhiteoutFlakes — %d FPS | %d geo, %d tex, %d nodes, %d parts, %d segs",
+                       L"WhiteoutFlakes \u2014 %d FPS | %d geo, %d tex, %d nodes, %d parts, %d segs",
                        frameCount, nGeo, nTex, nNodes, nParts, nSegs);
+            // Missing textures render magenta; the Listener lists them.
+            if (const int missing = g_wdxMissingTextureCount.load(); missing > 0) {
+                wchar_t extra[80];
+                swprintf_s(extra, L" | %d texture(s) missing, see Listener", missing);
+                wcscat_s(title, extra);
+            }
             SetTitle(title);
             frameCount = 0;
             fpsTimer = now;

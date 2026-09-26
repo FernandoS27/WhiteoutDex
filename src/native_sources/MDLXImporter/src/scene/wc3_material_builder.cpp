@@ -1033,11 +1033,6 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
         pb->SetCount(compmat_amount, numLayers - 1);
     }
 
-    // The viewport texture comes from the topmost layer that is actually
-    // composited, so a layer we deliberately leave out (below) does not end
-    // up being the one Nitrous shows.
-    int lastShownLayer = 0;
-
     for (int j = 0; j < numLayers; ++j) {
         // Each layer gets its own texmap vector — this ensures that when two
         // layers in the same composite reference the same texture with
@@ -1067,7 +1062,6 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
 
         const int blendIdx = j - 1;
         pb->SetValue(compmat_map_on, 0, TRUE, blendIdx);
-        lastShownLayer = j;
 
         switch (irMat.layers[j].blendMode) {
         case ir::BlendMode::Additive:
@@ -1091,7 +1085,6 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
             pb->SetValue(compmat_type, 0, 0, blendIdx);
             pb->SetValue(compmat_amount, 0, 100.0f, blendIdx);
             pb->SetValue(compmat_map_on, 0, FALSE, blendIdx);
-            lastShownLayer = j - 1;
             break;
 
         default:
@@ -1101,15 +1094,86 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
         }
     }
 
-    // Show the topmost composited layer's texture in the viewport
-    Mtl* lastSubMtl = compMtl->GetSubMtl(lastShownLayer);
-    if (lastSubMtl) {
-        MtlBase* activeTex = lastSubMtl->GetActiveTexmap();
-        if (activeTex)
-            compMtl->SetActiveTexmap(static_cast<Texmap*>(activeTex));
-    }
+    activateCompositeViewportLayer(compMtl, irMat, irModel, gi);
 
     return compMtl;
+}
+
+namespace {
+
+bool isAdditiveBlend(ir::BlendMode mode) {
+    return mode == ir::BlendMode::Additive || mode == ir::BlendMode::AddAlpha;
+}
+
+bool isModulateBlend(ir::BlendMode mode) {
+    return mode == ir::BlendMode::Modulate || mode == ir::BlendMode::Modulate2x;
+}
+
+// A real bitmap on the diffuse slot, not a replaceable (team colour/glow) one.
+bool hasOwnDiffuseTexture(const ir::MaterialLayer& layer, const ir::IRModel& irModel) {
+    for (const auto& texRef : layer.textureRefs) {
+        if (texRef.slot != ir::TextureSlot::Diffuse ||
+            texRef.textureIndex < 0 ||
+            texRef.textureIndex >= static_cast<int32_t>(irModel.textures.size()))
+            continue;
+        const auto& tex = irModel.textures[texRef.textureIndex];
+        if (tex.replaceableId == 0 && !tex.filePath.empty())
+            return true;
+    }
+    return false;
+}
+
+} // namespace
+
+void activateCompositeViewportLayer(Mtl* compMtl, const ir::Material& irMat,
+                                    const ir::IRModel& irModel, Interface* gi)
+{
+    if (!compMtl || !gi) return;
+    const int numLayers = std::min(static_cast<int>(irMat.layers.size()),
+                                   compMtl->NumSubMtls());
+    if (numLayers < 2) return;
+
+    // Nitrous has no shaded display for Composite: with a Wc3Material, a
+    // Standard or any other sub-material as the base it draws the whole object
+    // flat grey (tested on Max 2027). The only thing it shows is what is
+    // switched on AT THE COMPOSITE, and SetActiveTexmap() alone does not do
+    // that — Interface::ActivateTexture() on the top-level material does (the
+    // SDK call behind MAXScript's showTextureMap).
+    //
+    // Switch on a whole LAYER MATERIAL, which is what the viewport menu's
+    // "Shaded Materials with Maps" does: Nitrous then draws that layer with
+    // its opacity map. A texmap carries no opacity, so a glow or trail texture
+    // on black showed as a solid black plane (nwdg2.mdx, fm-zhaoyundg.mdx).
+    //
+    // Which layer reads as the model:
+    //  1. the lowest opaque or alpha-tested layer with a real texture (a
+    //     team-colour base has no bitmap, so a unit shows its skin above it);
+    //  2. with additive layers, the last of them — the one the menu picks;
+    //  3. the lowest blended layer with a real texture — additive and
+    //     modulate overlays (glows, baked shadow maps, often on the second UV
+    //     set) would hide the art;
+    //  4. the topmost layer that is actually composited — a modulate layer is
+    //     left out of the composite, so it must not be the one Nitrous shows.
+    int shownLayer = -1;
+    for (int j = 0; j < numLayers && shownLayer < 0; ++j) {
+        const auto mode = irMat.layers[j].blendMode;
+        if ((mode == ir::BlendMode::None || mode == ir::BlendMode::Transparent) &&
+            hasOwnDiffuseTexture(irMat.layers[j], irModel))
+            shownLayer = j;
+    }
+    for (int j = numLayers - 1; j >= 0 && shownLayer < 0; --j)
+        if (isAdditiveBlend(irMat.layers[j].blendMode)) shownLayer = j;
+    for (int j = 0; j < numLayers && shownLayer < 0; ++j) {
+        if (isModulateBlend(irMat.layers[j].blendMode)) continue;
+        if (hasOwnDiffuseTexture(irMat.layers[j], irModel))
+            shownLayer = j;
+    }
+    if (shownLayer < 0)
+        shownLayer = isModulateBlend(irMat.layers[numLayers - 1].blendMode)
+                         ? numLayers - 2 : numLayers - 1;
+
+    if (Mtl* shownSubMtl = compMtl->GetSubMtl(shownLayer))
+        gi->ActivateTexture(shownSubMtl, compMtl);
 }
 
 // ── StdMat2 fallback (Wc3Material plugin not loaded) ────────

@@ -203,6 +203,9 @@ void extractParticles2(const std::vector<core::SceneNode>& nodes,
             baseObj = static_cast<IDerivedObject*>(baseObj)->GetObjRef();
         Class_ID cid = baseObj ? baseObj->ClassID() : Class_ID(0,0);
         const bool isNeoDex = (cid == mdx_ids::NEODEX_PARTICLES2);
+        // By-name reads look at the object's own param blocks, which a
+        // modifier on the node would hide behind its derived object.
+        if (isNeoDex) ref = baseObj;
 
         P2ELOG << "── PE2 " << (isNeoDex ? "NeoDex" : "WhiteoutDex")
                << " nodeIdx=" << sn.nodeIndex << " ──\n";
@@ -330,19 +333,18 @@ void extractParticles2(const std::vector<core::SceneNode>& nodes,
             { float s=1; PBR::readFloatByName(ref, L"middlescale", t, s); pe.segmentScale[1] = s; }
             { float s=1; PBR::readFloatByName(ref, L"endscale",    t, s); pe.segmentScale[2] = s; }
 
-            { int v=0;
-              PBR::readIntByName(ref, L"startLifespanHead",  t, v); pe.headInterval[0] = v;
-              PBR::readIntByName(ref, L"repeatLifespanHead", t, v); pe.headInterval[1] = v;
-              PBR::readIntByName(ref, L"endLifespanHead",    t, v); pe.headInterval[2] = v;
-              PBR::readIntByName(ref, L"startDecayHead",     t, v); pe.headDecayInterval[0] = v;
-              PBR::readIntByName(ref, L"repeatDecayHead",    t, v); pe.headDecayInterval[1] = v;
-              PBR::readIntByName(ref, L"endDecayHead",       t, v); pe.headDecayInterval[2] = v;
-              PBR::readIntByName(ref, L"startLifespanTail",  t, v); pe.tailInterval[0] = v;
-              PBR::readIntByName(ref, L"repeatLifespanTail", t, v); pe.tailInterval[1] = v;
-              PBR::readIntByName(ref, L"endLifespanTail",    t, v); pe.tailInterval[2] = v;
-              PBR::readIntByName(ref, L"startDecayTail",     t, v); pe.tailDecayInterval[0] = v;
-              PBR::readIntByName(ref, L"repeatDecayTail",    t, v); pe.tailDecayInterval[1] = v;
-              PBR::readIntByName(ref, L"endDecayTail",       t, v); pe.tailDecayInterval[2] = v;
+            // MDX interval order is start, end, repeat — NeoDex writes
+            // [startX, endX, repeatX] (NeoDexSceneParser, PE2 UV anims).
+            { auto readInterval = [&](const wchar_t* start, const wchar_t* end,
+                                      const wchar_t* repeat, std::array<int32_t, 3>& out) {
+                  int v = 0; PBR::readIntByName(ref, start,  t, v); out[0] = v;
+                  v = 0;     PBR::readIntByName(ref, end,    t, v); out[1] = v;
+                  v = 0;     PBR::readIntByName(ref, repeat, t, v); out[2] = v;
+              };
+              readInterval(L"startLifespanHead", L"endLifespanHead", L"repeatLifespanHead", pe.headInterval);
+              readInterval(L"startDecayHead",    L"endDecayHead",    L"repeatDecayHead",    pe.headDecayInterval);
+              readInterval(L"startLifespanTail", L"endLifespanTail", L"repeatLifespanTail", pe.tailInterval);
+              readInterval(L"startDecayTail",    L"endDecayTail",    L"repeatDecayTail",    pe.tailDecayInterval);
             }
 
             uint32_t flags = 0;
@@ -370,11 +372,20 @@ void extractParticles2(const std::vector<core::SceneNode>& nodes,
               if (!w.empty()) texName = wcharToUtf8(w.c_str()); }
             { std::wstring w; PBR::readStringByName(ref, L"path", t, w);
               if (!w.empty()) texPrefix = wcharToUtf8(w.c_str()); }
+            // "texture" holds the bitmap file the importer loaded; it is also
+            // the conversion source. Without a texture NeoDex writes an empty
+            // path for Team Color / Glow and Textures\white.blp otherwise
+            // (NeoDexSceneParser, PE2 textures).
             if (!texName.empty()) {
+                const std::string disk = texName;
                 size_t ls = texName.find_last_of("\\/");
                 if (ls != std::string::npos) texName = texName.substr(ls + 1);
                 std::string fp = texPrefix + texName;
-                pe.textureIndex = findOrAddTexture(model, fp, pe.replaceableId, false, false);
+                pe.textureIndex = findOrAddTexture(model, fp, pe.replaceableId, false, false, disk);
+            } else if (pe.replaceableId > 0) {
+                pe.textureIndex = findOrAddTexture(model, std::string(), pe.replaceableId, false, false);
+            } else {
+                pe.textureIndex = findOrAddTexture(model, "Textures\\white.blp", 0, false, false);
             }
         }
 

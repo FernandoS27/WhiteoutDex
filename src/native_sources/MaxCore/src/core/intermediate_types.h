@@ -47,6 +47,9 @@ struct Mesh {
     bool hasDropShadow = false;
     // MDX geoset SelectionGroup, kept in the `Wc3SelectionGroup` UserProp.
     uint32_t selectionGroup = 0;
+    // MDX geoset selection flag 4 (unselectable in game), kept in the
+    // `Unselectable` UserProp Object Settings writes.
+    bool unselectable = false;
 
     // LOD (v1000+ only): level-of-detail index. 0 = highest detail / main mesh,
     // 1,2,... = lower detail HD layers. Populated from the `Wc3GeosetLod`

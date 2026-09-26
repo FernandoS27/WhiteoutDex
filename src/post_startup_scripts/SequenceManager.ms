@@ -1,4 +1,4 @@
-struct WdxSequenceManager
+﻿struct WdxSequenceManager
 (
     isPoppedOut = false,
     savedIndex = undefined,
@@ -454,6 +454,431 @@ struct WdxSequenceManager
         this.sequences.count
     ),
 
+    -- Where the free time before a copy starting at t begins: the end of the
+    -- last sequence before t (Duplicate puts the copy 10 frames after it).
+    fn freeTimeBefore t =
+    (
+        local r = undefined
+        for q in this.sequences where q.endTime < t do
+            if r == undefined or q.endTime > r then r = q.endTime
+        if r == undefined then r = t - 2f
+        r
+    ),
+
+    -- Copies the keys a controller has in srcInterval to srcInterval + offset,
+    -- unless it has none or runs on a Global Sequence (cycles after its last
+    -- key). At struct level: a fn nested in a handler cannot call another one
+    -- ("No outer local variable references permitted here").
+    -- A key's curve depends on its neighbours, so
+    --  - the sequences before the copy keep their shape: the track's last key
+    --    keeps its in-tangent and holds its value (step out-tangent), and hold
+    --    keys fill the free time up to one frame after freeTimeBefore;
+    --  - the copy runs as the source does up to its ends: the two keys on
+    --    either side of the range come along (those before it only where they
+    --    land after the hold keys - otherwise the value at the start is keyed).
+    fn copyControllerKeys con srcInterval offset bumpFn =
+    (
+        if con == undefined then return false
+        local ks = undefined
+        try ( ks = con.keys ) catch ()
+        if ks == undefined or ks.count == 0 then return false
+
+        local isGlobal = false
+        try ( isGlobal = (getAfterORT con == #cycle) ) catch()
+        if isGlobal then return false
+
+        local s = srcInterval.start
+        local e = srcInterval.end
+        local freeFrom = this.freeTimeBefore (s + offset)
+        local before = #(), inside = #(), after = #()
+        for k in ks do
+        (
+            local t = k.time
+            if t < s then append before t
+            else if t > e then append after t
+            else append inside t
+        )
+        qsort before this.compareTimes
+        qsort after this.compareTimes
+        -- Keys only before the range: the source holds their last value, and
+        -- so does the copy with the hold keys below.
+        if inside.count == 0 and after.count == 0 then return false
+
+        local lo = s
+        local hi = e
+        local n = before.count
+        local startFits = n > 0 and before[n] + offset > freeFrom + 1f
+        if startFits then
+        (
+            lo = before[n]
+            if n > 1 and before[n - 1] + offset > freeFrom + 1f then lo = before[n - 1]
+        )
+        if after.count > 0 then hi = after[amin #(2, after.count)]
+        -- Without the keys before s, the curve up to the first key after s
+        -- is keyed frame by frame with the source's values.
+        local startValues = #()
+        if not startFits then
+        (
+            local later = for t in inside where t > s collect t
+            local upTo = if later.count > 0 then (amin later) else e
+            local nf = ((upTo - s) as integer) / ticksPerFrame
+            for i = 0 to nf - 1 do
+            (
+                local t = s + (i as time)
+                if (findItem inside t) == 0 then
+                    try ( append startValues #(t + offset, at time t con.value) ) catch ()
+            )
+        )
+
+        -- Hold the last pose (only when the copy lands after the last key)
+        local lastT = ks[ks.count].time
+        local lastIn = undefined
+        if lastT <= freeFrom then
+        (
+            try
+            (
+                local lk = ks[ks.count]
+                lastIn = #(lk.inTangentType, lk.inTangent, lk.inTangentLength)
+            ) catch ()
+            for ht in #(lastT + 1f, freeFrom - 1f, freeFrom, freeFrom + 1f) do
+            (
+                if ht > lastT then try ( addNewKey con ht ) catch ()
+            )
+        )
+
+        deselectKeys con
+        selectKeys con (interval lo hi)
+        copyPasteKeys con bumpFn offset #replacekeys
+        deselectKeys con
+
+        for sv in startValues do
+        (
+            try
+            (
+                addNewKey con sv[1]
+                with animate on
+                (
+                    at time sv[1] con.value = sv[2]
+                )
+            ) catch ()
+        )
+        -- Bezier keys only; other keys have no tangents
+        local li = if lastIn != undefined then (getKeyIndex con lastT) else 0
+        if li > 0 then
+        (
+            try
+            (
+                local lk = con.keys[li]
+                lk.inTangentType = #custom
+                lk.inTangent = lastIn[2]
+                lk.inTangentLength = lastIn[3]
+                lk.outTangentType = #step
+            ) catch ()
+        )
+        true
+    ),
+
+    -- One transform channel. Keyframe controllers hold their keys; Position_XYZ,
+    -- Euler_XYZ and list controllers keep them on sub-controllers (X/Y/Z, list
+    -- layers) and report an empty key array themselves, so those are walked.
+    fn copyChannelKeys con srcInterval offset bumpFn depth:0 =
+    (
+        if con == undefined then return false
+        local ks = undefined
+        try ( ks = con.keys ) catch ()
+        if ks != undefined and ks.count > 0 then
+            this.copyControllerKeys con srcInterval offset bumpFn
+        else if depth < 3 then
+        (
+            local n = 0
+            try ( n = con.numSubs ) catch ()
+            for i = 1 to n do
+            (
+                local sub = undefined
+                try ( sub = con[i].controller ) catch ()
+                if sub != undefined then
+                    this.copyChannelKeys sub srcInterval offset bumpFn depth:(depth + 1)
+            )
+        )
+        true
+    ),
+
+    -- ------------------------------------------------------------------
+    -- Biped
+    -- ------------------------------------------------------------------
+    -- Biped keys cannot be copied like other keys: copyPasteKeys does nothing
+    -- on them, and addNewKey / deleteKeys need Biped's own versions
+    -- (MAXScript Help, "Biped Keys"). Posture copy/paste
+    -- (biped.copyBipPosture / pasteBipPosture) puts IK legs in the wrong
+    -- place. So the keys are created at the new times, take the source keys'
+    -- settings, and get the source pose: the COM keys by value, the limbs
+    -- with biped.setTransform (MAXScript Help, "Biped Transforms Methods").
+
+    fn bipedKeyTimes c s e =
+    (
+        local r = #()
+        try ( for k in c.keys where k.time >= s and k.time <= e do append r k.time ) catch ()
+        r
+    ),
+
+    fn bipedLastKeyTime c =
+    (
+        local r = undefined
+        try ( if c.keys.count > 0 then r = c.keys[c.keys.count].time ) catch ()
+        r
+    ),
+
+    fn compareTimes a b = (if a < b then -1 else if a > b then 1 else 0),
+    fn compareFirst a b = (if a[1] < b[1] then -1 else if a[1] > b[1] then 1 else 0),
+
+    -- The times a track's pose is copied at: its keys in [s, e] and the two
+    -- keys on either side of them, so the copy's curve runs exactly as the
+    -- source's does up to its ends (a key's curve depends on its neighbours).
+    -- The keys before s only where they land after the hold keys (see
+    -- copyBipedKeys); if the one right before s does not, the pose at s is
+    -- keyed instead. Without keys after e the source holds its last pose,
+    -- and so does the copy.
+    fn bipedCopyTimes c s e offset freeFrom =
+    (
+        local before = #(), inside = #(), after = #()
+        try
+        (
+            for k in c.keys do
+            (
+                local t = k.time
+                if t < s then append before t
+                else if t > e then append after t
+                else append inside t
+            )
+        ) catch ()
+        qsort before this.compareTimes
+        qsort after this.compareTimes
+        local r = deepCopy inside
+        local n = before.count
+        if n > 0 and before[n] + offset > freeFrom + 1f then
+        (
+            append r before[n]
+            if n > 1 and before[n - 1] + offset > freeFrom + 1f then append r before[n - 1]
+        )
+        else
+        (
+            -- The key before s cannot come along (it would land in the
+            -- sequence before the copy), and the curve through the range
+            -- depends on it: key every frame of the range instead (exact at
+            -- every frame, which is what the exporter samples).
+            local nf = ((e - s) as integer) / ticksPerFrame
+            for i = 0 to nf do appendIfUnique r (s + (i as time))
+        )
+        for i = 1 to (amin #(2, after.count)) do append r after[i]
+        qsort r this.compareTimes
+        r
+    ),
+
+    -- TCB, ease and the type's own settings (IK, dynamics, balance, head)
+    -- of the source keys at times onto the keys at times + offset.
+    fn copyBipedKeyParams c times offset =
+    (
+        for t in times do
+        (
+            local si = 0, ti = 0
+            try ( si = getKeyIndex c t ) catch ()
+            try ( ti = getKeyIndex c (t + offset) ) catch ()
+            if si > 0 and ti > 0 then
+            (
+                local sk = undefined, tk = undefined
+                try ( sk = biped.getKey c si; tk = biped.getKey c ti ) catch ()
+                if sk != undefined and tk != undefined then
+                    for p in #(#tension, #continuity, #bias, #easeTo, #easeFrom, \
+                               #ikBlend, #ikSpace, #ikAnkleTension, #ikJoinedPivot, #ikPivotIndex, \
+                               #dynamicsBlend, #ballisticTension, #balanceFactor, #headBlend) do
+                        try ( setProperty tk p (getProperty sk p) ) catch ()
+            )
+        )
+    ),
+
+    -- Copies the keys of the biped whose COM (center of mass, Bip01) is com
+    -- from srcInterval to srcInterval + offset. freeFrom: where the free
+    -- time before the copy begins (the end of the last sequence before it).
+    -- holdKey: every track gets keys that hold its last pose - one frame
+    -- after its last key, and at freeFrom - 1, freeFrom and freeFrom + 1 -
+    -- so the sequences before the copy do not start moving towards it (a
+    -- key's curve depends on the keys on both sides of it).
+    fn copyBipedKeys com srcInterval offset freeFrom:undefined holdKey:true keyParams:true =
+    (
+        local bc = com.controller
+        local s = srcInterval.start
+        local e = srcInterval.end
+        if freeFrom == undefined then freeFrom = s + offset - 2f
+        local subs = #()
+        try ( subs = #(bc.horizontal.controller, bc.vertical.controller, bc.turning.controller) ) catch ( return false )
+
+        -- Parts of this biped, parents first (Footsteps has no pose)
+        local parts = #()
+        for o in objects where isValidNode o and o != com and classOf o == Biped_Object do
+        (
+            local c = o.controller
+            if (classOf c) != Footsteps and (try (c.rootNode == com) catch false) then
+            (
+                local d = 0
+                local p = o.parent
+                while p != undefined do ( d += 1; p = p.parent )
+                append parts #(d, o)
+            )
+        )
+        qsort parts this.compareFirst
+        parts = for p in parts collect p[2]
+
+        local hasKeys = false
+        for c in subs where (this.bipedLastKeyTime c) != undefined do hasKeys = true
+        for o in parts where (this.bipedLastKeyTime o.controller) != undefined do hasKeys = true
+        if not hasKeys then return false
+
+        -- Times per track. The COM has three tracks (horizontal, vertical,
+        -- turning); its pose is needed wherever one of them gets a key.
+        local subTimes = for c in subs collect (this.bipedCopyTimes c s e offset freeFrom)
+        local comTimes = #()
+        for ts in subTimes do for t in ts do appendIfUnique comTimes t
+        local partTimes = for o in parts collect (this.bipedCopyTimes o.controller s e offset freeFrom)
+        local lastTimes = for c in subs collect (this.bipedLastKeyTime c)
+        join lastTimes (for o in parts collect (this.bipedLastKeyTime o.controller))
+
+        -- Every source pose first: once a pose has been written, Biped
+        -- returns wrong values for the source frames. The pose moves along
+        -- with the biped's parent (not part of the biped) from t to t + offset.
+        local root = com.parent
+        fn moveWithRoot root tm t offset =
+        (
+            if root == undefined then tm
+            else (tm * (inverse (at time t root.transform))) * (at time (t + offset) root.transform)
+        )
+        local comTMs = for t in comTimes collect (moveWithRoot root (at time t com.transform) t offset)
+        local partTMs = for i = 1 to parts.count collect
+            (for t in partTimes[i] collect (moveWithRoot root (at time t parts[i].transform) t offset))
+
+        -- sliderTime is clamped to the animation range, and setTransform
+        -- works at the slider time
+        local oldRange = animationRange
+        local oldSlider = sliderTime
+        local lastT = e
+        for ts in partTimes do for t in ts where t > lastT do lastT = t
+        for t in comTimes where t > lastT do lastT = t
+        animationRange = interval (amin #(s, oldRange.start)) (amax #(lastT + offset, oldRange.end))
+        -- No "with redraw off" here: it keeps Biped from taking up changed
+        -- keys, and every limb after the COM would be set against its old pose.
+        try
+        (
+            if holdKey then
+            (
+                local tracks = join (deepCopy subs) (for o in parts collect o.controller)
+                for i = 1 to tracks.count where lastTimes[i] != undefined and lastTimes[i] <= freeFrom do
+                    for ht in #(lastTimes[i] + 1f, freeFrom - 1f, freeFrom, freeFrom + 1f) where ht > lastTimes[i] do
+                        biped.addNewKey tracks[i] ht
+            )
+
+            -- The keys first, with the source keys' settings: IK settings
+            -- changed after the pose move the limb.
+            for i = 1 to 3 do
+                for t in subTimes[i] do biped.addNewKey subs[i] (t + offset)
+            for i = 1 to parts.count do
+                for t in partTimes[i] do biped.addNewKey parts[i].controller (t + offset)
+            if keyParams then
+            (
+                for i = 1 to 3 do this.copyBipedKeyParams subs[i] subTimes[i] offset
+                for i = 1 to parts.count do this.copyBipedKeyParams parts[i].controller partTimes[i] offset
+            )
+
+            -- The COM keys hold world values (horizontal x / y, vertical z,
+            -- turning rotation; "BipedKey" in the MAXScript Help) and are
+            -- written directly: setTransform plus biped.setKey leaves a key
+            -- that is already there unchanged, and setTransform with setkey
+            -- would key all three tracks.
+            for i = 1 to 3 do
+                for t in subTimes[i] do
+                (
+                    local j = findItem comTimes t
+                    local ki = getKeyIndex subs[i] (t + offset)
+                    if j > 0 and ki > 0 then
+                    (
+                        local k = biped.getKey subs[i] ki
+                        local tm = comTMs[j]
+                        if i == 1 then ( k.x = tm.pos.x; k.y = tm.pos.y )
+                        else if i == 2 then k.z = tm.pos.z
+                        else k.rotation = tm.rotation
+                    )
+                )
+
+            -- Limbs, parents first: setTransform with setkey updates the key
+            -- that is there. A chain of parts with the same key times (one
+            -- Biped track, such as clavicle to fingers) is set at one slider
+            -- position per time: moving the slider is what takes the time.
+            -- A chain's first part has its parent in an earlier chain.
+            local chains = #() -- #(times as string, #(part indices))
+            for i = 1 to parts.count do
+            (
+                local key = partTimes[i] as string
+                local g = 0
+                for gi = 1 to chains.count where g == 0 and chains[gi][1] == key do
+                    for m in chains[gi][2] where parts[m] == parts[i].parent do g = gi
+                if g == 0 then append chains #(key, #(i)) else append chains[g][2] i
+            )
+            for ch in chains do
+            (
+                local idx = ch[2]
+                for j = 1 to partTimes[idx[1]].count do
+                (
+                    sliderTime = partTimes[idx[1]][j] + offset
+                    for i in idx do biped.setTransform parts[i] #rotation partTMs[i][j].rotation true
+                )
+            )
+        )
+        catch ( format "** WDX Duplicate: biped % failed: %\n" com.name (getCurrentException()) )
+        animationRange = oldRange
+        sliderTime = oldSlider
+        true
+    ),
+
+    -- An object's transform keys, channel by channel, so a channel on a Global
+    -- Sequence is left out (copying the whole transform track copied those
+    -- keys into the new sequence too). An object without separate channels
+    -- (IK, ...) copies its whole transform track as before; a Biped is
+    -- copied as a whole through its COM.
+    fn copyTransformKeys obj srcInterval offset bumpFn =
+    (
+        if classOf obj == Biped_Object then
+        (
+            if (try (classOf obj.controller == Vertical_Horizontal_Turn) catch false) then
+            (
+                this.copyBipedKeys obj srcInterval offset freeFrom:(this.freeTimeBefore (srcInterval.start + offset))
+            )
+            return ok
+        )
+
+        local channels = #()
+        try ( append channels obj.pos.controller ) catch ()
+        try ( append channels obj.rotation.controller ) catch ()
+        try ( append channels obj.scale.controller ) catch ()
+        channels = for c in channels where c != undefined collect c
+
+        if channels.count > 0 then
+        (
+            for c in channels do this.copyChannelKeys c srcInterval offset bumpFn
+        )
+        else
+        (
+            local tc = undefined
+            try ( tc = obj.transform.controller ) catch ()
+            if tc == undefined then try ( tc = obj.controller ) catch ()
+            if tc != undefined then
+            (
+                deselectKeys tc
+                selectKeys tc srcInterval
+                copyPasteKeys tc bumpFn offset #replacekeys
+                deselectKeys tc
+            )
+        )
+        ok
+    ),
+
     fn LoadSequences =
     (
         -- Remember what the scene held at the moment we read it, so a later
@@ -505,6 +930,20 @@ struct WdxSequenceManager
                             extents:ext \
                             ex:undefined \
                             sharedGroup:sg)
+                    )
+
+                    -- By start time, as the NoteTrack path below does: Duplicate
+                    -- puts the copy after the LAST entry, so data stored out of
+                    -- order (another script or importer) made it overlap.
+                    if result.count > 1 then
+                    (
+                        fn compareSeqByStart a b =
+                        (
+                            if a.startTime < b.startTime then -1
+                            else if a.startTime > b.startTime then 1
+                            else 0
+                        )
+                        qsort result compareSeqByStart
                     )
                     return result
                 )
@@ -1364,23 +1803,6 @@ struct WdxSequenceManager
 					
 					local timeOffset = newStartTime - seq.starttime
 					
-					-- Helper: copy keys of a single controller if animated and not global
-					fn copyControllerKeys con srcInterval offset bumpFn =
-					(
-						if con == undefined then return false
-						if con.keys == undefined or con.keys.count == 0 then return false
-						
-						local isGlobal = false
-						try ( isGlobal = (getAfterORT con == #cycle) ) catch()
-						if isGlobal then return false
-						
-						deselectKeys con
-						selectKeys con srcInterval
-						copyPasteKeys con bumpFn offset #replacekeys
-						deselectKeys con
-						true
-					)
-
 					-- Helper: copies the keys of an animatable property via the property setter.
 					-- Writing to the controller directly (copyPasteKeys / addNewKey + key.value)
 					-- bypasses the on-set handler of scripted plugins AND the SetValue
@@ -1455,23 +1877,23 @@ struct WdxSequenceManager
 						
 						for obj in objects do
 						(
-							-- Transform keys
-							local transCon = obj.transform.controller
-							deselectKeys transCon
-							selectKeys transCon srcInterval
-							copyPasteKeys transCon self.bumpTime timeOffset #replacekeys
-							deselectKeys transCon
+						-- One try per object: an object that throws must not stop the
+						-- loop, or every object after it would get no keys at all.
+						try
+						(
+							-- Transform keys, per channel (Global Sequences left out)
+							self.copyTransformKeys obj srcInterval timeOffset self.bumpTime
 							
 							-- Visibility keys
 							local visCon = getVisController obj
 							if visCon != undefined then
-								copyControllerKeys visCon srcInterval timeOffset self.bumpTime
+								self.copyControllerKeys visCon srcInterval timeOffset self.bumpTime
 							
 							-- Camera FOV
 							try
 							(
 								if (superClassOf obj == camera) then
-									copyControllerKeys obj.fov.controller srcInterval timeOffset self.bumpTime
+									self.copyControllerKeys obj.fov.controller srcInterval timeOffset self.bumpTime
 							)
 							catch()
 							
@@ -1533,7 +1955,7 @@ struct WdxSequenceManager
 													if (findItem visitedUVCtrls c) == 0 do
 													(
 														append visitedUVCtrls c
-														copyControllerKeys c srcInterval timeOffset self.bumpTime
+														self.copyControllerKeys c srcInterval timeOffset self.bumpTime
 													)
 												)
 											)
@@ -1634,6 +2056,8 @@ struct WdxSequenceManager
 								)
 							)
 							catch()
+						)
+						catch (format "** WDX Duplicate: % skipped: %\n" obj.name (getCurrentException()))
 						)
 					)
 					catch print (getCurrentException())

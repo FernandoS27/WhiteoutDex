@@ -6,6 +6,7 @@
 // ============================================================================
 
 #include <MeshNormalSpec.h>
+#include <atomic>
 #include <bitmap.h>
 #include <bmmlib.h>
 #include <genlight.h>
@@ -51,6 +52,21 @@
 #define NEODEX_LIGHT_CLASS_ID Class_ID(0x456E2573, 0x2A456757)
 // BlizzPopcorn — Reforged v1200 PopcornFX corn emitter scripted plugin.
 #define BLIZZ_POPCORN_CLASS_ID Class_ID(0x7A1B2C09, 0x3D4E5F09)
+
+// NeoDex plug-ins (AppData\Roaming\Autodesk\ApplicationPlugins\NeoDex), the
+// same IDs the exporter registers in mdx_class_ids.h. A scripted plug-in's
+// ClassID() is its declared classID (mxsPlugin.h returns pc->class_id).
+#define NEODEX_MAT_CLASS_ID Class_ID(0x681a50f9, 0x2fae1330)
+#define NEODEX_PARTICLES1_CLASS_ID Class_ID(0x750735E3, 0x21F2D857)
+#define NEODEX_PARTICLES2_CLASS_ID Class_ID(0x02942cac, 0x43c6a3d9)
+#define NEODEX_RIBBON_CLASS_ID Class_ID(0x179527d0, 0x1c217376)
+#define NEODEX_POPCORN_CLASS_ID Class_ID(0x6a17b48c, 0x291672fe)
+
+// WhiteoutDex's Wc3Material or NeoDex's "Warcraft 3" material. Parameters the
+// two name differently are resolved by FindPB2Param's NeoDex aliases.
+inline bool IsWc3MaterialClass(const Class_ID& cid) {
+    return cid == WARCRAFT3_MAT_CLASS_ID || cid == NEODEX_MAT_CLASS_ID;
+}
 
 // Cross-DLL interface IDs
 #define WC3P2_TEXTURE_PATH_IID 0x7B3C8D10
@@ -100,6 +116,8 @@ struct MaterialLayerInfo {
     Vector3f fresnelColor = {0.0f, 0.0f, 0.0f};
     // Index into uvAnimSources_ / the renderer's texAnimPalette, -1 = none.
     i32 textureAnimationId = -1;
+    // MDX coordId: 0 samples the first unwrap, 1 the second (map channel 2).
+    i32 coordId = 0;
 };
 
 struct MaterialInfo {
@@ -293,8 +311,11 @@ private:
     // Wc3Material reading helpers — shared between CollectMaterials, CollectScene,
     // ExtractWc3MaterialLayer, and RefreshMaterials.
     static i32 ReadWc3MaterialFlags(Mtl* mtl);
+    static i32 ReadWc3CoordId(Mtl* mtl);
     std::wstring ResolveBitmapPath(Mtl* mtl, const wchar_t* paramName);
-    MaterialLayerInfo ExtractWc3MaterialLayer(Mtl* mtl);
+    // textureLayerOnly: the texture half of a NeoDex Team Color material
+    // (see IsNeoDexTeamColorSplit) — ignore the Team Color replaceable.
+    MaterialLayerInfo ExtractWc3MaterialLayer(Mtl* mtl, bool textureLayerOnly = false);
     // Texture registration: push (rgba, w, h) into the loaded-texture table and
     // return its new texId. Used by every loader path. `displayPath` is the
     // filePath stored on TextureEntry for diagnostics; when empty, the cache
@@ -341,6 +362,8 @@ private:
     std::vector<LightInfo> lights_;
 
     std::unordered_map<std::wstring, i32> texPathToId_;
+    // Texture paths found nowhere (disk, CASC, MPQ) since the last CollectScene.
+    std::vector<std::wstring> missingTextures_;
     std::unordered_map<Mtl*, i32> mtlToId_;
     i32 nextTexId_ = 0;
     i32 nextMatId_ = 0;
@@ -398,6 +421,7 @@ private:
         std::wstring emissiveTexPath;
         std::wstring teamColorTexPath;
         bool hasUvAnim = false;
+        i32 coordId = 0;
     };
     std::unordered_map<i32, MaterialSnapshot> matSnapshots_; // materialId → snapshot
 
@@ -429,3 +453,7 @@ struct ViewportCameraPose {
 bool ReadActiveViewportCamera(ViewportCameraPose& out);
 
 } // namespace whiteout::flakes
+
+// How many textures the last scene collection found nowhere. Written on
+// Max's main thread, read by the render window for its title.
+extern std::atomic<int> g_wdxMissingTextureCount;

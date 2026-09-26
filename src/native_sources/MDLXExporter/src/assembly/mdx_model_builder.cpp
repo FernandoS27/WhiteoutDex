@@ -613,7 +613,8 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         }
 
         geo.selectionGroup = irMesh.selectionGroup;
-        geo.selectionFlags = 0;
+        // Selection flag 4: unselectable in game (Object Settings checkbox).
+        geo.selectionFlags = irMesh.unselectable ? 4u : 0u;
 
         // LOD fields — propagate from IR (populated by mesh_extractor from
         // UserProps Wc3GeosetLod / Wc3LodName). For v800 these fields don't

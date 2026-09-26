@@ -1159,6 +1159,47 @@ struct WdxAnimTools
         button controllerBtn "Apply to selected" width:410 height:22 pos:[16,132] tooltip:"Applies the selected controller types to the selected objects"
         
         -- Functions
+        -- True if a controller or any of its sub-controllers has keys
+        -- (Position_XYZ / Euler_XYZ keep theirs on X/Y/Z).
+        fn controllerHasKeys c =
+        (
+            if c == undefined then return false
+            if (try (c.keys.count) catch 0) > 0 then return true
+            for j = 1 to (try (c.numSubs) catch 0) do
+                if controllerHasKeys (try (c[j].controller) catch undefined) then return true
+            false
+        )
+
+        -- Puts a new controller of class newCon on an object's position or
+        -- rotation track.
+        -- In a list controller (Position_List / Rotation_List, as Freeze
+        -- Transform leaves) only its layers of layerClasses that are active or
+        -- keyed: replacing the list itself threw away every layer. A keyless
+        -- layer that is not active - the "Frozen" layer holding the frozen
+        -- offset - stays as it is.
+        -- channel is #pos or #rotation: a track passed as obj.pos would arrive
+        -- as its value, not as the track.
+        fn replaceTrackController obj channel newCon layerClasses =
+        (
+            local ctrl = if channel == #pos then obj.pos.controller else obj.rotation.controller
+            local cls = classOf ctrl
+            if cls == position_list or cls == rotation_list then
+            (
+                local active = try (ctrl.active) catch 0
+                for i = 1 to ctrl.count do
+                (
+                    local sub = try (ctrl[i].controller) catch undefined
+                    if sub != undefined and (findItem layerClasses (classOf sub)) > 0 and \
+                       (i == active or controllerHasKeys sub) then
+                        try ( ctrl[i].controller = newCon() ) catch()
+                )
+            )
+            else if channel == #pos then
+                obj.pos.controller = newCon()
+            else
+                obj.rotation.controller = newCon()
+        )
+
         mapped fn applyControllers obj posCon rotCon scaCon =
         (
             -- Skip Biped objects only
@@ -1167,22 +1208,22 @@ struct WdxAnimTools
                 print ("Skipping Biped object: " + obj.name + " - Biped controllers cannot be changed")
                 return undefined
             )
-            
+
             -- Regular objects and CAT bones - use try-catch to be safe
             try
             (
-                if posCon != undefined and obj.position != undefined then 
-                    obj.position.controller = posCon()
+                if posCon != undefined and obj.position != undefined then
+                    replaceTrackController obj #pos posCon #(Position_XYZ, bezier_position, linear_position, tcb_position)
             )
             catch
             (
                 print ("Could not change position controller for: " + obj.name)
             )
-            
+
             try
             (
-                if rotCon != undefined and obj.rotation != undefined then 
-                    obj.rotation.controller = rotCon()
+                if rotCon != undefined and obj.rotation != undefined then
+                    replaceTrackController obj #rotation rotCon #(Euler_XYZ, bezier_rotation, linear_rotation, tcb_rotation)
             )
             catch
             (

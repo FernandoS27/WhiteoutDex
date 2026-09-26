@@ -70,43 +70,77 @@ extends:Bitmaptexture replaceUI:true version:11
 		) catch()
 	)
 
-	fn setBezierTangents ctrl tangentType =
+	-- The UV channels the TXAN controller type applies to.
+	fn uvAnimProps = #(#anim_UOffset, #anim_VOffset, #anim_WOffset, #anim_WAngle, #anim_UTiling, #anim_VTiling)
+
+	-- The keyed controller of a UV channel, or undefined.
+	fn keyedUVController prop =
 	(
-		if classof ctrl == Bezier_Float do
-			for i = 1 to ctrl.keys.count do
-			( ctrl.keys[i].inTangentType = tangentType; ctrl.keys[i].outTangentType = tangentType )
+		local c = try ( getPropertyController this prop ) catch ( undefined )
+		if c != undefined and (try ( numKeys c ) catch ( 0 )) > 0 then c else undefined
 	)
 
-	-- CONTROLLER SWITCHING: actually changes the controller class on the track
-	-- ctrlType: 1=None, 2=Linear, 3=Bezier, 4=Hermite
+	-- A bezier_float whose keys all hold (STEP out-tangents) is how
+	-- DontInterp is stored; the importer writes it and the exporter reads it.
+	fn isStepBezier ctrl =
+	(
+		if classof ctrl != Bezier_Float or ctrl.keys.count == 0 do return false
+		for i = 1 to ctrl.keys.count do
+			if ctrl.keys[i].outTangentType != #step do return false
+		true
+	)
+
+	fn setBezierTangents ctrl tangentType =
+	(
+		for i = 1 to ctrl.keys.count do
+		( ctrl.keys[i].inTangentType = tangentType; ctrl.keys[i].outTangentType = tangentType )
+	)
+
+	-- Dropdown index (1=None, 2=Linear, 3=Bezier, 4=Hermite) of the first
+	-- keyed UV channel, or 0 when no channel is keyed.
+	fn detectUVInterp =
+	(
+		for p in uvAnimProps() do
+		(
+			local c = keyedUVController p
+			if c != undefined do
+				return (if isStepBezier c then 1
+				        else if classof c == Linear_Float then 2
+				        else if classof c == TCB_Float then 4
+				        else 3)
+		)
+		0
+	)
+
+	-- Converts every keyed UV channel to the picked interpolation. Called only
+	-- from the dropdown's selected event: uvCtrlType's set handler also runs
+	-- on create and load (MAXScript Help, "Scripted Plug-in Clauses"), where
+	-- the keys must never change. Assigning a new controller class to a
+	-- keyed param keeps the key times and values; a bezier that already has
+	-- its own tangents keeps them.
 	fn switchUVAnimController ctrlType =
 	(
-		local hasU = (try(this.anim_UOffset.isAnimated != false)catch(false))
-		local hasV = (try(this.anim_VOffset.isAnimated != false)catch(false))
-		if not hasU and not hasV do return()
-		case ctrlType of
+		for p in uvAnimProps() do
 		(
-			1: () -- None: leave as is
-			2: ( -- Linear
-				if hasU do try ( this.anim_UOffset.controller = Linear_Float() ) catch()
-				if hasV do try ( this.anim_VOffset.controller = Linear_Float() ) catch()
-			)
-			3: ( -- Bezier smooth
-				if hasU do try (
-					if classof this.anim_UOffset.controller != Bezier_Float do
-						this.anim_UOffset.controller = Bezier_Float()
-					setBezierTangents this.anim_UOffset.controller #smooth
-				) catch()
-				if hasV do try (
-					if classof this.anim_VOffset.controller != Bezier_Float do
-						this.anim_VOffset.controller = Bezier_Float()
-					setBezierTangents this.anim_VOffset.controller #smooth
-				) catch()
-			)
-			4: ( -- Hermite (TCB)
-				if hasU do try ( this.anim_UOffset.controller = TCB_Float() ) catch()
-				if hasV do try ( this.anim_VOffset.controller = TCB_Float() ) catch()
-			)
+			local c = keyedUVController p
+			if c != undefined do try (
+				case ctrlType of
+				(
+					1: ( -- None (DontInterp): hold every key
+						if classof c != Bezier_Float do
+						( setPropertyController this p (Bezier_Float()); c = getPropertyController this p )
+						setBezierTangents c #step
+					)
+					2: ( if classof c != Linear_Float do setPropertyController this p (Linear_Float()) )
+					3: ( -- Bezier: smooth tangents only for keys that had none
+						local fresh = (classof c != Bezier_Float) or (isStepBezier c)
+						if classof c != Bezier_Float do
+						( setPropertyController this p (Bezier_Float()); c = getPropertyController this p )
+						if fresh do setBezierTangents c #smooth
+					)
+					4: ( if classof c != TCB_Float do setPropertyController this p (TCB_Float()) )
+				)
+			) catch()
 		)
 		pushUVControllersToCoords()
 	)
@@ -168,7 +202,8 @@ extends:Bitmaptexture replaceUI:true version:11
 		anim_UTiling	type:#float		animatable:true		default:1.0	ui:spnUTiling
 		anim_VTiling	type:#float		animatable:true		default:1.0	ui:spnVTiling
 
-		on uvCtrlType set val do ( switchUVAnimController val )
+		-- uvCtrlType has no set handler: it would also run on create and load.
+		-- The dropdown's selected event converts the keys (uvAnimRollout).
 		on anim_UOffset set val do ( try ( delegate.coords.U_Offset = val ) catch(); pushUVControllersToCoords() )
 		on anim_VOffset set val do ( try ( delegate.coords.V_Offset = val ) catch(); pushUVControllersToCoords() )
 		on anim_WOffset set val do ()   -- StdUVGen has no W_Offset; param is MDX round-trip only
@@ -320,7 +355,14 @@ extends:Bitmaptexture replaceUI:true version:11
 				ddUVCtrl.selection	= savCtrl
 				this.uvCtrlType		= savCtrl
 			)
+
+			-- Show what the keys are, not what was last picked: tangents can
+			-- change in the curve editor without the dropdown knowing.
+			local detected = detectUVInterp()
+			if detected > 0 and detected != this.uvCtrlType do this.uvCtrlType = detected
 		)
+
+		on ddUVCtrl selected i do ( switchUVAnimController i )
 	)
 
 	---------------------------------------------------------------------------
