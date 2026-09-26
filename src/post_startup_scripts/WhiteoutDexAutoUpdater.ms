@@ -28,6 +28,15 @@ struct WhiteoutDexUpdaterStruct
     -- runs on the UI thread, so this is how long an unreachable GitHub can
     -- hold up 3ds Max once a day.
     queryTimeoutSec = 10,
+    -- release-assets.githubusercontent.com, where GitHub redirects release
+    -- downloads, resets about one TLS handshake in four from some networks
+    -- (seen 2026-09-27 on all four of its edge addresses; it failed a 0.9.2
+    -- -> 0.9.3 update). A reset comes back within a second, so a request
+    -- that fails that fast is tried again, up to maxAttempts times in all.
+    -- A slower failure is a timeout or a dead network, and repeating it
+    -- would only multiply the wait.
+    maxAttempts = 4,
+    quickFailureSec = 5,
 
     fn isSupported = ((maxVersion())[1] >= 20000),
 
@@ -96,7 +105,7 @@ struct WhiteoutDexUpdaterStruct
     -- ========================================
 
     -- Download a string from a URL, giving up after queryTimeoutSec
-    fn downloadString url =
+    fn downloadStringOnce url =
     (
         local _ex = undefined
         local result = undefined
@@ -148,7 +157,7 @@ struct WhiteoutDexUpdaterStruct
     ),
 
     -- Download a file from a URL
-    fn downloadFile url destPath =
+    fn downloadFileOnce url destPath =
     (
         if useHttpClient() then
         (
@@ -167,7 +176,7 @@ struct WhiteoutDexUpdaterStruct
                 _ex = getCurrentException()
             )
             try (httpClient.Dispose()) catch ()
-            -- Rethrown out here rather than in the catch; see downloadString.
+            -- Rethrown out here rather than in the catch; see downloadStringOnce.
             if _ex != undefined do throw _ex
         )
         else
@@ -179,6 +188,49 @@ struct WhiteoutDexUpdaterStruct
             wc.DownloadFile url destPath
             wc.Dispose()
         )
+    ),
+
+    -- Whether an attempt that started at startMs (timeStamp()) and failed
+    -- with ex gets another try. Logs the failure either way.
+    fn shouldRetry attempt startMs ex =
+    (
+        local again = attempt < maxAttempts and (timeStamp() - startMs) < (quickFailureSec * 1000)
+        format "[WhiteoutDex Updater] Attempt % of % failed%: %\n" attempt maxAttempts (if again then ", retrying" else "") ex
+        if again do sleep 1
+        again
+    ),
+
+    -- downloadStringOnce, tried again after a fast failure (see maxAttempts)
+    fn downloadString url =
+    (
+        local attempt = 0
+        local startMs = 0
+        local result = undefined
+        local _ex = undefined
+        do (
+            attempt += 1
+            startMs = timeStamp()
+            _ex = undefined
+            try (result = downloadStringOnce url) catch (_ex = getCurrentException())
+        ) while _ex != undefined and (shouldRetry attempt startMs _ex)
+        -- Rethrown out here rather than in the catch; see downloadStringOnce.
+        if _ex != undefined do throw _ex
+        result
+    ),
+
+    -- downloadFileOnce, tried again after a fast failure (see maxAttempts)
+    fn downloadFile url destPath =
+    (
+        local attempt = 0
+        local startMs = 0
+        local _ex = undefined
+        do (
+            attempt += 1
+            startMs = timeStamp()
+            _ex = undefined
+            try (downloadFileOnce url destPath) catch (_ex = getCurrentException())
+        ) while _ex != undefined and (shouldRetry attempt startMs _ex)
+        if _ex != undefined do throw _ex
     ),
 
     -- ========================================
