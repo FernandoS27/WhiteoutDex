@@ -214,48 +214,69 @@ struct WhiteoutDexUpdaterStruct
         local tmpDir = (dotNetClass "System.IO.Path").GetTempPath()
         local dlFile = tmpDir + "WhiteoutDex_Setup_v" + ver + ".exe"
         local batFile = tmpDir + "WhiteoutDex_AutoInstall.bat"
+
+        -- Only the download itself reports "Download failed". One try around
+        -- everything used to say so for any later error as well, with the
+        -- installer already sitting complete in %TEMP%.
+        local downloaded = false
+        progressStart (::WdxL.t "upd_downloading")
         try (
-            progressStart (::WdxL.t "upd_downloading")
             downloadFile dlUrl dlFile
-            progressEnd()
-            if doesFileExist dlFile then (
-                -- Ask user if Max should be closed
-                if queryBox ((::WdxL.t "upd_close_max_msg") + "\n\n" + (::WdxL.t "upd_save_work_msg")) title:(::WdxL.t "upd_title") then (
-                    -- Batch script: waits until every 3ds Max is closed (the
-                    -- installer updates all of them), then starts the installer
-                    local bat = "@echo off\n"
-                    bat += ":WAIT\n"
-                    bat += "tasklist /FI \"IMAGENAME eq 3dsmax.exe\" 2>NUL | find /I \"3dsmax.exe\" >NUL\n"
-                    bat += "if %ERRORLEVEL%==0 (\n"
-                    bat += "    timeout /t 2 /nobreak >NUL\n"
-                    bat += "    goto WAIT\n"
-                    bat += ")\n"
-                    bat += "timeout /t 1 /nobreak >NUL\n"
-                    bat += "start \"\" \"" + dlFile + "\" /NORESTART /NOCLOSEAPPLICATIONS\n"
-                    bat += "del \"%~f0\"\n"
-
-                    local f = createFile batFile
-                    format "%" bat to:f
-                    close f
-
-                    -- Start batch script hidden
-                    local psi = dotNetObject "System.Diagnostics.ProcessStartInfo"
-                    psi.FileName = batFile
-                    psi.WindowStyle = (dotNetClass "System.Diagnostics.ProcessWindowStyle").Hidden
-                    psi.CreateNoWindow = true
-                    (dotNetClass "System.Diagnostics.Process").Start psi
-
-                    -- Close Max gracefully (user gets save dialog if needed)
-                    quitMax #prompt
-                )
-            ) else (
-                messageBox (::WdxL.t "upd_download_failed") title:(::WdxL.t "upd_title") beep:false
-            )
+            downloaded = doesFileExist dlFile
         ) catch (
-            progressEnd()
             format "[WhiteoutDex Updater] Download failed: %\n" (getCurrentException())
-            messageBox (::WdxL.t "upd_download_failed") title:(::WdxL.t "upd_title") beep:false
         )
+        progressEnd()
+        if not downloaded then (
+            messageBox (::WdxL.t "upd_download_failed") title:(::WdxL.t "upd_title") beep:false
+            return false
+        )
+
+        -- Ask user if Max should be closed
+        if not (queryBox ((::WdxL.t "upd_close_max_msg") + "\n\n" + (::WdxL.t "upd_save_work_msg")) title:(::WdxL.t "upd_title")) then
+            return false
+
+        local started = false
+        try (
+            -- Batch script: waits until every 3ds Max is closed (the
+            -- installer updates all of them), then starts the installer
+            local bat = "@echo off\n"
+            bat += ":WAIT\n"
+            bat += "tasklist /FI \"IMAGENAME eq 3dsmax.exe\" 2>NUL | find /I \"3dsmax.exe\" >NUL\n"
+            bat += "if %ERRORLEVEL%==0 (\n"
+            bat += "    timeout /t 2 /nobreak >NUL\n"
+            bat += "    goto WAIT\n"
+            bat += ")\n"
+            bat += "timeout /t 1 /nobreak >NUL\n"
+            bat += "start \"\" \"" + dlFile + "\" /NORESTART /NOCLOSEAPPLICATIONS\n"
+            bat += "del \"%~f0\"\n"
+
+            local f = createFile batFile
+            format "%" bat to:f
+            close f
+
+            -- Start batch script hidden
+            local psi = dotNetObject "System.Diagnostics.ProcessStartInfo"
+            psi.FileName = batFile
+            psi.WindowStyle = (dotNetClass "System.Diagnostics.ProcessWindowStyle").Hidden
+            psi.CreateNoWindow = true
+            (dotNetClass "System.Diagnostics.Process").Start psi
+            started = true
+        ) catch (
+            format "[WhiteoutDex Updater] Could not start the installer: %\n" (getCurrentException())
+        )
+        if not started then (
+            messageBox ((::WdxL.t "upd_launch_failed") + "\n\n" + dlFile) title:(::WdxL.t "upd_title") beep:false
+            ShellLaunch "explorer.exe" ("/select,\"" + dlFile + "\"")
+            return false
+        )
+
+        -- Close Max gracefully; with no argument it offers to save a modified
+        -- scene. #noPrompt is quitMax's only option: the #prompt this used to
+        -- pass throws "Unknown argument" (verified on 2027), which left Max
+        -- open and the installer waiting until the user closed it by hand.
+        quitMax()
+        true
     ),
 
     -- ========================================
