@@ -4,8 +4,10 @@
 // simpleManipulator scripted plugins, so several things behave
 // differently from normal plugins:
 //
-//   1. Node name has "Obj:" prefix (added by importer for UI parsing) —
-//      must be stripped before writing to MDX.
+//   1. The MDX node name comes from the plugin's `eventName` parameter,
+//      not the Max node name. Scenes saved before that parameter existed
+//      read it as "", and fall back to the node name with its "Obj:"
+//      prefix (the old importer convention) stripped.
 //   2. keyList is an IntTab parameter with DYNAMIC ParamID (scripted
 //      plugins don't expose stable numeric IDs). Direct IParamBlock2
 //      access is unreliable — use MaxScript route via
@@ -177,6 +179,39 @@ std::vector<int> readEventKeyList(INode* node) {
     return frames;
 }
 
+// Read the plugin's `eventName` parameter (the MDX node name) through
+// MaxScript, for the same dynamic-ParamID reason as readEventKeyList.
+// Returns "" when it is unset — scenes saved before the parameter existed
+// load it as "", and the caller then falls back to the node name.
+std::string readEventName(INode* node) {
+    if (!node) return {};
+
+    std::wstringstream ss;
+    ss << L"(local n = maxOps.getNodeByHandle " << node->GetHandle() << L";"
+       << L" local result = \"\";"
+       << L" if n != undefined and isProperty n #eventName"
+       << L"    and n.eventName != undefined do result = n.eventName;"
+       << L" result)";
+    std::wstring script = ss.str();
+
+    FPValue result;
+    result.type = TYPE_VOID;
+    BOOL ok = FALSE;
+    try {
+        ok = ExecuteMAXScriptScript(
+            const_cast<wchar_t*>(script.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+            MAXScript::ScriptSource::NonEmbedded,
+#endif
+            TRUE, &result);
+    } catch (...) {
+        ok = FALSE;
+    }
+
+    if (!ok || result.type != TYPE_STRING || !result.s) return {};
+    return wideToUtf8(result.s);
+}
+
 } // anonymous namespace
 
 void extractEvents(const std::vector<core::SceneNode>& nodes,
@@ -201,13 +236,18 @@ void extractEvents(const std::vector<core::SceneNode>& nodes,
         ir::EventObject evt;
         evt.nodeIndex = sn.nodeIndex;
 
-        // ── Node name → eventCode (strip "Obj:" prefix) ──
+        // ── eventName parameter → eventCode ──
+        // The Max node name is free (several nodes may carry the same
+        // event); only scenes saved before `eventName` existed fall back to
+        // it, minus the "Obj:" prefix.
         std::string rawName;
         const MCHAR* nodeName = sn.maxNode->GetName();
         if (nodeName) {
             rawName = wideToUtf8(nodeName);
         }
-        std::string eventCode = stripObjPrefix(rawName);
+        std::string eventCode = readEventName(sn.maxNode);
+        if (eventCode.empty())
+            eventCode = stripObjPrefix(rawName);
         evt.eventCode = eventCode;
 
         ELOG << "  Event node[" << sn.nodeIndex << "] '" << rawName
@@ -231,8 +271,9 @@ void extractEvents(const std::vector<core::SceneNode>& nodes,
         }
 
         // KEVT global sequence: the importer keeps its duration (ms) in a
-        // UserProp, because Wc3RefEvent's duplicate parameter blocks make a
-        // new parameter unsafe (see reference memory on scripted plugins).
+        // UserProp; Wc3RefEvent has no parameter for it. (It was added while
+        // the plugin's duplicate `main` blocks made a new parameter unsafe;
+        // those are merged now, so it could move into `eventInfo`.)
         int gsMs = 0;
         if (sn.maxNode->GetUserPropInt(_T("Wc3GlobalSequence"), gsMs) && gsMs > 0) {
             const TimeValue gsTicks = static_cast<TimeValue>(

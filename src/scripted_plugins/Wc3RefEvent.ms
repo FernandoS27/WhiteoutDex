@@ -10,13 +10,28 @@ plugin simpleManipulator Wdx_Wc3Event
     -- in the catalog as "event_info_ptitle" / "event_info_msg", translated into
     -- every language, so reinstating the button needs no new strings.
     ----------------------------------------------------------------------
+    -- ONE block named `main`, holding what used to be two blocks that were both
+    -- named `main` (`keyList` under rollout:params, `adsorption` under
+    -- rollout:General). Keep it that way: an old scene's saved blocks are
+    -- matched to the current definition BY NAME, so with two `main` blocks
+    -- both saved ones landed on the first and the other's values reset to
+    -- defaults as soon as the definition changed at all. `adsorption` lost
+    -- its ui: binding because a block binds to one rollout - the General
+    -- rollout reads and writes it by hand.
     parameters main rollout:params
     (
-        keyList type:#IntTab tabSizeVariable:true
+        keyList     type:#IntTab tabSizeVariable:true
+        adsorption  type:#string default:""
     )
-    parameters main rollout:General
+    -- The MDX node name of the event (e.g. "SNDxAHEA"), written on export.
+    -- It used to be the Max node name behind an "Obj:" prefix, which forced
+    -- every copy of the same event to fight over one name. Scenes saved
+    -- before this block load it as "" - the exporter and the UI then fall
+    -- back to the "Obj:" node name. Not ui:-bound: the params rollout
+    -- already carries `main`.
+    parameters eventInfo
     (
-        adsorption  type:#string ui:Temp_adsorption 
+        eventName   type:#string default:""
     )
     rollout General "General Functions"
     (
@@ -28,12 +43,17 @@ plugin simpleManipulator Wdx_Wc3Event
             (
                 selection[1].pos	 = obj.pos
                 selection[1].parent	 = obj
+                adsorption           = obj.name
                 Temp_adsorption.text = obj.name
                 btn_adsorption.text	 = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
             )catch()
         )
         on General open do
         (
+            -- Not ui:-bound any more, so seed the hidden field by hand. An
+            -- event saved before the default existed carries undefined, which
+            -- an edittext refuses.
+            Temp_adsorption.text = if adsorption == undefined then "" else adsorption
             if ::WdxL != undefined then
             (
                 General.title = ::WdxL.t "event_general_functions_title"
@@ -55,16 +75,19 @@ plugin simpleManipulator Wdx_Wc3Event
             label l3 "· · · · Custom Data · · · ·" pos:[12,115] align:#center width:138
             edittext edtCustomData "" pos:[12,131] width:138 height:20 tooltip:"Custom event data code or sound path (overrides dropdown when non-empty)"
             button btnConfirmRename "Confirm" pos:[12,157] width:138 height:24
+            -- The MDX name export will write (eventName, or the legacy
+            -- "Obj:" node name while eventName is still empty).
+            label lblEventName "" pos:[12,187] align:#center width:138
             label huanhangfu3 "" height:0
         )
 
         group "Basic attribute"
         (
-            label lbl1 "Move the animation slider to indicate the position of the key" pos:[12,216] width:138 height:45
-            dotNetControl lvNotes "System.Windows.Forms.ListView" pos:[12,258] width:138 height:150
-            button btnAddNote    "Add"       pos:[12,418] width:138 height:24
-            button btnRemNote    "Remove"    pos:[12,447] width:138 height:24
-            button btnRemAllNote "Clear All" pos:[12,476] width:138 height:24
+            label lbl1 "Move the animation slider to indicate the position of the key" pos:[12,240] width:138 height:45
+            dotNetControl lvNotes "System.Windows.Forms.ListView" pos:[12,282] width:138 height:150
+            button btnAddNote    "Add"       pos:[12,442] width:138 height:24
+            button btnRemNote    "Remove"    pos:[12,471] width:138 height:24
+            button btnRemAllNote "Clear All" pos:[12,500] width:138 height:24
             label huanhangfu2 "" height:0
         )
 
@@ -796,6 +819,18 @@ plugin simpleManipulator Wdx_Wc3Event
             edtCustomData.text = ""
         )
 
+        -- The name export writes: eventName, or for an event saved before
+        -- that parameter existed, its node name minus the "Obj:" prefix.
+        fn currentEventName =
+        (
+            if eventName != undefined and eventName != "" then eventName
+            else
+            (
+                local n = try ((refs.dependentNodes this firstOnly:true).name) catch (undefined)
+                if n != undefined and findString n "Obj:" == 1 then substring n 5 -1 else ""
+            )
+        )
+
         on btnConfirmRename pressed do
         (
             local Type
@@ -804,14 +839,17 @@ plugin simpleManipulator Wdx_Wc3Event
             if (ddlEventType.selection == 3) then (Type = "UBRx")
             if (ddlEventType.selection == 4) then (Type = "SNDx")
             if (ddlEventType.selection == 5) then (Type = "SPNx")
-            
+
             local code
             if edtCustomData.text != "" then
                 code = edtCustomData.text
             else
                 code = getCodeFromItem (ddlEventData.selected)
-            
-            selection[1].name = "Obj:" + Type + code
+
+            -- The node keeps whatever name the user gave it; several nodes
+            -- can carry the same event.
+            eventName = Type + code
+            lblEventName.text = eventName
         )
 
         ----------------------------Update keys after editing---------------------------
@@ -857,13 +895,16 @@ plugin simpleManipulator Wdx_Wc3Event
             -- Populate data dropdown for current type
             ddlEventData.items = getDataForType ddlEventType.selection
 
-            -- Auto-detect type and data from object name
+            -- Auto-detect type and data from the event name
+            local code = currentEventName()
+            lblEventName.text = code
+            -- Pin a legacy "Obj:" name into eventName, so renaming the node
+            -- afterwards (now that the name is free) can't change the export.
+            if eventName == "" and code != "" do eventName = code
             try
             (
-                local objName = selection[1].name
-                if findString objName "Obj:" == 1 then
+                if code.count >= 4 then
                 (
-                    local code = substring objName 5 (objName.count - 4)
                     local prefix = substring code 1 3
                     local dataCode = substring code 5 (code.count - 4)
                     

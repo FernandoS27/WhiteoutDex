@@ -357,7 +357,7 @@ struct WhiteoutDexUtilityStruct
     fn IsCamera o = (classOf o == Targetcamera),
     fn IsCollisionShape o = ((classof o) as string == "Wdx_CollisionBox") or ((classof o) as string == "Wdx_Wc3CollisionSphere"),
     fn IsAttachment o = (classOf o == Wdx_Wc3AttachPoint),
-    fn IsEventObject o = ((substring o.name 1 4) == "Obj:"),
+    fn IsEventObject o = ((classof o) as string == "Wdx_Wc3Event"),
     fn IsParticleEmitter o = (classOf o == Wc3Particles1),
     fn IsParticleEmitter2 o = (classOf o == Wc3Particles2),
     fn IsRibbonEmitter o = (classOf o == Wc3Ribbon),

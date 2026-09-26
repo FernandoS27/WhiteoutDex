@@ -876,25 +876,25 @@ void Wc3EventBuilder::buildEvents(
         }
 
         INode* node = gi->CreateObjectNode(obj);
-        MSTR name;
-        // The Wc3RefEvent plug-in UI expects an "Obj:" prefix in the node name.
-        // Its auto-detect in 'on params open do' parses objName[5..] to extract
-        // the type code (FPT/SPL/UBR/SND/SPN) and the data code, so it can
-        // preselect the dropdowns correctly. Without that prefix the dropdowns
-        // stay on their defaults (FPT + first entry).
-        if (irEvt.nodeIndex >= 0 && irEvt.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
-            name.printf(_T("Obj:%hs"), irModel.nodes[irEvt.nodeIndex].name.c_str());
-        else
-            name.printf(_T("Obj:%hs%hs"), irEvt.eventCode.c_str(), irEvt.eventData.c_str());
-        node->SetName(name);
+        // The MDX name (e.g. "SNDxAHEA") goes to the plug-in's `eventName`
+        // parameter, which the exporter writes back and the UI parses to
+        // preselect its dropdowns. The node takes the same name only as a
+        // readable default — it no longer has to be unique per event, nor
+        // carry the old "Obj:" prefix.
+        const std::wstring evtName =
+            (irEvt.nodeIndex >= 0 && irEvt.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
+                ? toWstr(irModel.nodes[irEvt.nodeIndex].name)
+                : toWstr(irEvt.eventCode + irEvt.eventData);
+        node->SetName(evtName.c_str());
+        pbSetString(obj, L"eventName", evtName.c_str());
 
         positionAtPivot(node, irEvt.nodeIndex, irModel);
         setupNodeProperties(node, irEvt.nodeIndex, irModel);
         attachToParent(node, irEvt.nodeIndex, irModel, nodeMap);
 
         // Events on a global sequence keep its duration (ms) in a UserProp —
-        // Wc3RefEvent has no parameter for it, and its duplicate parameter
-        // blocks make adding one unsafe (see the exporter's event extractor).
+        // Wc3RefEvent has no parameter for it (see the exporter's event
+        // extractor).
         if (irEvt.globalSequenceIndex >= 0 &&
             irEvt.globalSequenceIndex < static_cast<int32_t>(irModel.globalSequenceDurations.size()))
             node->SetUserPropInt(_T("Wc3GlobalSequence"),

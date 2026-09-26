@@ -771,6 +771,10 @@ endif()
 # Read version from version.txt at the repo root so the manifest and the
 # installer stay in lockstep with whatever the runtime reports.
 if(EXISTS "${CMAKE_SOURCE_DIR}/version.txt")
+    # Re-run configure when the version changes; otherwise an existing build
+    # tree keeps generating the manifest and installer with the old one.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/version.txt")
     file(READ "${CMAKE_SOURCE_DIR}/version.txt" WDX_VERSION)
     string(STRIP "${WDX_VERSION}" WDX_VERSION)
 else()
