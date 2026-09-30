@@ -2663,7 +2663,24 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
     // 5. Handle import mode
     if (opts.core.mode == ir::CoreImportOptions::ImportMode::NewScene) {
+        // NewScene asks "save your changes?" when the scene counts as
+        // modified - in Max 2016 even a freshly reset one does. A caller that
+        // suppresses prompts (importFile #noPrompt, batch) must not get it.
+        if (suppressPrompts)
+            SetSaveRequiredFlag(FALSE);
         ii->NewScene();
+    }
+
+    // Non-finite vertex data (old exporters wrote "-1.#IND00" normals)
+    // would reach Max's mesh as NaN: neutral values instead.
+    for (auto& mesh : irModel.meshes) {
+        for (auto& v : mesh.vertices) {
+            auto fin3 = [](const Point3& p) { return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z); };
+            if (!fin3(v.position)) v.position = Point3(0.0f, 0.0f, 0.0f);
+            if (!fin3(v.normal)) v.normal = Point3(0.0f, 0.0f, 1.0f);
+            for (auto& uv : v.uvSets)
+                if (!std::isfinite(uv.x) || !std::isfinite(uv.y)) uv = Point2(0.0f, 0.0f);
+        }
     }
     if (modelCodePage != 0 && gi && gi->GetRootNode())
         gi->GetRootNode()->SetUserPropInt(_T("Wc3CodePage"), static_cast<int>(modelCodePage));
