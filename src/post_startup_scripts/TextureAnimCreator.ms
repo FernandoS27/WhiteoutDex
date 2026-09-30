@@ -284,6 +284,31 @@ fn WdxTAC_KeyChannel map prop times values ctrlClass keep:false cycle:false =
 		default: undefined
 	)
 	if coordProp != undefined do try (setPropertyController map.delegate.coords coordProp c) catch ()
+	-- The rotation track holds raw degrees (importer and exporter). Max 2021
+	-- and older convert a key value set from MAXScript on this controller -
+	-- shared with the StdUVGen's W_Angle, an angle - from degrees to radians,
+	-- Max 2023+ does not: read the float param back and scale the keys until
+	-- it holds the degrees asked for.
+	if prop == #anim_WAngle do
+	(
+		local probe = 0
+		for i = values.count to 1 by -1 where abs values[i] > 0.001 do probe = i
+		if probe > 0 do
+		(
+			local written = for v in values collect (v as float)
+			for pass = 1 to 3 do
+			(
+				local got = try (at time times[probe] (getProperty map prop)) catch (undefined)
+				if got == undefined or abs got < 1e-6 or abs (got - values[probe]) <= 0.001 * abs values[probe] do exit
+				local f = values[probe] / got
+				for i = 1 to times.count do
+				(
+					local ki = getKeyIndex c times[i]
+					if ki > 0 do (written[i] *= f; c.keys[ki].value = written[i])
+				)
+			)
+		)
+	)
 	c
 )
 
@@ -372,7 +397,9 @@ fn WdxTAC_GenerateUVMap nodes cols rows collapse =
 		if collapse then
 		(
 			addModifier o xf before:o.modifiers.count
-			maxOps.CollapseNodeTo o o.modifiers.count off
+			-- noWarning: the user asked for the collapse; Max 2016 would
+			-- otherwise stop on its "Collapse To" prompt
+			maxOps.CollapseNodeTo o o.modifiers.count true
 		)
 		else addModifier o xf
 		n += 1
