@@ -910,7 +910,8 @@
                             local extStr = rootNode.seqExtents[i]
                             if extStr != undefined and extStr != "" then
                             (
-                                local parts = filterString extStr " "
+                                -- decimal commas: scenes imported while Max ran with a ',' locale
+                                local parts = for p in (filterString extStr " ") collect (substituteString p "," ".")
                                 if parts.count == 7 then
                                 (
                                     ext = WdxWc3Extent \
@@ -954,7 +955,9 @@
         -- Fallback: Read from NoteTracks (legacy scenes)
         format "** WDX LoadSeq: Trying NoteTracks fallback (hasNT: %)\n" (HasNoteTracks Rootnode)
         this.cleanEmptyKeysFromSequences()
-        ::WdxUtils.ArrayMap (GetSequenceData ()) (fn tmp a = readSequenceData a[1] a[2])
+        -- a plain loop: Max 2016 throws "Unknown system exception" when a fn
+        -- literal defined here calls readSequenceData through ArrayMap
+        for a in (this.GetSequenceData()) collect (this.readSequenceData a[1] a[2])
     ),
     
     fn playSequence i =

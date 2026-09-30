@@ -26,6 +26,18 @@
 #include <ilayermanager.h>
 #include <modstack.h>
 #include <maxscript/maxscript.h>
+#include <locale.h>
+
+namespace {
+// Numbers written into MAXScript source and user properties always use '.'.
+// swprintf follows the host's LC_NUMERIC, and 3ds Max 2027 on a German
+// Windows runs with ',': "append rootNode.moveSpeed 270,5" does not compile,
+// and a scene saved there would not read back in another Max or language.
+_locale_t numLocale() {
+    static _locale_t c = _create_locale(LC_NUMERIC, "C");
+    return c;
+}
+} // namespace
 
 // ── Crash-safe diagnostic log (appended to %TEMP%\mdlx_import_debug.log) ──
 // Mirrors the MLOG helper in wc3_material_builder.cpp. Used by Wc3PopcornBuilder
@@ -321,24 +333,24 @@ void Wc3LightBuilder::buildLights(
         {
             wchar_t buf[64];
 
-            swprintf_s(buf, 64, L"%.6f,%.6f,%.6f",
+            _swprintf_s_l(buf, 64, L"%.6f,%.6f,%.6f", numLocale(),
                 irLight.color.r, irLight.color.g, irLight.color.b);
             node->SetUserPropString(MSTR(L"mdx_static_color"), MSTR(buf));
 
-            swprintf_s(buf, 64, L"%.6f,%.6f,%.6f",
+            _swprintf_s_l(buf, 64, L"%.6f,%.6f,%.6f", numLocale(),
                 irLight.ambientColor.r, irLight.ambientColor.g, irLight.ambientColor.b);
             node->SetUserPropString(MSTR(L"mdx_static_ambColor"), MSTR(buf));
 
-            swprintf_s(buf, 64, L"%.6f", irLight.intensity);
+            _swprintf_s_l(buf, 64, L"%.6f", numLocale(), irLight.intensity);
             node->SetUserPropString(MSTR(L"mdx_static_intensity"), MSTR(buf));
 
-            swprintf_s(buf, 64, L"%.6f", irLight.ambientIntensity);
+            _swprintf_s_l(buf, 64, L"%.6f", numLocale(), irLight.ambientIntensity);
             node->SetUserPropString(MSTR(L"mdx_static_ambIntensity"), MSTR(buf));
 
-            swprintf_s(buf, 64, L"%.6f", irLight.attenuationStart);
+            _swprintf_s_l(buf, 64, L"%.6f", numLocale(), irLight.attenuationStart);
             node->SetUserPropString(MSTR(L"mdx_static_attStart"), MSTR(buf));
 
-            swprintf_s(buf, 64, L"%.6f", irLight.attenuationEnd);
+            _swprintf_s_l(buf, 64, L"%.6f", numLocale(), irLight.attenuationEnd);
             node->SetUserPropString(MSTR(L"mdx_static_attEnd"), MSTR(buf));
         }
 
@@ -1544,13 +1556,13 @@ void Wc3SequenceBuilder::buildSequences(
 
         // Extent string: "radius minX minY minZ maxX maxY maxZ"
         wchar_t extBuf[256];
-        swprintf_s(extBuf, 256, L"%g %g %g %g %g %g %g",
+        _swprintf_s_l(extBuf, 256, L"%g %g %g %g %g %g %g", numLocale(),
             seq.extentRadius,
             seq.extentMin.x, seq.extentMin.y, seq.extentMin.z,
             seq.extentMax.x, seq.extentMax.y, seq.extentMax.z);
 
         wchar_t line[1024];
-        swprintf_s(line, 1024,
+        _swprintf_s_l(line, 1024,
             L"append rootNode.seqNames \"%s\"\n"
             L"append rootNode.startFrames %d\n"
             L"append rootNode.endFrames %d\n"
@@ -1558,7 +1570,7 @@ void Wc3SequenceBuilder::buildSequences(
             L"append rootNode.rarity %g\n"
             L"append rootNode.moveSpeed %g\n"
             L"append rootNode.seqExtents \"%s\"\n"
-            L"append rootNode.sharedGroup \"\"\n",
+            L"append rootNode.sharedGroup \"\"\n", numLocale(),
             wname.c_str(),
             startF, endF,
             seq.isLooping ? L"false" : L"true",  // nonLooping = !isLooping

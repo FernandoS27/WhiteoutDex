@@ -13,8 +13,16 @@
 #include <algorithm>
 #include <unordered_map>
 #include <cwctype>
+#include <locale.h>
 
 namespace {
+// "Rarity=0.5" / "MoveSpeed=270.5" in note keys always use '.': _wtof follows
+// the host's LC_NUMERIC, and 3ds Max 2027 on a German Windows runs with ','
+// (270.5 read as 270). The "C" locale variant ignores that.
+float noteFloat(const wchar_t* s) {
+    static _locale_t c = _create_locale(LC_NUMERIC, "C");
+    return static_cast<float>(c ? _wtof_l(s, c) : _wtof(s));
+}
 enum SeqParamID : ParamID { PID_SeqNames=0,PID_StartFrames=1,PID_EndFrames=2,PID_NonLooping=3,PID_Rarity=4,PID_MoveSpeed=5,PID_SeqExtents=6,PID_SharedGroup=7 };
 
 IParamBlock2* findSequenceCA(INode* rootNode) {
@@ -50,7 +58,11 @@ std::string wstrToUtf8(const wchar_t* wstr) {
 }
 void parseExtentString(const wchar_t* str,float& bound,Point3& mn,Point3& mx) {
     if(!str||!str[0]) return;
-    swscanf_s(str,L"%f %f %f %f %f %f %f",&bound,&mn.x,&mn.y,&mn.z,&mx.x,&mx.y,&mx.z);
+    // space separated, '.' decimals; a scene imported where LC_NUMERIC used
+    // ',' (older builds under Max 2027 on a German Windows) wrote commas
+    std::wstring v(str); for(auto& ch:v) if(ch==L',') ch=L'.';
+    static _locale_t c=_create_locale(LC_NUMERIC,"C");
+    _swscanf_s_l(v.c_str(),L"%f %f %f %f %f %f %f",c,&bound,&mn.x,&mn.y,&mn.z,&mx.x,&mx.y,&mx.z);
 }
 
 // Note track fallback
@@ -76,7 +88,7 @@ std::vector<ir::Sequence> extractFromNoteTracks(INode* rootNode) {
     for(int i=0;i<numKeys;i++){NoteKey* nk=nt->keys[i];if(!nk)continue;const wchar_t* val=nk->note.data();if(!val||!val[0])continue;std::wstring key(val);NoteKeyEntry entry;entry.value=key;entry.time=nk->time;if(groups.find(key)==groups.end())groupOrder.push_back(key);groups[key].push_back(entry);}
     struct SeqParsed{std::string name;TimeValue startTime,endTime;bool nonLooping;float rarity,moveSpeed;};
     std::vector<SeqParsed> parsed;
-    for(auto& keyStr:groupOrder){auto& grp=groups[keyStr];if(grp.size()<2)continue;std::sort(grp.begin(),grp.end(),[](const NoteKeyEntry& a,const NoteKeyEntry& b){return a.time<b.time;});size_t pairCount=grp.size()/2;for(size_t p=0;p<pairCount;p++){auto& k1=grp[p*2];auto& k2=grp[p*2+1];auto tokens=tokenizeNoteValue(k1.value.c_str());std::string seqName=tokens.empty()?"Unknown":wdx::text::wideToMdx(tokens[0].c_str());bool nonLoop=false;float rare=0,speed=0;for(size_t t=1;t<tokens.size();t++){if(wcsieq(tokens[t],L"NonLooping"))nonLoop=true;else if(wcsistartswith(tokens[t],L"Rarity",6))rare=(float)_wtof(tokens[t].c_str()+6);else if(wcsistartswith(tokens[t],L"MoveSpeed",9))speed=(float)_wtof(tokens[t].c_str()+9);}SeqParsed sp;sp.name=seqName;sp.startTime=std::min(k1.time,k2.time);sp.endTime=std::max(k1.time,k2.time);sp.nonLooping=nonLoop;sp.rarity=rare;sp.moveSpeed=speed;parsed.push_back(std::move(sp));}}
+    for(auto& keyStr:groupOrder){auto& grp=groups[keyStr];if(grp.size()<2)continue;std::sort(grp.begin(),grp.end(),[](const NoteKeyEntry& a,const NoteKeyEntry& b){return a.time<b.time;});size_t pairCount=grp.size()/2;for(size_t p=0;p<pairCount;p++){auto& k1=grp[p*2];auto& k2=grp[p*2+1];auto tokens=tokenizeNoteValue(k1.value.c_str());std::string seqName=tokens.empty()?"Unknown":wdx::text::wideToMdx(tokens[0].c_str());bool nonLoop=false;float rare=0,speed=0;for(size_t t=1;t<tokens.size();t++){if(wcsieq(tokens[t],L"NonLooping"))nonLoop=true;else if(wcsistartswith(tokens[t],L"Rarity",6))rare=noteFloat(tokens[t].c_str()+6);else if(wcsistartswith(tokens[t],L"MoveSpeed",9))speed=noteFloat(tokens[t].c_str()+9);}SeqParsed sp;sp.name=seqName;sp.startTime=std::min(k1.time,k2.time);sp.endTime=std::max(k1.time,k2.time);sp.nonLooping=nonLoop;sp.rarity=rare;sp.moveSpeed=speed;parsed.push_back(std::move(sp));}}
     std::sort(parsed.begin(),parsed.end(),[](const SeqParsed& a,const SeqParsed& b){return a.startTime<b.startTime;});
     for(auto& sp:parsed){ir::Sequence seq;seq.name=sp.name;seq.startTime=sp.startTime;seq.endTime=sp.endTime;seq.isLooping=!sp.nonLooping;seq.rarity=sp.rarity;seq.moveSpeed=sp.moveSpeed;sequences.push_back(std::move(seq));}
     return sequences;
