@@ -827,7 +827,20 @@ plugin simpleManipulator Wdx_Wc3Event
             else
             (
                 local n = try ((refs.dependentNodes this firstOnly:true).name) catch (undefined)
-                if n != undefined and findString n "Obj:" == 1 then substring n 5 -1 else ""
+                if n != undefined and findString n "Obj:" == 1 then
+                (
+                    -- NeoDex(Plus) puts a note behind the code:
+                    -- "Obj:FPTXFPL1(脚印-爪印大号左)". The code ends there.
+                    local c = substring n 5 -1
+                    local cut = c.count + 1
+                    for sep in #("(", " ", bit.intAsChar 0xFF08) do -- also the full-width "("
+                    (
+                        local i = findString c sep
+                        if i != undefined and i < cut do cut = i
+                    )
+                    substring c 1 (cut - 1)
+                )
+                else ""
             )
         )
 
@@ -846,10 +859,15 @@ plugin simpleManipulator Wdx_Wc3Event
             else
                 code = getCodeFromItem (ddlEventData.selected)
 
-            -- The node keeps whatever name the user gave it; several nodes
-            -- can carry the same event.
+            -- A node the user named keeps its name (several nodes can carry
+            -- the same event); one still named after its code is relabelled
+            -- for the new one (Wc3RefEventCallback.ms, WdxEventApplyName).
+            local oldCode = currentEventName()
             eventName = Type + code
             lblEventName.text = eventName
+            local node = try (refs.dependentNodes this firstOnly:true) catch (undefined)
+            if node != undefined and ::WdxEventApplyName != undefined do
+                try (::WdxEventApplyName node oldCode eventName) catch ()
         )
 
         ----------------------------Update keys after editing---------------------------

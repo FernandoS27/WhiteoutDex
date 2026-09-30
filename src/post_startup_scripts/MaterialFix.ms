@@ -725,7 +725,7 @@ struct WdxMaterialFixStruct
         local M = ::WdxMaterialFix
         M.load()
         try (destroyDialog M.mainRollout) catch ()
-        local style = #(#style_titlebar, #style_border, #style_sysmenu)
+        local style = #(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)
         local parts = filterString (::WdxGetUserSetting "MaterialFix" "DialogPos" "") "[], "
         if parts.count == 2 and (parts[1] as float) != undefined and (parts[2] as float) != undefined then
             createDialog M.mainRollout pos:[parts[1] as float, parts[2] as float] style:style

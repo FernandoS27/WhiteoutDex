@@ -197,7 +197,9 @@ struct WdxVisibilityKeyer
 									local newKey = addNewKey newCon kd[1]
 									newKey.value = kd[2]
 									
-									if interpDropdown.selected == "None" then
+									-- Boolean keys step by themselves and have no
+									-- tangent properties (only time/selected/value)
+									if interpDropdown.selected == "None" and classOf newCon != boolean_float then
 									(
 										newKey.inTangentType = #step
 										newKey.outTangentType = #step

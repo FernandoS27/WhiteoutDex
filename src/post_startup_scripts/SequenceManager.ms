@@ -2797,7 +2797,7 @@
     
     fn showUI =
     (
-        if not this.mainRollout.isDisplayed then CreateDialog this.mainRollout
+        if not this.mainRollout.isDisplayed then CreateDialog this.mainRollout style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)
     ),
     
     fn hideUI =
