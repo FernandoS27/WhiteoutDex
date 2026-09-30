@@ -258,7 +258,7 @@ struct WhiteoutDexMPQHelperStruct
             return false
         )
         
-        this.textureCache = Dictionary #string
+        this.textureCache = ::_wdxNewFastDict()
         makeDir this.tempDir all:true
         
         if mpqFiles.count > 0 then
@@ -342,9 +342,9 @@ struct WhiteoutDexMPQHelperStruct
         if this.ndx == undefined then return undefined
         
         -- Check cache
-        if this.textureCache != undefined and hasDictValue this.textureCache fname then
+        if this.textureCache != undefined and (::_wdxDictHas this.textureCache fname) then
         (
-            local cached = this.textureCache[fname]
+            local cached = (::_wdxDictGet this.textureCache fname)
             if doesFileExist cached then return cached
         )
         
@@ -355,17 +355,17 @@ struct WhiteoutDexMPQHelperStruct
         
         if ::WhiteoutDexHasNativeBLP and doesFileExist blpCachePath then
         (
-            if this.textureCache != undefined then this.textureCache[fname] = blpCachePath
+            if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname blpCachePath
             return blpCachePath
         )
         if doesFileExist pngPath then
         (
-            if this.textureCache != undefined then this.textureCache[fname] = pngPath
+            if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname pngPath
             return pngPath
         )
         if doesFileExist tgaPath then
         (
-            if this.textureCache != undefined then this.textureCache[fname] = tgaPath
+            if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname tgaPath
             return tgaPath
         )
         
@@ -406,7 +406,7 @@ struct WhiteoutDexMPQHelperStruct
         -- Native BLP support: return BLP directly
         if ::WhiteoutDexHasNativeBLP then
         (
-            if this.textureCache != undefined then this.textureCache[fname] = blpCachePath
+            if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname blpCachePath
             format "WhiteoutDex MPQ: '%' -> '%' (native BLP)\n" foundPath (filenameFromPath blpCachePath)
             return blpCachePath
         )
@@ -420,7 +420,7 @@ struct WhiteoutDexMPQHelperStruct
                 bmp.Save pngPath ((dotNetClass "System.Drawing.Imaging.ImageFormat").Png)
                 bmp.Dispose()
                 try ( deleteFile blpCachePath ) catch()
-                if this.textureCache != undefined then this.textureCache[fname] = pngPath
+                if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname pngPath
                 format "WhiteoutDex MPQ: '%' -> '%'\n" foundPath (filenameFromPath pngPath)
                 return pngPath
             )
@@ -444,7 +444,7 @@ struct WhiteoutDexMPQHelperStruct
         if this.ndx == undefined then return #()
         
         this.mdxFileList = #()
-        local mdxSet = Dictionary #string
+        local mdxSet = ::_wdxNewFastDict()
         
         try
         (
@@ -455,9 +455,9 @@ struct WhiteoutDexMPQHelperStruct
                 (
                     local f = allFiles[i]
                     local key = toLower f
-                    if not (hasDictValue mdxSet key) then
+                    if not (::_wdxDictHas mdxSet key) then
                     (
-                        mdxSet[key] = true
+                        ::_wdxDictSet mdxSet key true
                         append this.mdxFileList f
                     )
                 )
@@ -632,7 +632,7 @@ struct WhiteoutDexCASCHelperStruct
         if fileCount > 0 then
         (
             this.isInitialized = true
-            this.textureCache = Dictionary #string
+            this.textureCache = ::_wdxNewFastDict()
             this.saveSettings()
             format "WhiteoutDex CASC: Ready! % files available.\n" fileCount
         )
@@ -720,9 +720,9 @@ struct WhiteoutDexCASCHelperStruct
         if this.ndx == undefined then return undefined
         
         -- Check cache
-        if this.textureCache != undefined and hasDictValue this.textureCache fname then
+        if this.textureCache != undefined and (::_wdxDictHas this.textureCache fname) then
         (
-            local cached = this.textureCache[fname]
+            local cached = (::_wdxDictGet this.textureCache fname)
             if doesFileExist cached then return cached
         )
         
@@ -734,22 +734,22 @@ struct WhiteoutDexCASCHelperStruct
         
         if ::WhiteoutDexHasNativeBLP and doesFileExist blpCachePath then
         (
-            if this.textureCache != undefined then this.textureCache[fname] = blpCachePath
+            if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname blpCachePath
             return blpCachePath
         )
         if doesFileExist ddsCachePath then
         (
-            if this.textureCache != undefined then this.textureCache[fname] = ddsCachePath
+            if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname ddsCachePath
             return ddsCachePath
         )
         if doesFileExist pngPath then
         (
-            if this.textureCache != undefined then this.textureCache[fname] = pngPath
+            if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname pngPath
             return pngPath
         )
         if doesFileExist tgaPath then
         (
-            if this.textureCache != undefined then this.textureCache[fname] = tgaPath
+            if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname tgaPath
             return tgaPath
         )
         
@@ -786,7 +786,7 @@ struct WhiteoutDexCASCHelperStruct
         -- DDS: return directly (Max handles DDS)
         if toLower texExt == ".dds" then
         (
-            if this.textureCache != undefined then this.textureCache[fname] = texTempPath
+            if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname texTempPath
             format "WhiteoutDex CASC: '%' -> '%'\n" (filenameFromPath cascFilePath) (filenameFromPath texTempPath)
             return texTempPath
         )
@@ -794,7 +794,7 @@ struct WhiteoutDexCASCHelperStruct
         -- BLP with native support: return directly
         if toLower texExt == ".blp" and ::WhiteoutDexHasNativeBLP then
         (
-            if this.textureCache != undefined then this.textureCache[fname] = texTempPath
+            if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname texTempPath
             format "WhiteoutDex CASC: '%' -> '%' (native BLP)\n" (filenameFromPath cascFilePath) (filenameFromPath texTempPath)
             return texTempPath
         )
@@ -808,7 +808,7 @@ struct WhiteoutDexCASCHelperStruct
                 bmp.Save pngPath ((dotNetClass "System.Drawing.Imaging.ImageFormat").Png)
                 bmp.Dispose()
                 try ( deleteFile texTempPath ) catch()
-                if this.textureCache != undefined then this.textureCache[fname] = pngPath
+                if this.textureCache != undefined then ::_wdxDictSet this.textureCache fname pngPath
                 format "WhiteoutDex CASC: '%' -> '%'\n" (filenameFromPath cascFilePath) (filenameFromPath pngPath)
                 return pngPath
             )
@@ -831,11 +831,11 @@ struct WhiteoutDexCASCHelperStruct
         if not this.isInitialized then return #()
         if this.ndx == undefined then return #()
         
-        this.mdxPathMap = Dictionary #string
+        this.mdxPathMap = ::_wdxNewFastDict()
         
         local rawFiles = this.filterFiles ".mdx"
         local displayNames = #()
-        local mdxSet = Dictionary #string
+        local mdxSet = ::_wdxNewFastDict()
         
         for f in rawFiles do
         (
@@ -864,11 +864,11 @@ struct WhiteoutDexCASCHelperStruct
             displayName = substituteString displayName "/" "\\"
             
             local key = toLower displayName
-            if not (hasDictValue mdxSet key) then
+            if not (::_wdxDictHas mdxSet key) then
             (
-                mdxSet[key] = true
+                ::_wdxDictSet mdxSet key true
                 append displayNames displayName
-                this.mdxPathMap[displayName] = f
+                ::_wdxDictSet this.mdxPathMap displayName f
             )
         )
         
@@ -885,8 +885,8 @@ struct WhiteoutDexCASCHelperStruct
         
         -- Resolve display name → real CASC path
         local realPath = cascPath
-        if this.mdxPathMap != undefined and hasDictValue this.mdxPathMap cascPath then
-            realPath = this.mdxPathMap[cascPath]
+        if this.mdxPathMap != undefined and (::_wdxDictHas this.mdxPathMap cascPath) then
+            realPath = (::_wdxDictGet this.mdxPathMap cascPath)
         
         -- Build unique output name: prefix HD_/SD_ based on tag
         local tag = try ( this.ndx.CASC_GetFileTag realPath ) catch( "" )

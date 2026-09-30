@@ -104,11 +104,26 @@ fn _wdxNewDict =
 		(_WdxDictPolyfill())
 )
 
+-- For large maps (MPQ/CASC file lists): the polyfill above searches linearly,
+-- so Max 2016 gets a .NET Hashtable instead. Same _wdxDict* functions.
+fn _wdxNewFastDict =
+(
+	if ::_wdxHasNativeDict then
+		(execute "Dictionary #string")
+	else
+		(dotNetObject "System.Collections.Hashtable")
+)
+
 fn _wdxDictSet dict key val =
 (
 	if ::_wdxHasNativeDict then
 	(
 		dict[key] = val
+	)
+	else if classOf dict == dotNetObject then
+	(
+		if dict.ContainsKey key do dict.Remove key
+		dict.Add key val
 	)
 	else
 	(
@@ -129,6 +144,8 @@ fn _wdxDictGet dict key =
 (
 	if ::_wdxHasNativeDict then
 		dict[key]
+	else if classOf dict == dotNetObject then
+		(if dict.ContainsKey key then dict.Item[key] else undefined)
 	else
 	(
 		local idx = findItem dict._k key
@@ -140,6 +157,8 @@ fn _wdxDictHas dict key =
 (
 	if ::_wdxHasNativeDict then
 		hasDictValue dict key
+	else if classOf dict == dotNetObject then
+		dict.ContainsKey key
 	else
 		(findItem dict._k key) != 0
 )
@@ -148,6 +167,8 @@ fn _wdxDictCount dict =
 (
 	if ::_wdxHasNativeDict then
 		dict.count
+	else if classOf dict == dotNetObject then
+		dict.Count
 	else
 		dict._k.count
 )
