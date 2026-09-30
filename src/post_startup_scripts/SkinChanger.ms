@@ -174,6 +174,28 @@ struct WdxSkinChanger
     -- FUNCTION: changeSkinData
     -- Converts skin weights to WC3 compatible format (max 5 influences)
     -- =================================================================
+    -- The bone nodes of a Skin, index = bone ID. skinOps.GetBoneNode does not
+    -- exist in Max 2016 (its skinOps has GetBoneName only): there the Skin's
+    -- node references are in bone order; a name lookup is the last resort.
+    fn skinBoneNodes sk =
+    (
+        local nb = skinOps.GetNumberBones sk
+        local out = try (for b = 1 to nb collect (skinOps.GetBoneNode sk b)) catch (undefined)
+        if out != undefined do return out
+        local refNodes = #()
+        for r in (refs.dependsOn sk) where isValidNode r do appendIfUnique refNodes r
+        out = for b = 1 to nb collect
+        (
+            local nm = skinOps.GetBoneName sk b 1
+            local n = undefined
+            if b <= refNodes.count and refNodes[b].name == nm do n = refNodes[b]
+            if n == undefined do (local c = for r in refNodes where r.name == nm collect r; if c.count > 0 do n = c[1])
+            if n == undefined do n = getNodeByName nm
+            n
+        )
+        out
+    ),
+
     fn changeSkinData limitToFourBones_param:true minWeightThreshold_param:0.001 =
     (
         theHold.Begin()
@@ -219,6 +241,7 @@ struct WdxSkinChanger
                 modPanel.setCurrentObject skinMod
                 
                 local numVertices = skinOps.GetNumberVertices skinMod
+                local skBones = skinBoneNodes skinMod
                 if numVertices == 0 then 
                 (
                     ::WdxErrorReporter.logWarning "SkinChanger" obj.name "Skipping: Skin modifier has 0 vertices."
@@ -238,7 +261,7 @@ struct WdxSkinChanger
                         local boneID = skinOps.GetVertexWeightBoneID skinMod v i
                         local weight = skinOps.GetVertexWeight skinMod v i
                         
-                        local boneNode = skinOps.GetBoneNode skinMod boneID 
+                        local boneNode = if boneID >= 1 and boneID <= skBones.count then skBones[boneID] else undefined
                         
                         if boneNode == undefined or isDeleted boneNode then 
                         (
@@ -591,7 +614,7 @@ struct WdxSkinChanger
                     select obj
                     modPanel.setCurrentObject sk
                     local nb = skinOps.GetNumberBones sk
-                    local bones = for b = 1 to nb collect (skinOps.GetBoneNode sk b)
+                    local bones = skinBoneNodes sk
                     local nv = skinOps.GetNumberVertices sk
                     local vw = for v = 1 to nv collect
                     (
@@ -667,9 +690,23 @@ struct WdxSkinChanger
                 select nn
                 modPanel.setCurrentObject sk
                 for b = 1 to allBones.count do skinOps.addBone sk allBones[b] (if b == allBones.count then 1 else 0)
+                -- Max 2016: a new Skin knows the mesh's vertices only once the
+                -- stack has been evaluated ("vertex count exceeded" otherwise),
+                -- and that first evaluation takes the bind pose from the bones'
+                -- current pose - so evaluate first, then set the bind TMs
+                local total = 0
+                for p in parts do total += p[4].count
+                classOf nn
+                if (skinOps.GetNumberVertices sk) < total do (update nn; completeRedraw(); modPanel.setCurrentObject sk; classOf nn)
+                if (skinOps.GetNumberVertices sk) != total do
+                (
+                    append skipped (keepName + ": new Skin has " + (skinOps.GetNumberVertices sk) as string + " vertices, expected " + total as string)
+                    delete nn
+                    continue
+                )
                 for b = 1 to allBones.count do skinUtils.SetBoneBindTM nn allBones[b] allBind[b]
                 skinUtils.SetMeshBindTM nn firstBind
-                local idOf = for b = 1 to (skinOps.GetNumberBones sk) collect (skinOps.GetBoneNode sk b)
+                local idOf = skinBoneNodes sk
                 local vOff = 0
                 for p in parts do
                 (
@@ -677,7 +714,18 @@ struct WdxSkinChanger
                     (
                         local ids = for bn in p[4][v][1] collect (findItem idOf bn)
                         if ids.count > 0 and findItem ids 0 == 0 do
+                        (
+                            -- Max 2016: ReplaceVertexWeights keeps the new
+                            -- Skin's envelope influences - zero them first
+                            local extra = #()
+                            for q = 1 to (skinOps.GetVertexWeightCount sk (vOff + v)) do
+                            (
+                                local bid = skinOps.GetVertexWeightBoneID sk (vOff + v) q
+                                if findItem ids bid == 0 do append extra bid
+                            )
+                            if extra.count > 0 do skinOps.SetVertexWeights sk (vOff + v) extra (for e in extra collect 0.0)
                             skinOps.ReplaceVertexWeights sk (vOff + v) ids p[4][v][2]
+                        )
                     )
                     vOff += p[4].count
                 )
