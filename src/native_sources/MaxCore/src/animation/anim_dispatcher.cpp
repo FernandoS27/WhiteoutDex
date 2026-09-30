@@ -264,7 +264,11 @@ static std::vector<TimeValue> generateFrameTimes(TimeValue seqStart,
 }
 
 // Filter pre-collected IK key times to a sequence range + boundaries.
-static std::vector<TimeValue> filterIKKeyTimes(
+// No longer used for IK nodes: a chain root moved by keys outside the IK
+// chain helpers (the pelvis of "03 Ik-joe (Spline IK).max") got only its
+// sequence start and end, and the whole leg drifted. IK nodes are sampled
+// every frame now; the reducer trims the keys again.
+[[maybe_unused]] static std::vector<TimeValue> filterIKKeyTimes(
         const std::vector<TimeValue>& allIKKeys,
         TimeValue seqStart, TimeValue seqEnd) {
     std::vector<TimeValue> times;
@@ -986,7 +990,7 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 int transLogCount = 0;
                 const bool transAtKeys = !isIKNode && !needsPerFrame && isFKPosNode;
                 auto transTimes = isIKNode
-                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    ? generateFrameTimes(seq.startTime, seq.endTime, frameInterval)
                     : transAtKeys
                         ? collectKeyTimes(posCtrlFK, seq.startTime, seq.endTime)
                         : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
@@ -1100,7 +1104,7 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 const int frameInterval = GetTicksPerFrame(); // one frame of the scene
                 const bool keyTimeRot = isIKNode || (!needsPerFrame && isFKRotNode);
                 auto rotTimes = isIKNode
-                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    ? generateFrameTimes(seq.startTime, seq.endTime, frameInterval)
                     : keyTimeRot
                         ? (rotTypeFK == ControllerType::Euler_XYZ
                             ? collectEulerKeyTimes(rotCtrlFK, seq.startTime, seq.endTime)
@@ -1239,7 +1243,7 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
 
                 const bool sclAtKeys = !isIKNode && !needsPerFrame;
                 auto sclTimes = isIKNode
-                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    ? generateFrameTimes(seq.startTime, seq.endTime, frameInterval)
                     : sclAtKeys
                         ? collectKeyTimes(sclCtrlFK, seq.startTime, seq.endTime)
                         : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
