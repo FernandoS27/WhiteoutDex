@@ -14,6 +14,11 @@
 #include <polyobj.h>        // POLYOBJ_CLASS_ID
 #include <CS/BIPEXP.h>      // BIPBODY_CONTROL_CLASS_ID, BIPDRIVEN_CONTROL_CLASS_ID
 #include <icustattribcontainer.h>
+#include <maxscript/maxscript.h>  // ExecuteMAXScriptScript
+#include <ifnpub.h>                // FPValue
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+#  include <maxscript/ScriptSource.h>
+#endif
 #include <maxversion.h>
 
 // Pre-Max 2022 SDKs only export BIPSLAVE_CONTROL_CLASS_ID (renamed to
@@ -535,6 +540,60 @@ void collectMaterialProblems(std::vector<Problem>& out) {
 
 } // anonymous namespace
 
+// Node materials identical to an earlier one. The comparison - every value,
+// map, bitmap and animated track - lives in WhiteoutDexMaterialMerge.ms
+// (WdxDuplicateMaterialGroups: "keep,dup,dup;keep,dup" as anim handles).
+void collectDuplicateMaterials(std::vector<Problem>& out) {
+    const wchar_t* script =
+        L"if ::WdxDuplicateMaterialGroups == undefined then \"\" else (try (::WdxDuplicateMaterialGroups()) catch (\"\"))";
+    FPValue value;
+    value.type = TYPE_VOID;
+    BOOL ok = FALSE;
+    try {
+        ok = ExecuteMAXScriptScript(const_cast<MCHAR*>(script),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+                                    MAXScript::ScriptSource::NotSpecified,
+#endif
+                                    TRUE, &value);
+    } catch (...) {
+        ok = FALSE;
+    }
+    if (!ok || value.type != TYPE_STRING || !value.s) return;
+    const std::wstring groups(value.s);
+    // "3498P": MAXScript prints the handle with its IntegerPtr suffix
+    auto mtlOf = [](const std::wstring& h) -> Mtl* {
+        const AnimHandle handle = static_cast<AnimHandle>(wcstoull(h.c_str(), nullptr, 10));
+        Animatable* a = Animatable::GetAnimByHandle(handle);
+        return a && a->SuperClassID() == MATERIAL_CLASS_ID ? static_cast<Mtl*>(a) : nullptr;
+    };
+    size_t start = 0;
+    while (start < groups.size()) {
+        size_t end = groups.find(L';', start);
+        if (end == std::wstring::npos) end = groups.size();
+        const std::wstring group = groups.substr(start, end - start);
+        std::vector<Mtl*> mtls;
+        size_t s = 0;
+        while (s < group.size()) {
+            size_t e = group.find(L',', s);
+            if (e == std::wstring::npos) e = group.size();
+            mtls.push_back(mtlOf(group.substr(s, e - s)));
+            s = e + 1;
+        }
+        if (mtls.size() > 1 && mtls[0]) {
+            for (size_t i = 1; i < mtls.size(); ++i) {
+                if (!mtls[i]) continue;
+                Problem p;
+                p.type = ProblemType::DuplicateMaterial;
+                p.mtl  = mtls[i];
+                p.displayName = std::wstring(mtls[i]->GetName().data()) + L"  =  "
+                              + std::wstring(mtls[0]->GetName().data());
+                out.push_back(p);
+            }
+        }
+        start = end + 1;
+    }
+}
+
 ScanResult scanScene() {
     ScanResult result;
     Interface* gi = GetCOREInterface();
@@ -546,6 +605,7 @@ ScanResult scanScene() {
     collectMeshProblems(root, result.problems);
     collectBoneControllerProblems(root, result.problems);
     collectMaterialProblems(result.problems);
+    collectDuplicateMaterials(result.problems);
 
     return result;
 }

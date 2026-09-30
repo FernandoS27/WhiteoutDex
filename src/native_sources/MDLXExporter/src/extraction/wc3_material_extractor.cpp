@@ -1,9 +1,11 @@
 // MDLXExporter — Wc3Material extractor implementation
 #include "wc3_material_extractor.h"
+#include <wdx_text.h>
 #include "../mdx_class_ids.h"
 #include "../material_fix_settings.h"
 
 #include <wdx_foreign_material.h>
+#include <wdx_replaceable_ids.h>
 
 #include <scene/paramblock_reader.h>
 #include <animation/global_sequence_helper.h>
@@ -102,7 +104,7 @@ std::string extractBitmapFileName(Texmap* tex) {
     // Standard Bitmaptexture
     if (tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
         auto* bmt = static_cast<BitmapTex*>(tex);
-        return stripPath(wstrToUtf8(bmt->GetMapName()));
+        return stripPath(wdx::text::wideToMdx(bmt->GetMapName()));
     }
     // Wc3Bitmap — find BitmapTex delegate in references
     if (tex->ClassID() == mdx_ids::WC3_BITMAP) {
@@ -110,7 +112,7 @@ std::string extractBitmapFileName(Texmap* tex) {
             ReferenceTarget* ref = tex->GetReference(i);
             if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
                 auto* bmt = static_cast<BitmapTex*>(ref);
-                return stripPath(wstrToUtf8(bmt->GetMapName()));
+                return stripPath(wdx::text::wideToMdx(bmt->GetMapName()));
             }
         }
     }
@@ -124,7 +126,7 @@ std::string readMaterialPrefix(ReferenceTarget* mtlRef, const wchar_t* paramName
     using PBR = core::ParamBlockReader;
     std::wstring prefix;
     if (PBR::readStringByName(mtlRef, paramName, 0, prefix) && !prefix.empty())
-        return wstrToUtf8(prefix.c_str());
+        return wdx::text::wideToMdx(prefix.c_str());
     return {};
 }
 
@@ -390,11 +392,16 @@ BitmapProperties extractBitmapProperties(Texmap* tex) {
         using PBR = core::ParamBlockReader;
         TimeValue t = 0;
 
-        int replId = 1; // 1-based: 1 = Not Used
-        PBR::readIntByName(ref, L"replaceableId", t, replId);
-        // NeoDex fallback: param is called "retexture"
-        if (replId == 0) PBR::readIntByName(ref, L"retexture", t, replId);
-        props.replaceableId = std::max(0, replId - 1);
+        // Wc3Bitmap's dropdown holds a list position (wdx_replaceable_ids.h);
+        // NeoDex's "retexture" list is 0 / 1 / 2 itself, so position - 1.
+        int replId = 1; // 1 = Not Used
+        if (PBR::readIntByName(ref, L"replaceableId", t, replId) && replId > 0) {
+            props.replaceableId = wdx::replaceable::IdFromDropdown(replId);
+        } else {
+            replId = 0;
+            PBR::readIntByName(ref, L"retexture", t, replId);
+            props.replaceableId = std::max(0, replId - 1);
+        }
 
         BOOL flag = FALSE;
         const bool hasWrapU = PBR::readBoolByName(ref, L"wrapU", t, flag);
@@ -407,7 +414,7 @@ BitmapProperties extractBitmapProperties(Texmap* tex) {
 
         std::wstring prefix;
         if (PBR::readStringByName(ref, L"prefixPath", t, prefix) && !prefix.empty())
-            props.prefixPath = wstrToUtf8(prefix.c_str());
+            props.prefixPath = wdx::text::wideToMdx(prefix.c_str());
 
         // The delegate's tiling is only a fallback for a Wc3Bitmap without
         // the wrap params. When they exist they are the truth: Wc3Material's
@@ -1564,7 +1571,7 @@ static int32_t extractExactFlipbook(ReferenceTarget* mtlRef, ir::IRModel& model,
     std::vector<int32_t> texIndex(static_cast<size_t>(count), -1);
     for (int i = 0; i < count; ++i) {
         const MCHAR* raw = pb->GetStr(pid, 0, i);
-        const std::string entry = raw ? wstrToUtf8(raw) : std::string();
+        const std::string entry = raw ? wdx::text::wideToMdx(raw) : std::string();
         const size_t a = entry.find('|');
         const size_t b = (a == std::string::npos) ? std::string::npos : entry.find('|', a + 1);
         if (b == std::string::npos) continue;
@@ -1682,6 +1689,9 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     flagVal = FALSE;
     if (PBR::readBoolByName(mtlRef, L"backFacesForShadows", t, flagVal) && flagVal)
         layer.backFacesForShadows = true;
+    flagVal = FALSE;
+    if (PBR::readBoolByName(mtlRef, L"unlit", t, flagVal) && flagVal)
+        layer.unlit = true;
 
     // Shader dropdown (1 SD, 2 HD, 3 SD on HD, 4 Crystal) → MDX ShaderType.
     // Only Wc3Material has it: a NeoDex material would answer with its
@@ -1742,11 +1752,9 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         matProps.shaderName = wstrToUtf8(shaderPath.c_str());
 
     // Material-level replaceableId (new NeoDex scheme — field moved from
-    // Wc3Bitmap to Wc3Material). Dropdown stores 1-based indices:
-    //   1 = Not Used, 2 = Team Color, 3 = Team Glow, 4 = Cliff,
-    //   5 = Lord Cliffington.
-    // MDX TEXS expects 0-based: 0 = Normal, 1 = Team Color, 2 = Team Glow,
-    // 3 = Cliff, 4 = Lord Cliffington. So subtract 1.
+    // Wc3Bitmap to Wc3Material). The dropdown holds a list position that
+    // wdx::replaceable::IdFromDropdown turns into the MDX id (0 none,
+    // 1 team colour, 2 team glow, 11 cliff, 31-37 trees).
     //
     // We fall back to reading from the bitmap (extractBitmapProperties) if
     // the material doesn't explicitly set replaceableId — that preserves
@@ -1756,9 +1764,13 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     bool matReplaceableIdFound = false;
     {
         int dropdownVal = 0;
-        if (readIntFB(mtlRef, L"replaceableId", L"retexture", t, dropdownVal)) {
+        // Wc3Material's dropdown holds a list position (wdx_replaceable_ids.h);
+        // NeoDex's "retexture" list is 0 / 1 / 2 itself, so position - 1.
+        if (core::ParamBlockReader::readIntByName(mtlRef, L"replaceableId", t, dropdownVal)) {
             matReplaceableIdFound = true;
-            // Dropdown is 1-based; convert to MDX 0-based. Clamp negatives.
+            matReplaceableId = wdx::replaceable::IdFromDropdown(dropdownVal);
+        } else if (core::ParamBlockReader::readIntByName(mtlRef, L"retexture", t, dropdownVal)) {
+            matReplaceableIdFound = true;
             matReplaceableId = std::max(0, dropdownVal - 1);
         }
         if (textureLayerOnly) matReplaceableId = 0;
@@ -1812,11 +1824,14 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
                 bmpProps.sphereEnvMap = true;
         }
 
-        // For Team Color / Team Glow / Cliff the MDX convention is an empty
-        // texture path — the game substitutes the texture at runtime based
-        // on the replaceableId. Force the path empty if this is a special
-        // replaceable type, regardless of what diffuseMap points to.
-        if (matReplaceableId >= 1 && matReplaceableId <= 4) {
+        // For every replaceable texture (team colour / glow, cliff, trees -
+        // wdx_replaceable_ids.h) the MDX convention is an empty texture
+        // path: the game substitutes the texture at runtime based on the
+        // replaceableId. Force the path empty, regardless of what diffuseMap
+        // points to (the importer loads the canonical texture there so the
+        // viewport shows something).
+        const bool replaceable = bmpProps.replaceableId > 0;
+        if (replaceable) {
             fileName.clear();
         }
 
@@ -1826,7 +1841,7 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         std::string matPrefix = readMaterialPrefix(mtlRef, L"diffusePrefix");
         if (matPrefix.empty() && neoDex) matPrefix = readMaterialPrefix(mtlRef, L"path");
         std::string prefix = !matPrefix.empty() ? matPrefix : bmpProps.prefixPath;
-        std::string texPath = (matReplaceableId >= 1 && matReplaceableId <= 4)
+        std::string texPath = replaceable
                                   ? std::string()  // empty path for replaceables
                                   : buildTexturePath(prefix, fileName);
 
@@ -1914,9 +1929,9 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
             texRef.slot = ir::TextureSlot::Diffuse;
             layer.textureRefs.push_back(texRef);
         }
-    } else if (matReplaceableId >= 1 && matReplaceableId <= 4) {
-        // Material has no diffuseMap but is a Team Color / Team Glow / Cliff
-        // replaceable. MDX convention is to emit a TEXS entry with the
+    } else if (matReplaceableId > 0) {
+        // Material has no diffuseMap but is a replaceable (team colour /
+        // glow, cliff, tree). MDX convention is to emit a TEXS entry with the
         // replaceableId set and an empty path — the engine substitutes the
         // texture at runtime. Without this fallback, replaceable materials
         // that don't carry a bitmap lose their replaceableId on export.
@@ -2010,6 +2025,10 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
             wrap = FALSE;
             if (PBR::readBoolByName(mtlRef, L"Wrap_Height", t, wrap)) bp.wrapV = wrap != 0;
         }
+        // A replaceable (tree, team colour, cliff) keeps an empty path in
+        // every slot, like the diffuse: Blizzard's HD trees carry id 31-37
+        // with no path in diffuse, normal and ORM alike.
+        if (bp.replaceableId > 0) path.clear();
         ir::TextureRef ref;
         ref.textureIndex = findOrAddTexture(model, path, bp.replaceableId,
                                             bp.wrapU, bp.wrapV,

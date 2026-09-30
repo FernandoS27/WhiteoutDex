@@ -14,6 +14,8 @@
 #include <modstack.h>
 #include <iskin.h>          // SKIN_CLASSID
 #include <triobj.h>         // EDITTRIOBJ_CLASS_ID
+#include <algorithm>
+#include <vector>
 #include <maxscript/maxscript.h>  // ExecuteMAXScriptScript
 #include <maxversion.h>
 
@@ -258,17 +260,58 @@ int fixBoneControllers(const ScanResult& result) {
     Interface* gi = GetCOREInterface();
     if (!gi) return 0;
 
+    // The nodes to fix - re-checked, the user might have fixed one by hand -
+    // parents before children, so a child's motion is put back under its
+    // parent's restored one.
+    std::vector<INode*> nodes;
+    for (auto& p : result.problems) {
+        if (p.type != ProblemType::InvalidController || !p.node) continue;
+        if (hasValidPRS(p.node)) continue;
+        if (std::find(nodes.begin(), nodes.end(), p.node) == nodes.end())
+            nodes.push_back(p.node);
+    }
+    if (nodes.empty()) return 0;
+    auto depth = [](INode* n) {
+        int d = 0;
+        for (INode* q = n->GetParentNode(); q && !q->IsRootNode(); q = q->GetParentNode()) ++d;
+        return d;
+    };
+    std::stable_sort(nodes.begin(), nodes.end(),
+                     [&](INode* a, INode* b) { return depth(a) < depth(b); });
+
+    // A new controller starts empty: swapped in bare, it dropped the node's
+    // pose and animation (a weapon joint driven by a constraint jumped 750
+    // units). So what every node shows is recorded per frame first and set
+    // back as keys on the new controllers afterwards.
+    // Every key of the scene, not just the active time segment: Kyoshiro's
+    // is 450-550 while its sequences start at frame 5, and outside the
+    // recorded frames the new controllers held garbage (a sheath 2.6e11
+    // units away at frame 201).
+    Interval range = gi->GetAnimRange();
+    const Interval keyRange = gi->GetRootNode()->GetTimeRange(
+        TIMERANGE_ALL | TIMERANGE_CHILDNODES | TIMERANGE_CHILDANIMS);
+    if (!keyRange.Empty() && keyRange.Start() <= keyRange.End())
+        range.Set(std::min(range.Start(), keyRange.Start()), std::max(range.End(), keyRange.End()));
+    const TimeValue tpf = std::max<TimeValue>(GetTicksPerFrame(), 1);
+    // A stray key far away must not make this record millions of frames.
+    if ((range.End() - range.Start()) / tpf > 100000)
+        range = gi->GetAnimRange();
+    std::vector<TimeValue> times;
+    for (TimeValue t = range.Start(); t <= range.End(); t += tpf) times.push_back(t);
+    if (times.empty() || times.back() != range.End()) times.push_back(range.End());
+    std::vector<std::vector<Matrix3>> worldTMs(nodes.size());
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        worldTMs[i].reserve(times.size());
+        for (TimeValue t : times) worldTMs[i].push_back(nodes[i]->GetNodeTM(t));
+    }
+
     theHold.Begin();
     int fixed = 0;
+    const BOOL wasAnimating = Animating();
 
-    for (auto& p : result.problems) {
-        if (p.type != ProblemType::InvalidController) continue;
-        if (!p.node) continue;
-
-        // Re-check — the user might have already fixed this manually
-        if (hasValidPRS(p.node)) continue;
-
-        Control* tm = p.node->GetTMController();
+    for (size_t ni = 0; ni < nodes.size(); ++ni) {
+        INode* node = nodes[ni];
+        Control* tm = node->GetTMController();
         if (!tm) continue;
 
         // If the top-level controller isn't PRS, replace it with one
@@ -277,7 +320,7 @@ int fixBoneControllers(const ScanResult& result) {
                 gi->CreateInstance(CTRL_MATRIX3_CLASS_ID,
                                    Class_ID(PRS_CONTROL_CLASS_ID, 0)));
             if (!prs) continue;
-            p.node->SetTMController(prs);
+            node->SetTMController(prs);
             tm = prs;
         }
 
@@ -320,9 +363,16 @@ int fixBoneControllers(const ScanResult& result) {
             if (nc) tm->SetScaleController(nc);
         }
 
+        // The recorded motion back, one key per frame on the new controllers.
+        AnimateOn();
+        for (size_t k = 0; k < times.size(); ++k)
+            node->SetNodeTM(times[k], worldTMs[ni][k]);
+        AnimateOff();
+
         ++fixed;
     }
 
+    if (wasAnimating) AnimateOn(); else AnimateOff();
     theHold.Accept(_M("Fix Bone Controllers"));
     return fixed;
 }
@@ -889,6 +939,10 @@ const wchar_t* kSplitMultiScript =
     L"      c.name = if getNodeByName base == undefined then base else uniqueName (base + \"_\")\n"
     L"      c.parent = n.parent\n"
     L"      n.layer.addNode c\n"
+    L"      -- A hidden mesh is not exported: its pieces stay hidden too\n"
+    L"      -- (\"women animation mod\": hidden death weapons came back visible)\n"
+    L"      c.isHidden = n.isHidden\n"
+    L"      c.isFrozen = n.isFrozen\n"
     L"      append pieces c\n"
     L"    )\n"
     L"    for ch in (for x in n.children collect x) do ch.parent = pieces[1]\n"
@@ -961,6 +1015,27 @@ int fixMultiMaterialMeshes(const ScanResult& result) {
 // Fix all
 // ============================================================================
 
+int fixDuplicateMaterials(const ScanResult& result) {
+    if (result.countByType(ProblemType::DuplicateMaterial) == 0) return 0;
+    const wchar_t* script =
+        L"if ::WdxMergeDuplicateMaterials == undefined then 0 else (undo \"Merge Identical Materials\" on (::WdxMergeDuplicateMaterials()))";
+    FPValue value;
+    value.type = TYPE_VOID;
+    BOOL ok = FALSE;
+    try {
+        ok = ExecuteMAXScriptScript(const_cast<MCHAR*>(script),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+                                    MAXScript::ScriptSource::NotSpecified,
+#endif
+                                    TRUE, &value);
+    } catch (...) {
+        ok = FALSE;
+    }
+    const int merged = (ok && value.type == TYPE_INT) ? value.i : 0;
+    ELOG << "[matMerge] merged " << merged << " duplicate material(s)\n"; EFLUSH;
+    return merged;
+}
+
 int fixAll(const ScanResult& result) {
     int n = 0;
     n += fixDuplicateNames(result);
@@ -972,11 +1047,14 @@ int fixAll(const ScanResult& result) {
         n += fixMeshProblems(after);
         n += fixBoneControllers(after);
         n += fixUnsupportedMaterials(after);
+        n += fixDuplicateMaterials(scanScene());
         return n;
     }
     n += fixMeshProblems(result);
     n += fixBoneControllers(result);
     n += fixUnsupportedMaterials(result);
+    // Materials the conversion made alike are merged too: scan again.
+    n += fixDuplicateMaterials(scanScene());
     return n;
 }
 

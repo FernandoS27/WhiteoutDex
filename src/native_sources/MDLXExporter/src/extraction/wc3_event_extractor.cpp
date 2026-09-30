@@ -61,6 +61,18 @@ std::string stripObjPrefix(const std::string& name) {
     return name;
 }
 
+// The event code at the front of a node name. NeoDex(Plus) labels its event
+// nodes "Obj:FPTXFPL1(<note>)" and WhiteoutDex "FPTxFPL1 (<type> - <note>)";
+// an event code never holds a space or a bracket, so it ends at the first
+// one, an ASCII or a full-width "(" (U+FF08, UTF-8 EF BC 88).
+std::string eventCodeFromNodeName(const std::string& name) {
+    std::string code = stripObjPrefix(name);
+    std::size_t cut = code.find_first_of(" (");
+    const std::size_t wide = code.find("\xEF\xBC\x88");
+    if (wide != std::string::npos && wide < cut) cut = wide;
+    return cut == std::string::npos ? code : code.substr(0, cut);
+}
+
 // Convert a wide MSTR/wchar_t* string to UTF-8 std::string.
 std::string wideToUtf8(const wchar_t* w) {
     if (!w) return {};
@@ -247,7 +259,7 @@ void extractEvents(const std::vector<core::SceneNode>& nodes,
         }
         std::string eventCode = readEventName(sn.maxNode);
         if (eventCode.empty())
-            eventCode = stripObjPrefix(rawName);
+            eventCode = eventCodeFromNodeName(rawName);
         evt.eventCode = eventCode;
 
         ELOG << "  Event node[" << sn.nodeIndex << "] '" << rawName

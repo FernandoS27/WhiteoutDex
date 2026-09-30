@@ -155,6 +155,7 @@ struct MaterialLayer {
     bool unfogged = false;
     bool backFacesForShadows = false;
     bool ambientOcclusion = false;
+    bool unlit = false;          // Reforged ShadingFlag 0x100
 
     // MDX Layer::ShaderType value (0 SD, 1 HD, 2 SD on HD, 24 Crystal), or -1
     // when the source does not say and the exporter has to infer it.

@@ -1,6 +1,7 @@
 // MDLXExporter — MdxExporterPlugin implementation
 // DEBUG: Logs to %TEMP%\mdlx_export_debug.log
 #include "mdx_exporter_plugin.h"
+#include <wdx_text.h>
 #include "mdx_export_options.h"
 #include "mdx_class_ids.h"
 #include "mdx_node_registration.h"
@@ -189,10 +190,19 @@ void resolveSkinIndices(INode* meshNode, ir::Mesh& mesh,
 
 } // namespace
 
+
 int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi, BOOL suppressPrompts, DWORD)
 {
     core::ExportErrorReporter reporter;
     MdxExportOptions opts;
+
+    // Names and paths go out in the code page the importer found in the
+    // model (root user property Wc3CodePage, wdx_text.h); a scene made in
+    // Max has none and gets the Windows code page, GBK or UTF-8.
+    int sceneCodePage = 0;
+    if (gi && gi->GetRootNode())
+        gi->GetRootNode()->GetUserPropInt(_T("Wc3CodePage"), sceneCodePage);
+    wdx::text::CodePageScope codePageScope(static_cast<UINT>(sceneCodePage));
 
     ELOG << "==== MDLXExporter::DoExport ====\n";
     ELOG << "File: " << wcharToUtf8(name) << "\n"; EFLUSH;

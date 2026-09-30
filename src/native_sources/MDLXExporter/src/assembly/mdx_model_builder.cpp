@@ -343,9 +343,11 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     for (auto& mat : ir.materials)
         model.materials.push_back(matMapper.map(mat, ir, opts.version));
 
-    // Fallback: if no textures/materials were extracted, create a default
-    // white.blp material so editors and viewers don't choke on dangling MaterialID refs.
-    if (model.textures.empty() && model.materials.empty()) {
+    // Fallback: geosets without any material get a default white.blp
+    // material so editors and viewers don't choke on dangling MaterialID refs.
+    // A model without geosets (emitters, lights, weather) needs none - the
+    // game's own models of that kind have no MTLS at all.
+    if (model.materials.empty() && !ir.meshes.empty()) {
         Texture fallbackTex;
         fallbackTex.fileName = "Textures\\white.blp";
         fallbackTex.replaceableId = 0;
@@ -356,7 +358,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         wdx::Layer layer;
         layer.filterMode = wdx::Layer::FilterMode::None;
         layer.shadingFlags = wdx::Layer::ShadingFlag::None;
-        layer.textureId = 0;
+        layer.textureId = static_cast<uint32_t>(model.textures.size() - 1);
         layer.alpha = 1.0f;
         layer.coordId = 0;
         layer.textureAnimationId = 0xFFFFFFFF;
@@ -1022,9 +1024,12 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         //                v1    = (-15.88, -24.03, -40.25) ← local min corner
         //                v2    = ( 15.88,  24.03,   0.00) ← local max corner
         //   + KGTR 554 keys, KGRT 480 keys, parentId = 0xFFFFFFFF
-        const bool isAnimated =
-            cs.node.translationTracks.isUsed ||
-            cs.node.rotationTracks.isUsed;
+        //
+        // Only a moving (KGTR) hitbox is local - the importer reads the same
+        // rule (mdx_model_disassembler.cpp, mapCollisionShapes). A static
+        // shape with nothing but a rest-pose KGRT was written local before
+        // and came back at the model origin.
+        const bool isAnimated = cs.node.translationTracks.isUsed;
         if (opts.version >= 1000 && isAnimated) {
             // Fetch pivot in MDX space for this node
             uint32_t objId = cs.node.objectId;
@@ -1036,25 +1041,11 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
                     vert.z -= pv.z;
                 }
             }
-            // Box-bottom anchor for v1000+ animated shapes.
-            //
-            // The extractor produces a Max-space AABB where the pivot is at
-            // the box's BOTTOM (z ∈ [pos.z, pos.z+height]). That's correct
-            // for the legacy v800 convention and must stay unchanged so
-            // existing v800 models (e.g. Madara hitboxes) keep roundtripping.
-            //
-            // The v1000+ MDX convention, however, places the pivot at the
-            // box's TOP face — local z ∈ [-height, 0]. After the pivot
-            // subtract above we currently have z ∈ [0, +height], so we
-            // shift both Z values down by 'height' to match the ORIG file.
-            //
-            // Reference (KulTirasMarine.mdx, v1000):
-            //   Torso: ORIG v1.z=-40.25, v2.z=0.00 (height 40.25 below pivot)
-            if (irCs.shape == ir::CollisionShape::Shape::Box && cs.vertices.size() == 2) {
-                float height = cs.vertices[1].z - cs.vertices[0].z;
-                cs.vertices[0].z -= height;   // was 0, becomes -height
-                cs.vertices[1].z -= height;   // was +height, becomes 0
-            }
+            // No extra Z shift for boxes: the extractor reads the object TM,
+            // so a box whose pivot sits on its top face (KulTirasMarine:
+            // local z -40.25..0) already comes out that way, and a box made
+            // in Max (pivot at the bottom) keeps 0..height. Shifting by the
+            // height as well moved every animated box down by its height.
             // Animated hitboxes live at root level; they follow their
             // bone through the animation tracks, not through parenting.
             cs.node.parentId = 0xFFFFFFFFu;

@@ -1,6 +1,7 @@
 // MDLXExporter — Sequence manager implementation
 // DEBUG: Logs to %TEMP%\mdlx_export_debug.log
 #include "mdx_sequence_manager.h"
+#include <wdx_text.h>
 #include "../mdx_export_debug.h"
 
 #include <icustattribcontainer.h>
@@ -75,7 +76,7 @@ std::vector<ir::Sequence> extractFromNoteTracks(INode* rootNode) {
     for(int i=0;i<numKeys;i++){NoteKey* nk=nt->keys[i];if(!nk)continue;const wchar_t* val=nk->note.data();if(!val||!val[0])continue;std::wstring key(val);NoteKeyEntry entry;entry.value=key;entry.time=nk->time;if(groups.find(key)==groups.end())groupOrder.push_back(key);groups[key].push_back(entry);}
     struct SeqParsed{std::string name;TimeValue startTime,endTime;bool nonLooping;float rarity,moveSpeed;};
     std::vector<SeqParsed> parsed;
-    for(auto& keyStr:groupOrder){auto& grp=groups[keyStr];if(grp.size()<2)continue;std::sort(grp.begin(),grp.end(),[](const NoteKeyEntry& a,const NoteKeyEntry& b){return a.time<b.time;});size_t pairCount=grp.size()/2;for(size_t p=0;p<pairCount;p++){auto& k1=grp[p*2];auto& k2=grp[p*2+1];auto tokens=tokenizeNoteValue(k1.value.c_str());std::string seqName=tokens.empty()?"Unknown":wstrToUtf8(tokens[0].c_str());bool nonLoop=false;float rare=0,speed=0;for(size_t t=1;t<tokens.size();t++){if(wcsieq(tokens[t],L"NonLooping"))nonLoop=true;else if(wcsistartswith(tokens[t],L"Rarity",6))rare=(float)_wtof(tokens[t].c_str()+6);else if(wcsistartswith(tokens[t],L"MoveSpeed",9))speed=(float)_wtof(tokens[t].c_str()+9);}SeqParsed sp;sp.name=seqName;sp.startTime=std::min(k1.time,k2.time);sp.endTime=std::max(k1.time,k2.time);sp.nonLooping=nonLoop;sp.rarity=rare;sp.moveSpeed=speed;parsed.push_back(std::move(sp));}}
+    for(auto& keyStr:groupOrder){auto& grp=groups[keyStr];if(grp.size()<2)continue;std::sort(grp.begin(),grp.end(),[](const NoteKeyEntry& a,const NoteKeyEntry& b){return a.time<b.time;});size_t pairCount=grp.size()/2;for(size_t p=0;p<pairCount;p++){auto& k1=grp[p*2];auto& k2=grp[p*2+1];auto tokens=tokenizeNoteValue(k1.value.c_str());std::string seqName=tokens.empty()?"Unknown":wdx::text::wideToMdx(tokens[0].c_str());bool nonLoop=false;float rare=0,speed=0;for(size_t t=1;t<tokens.size();t++){if(wcsieq(tokens[t],L"NonLooping"))nonLoop=true;else if(wcsistartswith(tokens[t],L"Rarity",6))rare=(float)_wtof(tokens[t].c_str()+6);else if(wcsistartswith(tokens[t],L"MoveSpeed",9))speed=(float)_wtof(tokens[t].c_str()+9);}SeqParsed sp;sp.name=seqName;sp.startTime=std::min(k1.time,k2.time);sp.endTime=std::max(k1.time,k2.time);sp.nonLooping=nonLoop;sp.rarity=rare;sp.moveSpeed=speed;parsed.push_back(std::move(sp));}}
     std::sort(parsed.begin(),parsed.end(),[](const SeqParsed& a,const SeqParsed& b){return a.startTime<b.startTime;});
     for(auto& sp:parsed){ir::Sequence seq;seq.name=sp.name;seq.startTime=sp.startTime;seq.endTime=sp.endTime;seq.isLooping=!sp.nonLooping;seq.rarity=sp.rarity;seq.moveSpeed=sp.moveSpeed;sequences.push_back(std::move(seq));}
     return sequences;
@@ -103,7 +104,7 @@ std::vector<ir::Sequence> MdxSequenceManager::extractSequences(Interface* gi) {
     sequences.reserve(count);
     for(int i=0;i<count;i++){
         ir::Sequence seq; Interval valid=FOREVER;
-        const MCHAR* name=nullptr; pb->GetValue(PID_SeqNames,0,name,valid,i); seq.name=wstrToUtf8(name);
+        const MCHAR* name=nullptr; pb->GetValue(PID_SeqNames,0,name,valid,i); seq.name=wdx::text::wideToMdx(name);
         int sf=0,ef=0; pb->GetValue(PID_StartFrames,0,sf,valid,i); pb->GetValue(PID_EndFrames,0,ef,valid,i);
         seq.startTime=sf*tpf; seq.endTime=ef*tpf;
         int nl=0; pb->GetValue(PID_NonLooping,0,nl,valid,i); seq.isLooping=(nl==0);

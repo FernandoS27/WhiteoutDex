@@ -1,5 +1,6 @@
 // MDLXImporter — MdlxImporterPlugin implementation
 #include "mdlx_importer_plugin.h"
+#include <wdx_text.h>
 #include "mdlx_import_options.h"
 #include "mdlx_class_ids.h"
 #include "import_dialog.h"
@@ -375,7 +376,7 @@ INode* createBoneNode(const ir::Bone& bone, Interface* gi, bool asPointHelper) {
     if (!node) return nullptr;
 
     MSTR name;
-    name.printf(_T("%hs"), bone.name.c_str());
+    name = wdx::text::mdxToWide(bone.name).c_str();
     node->SetName(name);
 
     // Point-helper styling — match NeoDex's appearance:
@@ -654,7 +655,7 @@ INode* createMeshNode(const ir::Mesh& irMesh, Interface* gi) {
     }
 
     MSTR name;
-    name.printf(_T("%hs"), fullName.c_str());
+    name = wdx::text::mdxToWide(fullName).c_str();
     node->SetName(name);
 
     node->SetUserPropInt(_T("Wc3GeosetLod"), lodLevel);
@@ -668,7 +669,7 @@ INode* createMeshNode(const ir::Mesh& irMesh, Interface* gi) {
         std::string prefix = fullName.substr(0, lastUnderscore);
         if (prefix != "Geoset" && !prefix.empty()) {
             MSTR lodNameStr;
-            lodNameStr.printf(_T("%hs"), prefix.c_str());
+            lodNameStr = wdx::text::mdxToWide(prefix).c_str();
             node->SetUserPropString(_T("Wc3LodName"), lodNameStr);
         }
     }
@@ -821,6 +822,12 @@ bool applySkinModifier(INode* meshNode, const ir::Mesh& irMesh,
 //
 // Keys without tangents are the sequence boundary keys the importer adds;
 // the game holds the value there, so they and the sides facing them are flat.
+// "Flat" is a custom tangent of 0: BEZKEY_FLAT (6) is what Max calls Auto
+// (MAXScript Help, "Bezier Controller Keys": #smooth #linear #step #fast #slow
+// #custom #auto), a tangent computed from the neighbouring keys. After a key
+// the curve arrives at from another value it keeps that slope - over a long
+// sequence the Teen Abomination's root sank 570 units in "Decay Bone", where
+// the file holds it still.
 static void prepareBezierHandles(IBezFloatKey& key)
 {
     SetTangentLock(key.flags, 0, FALSE);
@@ -845,8 +852,7 @@ static void setMdxBezierTangents(Key& key, const std::vector<ir::Keyframe<T>>& k
     // Tangent types go through a variable: SetInTanType/SetOutTanType shift
     // their argument unparenthesized, which would split a ?: expression.
     const bool inCurve = kf.hasTangents && i > 0 && keys[i - 1].hasTangents;
-    const int inType = inCurve ? BEZKEY_USER : BEZKEY_FLAT;
-    SetInTanType(key.flags, inType);
+    SetInTanType(key.flags, BEZKEY_USER);   // tangent stays 0 (the key is zeroed) unless curved
     if (inCurve) {
         const float dt = static_cast<float>(kf.time - keys[i - 1].time);
         if (dt > 0.0f) key.intan = hermite ? kf.inTangent * (-1.0f / dt)
@@ -854,8 +860,7 @@ static void setMdxBezierTangents(Key& key, const std::vector<ir::Keyframe<T>>& k
     }
 
     const bool outCurve = kf.hasTangents && i + 1 < n && keys[i + 1].hasTangents;
-    const int outType = outCurve ? BEZKEY_USER : BEZKEY_FLAT;
-    SetOutTanType(key.flags, outType);
+    SetOutTanType(key.flags, BEZKEY_USER);
     if (outCurve) {
         const float dt = static_cast<float>(keys[i + 1].time - kf.time);
         if (dt > 0.0f) key.outtan = hermite ? kf.outTangent * (1.0f / dt)
@@ -864,12 +869,13 @@ static void setMdxBezierTangents(Key& key, const std::vector<ir::Keyframe<T>>& k
 }
 
 // A flat key (sequence stub): holds its value, like the game does there.
+// Custom tangents of 0 - the key is zeroed - not BEZKEY_FLAT, which is Auto.
 template <class Key>
 static void setFlatBezierKey(Key& key)
 {
     prepareBezierHandles(key);
-    SetInTanType(key.flags, BEZKEY_FLAT);
-    SetOutTanType(key.flags, BEZKEY_FLAT);
+    SetInTanType(key.flags, BEZKEY_USER);
+    SetOutTanType(key.flags, BEZKEY_USER);
 }
 
 // Adds a rest value to a track's keys. Bezier tangents are control points and
@@ -954,6 +960,78 @@ void insertSequenceBoundaryKeys(ir::Track<T>& track,
         [](const ir::Keyframe<T>& a, const ir::Keyframe<T>& b) {
             return a.time < b.time;
         });
+}
+
+// ── Curved rotations ────────────────────────────────────────
+// Max has no rotation controller that interpolates like the game: the
+// importer uses linear_rotation (slerp), while Hermite and Bezier rotation
+// tracks are drawn by the game as squad between the keys and their tangent
+// quaternions (slerp(slerp(a, b, s), slerp(aOut, bIn, s), 2s(1-s)), as in
+// mdx-m3-viewer's sqlerp). Keeping only the file's keys bends limbs by
+// tens of units between them (Teen Abomination "Attack": Chain_2 30 units).
+// So the curve is sampled once per frame between two keys of the same
+// sequence (or of a global-sequence track) and stored as extra linear keys.
+// A step track ("None") holds its value until one frame before the next key.
+static Quat quatSlerpGame(Quat a, Quat b, float t)
+{
+    float cosom = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+    if (cosom < 0.0f) { cosom = -cosom; b = Quat(-b.x, -b.y, -b.z, -b.w); }
+    float s0 = 1.0f - t, s1 = t;
+    if (1.0f - cosom > 1e-6f) {
+        const float omega = std::acos(std::min(1.0f, cosom));
+        const float sinom = std::sin(omega);
+        s0 = std::sin((1.0f - t) * omega) / sinom;
+        s1 = std::sin(t * omega) / sinom;
+    }
+    return Quat(s0 * a.x + s1 * b.x, s0 * a.y + s1 * b.y,
+                s0 * a.z + s1 * b.z, s0 * a.w + s1 * b.w);
+}
+
+static void bakeCurvedRotation(ir::QuatTrack& track,
+                               const std::vector<ir::Sequence>& sequences)
+{
+    const auto interp = track.interpolation;
+    if (track.keys.size() < 2 || interp == ir::InterpolationType::Linear) return;
+    const TimeValue tpf = GetTicksPerFrame();
+    const bool gseq = track.globalSequenceIndex >= 0;
+    auto sameSequence = [&](TimeValue a, TimeValue b) {
+        if (gseq) return true;
+        for (const auto& s : sequences)
+            if (s.startTime <= a && b <= s.endTime) return true;
+        return false;
+    };
+    std::vector<ir::Keyframe<Quat>> extra;
+    for (size_t i = 0; i + 1 < track.keys.size(); ++i) {
+        const auto& a = track.keys[i];
+        const auto& b = track.keys[i + 1];
+        if (b.time - a.time <= tpf || !sameSequence(a.time, b.time)) continue;
+        if (interp == ir::InterpolationType::None) {
+            ir::Keyframe<Quat> k;
+            k.time = b.time - tpf;
+            k.value = a.value;
+            extra.push_back(k);
+            continue;
+        }
+        // Boundary stubs carry no tangents: the game holds there anyway.
+        if (!a.hasTangents || !b.hasTangents) continue;
+        const TimeValue first = (a.time / tpf + 1) * tpf;
+        for (TimeValue t = first; t < b.time; t += tpf) {
+            const float s = static_cast<float>(t - a.time) / static_cast<float>(b.time - a.time);
+            Quat q = quatSlerpGame(quatSlerpGame(a.value, b.value, s),
+                                   quatSlerpGame(a.outTangent, b.inTangent, s),
+                                   2.0f * s * (1.0f - s));
+            const float len = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+            if (len > 1e-8f) q = Quat(q.x / len, q.y / len, q.z / len, q.w / len);
+            ir::Keyframe<Quat> k;
+            k.time = t;
+            k.value = q;
+            extra.push_back(k);
+        }
+    }
+    if (extra.empty()) return;
+    track.keys.insert(track.keys.end(), extra.begin(), extra.end());
+    std::stable_sort(track.keys.begin(), track.keys.end(),
+        [](const ir::Keyframe<Quat>& x, const ir::Keyframe<Quat>& y) { return x.time < y.time; });
 }
 
 void insertTranslationKeys(INode* node, const ir::Vec3Track& track,
@@ -1563,8 +1641,9 @@ void animateFloatNamedScript(INode* node, const wchar_t* paramName,
        << L"n." << paramName << L".controller = bezier_float();"
        << L"local c = n." << paramName << L".controller;";
 
-    // V3 strategy for Bezier: same-value neighbours become BEZKEY_FLAT to avoid
-    // overshoot. Linear/Step/None bypass this and use their own tangent type.
+    // V3 strategy for Bezier: the sides towards a same-value neighbour are flat
+    // (custom tangent 0 - "#flat" is Auto in Max) to avoid overshoot.
+    // Linear/Step/None bypass this and use their own tangent type.
     constexpr float kEpsilon = 1e-4f;
     const bool isBezier = (track.interpolation == ir::InterpolationType::Bezier);
     const int n = static_cast<int>(track.keys.size());
@@ -1575,13 +1654,15 @@ void animateFloatNamedScript(INode* node, const wchar_t* paramName,
         if (isBezier) {
             bool prevSame = (i > 0) && (fabsf(track.keys[i-1].value - kf.value) < kEpsilon);
             bool nextSame = (i < n - 1) && (fabsf(track.keys[i+1].value - kf.value) < kEpsilon);
-            inTan  = prevSame ? L"#flat" : L"#smooth";
-            outTan = nextSame ? L"#flat" : L"#smooth";
+            inTan  = prevSame ? L"#custom" : L"#smooth";
+            outTan = nextSame ? L"#custom" : L"#smooth";
         }
         ss << L"local k = addNewKey c " << kf.time << L"t;"
            << L"k.value = " << kf.value << L";"
            << L"k.inTangentType = " << inTan << L";"
            << L"k.outTangentType = " << outTan << L";";
+        if (inTan[1] == L'c') ss << L"k.inTangent = 0.0;";
+        if (outTan[1] == L'c') ss << L"k.outTangent = 0.0;";
     }
 
     if (track.globalSequenceIndex >= 0) {
@@ -1646,19 +1727,22 @@ void animateColorNamedScript(INode* node, const wchar_t* paramName,
         if (g < 0) g = 0; if (g > 255) g = 255;
         if (b < 0) b = 0; if (b > 255) b = 255;
 
-        // V3 strategy for Bezier: same-value neighbours become BEZKEY_FLAT.
+        // V3 strategy for Bezier: flat (custom tangent 0) towards a
+        // same-value neighbour - "#flat" is Auto in Max.
         const wchar_t* inTan = tanType;
         const wchar_t* outTan = tanType;
         if (isBezier) {
             bool prevSame = (i > 0) && sameColor(track.keys[i-1].value, kf.value);
             bool nextSame = (i < n - 1) && sameColor(track.keys[i+1].value, kf.value);
-            inTan  = prevSame ? L"#flat" : L"#smooth";
-            outTan = nextSame ? L"#flat" : L"#smooth";
+            inTan  = prevSame ? L"#custom" : L"#smooth";
+            outTan = nextSame ? L"#custom" : L"#smooth";
         }
         ss << L"local k = addNewKey c " << kf.time << L"t;"
            << L"k.value = color " << r << L" " << g << L" " << b << L";"
            << L"k.inTangentType = " << inTan << L";"
            << L"k.outTangentType = " << outTan << L";";
+        if (inTan[1] == L'c') ss << L"k.inTangent = [0,0,0];";
+        if (outTan[1] == L'c') ss << L"k.outTangent = [0,0,0];";
     }
 
     if (track.globalSequenceIndex >= 0) {
@@ -2539,6 +2623,15 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     mdx_disasm::MdxModelDisassembler disassembler;
     ir::IRModel irModel = disassembler.disassemble(mdxModel, opts);
 
+    // 4a. The text encoding of the model's names (wdx_text.h): every name and
+    // path below is read in it, and the scene keeps it for the exporter.
+    std::vector<std::string> modelTexts;
+    for (const auto& n : irModel.nodes) modelTexts.push_back(n.name);
+    for (const auto& q : irModel.sequences) modelTexts.push_back(q.name);
+    for (const auto& t : irModel.textures) modelTexts.push_back(t.filePath);
+    const UINT modelCodePage = wdx::text::detectCodePage(modelTexts);
+    wdx::text::CodePageScope codePageScope(modelCodePage);
+
     // 4b. Compact timeline (MaxScript convertSequences + preProcessKeys)
     remapTimeline(irModel);
 
@@ -2572,6 +2665,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     if (opts.core.mode == ir::CoreImportOptions::ImportMode::NewScene) {
         ii->NewScene();
     }
+    if (modelCodePage != 0 && gi && gi->GetRootNode())
+        gi->GetRootNode()->SetUserPropInt(_T("Wc3CodePage"), static_cast<int>(modelCodePage));
 
     // 6. Optimize (optional)
     if (opts.core.optimizeGeometry) {
@@ -3168,6 +3263,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             if (opts.core.importRotation && !na.rotation.empty()) {
                 ir::QuatTrack rotTrack = na.rotation;
                 insertSequenceBoundaryKeys(rotTrack, irModel.sequences);
+                bakeCurvedRotation(rotTrack, irModel.sequences);
                 insertRotationKeys(node, rotTrack, stubRot);
             }
 
@@ -4625,7 +4721,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         for (const auto& seq : irModel.sequences)
             if (seq.endTime > maxEnd) maxEnd = seq.endTime;
         if (maxEnd > 0) {
-            Interval range(0, maxEnd);
+            // at least one frame (see buildSequences)
+            Interval range(0, std::max<TimeValue>(maxEnd, GetTicksPerFrame()));
             gi->SetAnimRange(range);
             ILOG << "  Animation range set to 0 - " << maxEnd
                  << " ticks (" << (maxEnd / GetTicksPerFrame()) << " frames)\n";
@@ -4638,7 +4735,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             if (t > maxGS) maxGS = t;
         }
         if (maxGS > 0) {
-            Interval range(0, maxGS);
+            Interval range(0, std::max<TimeValue>(maxGS, GetTicksPerFrame()));
             gi->SetAnimRange(range);
             ILOG << "  Animation range (global seq) set to 0 - " << maxGS
                  << " ticks (" << (maxGS / GetTicksPerFrame()) << " frames)\n";
