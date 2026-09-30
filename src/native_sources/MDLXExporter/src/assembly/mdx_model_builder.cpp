@@ -12,6 +12,7 @@
 #include <map>
 #include <set>
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <fstream>
 #include <windows.h>
@@ -49,10 +50,22 @@ namespace {
 
 // ── Track conversion helpers ─────────────────────────────────
 
+bool finiteValue(float v) { return std::isfinite(v); }
+bool finiteValue(int32_t) { return true; }
+bool finiteValue(const Point3& p) { return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z); }
+bool finiteValue(const Quat& q) { return std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z) && std::isfinite(q.w); }
+bool finiteValue(const Color& c) { return std::isfinite(c.r) && std::isfinite(c.g) && std::isfinite(c.b); }
+
+// A sampled key can come out NaN (a node scaled to zero decomposes into NaN
+// translation and scale); the game cannot play it. Such keys are left out.
 template <typename MdxT, typename IrT>
-Track<MdxT> convertTrack(const ir::Track<IrT>& irTrack,
+Track<MdxT> convertTrack(const ir::Track<IrT>& irTrackIn,
                           MdxT (*valueFn)(const IrT&))
 {
+    ir::Track<IrT> irTrack = irTrackIn;
+    irTrack.keys.erase(std::remove_if(irTrack.keys.begin(), irTrack.keys.end(), [](const ir::Keyframe<IrT>& k) {
+        return !finiteValue(k.value) || (k.hasTangents && (!finiteValue(k.inTangent) || !finiteValue(k.outTangent)));
+    }), irTrack.keys.end());
     Track<MdxT> out;
     if (irTrack.empty()) return out;
 

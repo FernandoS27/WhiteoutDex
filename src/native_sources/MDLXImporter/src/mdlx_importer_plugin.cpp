@@ -828,6 +828,27 @@ bool applySkinModifier(INode* meshNode, const ir::Mesh& irMesh,
 // the curve arrives at from another value it keeps that slope - over a long
 // sequence the Teen Abomination's root sank 570 units in "Decay Bone", where
 // the file holds it still.
+// Some old MDX files hold NaN keys (a rotation of nan,nan,nan,nan). Max's
+// controllers do not agree on them: Max 2016 drops most, Max 2027 carries the
+// NaN on into more channels and exports more of them than the file had.
+// A key without a finite value is dropped before any controller sees it.
+static bool finiteValue(float v) { return std::isfinite(v); }
+static bool finiteValue(int32_t) { return true; }
+static bool finiteValue(const Point3& p) { return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z); }
+static bool finiteValue(const Point4& p) { return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) && std::isfinite(p.w); }
+static bool finiteValue(const Quat& q) { return std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z) && std::isfinite(q.w); }
+static bool finiteValue(const Color& c) { return std::isfinite(c.r) && std::isfinite(c.g) && std::isfinite(c.b); }
+
+template <class T>
+static size_t dropNonFiniteKeys(ir::Track<T>& track)
+{
+    const size_t before = track.keys.size();
+    track.keys.erase(std::remove_if(track.keys.begin(), track.keys.end(), [](const ir::Keyframe<T>& k) {
+        return !finiteValue(k.value) || (k.hasTangents && (!finiteValue(k.inTangent) || !finiteValue(k.outTangent)));
+    }), track.keys.end());
+    return before - track.keys.size();
+}
+
 static void prepareBezierHandles(IBezFloatKey& key)
 {
     SetTangentLock(key.flags, 0, FALSE);
@@ -2682,7 +2703,22 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 if (!std::isfinite(uv.x) || !std::isfinite(uv.y)) uv = Point2(0.0f, 0.0f);
         }
     }
-    if (modelCodePage != 0 && gi && gi->GetRootNode())
+    for (auto& na : irModel.nodeAnimations) {
+        dropNonFiniteKeys(na.translation);
+        dropNonFiniteKeys(na.rotation);
+        dropNonFiniteKeys(na.scale);
+    }
+    for (auto& t : irModel.floatTracks) dropNonFiniteKeys(t);
+    for (auto& t : irModel.vec3Tracks) dropNonFiniteKeys(t);
+    for (auto& t : irModel.quatTracks) dropNonFiniteKeys(t);
+    for (auto& t : irModel.colorTracks) dropNonFiniteKeys(t);
+    for (auto& t : irModel.vec4Tracks) dropNonFiniteKeys(t);
+    // A new scene always gets the model's value, 0 included: Max 2016 keeps
+    // the root node's user properties through a reset, so the code page of
+    // the model imported before would otherwise encode this one's names
+    // (a 1252 "Fuß" exported as UTF-8).
+    const bool newScene = opts.core.mode == ir::CoreImportOptions::ImportMode::NewScene;
+    if ((modelCodePage != 0 || newScene) && gi && gi->GetRootNode())
         gi->GetRootNode()->SetUserPropInt(_T("Wc3CodePage"), static_cast<int>(modelCodePage));
 
     // 6. Optimize (optional)
