@@ -45,6 +45,10 @@ global WdxTAC_ApplySequence
 global WdxTAC_GenerateUVMap
 global WdxTAC_SequenceFiles
 global WdxTexAnimCreator
+global WdxTAC_IconFile
+global WdxTAC_ArrowImages
+global WdxTAC_Dotted
+global WdxTAC_FileInfo
 
 -- Localized text with an English fallback.
 fn WdxTAC_Tr key fallback =
@@ -427,106 +431,198 @@ fn WdxTAC_ApplySequence mat files prefix t0 frameStep reverseOrder isGlobal keep
 )
 
 -------------------------------------------------------------------------------
--- UI
+-- UI (layout after the NeoDex material's animation panel: coloured tabs,
+-- labels in the tab colour with dotted leaders, ON/OFF pairs, arrow icons,
+-- an info box with the animation length and one big button)
 -------------------------------------------------------------------------------
+
+-- The toolkit's icon folder (installed package), "" when unknown.
+fn WdxTAC_IconFile nm =
+(
+	local root = try (::WhiteoutDexInstallRoot) catch (undefined)
+	local f = if root == undefined then "" else root + "\\whiteoutdex_icons\\" + nm
+	if f != "" and doesFileExist f then f else ""
+)
+
+-- The two-state image strip of an arrow checkbutton (off / on, 20x20 each);
+-- a plain grey strip when the icons are not installed.
+fn WdxTAC_ArrowImages nm =
+(
+	local f = WdxTAC_IconFile nm
+	if f != "" then #(f, undefined, 2, 1, 2, 1, 2)
+	else #(bitmap 40 20 color:(color 70 70 70), undefined, 2, 1, 2, 1, 2)
+)
+
+-- "name.tga  (320 x 320)" for the target line; the full path is too long.
+fn WdxTAC_FileInfo f =
+(
+	if f == undefined or f == "" do return ""
+	local s = filenameFromPath f
+	local b = try (openBitMap f) catch (undefined)
+	if b != undefined do (s += "   (" + (b.width as string) + " x " + (b.height as string) + ")"; close b)
+	s
+)
+
+-- Text padded with dots to a fixed character width ("Direction ........").
+fn WdxTAC_Dotted txt n =
+(
+	local s = trimRight txt ": "
+	s += " "
+	for i = s.count to n do s += "."
+	s
+)
+
 rollout WdxTexAnimCreatorRoll "Texture Animation Creator"
 (
 	local mats = #(), maps = #(), curTab = 2
-	local cBlue = (color 90 170 230), cTeal = (color 40 170 160), cPurple = (color 150 120 210)
+	local isGlobal = false, keepKeys = false, collapseUV = true
+	-- colours after the NeoDex panel: tab highlights, label text, ON green, OFF red
 
 	fn hasMaterial o = (o.material != undefined)
 
-	groupBox grpTarget "Target" pos:[8, 4] width:324 height:150
-	pickbutton pbObj "Pick Object" width:100 height:22 pos:[16, 22] filter:hasMaterial tooltip:"Pick an object with a Wc3 material"
-	button btnSel "Selection" width:100 height:22 pos:[120, 22] tooltip:"Use the material of the selected object"
-	button btnMedit "Material Editor" width:100 height:22 pos:[224, 22] tooltip:"Use the material in the active Material Editor slot"
-	label lblMat "Material" pos:[16, 54]
-	dropdownlist ddMat "" width:250 pos:[74, 50]
-	label lblMap "Texture" pos:[16, 80]
-	dropdownlist ddMap "" width:250 pos:[74, 76]
-	label lblFile "" pos:[16, 106] width:308
-	label lblGrid "" pos:[16, 128] width:308
+	-- ── Target ────────────────────────────────────────────────────────────
+	groupBox grpTarget "Target" pos:[6, 4] width:328 height:118
+	pickbutton pbObj "Pick Object" pos:[14, 22] width:100 height:22 filter:hasMaterial tooltip:"Pick an object with a Wc3 material"
+	button btnSel "Selection" pos:[120, 22] width:100 height:22 tooltip:"Use the material of the selected object"
+	button btnMedit "Material Editor" pos:[226, 22] width:100 height:22 tooltip:"Use the material in the active Material Editor slot"
+	label lblMat "Material" pos:[14, 54]
+	dropdownlist ddMat "" pos:[80, 50] width:246
+	label lblMap "Texture" pos:[14, 80]
+	dropdownlist ddMap "" pos:[80, 76] width:246
+	label lblFile "" pos:[14, 102] width:312
 
-	checkbutton tabFlow "Flow" width:104 height:24 pos:[8, 162] highlightColor:cBlue tooltip:"Scroll, rotate or scale the texture (water, lava, auras)"
-	checkbutton tabSheet "Sprite Sheet" width:104 height:24 pos:[118, 162] highlightColor:cTeal checked:true tooltip:"One texture with a grid of frames (hits, explosions)"
-	checkbutton tabSeq "Sequence" width:104 height:24 pos:[228, 162] highlightColor:cPurple tooltip:"A folder of single frame pictures (flipbook)"
-	groupBox grpTab "" pos:[8, 188] width:324 height:176
+	-- ── Tabs ──────────────────────────────────────────────────────────────
+	checkbutton tabFlow "Flow Anim" pos:[6, 130] width:104 height:24 highlightColor:(color 176 97 19) tooltip:"Scroll, rotate or scale the texture (water, lava, auras)"
+	checkbutton tabSheet "SEQ Anim (Solo)" pos:[118, 130] width:104 height:24 highlightColor:(color 51 131 65) checked:true tooltip:"One texture with a grid of frames (hits, explosions)"
+	checkbutton tabSeq "SEQ Anim (Many)" pos:[230, 130] width:104 height:24 highlightColor:(color 10 130 144) tooltip:"A folder of single frame pictures (flipbook)"
+	groupBox grpPanel "" pos:[6, 156] width:328 height:232
 
-	-- Flow
-	spinner flStart "Start frame " range:[-100000, 100000, 0] type:#integer fieldwidth:50 pos:[20, 204]
-	spinner flEnd "End frame " range:[-100000, 100000, 30] type:#integer fieldwidth:50 pos:[180, 204]
-	label flDirLbl "Direction" pos:[20, 238]
-	checkbutton flUp "Up" width:40 height:22 pos:[120, 234] highlightColor:cBlue tooltip:"Scroll up"
-	checkbutton flDown "Down" width:40 height:22 pos:[164, 234] highlightColor:cBlue tooltip:"Scroll down"
-	checkbutton flLeft "Left" width:40 height:22 pos:[208, 234] highlightColor:cBlue tooltip:"Scroll left"
-	checkbutton flRight "Right" width:40 height:22 pos:[252, 234] highlightColor:cBlue tooltip:"Scroll right"
-	label flRotLbl "Rotation" pos:[20, 268]
-	checkbutton flRotL "Left turn" width:84 height:22 pos:[120, 264] highlightColor:cBlue tooltip:"One turn counter-clockwise"
-	checkbutton flRotR "Right turn" width:84 height:22 pos:[208, 264] highlightColor:cBlue tooltip:"One turn clockwise"
-	label flSclLbl "Scaling" pos:[20, 298]
-	checkbutton flSclUp "Grow 2x" width:84 height:22 pos:[120, 294] highlightColor:cBlue tooltip:"Grow to 2x"
-	checkbutton flSclDn "Shrink 0.5x" width:84 height:22 pos:[208, 294] highlightColor:cBlue tooltip:"Shrink to 0.5x"
+	-- ── Flow ──────────────────────────────────────────────────────────────
+	hyperLink flStartLbl "Start time:" pos:[16, 174] width:74 color:(color 255 165 86) enabled:false
+	spinner flStart "" pos:[92, 172] fieldwidth:60 range:[-100000, 100000, 0] type:#integer
+	hyperLink flEndLbl "End time:" pos:[180, 174] width:70 color:(color 255 165 86) enabled:false
+	spinner flEnd "" pos:[252, 172] fieldwidth:60 range:[-100000, 100000, 30] type:#integer
+	hyperLink flDirLbl "Direction" pos:[16, 201] width:190 color:(color 255 165 86) enabled:false
+	checkbutton flUp "" pos:[222, 198] width:22 height:22 images:(WdxTAC_ArrowImages "wdx_up.bmp") highlightColor:(color 176 97 19) tooltip:"Scroll up"
+	checkbutton flDown "" pos:[248, 198] width:22 height:22 images:(WdxTAC_ArrowImages "wdx_down.bmp") highlightColor:(color 176 97 19) tooltip:"Scroll down"
+	checkbutton flLeft "" pos:[274, 198] width:22 height:22 images:(WdxTAC_ArrowImages "wdx_left.bmp") highlightColor:(color 176 97 19) tooltip:"Scroll left"
+	checkbutton flRight "" pos:[300, 198] width:22 height:22 images:(WdxTAC_ArrowImages "wdx_right.bmp") highlightColor:(color 176 97 19) tooltip:"Scroll right"
+	hyperLink flRotLbl "Rotation" pos:[16, 228] width:190 color:(color 255 165 86) enabled:false
+	checkbutton flRotL "L" pos:[222, 225] width:48 height:22 highlightColor:(color 176 97 19) tooltip:"One turn counter-clockwise"
+	checkbutton flRotR "R" pos:[274, 225] width:48 height:22 highlightColor:(color 176 97 19) tooltip:"One turn clockwise"
+	hyperLink flSclLbl "Scaling" pos:[16, 255] width:190 color:(color 255 165 86) enabled:false
+	checkbutton flSclUp "+" pos:[222, 252] width:48 height:22 highlightColor:(color 176 97 19) tooltip:"Grow to 2x"
+	checkbutton flSclDn "-" pos:[274, 252] width:48 height:22 highlightColor:(color 176 97 19) tooltip:"Shrink to 0.5x"
+	hyperLink flGlobLbl "Global animation" pos:[16, 282] width:190 color:(color 255 165 86) enabled:false
+	checkbutton flGlobOn "ON" pos:[222, 279] width:48 height:22 highlightColor:(color 76 141 0)
+	checkbutton flGlobOff "OFF" pos:[274, 279] width:48 height:22 highlightColor:(color 144 34 34) checked:true
+	hyperLink flKeepLbl "Keep existing animation" pos:[16, 309] width:190 color:(color 255 165 86) enabled:false
+	checkbutton flKeepOn "ON" pos:[222, 306] width:48 height:22 highlightColor:(color 76 141 0)
+	checkbutton flKeepOff "OFF" pos:[274, 306] width:48 height:22 highlightColor:(color 144 34 34) checked:true
 
-	-- Sprite sheet
-	spinner shCols "Columns " range:[1, 64, 4] type:#integer fieldwidth:40 pos:[20, 204]
-	spinner shRows "Rows " range:[1, 64, 4] type:#integer fieldwidth:40 pos:[146, 204]
-	button btnDetect "Detect" width:56 height:18 pos:[264, 203] tooltip:"Count columns, rows and frames of the texture again"
-	spinner shFirst "First frame " range:[1, 4096, 1] type:#integer fieldwidth:40 pos:[20, 230]
-	spinner shLast "Last frame " range:[1, 4096, 16] type:#integer fieldwidth:40 pos:[146, 230]
-	spinner shStart "Start time " range:[-100000, 100000, 0] type:#integer fieldwidth:40 pos:[20, 256]
-	spinner shLoops "Loops " range:[1, 100, 1] type:#integer fieldwidth:40 pos:[146, 256]
-	label shSkipLbl "Skip frames" pos:[20, 284]
-	dropdownlist shSkip "" items:#("0", "1", "2", "3", "4", "5", "6", "7", "8") width:50 pos:[90, 280]
-	label shOrdLbl "Order" pos:[150, 284]
-	dropdownlist shOrder "" items:#("Forward", "Reverse") width:90 pos:[190, 280]
-	button btnUV "Generate UV Map" width:200 height:22 pos:[20, 312] tooltip:"Shrink the selected objects' UVs to the first cell of the grid"
-	checkbox chkCollapse "Collapse" pos:[232, 315] checked:true tooltip:"Collapse the UV change into the mesh"
+	-- ── Sprite sheet (SEQ Solo) ───────────────────────────────────────────
+	hyperLink shStartLbl "Start time:" pos:[16, 174] width:74 color:(color 106 225 127) enabled:false
+	spinner shStart "" pos:[92, 172] fieldwidth:60 range:[-100000, 100000, 0] type:#integer
+	hyperLink shLoopsLbl "Loop:" pos:[180, 174] width:70 color:(color 106 225 127) enabled:false
+	spinner shLoops "" pos:[252, 172] fieldwidth:60 range:[1, 100, 1] type:#integer
+	hyperLink shColsLbl "Columns:" pos:[16, 201] width:74 color:(color 106 225 127) enabled:false
+	spinner shCols "" pos:[92, 199] fieldwidth:60 range:[1, 64, 4] type:#integer
+	hyperLink shRowsLbl "Rows:" pos:[180, 201] width:70 color:(color 106 225 127) enabled:false
+	spinner shRows "" pos:[252, 199] fieldwidth:60 range:[1, 64, 4] type:#integer
+	hyperLink shFirstLbl "Start key:" pos:[16, 228] width:74 color:(color 106 225 127) enabled:false
+	spinner shFirst "" pos:[92, 226] fieldwidth:60 range:[1, 4096, 1] type:#integer
+	hyperLink shLastLbl "End key:" pos:[180, 228] width:70 color:(color 106 225 127) enabled:false
+	spinner shLast "" pos:[252, 226] fieldwidth:60 range:[1, 4096, 16] type:#integer
+	hyperLink shSkipLbl "Frame skipping" pos:[16, 255] width:190 color:(color 106 225 127) enabled:false
+	dropdownlist shSkip "" pos:[214, 251] width:108 items:#("0f", "1f", "2f", "3f", "4f", "5f", "6f", "7f", "8f")
+	hyperLink shOrdLbl "Play order" pos:[16, 282] width:190 color:(color 106 225 127) enabled:false
+	dropdownlist shOrder "" pos:[214, 278] width:108 items:#("Forward play", "Reverse play")
+	hyperLink shSpdLbl "Play speed" pos:[16, 309] width:190 color:(color 106 225 127) enabled:false
+	dropdownlist shSpeed "" pos:[214, 305] width:108 items:#("10F/S", "15F/S", "30F/S", "60F/S") selection:3
+	hyperLink shGlobLbl "Global animation" pos:[16, 336] width:190 color:(color 106 225 127) enabled:false
+	checkbutton shGlobOn "ON" pos:[222, 333] width:48 height:22 highlightColor:(color 76 141 0)
+	checkbutton shGlobOff "OFF" pos:[274, 333] width:48 height:22 highlightColor:(color 144 34 34) checked:true
+	hyperLink shKeepLbl "Keep existing animation" pos:[16, 363] width:190 color:(color 106 225 127) enabled:false
+	checkbutton shKeepOn "ON" pos:[222, 360] width:48 height:22 highlightColor:(color 76 141 0)
+	checkbutton shKeepOff "OFF" pos:[274, 360] width:48 height:22 highlightColor:(color 144 34 34) checked:true
+	groupBox grpUV "" pos:[6, 390] width:328 height:92
+	hyperLink shGridLbl "" pos:[16, 405] width:230 color:(color 106 225 127) enabled:false
+	button btnDetect "Detect" pos:[256, 402] width:66 height:20 tooltip:"Count columns, rows and frames of the texture again"
+	button btnUV "Generate UV Map" pos:[14, 428] width:312 height:24 tooltip:"Shrink the selected objects' UVs to the first cell of the grid"
+	hyperLink shColLbl "Collapse modifier" pos:[16, 461] width:190 color:(color 106 225 127) enabled:false
+	checkbutton shColOn "ON" pos:[222, 458] width:48 height:22 highlightColor:(color 76 141 0) checked:true
+	checkbutton shColOff "OFF" pos:[274, 458] width:48 height:22 highlightColor:(color 144 34 34)
 
-	-- Sequence
-	edittext sqPath "Folder" width:266 pos:[16, 204] readOnly:true
-	button btnSqPath "..." width:30 height:18 pos:[290, 204]
-	label sqCount "" pos:[20, 228] width:290
-	edittext sqPrefix "MDX path" width:290 pos:[16, 250] text:"Textures\\"
-	label sqOrdLbl "Order" pos:[20, 282]
-	dropdownlist sqOrder "" items:#("Forward", "Reverse") width:90 pos:[60, 278]
-	spinner sqStart "Start time " range:[-100000, 100000, 0] type:#integer fieldwidth:40 pos:[170, 282]
+	-- ── Sequence (SEQ Many) ───────────────────────────────────────────────
+	hyperLink sqOrdLbl "Play order" pos:[16, 174] width:190 color:(color 85 204 217) enabled:false
+	dropdownlist sqOrder "" pos:[214, 170] width:108 items:#("Forward play", "Reverse play")
+	hyperLink sqSpdLbl "Play speed" pos:[16, 201] width:190 color:(color 85 204 217) enabled:false
+	dropdownlist sqSpeed "" pos:[214, 197] width:108 items:#("10F/S", "15F/S", "30F/S", "60F/S") selection:3
+	hyperLink sqStartLbl "Start time" pos:[16, 228] width:190 color:(color 85 204 217) enabled:false
+	spinner sqStart "" pos:[252, 226] fieldwidth:60 range:[-100000, 100000, 0] type:#integer
+	hyperLink sqPrefixLbl "MDX path" pos:[16, 255] width:80 color:(color 85 204 217) enabled:false
+	edittext sqPrefix "" pos:[96, 253] width:226 text:"Textures\\"
+	hyperLink sqGlobLbl "Global animation" pos:[16, 282] width:190 color:(color 85 204 217) enabled:false
+	checkbutton sqGlobOn "ON" pos:[222, 279] width:48 height:22 highlightColor:(color 76 141 0)
+	checkbutton sqGlobOff "OFF" pos:[274, 279] width:48 height:22 highlightColor:(color 144 34 34) checked:true
+	hyperLink sqKeepLbl "Keep existing animation" pos:[16, 309] width:190 color:(color 85 204 217) enabled:false
+	checkbutton sqKeepOn "ON" pos:[222, 306] width:48 height:22 highlightColor:(color 76 141 0)
+	checkbutton sqKeepOff "OFF" pos:[274, 306] width:48 height:22 highlightColor:(color 144 34 34) checked:true
+	groupBox grpSeq "" pos:[6, 336] width:328 height:66
+	hyperLink sqPathLbl "Sequence frame folder path:" pos:[16, 350] width:230 color:(color 85 204 217) enabled:false
+	edittext sqPath "" pos:[12, 370] width:274 readOnly:true
+	button btnSqPath "..." pos:[292, 369] width:30 height:20
 
-	-- common
-	label spdLbl "Speed" pos:[20, 342]
-	dropdownlist ddSpeed "" items:#("10 fps", "15 fps", "30 fps", "60 fps") selection:2 width:80 pos:[60, 338]
-	checkbox chkGlobal "Global animation (loops forever)" pos:[16, 372]
-	checkbox chkKeep "Keep existing keys" pos:[16, 392]
-	label lblTime "" pos:[210, 374] width:120
-	button btnGenerate "Generate Animation" width:324 height:30 pos:[8, 414]
-	label lblResult "" pos:[12, 450] width:316
+	-- ── Info + generate ───────────────────────────────────────────────────
+	groupBox grpInfo "" pos:[6, 488] width:328 height:40
+	label lblKeys "" pos:[16, 505] width:150
+	label lblTime "" pos:[176, 505] width:150
+	button btnGenerate "Generate Animation" pos:[6, 536] width:328 height:30
+	label lblResult "" pos:[10, 572] width:320
 
 	fn tabControls t =
 	(
 		case t of
 		(
-			1: #(flStart, flEnd, flDirLbl, flUp, flDown, flLeft, flRight, flRotLbl, flRotL, flRotR, flSclLbl, flSclUp, flSclDn)
-			2: #(shCols, shRows, btnDetect, shFirst, shLast, shStart, shLoops, shSkipLbl, shSkip, shOrdLbl, shOrder, btnUV, chkCollapse)
-			default: #(sqPath, btnSqPath, sqCount, sqPrefix, sqOrdLbl, sqOrder, sqStart)
+			1: #(flStartLbl, flStart, flEndLbl, flEnd, flDirLbl, flUp, flDown, flLeft, flRight, flRotLbl, flRotL, flRotR, flSclLbl, flSclUp, flSclDn, flGlobLbl, flGlobOn, flGlobOff, flKeepLbl, flKeepOn, flKeepOff)
+			2: #(shStartLbl, shStart, shLoopsLbl, shLoops, shColsLbl, shCols, shRowsLbl, shRows, shFirstLbl, shFirst, shLastLbl, shLast, shSkipLbl, shSkip, shOrdLbl, shOrder, shSpdLbl, shSpeed, shGlobLbl, shGlobOn, shGlobOff, shKeepLbl, shKeepOn, shKeepOff, grpUV, shGridLbl, btnDetect, btnUV, shColLbl, shColOn, shColOff)
+			default: #(sqOrdLbl, sqOrder, sqSpdLbl, sqSpeed, sqStartLbl, sqStart, sqPrefixLbl, sqPrefix, sqGlobLbl, sqGlobOn, sqGlobOff, sqKeepLbl, sqKeepOn, sqKeepOff, grpSeq, sqPathLbl, sqPath, btnSqPath)
 		)
 	)
 
 	-- frames of the timeline per picture at the chosen speed
 	fn frameStep =
 	(
-		local fps = case ddSpeed.selection of (1: 10.0; 2: 15.0; 3: 30.0; default: 60.0)
+		local sel = if curTab == 3 then sqSpeed.selection else shSpeed.selection
+		local fps = case sel of (1: 10.0; 2: 15.0; 3: 30.0; default: 60.0)
 		amax #(1, (frameRate / fps + 0.5) as integer)
 	)
 
 	fn updateTime =
 	(
-		local n = 0, len = 0
+		local len = 0
 		case curTab of
 		(
-			1: (n = 2; len = flEnd.value - flStart.value)
-			2: (n = (WdxTAC_CellOrder shFirst.value shLast.value (shSkip.selection - 1) (shOrder.selection == 2) shLoops.value).count; len = n * frameStep())
-			default: (n = (WdxTAC_SequenceFiles sqPath.text).count; len = n * frameStep())
+			1: len = flEnd.value - flStart.value
+			2: len = (WdxTAC_CellOrder shFirst.value shLast.value (shSkip.selection - 1) (shOrder.selection == 2) shLoops.value).count * frameStep()
+			default: len = (WdxTAC_SequenceFiles sqPath.text).count * frameStep()
 		)
-		lblTime.text = (WdxTAC_Tr "tac_keys_lbl" "Keys: ") + (n as string) + "   " + (formattedPrint (len as float / frameRate) format:".2f") + " s"
+		lblKeys.text = (WdxTAC_Tr "tac_anim_keys" "Anim Keys: ") + (len as string) + " F"
+		lblTime.text = (WdxTAC_Tr "tac_anim_time" "Anim Time: ") + (formattedPrint (len as float / frameRate) format:".1f") + " S"
+	)
+
+	-- panel height and the controls below it follow the tab
+	fn layoutFor t =
+	(
+		local panelH = case t of (1: 178; 2: 232; default: 178)
+		grpPanel.height = panelH
+		local y = case t of (1: 156 + panelH + 6; 2: 488; default: 408)
+		grpInfo.pos = [6, y]
+		lblKeys.pos = [16, y + 17]
+		lblTime.pos = [176, y + 17]
+		btnGenerate.pos = [6, y + 48]
+		lblResult.pos = [10, y + 84]
+		WdxTexAnimCreatorRoll.height = y + 104
 	)
 
 	fn showTab t =
@@ -534,10 +630,14 @@ rollout WdxTexAnimCreatorRoll "Texture Animation Creator"
 		curTab = t
 		tabFlow.checked = (t == 1); tabSheet.checked = (t == 2); tabSeq.checked = (t == 3)
 		for k = 1 to 3 do for c in (tabControls k) do c.visible = (k == t)
-		spdLbl.visible = (t != 1)
-		ddSpeed.visible = (t != 1)
+		layoutFor t
 		updateTime()
 	)
+
+	-- ON/OFF pairs: one state, shown on every tab
+	fn setGlobal v = (isGlobal = v; for p in #(#(flGlobOn, flGlobOff), #(shGlobOn, shGlobOff), #(sqGlobOn, sqGlobOff)) do (p[1].checked = v; p[2].checked = not v))
+	fn setKeep v = (keepKeys = v; for p in #(#(flKeepOn, flKeepOff), #(shKeepOn, shKeepOff), #(sqKeepOn, sqKeepOff)) do (p[1].checked = v; p[2].checked = not v))
+	fn setCollapse v = (collapseUV = v; shColOn.checked = v; shColOff.checked = not v)
 
 	fn curMat = (if ddMat.selection > 0 and ddMat.selection <= mats.count then mats[ddMat.selection] else undefined)
 	fn curMap = (if ddMap.selection > 0 and ddMap.selection <= maps.count then maps[ddMap.selection][2] else undefined)
@@ -545,11 +645,11 @@ rollout WdxTexAnimCreatorRoll "Texture Animation Creator"
 	fn detect =
 	(
 		local m = curMap()
-		if m == undefined do (lblGrid.text = ""; return ok)
+		if m == undefined do (shGridLbl.text = ""; return ok)
 		local g = WdxTAC_DetectGrid (WdxTAC_MapFile m)
 		shCols.value = g[1]; shRows.value = g[2]
 		shFirst.value = 1; shLast.value = amax #(1, g[3])
-		lblGrid.text = if g[4] == "none" then (WdxTAC_Tr "tac_grid_none" "Grid not found - set columns and rows") \
+		shGridLbl.text = if g[4] == "none" then (WdxTAC_Tr "tac_grid_none" "Grid not found - set columns and rows") \
 			else (WdxTAC_Tr "tac_grid_found" "Grid: ") + (g[1] as string) + " x " + (g[2] as string) + ", " + (g[3] as string) + " " + (WdxTAC_Tr "tac_frames_word" "frames")
 		updateTime()
 	)
@@ -560,7 +660,7 @@ rollout WdxTexAnimCreatorRoll "Texture Animation Creator"
 		ddMap.items = for m in maps collect (m[1] + ": " + (filenameFromPath (WdxTAC_MapFile m[2])))
 		ddMap.selection = if maps.count > 0 then 1 else 0
 		local m = curMap()
-		lblFile.text = if m == undefined then (WdxTAC_Tr "tac_no_texture" "No Wc3Bitmap on this material") else (WdxTAC_MapFile m)
+		lblFile.text = if m == undefined then (WdxTAC_Tr "tac_no_texture" "No Wc3Bitmap on this material") else (WdxTAC_FileInfo (WdxTAC_MapFile m))
 		detect()
 	)
 
@@ -577,7 +677,7 @@ rollout WdxTexAnimCreatorRoll "Texture Animation Creator"
 	on btnSel pressed do (if selection.count > 0 do setTarget selection[1].material)
 	on btnMedit pressed do (try (setTarget (medit.GetCurMtl())) catch ())
 	on ddMat selected i do fillMaps()
-	on ddMap selected i do (lblFile.text = WdxTAC_MapFile (curMap()); detect())
+	on ddMap selected i do (lblFile.text = WdxTAC_FileInfo (WdxTAC_MapFile (curMap())); detect())
 	on btnDetect pressed do detect()
 
 	on tabFlow changed st do showTab 1
@@ -592,6 +692,20 @@ rollout WdxTexAnimCreatorRoll "Texture Animation Creator"
 	on flRotR changed st do (if st do flRotL.checked = false)
 	on flSclUp changed st do (if st do flSclDn.checked = false)
 	on flSclDn changed st do (if st do flSclUp.checked = false)
+	on flGlobOn changed st do setGlobal true
+	on flGlobOff changed st do setGlobal false
+	on shGlobOn changed st do setGlobal true
+	on shGlobOff changed st do setGlobal false
+	on sqGlobOn changed st do setGlobal true
+	on sqGlobOff changed st do setGlobal false
+	on flKeepOn changed st do setKeep true
+	on flKeepOff changed st do setKeep false
+	on shKeepOn changed st do setKeep true
+	on shKeepOff changed st do setKeep false
+	on sqKeepOn changed st do setKeep true
+	on sqKeepOff changed st do setKeep false
+	on shColOn changed st do setCollapse true
+	on shColOff changed st do setCollapse false
 	on flStart changed v do (if flEnd.value <= v do flEnd.value = v + 1; updateTime())
 	on flEnd changed v do (if flStart.value >= v do flStart.value = v - 1; updateTime())
 	on shCols changed v do (shLast.value = amin #(shLast.value, v * shRows.value); updateTime())
@@ -601,14 +715,15 @@ rollout WdxTexAnimCreatorRoll "Texture Animation Creator"
 	on shLoops changed v do updateTime()
 	on shSkip selected i do updateTime()
 	on shOrder selected i do updateTime()
-	on ddSpeed selected i do updateTime()
+	on shSpeed selected i do updateTime()
+	on sqSpeed selected i do updateTime()
 	on btnSqPath pressed do
 	(
 		local p = getSavePath caption:(WdxTAC_Tr "tac_pick_folder" "Folder with the frame pictures") initialDir:(if sqPath.text != "" then sqPath.text else maxFilePath)
 		if p != undefined do
 		(
 			sqPath.text = p
-			sqCount.text = ((WdxTAC_SequenceFiles p).count as string) + " " + (WdxTAC_Tr "tac_pictures_word" "pictures")
+			sqPathLbl.text = (WdxTAC_Tr "tac_seq_folder_lbl" "Sequence frame folder path:") + " " + ((WdxTAC_SequenceFiles p).count as string) + " " + (WdxTAC_Tr "tac_pictures_word" "pictures")
 			updateTime()
 		)
 	)
@@ -620,7 +735,7 @@ rollout WdxTexAnimCreatorRoll "Texture Animation Creator"
 		else
 		(
 			local n = 0
-			undo "Generate UV Map" on (n = WdxTAC_GenerateUVMap sel shCols.value shRows.value chkCollapse.checked)
+			undo "Generate UV Map" on (n = WdxTAC_GenerateUVMap sel shCols.value shRows.value collapseUV)
 			lblResult.text = (WdxTAC_Tr "tac_uv_done" "UV map set on objects: ") + (n as string)
 		)
 	)
@@ -638,17 +753,17 @@ rollout WdxTexAnimCreatorRoll "Texture Animation Creator"
 					local dV = if flUp.checked then 1 else if flDown.checked then -1 else 0
 					local dR = if flRotR.checked then 1 else if flRotL.checked then -1 else 0
 					local dS = if flSclUp.checked then 1 else if flSclDn.checked then -1 else 0
-					n = WdxTAC_ApplyFlow (curMap()) flStart.value flEnd.value dU dV dR dS chkGlobal.checked chkKeep.checked
+					n = WdxTAC_ApplyFlow (curMap()) flStart.value flEnd.value dU dV dR dS isGlobal keepKeys
 				)
 				2:
 				(
 					local cells = WdxTAC_CellOrder shFirst.value (amin #(shLast.value, shCols.value * shRows.value)) (shSkip.selection - 1) (shOrder.selection == 2) shLoops.value
-					n = WdxTAC_ApplySpriteSheet (curMap()) shCols.value shRows.value cells shStart.value (frameStep()) chkGlobal.checked chkKeep.checked
+					n = WdxTAC_ApplySpriteSheet (curMap()) shCols.value shRows.value cells shStart.value (frameStep()) isGlobal keepKeys
 				)
 				default:
 				(
 					local files = WdxTAC_SequenceFiles sqPath.text
-					n = WdxTAC_ApplySequence (curMat()) files sqPrefix.text sqStart.value (frameStep()) (sqOrder.selection == 2) chkGlobal.checked chkKeep.checked
+					n = WdxTAC_ApplySequence (curMat()) files sqPrefix.text sqStart.value (frameStep()) (sqOrder.selection == 2) isGlobal keepKeys
 				)
 			)
 		)
@@ -660,23 +775,40 @@ rollout WdxTexAnimCreatorRoll "Texture Animation Creator"
 	fn applyTexts =
 	(
 		WdxTexAnimCreatorRoll.title = WdxTAC_Tr "menu_texture_anim_creator" "Texture Animation Creator"
-		local pairs = #(
+		local plain = #(
 			#(grpTarget, "tac_target_grp"), #(btnSel, "tac_selection_btn"), #(btnMedit, "tac_medit_btn"),
-			#(lblMat, "tac_material_lbl"), #(lblMap, "tac_texture_lbl"),
 			#(tabFlow, "tac_tab_flow"), #(tabSheet, "tac_tab_sheet"), #(tabSeq, "tac_tab_seq"),
-			#(flDirLbl, "tac_direction_lbl"), #(flRotLbl, "tac_rotation_lbl"), #(flSclLbl, "tac_scaling_lbl"),
-			#(flUp, "tac_up_btn"), #(flDown, "tac_down_btn"), #(flLeft, "tac_left_btn"), #(flRight, "tac_right_btn"),
-			#(flRotL, "tac_turn_left_btn"), #(flRotR, "tac_turn_right_btn"), #(flSclUp, "tac_grow_btn"), #(flSclDn, "tac_shrink_btn"),
-			#(btnDetect, "tac_detect_btn"), #(shSkipLbl, "tac_skip_lbl"), #(shOrdLbl, "tac_order_lbl"), #(sqOrdLbl, "tac_order_lbl"),
-			#(btnUV, "tac_uvmap_btn"), #(chkCollapse, "tac_collapse_chk"), #(spdLbl, "tac_speed_lbl"),
-			#(chkGlobal, "tac_global_chk"), #(chkKeep, "tac_keep_chk"), #(btnGenerate, "tac_generate_btn"))
-		for p in pairs do try (p[1].text = WdxTAC_Tr p[2] p[1].text) catch ()
+			#(lblMat, "tac_material_lbl"), #(lblMap, "tac_texture_lbl"), #(btnDetect, "tac_detect_btn"),
+			#(btnUV, "tac_uvmap_btn"), #(btnGenerate, "tac_generate_btn"), #(sqPathLbl, "tac_seq_folder_lbl"),
+			#(flStartLbl, "tac_start_time_lbl"), #(shStartLbl, "tac_start_time_lbl"), #(flEndLbl, "tac_end_time_lbl"),
+			#(shLoopsLbl, "tac_loop_lbl"), #(shColsLbl, "tac_columns_lbl"), #(shRowsLbl, "tac_rows_lbl"),
+			#(shFirstLbl, "tac_start_key_lbl"), #(shLastLbl, "tac_end_key_lbl"), #(sqPrefixLbl, "tac_mdxpath_lbl"))
+		for p in plain do try (p[1].text = WdxTAC_Tr p[2] p[1].text) catch ()
 		if pbObj.text == "Pick Object" do pbObj.text = WdxTAC_Tr "tac_pick_object_btn" "Pick Object"
-		local ord = #(WdxTAC_Tr "tac_forward" "Forward", WdxTAC_Tr "tac_reverse" "Reverse")
+		-- labels with a dotted leader up to the buttons
+		local dotted = #(
+			#(flDirLbl, "tac_direction_lbl"), #(flRotLbl, "tac_rotation_lbl"), #(flSclLbl, "tac_scaling_lbl"),
+			#(flGlobLbl, "tac_global_lbl"), #(shGlobLbl, "tac_global_lbl"), #(sqGlobLbl, "tac_global_lbl"),
+			#(flKeepLbl, "tac_keep_lbl"), #(shKeepLbl, "tac_keep_lbl"), #(sqKeepLbl, "tac_keep_lbl"),
+			#(shSkipLbl, "tac_skip_lbl"), #(shOrdLbl, "tac_order_lbl"), #(sqOrdLbl, "tac_order_lbl"),
+			#(shSpdLbl, "tac_speed_lbl"), #(sqSpdLbl, "tac_speed_lbl"), #(shColLbl, "tac_collapse_lbl"),
+			#(sqStartLbl, "tac_start_time_lbl"))
+		for p in dotted do try (p[1].text = WdxTAC_Dotted (WdxTAC_Tr p[2] p[1].text) 44) catch ()
+		local ord = #(WdxTAC_Tr "tac_forward" "Forward play", WdxTAC_Tr "tac_reverse" "Reverse play")
 		shOrder.items = ord
 		sqOrder.items = ord
-		try (sqPath.caption = WdxTAC_Tr "tac_folder_lbl" "Folder") catch ()
-		try (sqPrefix.caption = WdxTAC_Tr "tac_mdxpath_lbl" "MDX path") catch ()
+		local onTxt = WdxTAC_Tr "tac_on" "ON", offTxt = WdxTAC_Tr "tac_off" "OFF"
+		for b in #(flGlobOn, shGlobOn, sqGlobOn, flKeepOn, shKeepOn, sqKeepOn, shColOn) do b.text = onTxt
+		for b in #(flGlobOff, shGlobOff, sqGlobOff, flKeepOff, shKeepOff, sqKeepOff, shColOff) do b.text = offTxt
+		-- rotation arrows (the file is not saved as UTF-8 with BOM)
+		try
+		(
+			local ch = dotNetClass "System.Char"
+			flRotL.text = ch.ConvertFromUtf32 0x21BA
+			flRotR.text = ch.ConvertFromUtf32 0x21BB
+		) catch ()
+		-- arrows as text when the icons are not installed
+		if WdxTAC_IconFile "wdx_up.bmp" == "" do (flUp.text = "^"; flDown.text = "v"; flLeft.text = "<"; flRight.text = ">")
 	)
 
 	on WdxTexAnimCreatorRoll open do
@@ -693,7 +825,7 @@ struct WdxTexAnimCreatorStruct
 	fn open =
 	(
 		try (destroyDialog ::WdxTexAnimCreatorRoll) catch ()
-		createDialog ::WdxTexAnimCreatorRoll 340 474 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)
+		createDialog ::WdxTexAnimCreatorRoll 340 592 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)
 	)
 )
 WdxTexAnimCreator = WdxTexAnimCreatorStruct()
