@@ -197,7 +197,9 @@ struct WdxVisibilityKeyer
 									local newKey = addNewKey newCon kd[1]
 									newKey.value = kd[2]
 									
-									if interpDropdown.selected == "None" then
+									-- Boolean keys step by themselves and have no
+									-- tangent properties (only time/selected/value)
+									if interpDropdown.selected == "None" and classOf newCon != boolean_float then
 									(
 										newKey.inTangentType = #step
 										newKey.outTangentType = #step
@@ -315,7 +317,9 @@ struct WdxVisibilityKeyer
 			interpDropdown.items = self.visConInterTypes
 			interpDropdown.selection = self.visConInterSelection
 			
-			callbacks.addScript #selectionSetChanged selectionChanged id:#WhiteoutDex_VisibilityKeyer
+			-- a script string: a function value needs 3ds Max 2021+ (MAXScript
+			-- Help, "General Event Callback Mechanism")
+			callbacks.addScript #selectionSetChanged "try (::WdxVisibilityKeyer.mainRollout.selectionChanged()) catch ()" id:#WhiteoutDex_VisibilityKeyer
 			registerTimeCallback selectionChangedtimeCB
 			selectionChanged()
 

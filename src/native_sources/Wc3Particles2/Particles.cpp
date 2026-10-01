@@ -9,6 +9,23 @@
 #include "Particles.h"
 #include "wdx_localization.h" // wdx::l10n — relabels the rollouts from the catalog
 #include <string>
+#include <locale.h>
+
+// Preset files are shared (NeoDex writes them too): numbers always use '.'.
+// sprintf/sscanf/atof follow the host's LC_NUMERIC, and 3ds Max 2027 on a
+// German Windows runs with ',' - "1.5" read back as 1, and the presets it
+// wrote had commas. The _l variants with the "C" locale ignore that; a comma
+// left by such a preset is read as the decimal point.
+static _locale_t PresetLocale() {
+    static _locale_t c = _create_locale(LC_NUMERIC, "C");
+    return c;
+}
+static std::string PresetNumber(const char* s) {
+    std::string v(s);
+    if (v.find('.') == std::string::npos)
+        for (auto& ch : v) if (ch == ',') ch = '.';
+    return v;
+}
 
 /// @name Module globals
 /// @{
@@ -1129,7 +1146,7 @@ static void IniWrite(FILE* f, const char* key, const char* val) {
     fprintf(f, "%s=%s\n", key, val);
 }
 static void IniWriteFloat(FILE* f, const char* key, float val) {
-    char buf[64]; sprintf_s(buf, "%.6g", val);
+    char buf[64]; _sprintf_s_l(buf, sizeof(buf), "%.6g", PresetLocale(), val);
     IniWrite(f, key, buf);
 }
 static void IniWriteInt(FILE* f, const char* key, int val) {
@@ -1166,7 +1183,7 @@ static std::map<std::string, std::string> IniReadSection(const char* filename) {
 static float IniGetFloat(const std::map<std::string, std::string>& ini, const char* key, float def) {
     auto it = ini.find(key);
     if (it == ini.end() || it->second.empty()) return def;
-    return static_cast<float>(atof(it->second.c_str()));
+    return static_cast<float>(_atof_l(PresetNumber(it->second.c_str()).c_str(), PresetLocale()));
 }
 static int IniGetInt(const std::map<std::string, std::string>& ini, const char* key, int def) {
     auto it = ini.find(key);
@@ -1196,7 +1213,7 @@ static void ExportAnimFloat(FILE* f, const char* key, const char* animKey,
             ctrl->GetValue(keyTime, &val, iv);
             int frame = keyTime / GetTicksPerFrame();
             char buf[64];
-            sprintf_s(buf, "%df %g", frame, val);
+            _sprintf_s_l(buf, sizeof(buf), "%df %g", PresetLocale(), frame, val);
             if (i > 0) keyStr += "|";
             keyStr += buf;
         }
@@ -1236,7 +1253,7 @@ static void ImportAnimFloat(const std::map<std::string, std::string>& ini,
         char* token = strtok_s(buf, "|", &context);
         while (token) {
             int frame = 0; float val = 0.0f;
-            if (sscanf_s(token, "%df %f", &frame, &val) == 2) {
+            if (_sscanf_s_l(PresetNumber(token).c_str(), "%df %f", PresetLocale(), &frame, &val) == 2) {
                 TimeValue keyTime = frame * GetTicksPerFrame();
                 pb->SetValue(pid, keyTime, val);
             }

@@ -6,8 +6,11 @@
 // is deferred to Phase 5 (parameter animation pipeline).
 
 #include "wc3_scene_builders.h"
+#include <wdx_text.h>
 #include "texture_resolver.h"
 #include "../mdlx_class_ids.h"
+#include <wdx_replaceable_ids.h>
+#include <wdx_p2_intervals.h>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -23,6 +26,18 @@
 #include <ilayermanager.h>
 #include <modstack.h>
 #include <maxscript/maxscript.h>
+#include <locale.h>
+
+namespace {
+// Numbers written into MAXScript source and user properties always use '.'.
+// swprintf follows the host's LC_NUMERIC, and 3ds Max 2027 on a German
+// Windows runs with ',': "append rootNode.moveSpeed 270,5" does not compile,
+// and a scene saved there would not read back in another Max or language.
+_locale_t numLocale() {
+    static _locale_t c = _create_locale(LC_NUMERIC, "C");
+    return c;
+}
+} // namespace
 
 // ── Crash-safe diagnostic log (appended to %TEMP%\mdlx_import_debug.log) ──
 // Mirrors the MLOG helper in wc3_material_builder.cpp. Used by Wc3PopcornBuilder
@@ -101,13 +116,9 @@ void pbSetString(ReferenceTarget* t, const wchar_t* n, const MCHAR* v) {
     auto p = findParam(t, n); if (p) p.pb->SetValue(p.id, 0, v);
 }
 
+// MDX bytes to text: UTF-8 or the Windows code page (wdx_text.h).
 std::wstring toWstr(const std::string& u8) {
-    if (u8.empty()) return {};
-    int len = MultiByteToWideChar(CP_UTF8, 0, u8.c_str(), -1, nullptr, 0);
-    if (len <= 0) return {};
-    std::wstring r(static_cast<size_t>(len - 1), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, u8.c_str(), -1, r.data(), len);
-    return r;
+    return wdx::text::mdxToWide(u8);
 }
 
 // Position a node at its pivot point before parenting.
@@ -265,7 +276,7 @@ void Wc3LightBuilder::buildLights(
         INode* node = gi->CreateObjectNode(obj);
         MSTR name;
         if (irLight.nodeIndex >= 0 && irLight.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
-            name.printf(_T("%hs"), irModel.nodes[irLight.nodeIndex].name.c_str());
+            name = wdx::text::mdxToWide(irModel.nodes[irLight.nodeIndex].name).c_str();
         else
             name = _T("Wc3Light");
         node->SetName(name);
@@ -322,24 +333,24 @@ void Wc3LightBuilder::buildLights(
         {
             wchar_t buf[64];
 
-            swprintf_s(buf, 64, L"%.6f,%.6f,%.6f",
+            _swprintf_s_l(buf, 64, L"%.6f,%.6f,%.6f", numLocale(),
                 irLight.color.r, irLight.color.g, irLight.color.b);
             node->SetUserPropString(MSTR(L"mdx_static_color"), MSTR(buf));
 
-            swprintf_s(buf, 64, L"%.6f,%.6f,%.6f",
+            _swprintf_s_l(buf, 64, L"%.6f,%.6f,%.6f", numLocale(),
                 irLight.ambientColor.r, irLight.ambientColor.g, irLight.ambientColor.b);
             node->SetUserPropString(MSTR(L"mdx_static_ambColor"), MSTR(buf));
 
-            swprintf_s(buf, 64, L"%.6f", irLight.intensity);
+            _swprintf_s_l(buf, 64, L"%.6f", numLocale(), irLight.intensity);
             node->SetUserPropString(MSTR(L"mdx_static_intensity"), MSTR(buf));
 
-            swprintf_s(buf, 64, L"%.6f", irLight.ambientIntensity);
+            _swprintf_s_l(buf, 64, L"%.6f", numLocale(), irLight.ambientIntensity);
             node->SetUserPropString(MSTR(L"mdx_static_ambIntensity"), MSTR(buf));
 
-            swprintf_s(buf, 64, L"%.6f", irLight.attenuationStart);
+            _swprintf_s_l(buf, 64, L"%.6f", numLocale(), irLight.attenuationStart);
             node->SetUserPropString(MSTR(L"mdx_static_attStart"), MSTR(buf));
 
-            swprintf_s(buf, 64, L"%.6f", irLight.attenuationEnd);
+            _swprintf_s_l(buf, 64, L"%.6f", numLocale(), irLight.attenuationEnd);
             node->SetUserPropString(MSTR(L"mdx_static_attEnd"), MSTR(buf));
         }
 
@@ -461,7 +472,7 @@ void Wc3AttachmentBuilder::buildAttachments(
 
         INode* node = gi->CreateObjectNode(obj);
         MSTR name;
-        name.printf(_T("%hs"), irAtt.name.c_str());
+        name = wdx::text::mdxToWide(irAtt.name).c_str();
         node->SetName(name);
 
         positionAtPivot(node, irAtt.nodeIndex, irModel);
@@ -533,7 +544,7 @@ void Wc3Particle1Builder::buildParticles(
         INode* node = gi->CreateObjectNode(obj);
         MSTR name;
         if (irPE.nodeIndex >= 0 && irPE.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
-            name.printf(_T("%hs"), irModel.nodes[irPE.nodeIndex].name.c_str());
+            name = wdx::text::mdxToWide(irModel.nodes[irPE.nodeIndex].name).c_str();
         else
             name = _T("Wc3PE1");
         node->SetName(name);
@@ -623,7 +634,7 @@ void Wc3Particle2Builder::buildParticles(
         INode* node = gi->CreateObjectNode(obj);
         MSTR name;
         if (irPE.nodeIndex >= 0 && irPE.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
-            name.printf(_T("%hs"), irModel.nodes[irPE.nodeIndex].name.c_str());
+            name = wdx::text::mdxToWide(irModel.nodes[irPE.nodeIndex].name).c_str();
         else
             name = _T("Wc3PE2");
         node->SetName(name);
@@ -679,18 +690,21 @@ void Wc3Particle2Builder::buildParticles(
             pb->SetValue(PB_SCALE_END, 0, irPE.segmentScale[2]);
 
             // Head/tail UV animation intervals
+            // MDX intervals are {start, end, repeat}; each goes where the
+            // panel shows it (wdx_p2_intervals.h).
             pb->SetValue(PB_HEAD_LIFE_START, 0, irPE.headInterval[0]);
-            pb->SetValue(PB_HEAD_LIFE_REPEAT, 0, irPE.headInterval[1]);
-            pb->SetValue(PB_HEAD_LIFE_END, 0, irPE.headInterval[2]);
+            pb->SetValue(PB_HEAD_LIFE_END, 0, irPE.headInterval[1]);
+            pb->SetValue(PB_HEAD_LIFE_REPEAT, 0, irPE.headInterval[2]);
             pb->SetValue(PB_HEAD_DECAY_START, 0, irPE.headDecayInterval[0]);
-            pb->SetValue(PB_HEAD_DECAY_REPEAT, 0, irPE.headDecayInterval[1]);
-            pb->SetValue(PB_HEAD_DECAY_END, 0, irPE.headDecayInterval[2]);
+            pb->SetValue(PB_HEAD_DECAY_END, 0, irPE.headDecayInterval[1]);
+            pb->SetValue(PB_HEAD_DECAY_REPEAT, 0, irPE.headDecayInterval[2]);
             pb->SetValue(PB_TAIL_LIFE_START, 0, irPE.tailInterval[0]);
-            pb->SetValue(PB_TAIL_LIFE_REPEAT, 0, irPE.tailInterval[1]);
-            pb->SetValue(PB_TAIL_LIFE_END, 0, irPE.tailInterval[2]);
+            pb->SetValue(PB_TAIL_LIFE_END, 0, irPE.tailInterval[1]);
+            pb->SetValue(PB_TAIL_LIFE_REPEAT, 0, irPE.tailInterval[2]);
             pb->SetValue(PB_TAIL_DECAY_START, 0, irPE.tailDecayInterval[0]);
-            pb->SetValue(PB_TAIL_DECAY_REPEAT, 0, irPE.tailDecayInterval[1]);
-            pb->SetValue(PB_TAIL_DECAY_END, 0, irPE.tailDecayInterval[2]);
+            pb->SetValue(PB_TAIL_DECAY_END, 0, irPE.tailDecayInterval[1]);
+            pb->SetValue(PB_TAIL_DECAY_REPEAT, 0, irPE.tailDecayInterval[2]);
+            wdx::p2::markIntervalOrder(node);
 
             // Flags → individual bools
             uint32_t f = irPE.flags;
@@ -738,21 +752,8 @@ void Wc3Particle2Builder::buildParticles(
             //      still get extracted from CASC/MPQ.
             std::string mdxPath = irTex.filePath;
             if (mdxPath.empty() && irTex.replaceableId > 0) {
-                static constexpr struct { int id; const char* path; } kMap[] = {
-                    {  1, "ReplaceableTextures\\TeamColor\\TeamColor00.blp" },
-                    {  2, "ReplaceableTextures\\TeamGlow\\TeamGlow00.blp" },
-                    { 11, "ReplaceableTextures\\Cliff\\Cliff0.blp" },
-                    { 21, "ReplaceableTextures\\LordaeronTree\\LordaeronSummerTree.blp" },
-                    { 22, "ReplaceableTextures\\AshenvaleTree\\AshenTree.blp" },
-                    { 23, "ReplaceableTextures\\BarrensTree\\BarrensTree.blp" },
-                    { 24, "ReplaceableTextures\\NorthrendTree\\NorthTree.blp" },
-                    { 25, "ReplaceableTextures\\Mushroom\\MushroomTree.blp" },
-                    { 31, "ReplaceableTextures\\RuinsTree\\RuinsTree.blp" },
-                    { 32, "ReplaceableTextures\\OutlandMushroomTree\\MushroomTree.blp" },
-                };
-                for (const auto& m : kMap) {
-                    if (m.id == irTex.replaceableId) { mdxPath = m.path; break; }
-                }
+                const std::wstring wpath = wdx::replaceable::PathFromId(irTex.replaceableId);
+                mdxPath.assign(wpath.begin(), wpath.end());  // the paths are ASCII
             }
 
             if (!mdxPath.empty()) {
@@ -815,7 +816,7 @@ void Wc3RibbonBuilder::buildRibbons(
         INode* node = gi->CreateObjectNode(obj);
         MSTR name;
         if (irRib.nodeIndex >= 0 && irRib.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
-            name.printf(_T("%hs"), irModel.nodes[irRib.nodeIndex].name.c_str());
+            name = wdx::text::mdxToWide(irModel.nodes[irRib.nodeIndex].name).c_str();
         else
             name = _T("Wc3Ribbon");
         node->SetName(name);
@@ -960,6 +961,28 @@ void Wc3EventBuilder::buildEvents(
             }
         }
 
+        // Readable node label, "SNDxDDSN (Sound - NightElfDissipate)" in the
+        // current UI language, from WdxEventDisplayName
+        // (Wc3RefEventCallback.ms). Only the node name: the export reads
+        // `eventName`. Without the script the node keeps the plain code.
+        {
+            std::wstring esc;
+            for (wchar_t c : evtName) {
+                if (c == L'\\' || c == L'"') esc.push_back(L'\\');
+                esc.push_back(c);
+            }
+            std::wstringstream ls;
+            ls << L"(local n = maxOps.getNodeByHandle " << node->GetHandle() << L";"
+               << L" if n != undefined and ::WdxEventDisplayName != undefined do"
+               << L" n.name = ::WdxEventDisplayName \"" << esc << L"\")";
+            const std::wstring labelScript = ls.str();
+            ExecuteMAXScriptScript(const_cast<wchar_t*>(labelScript.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+                                   MAXScript::ScriptSource::NonEmbedded,
+#endif
+                                   TRUE, nullptr);
+        }
+
         // Register for animation key insertion
         if (irEvt.nodeIndex >= 0 && irEvt.nodeIndex < static_cast<int32_t>(nodeMap.size()))
             nodeMap[irEvt.nodeIndex] = node;
@@ -986,7 +1009,7 @@ void Wc3CollisionBuilder::buildCollisions(
         INode* node = gi->CreateObjectNode(obj);
         MSTR name;
         if (irCol.nodeIndex >= 0 && irCol.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
-            name.printf(_T("%hs"), irModel.nodes[irCol.nodeIndex].name.c_str());
+            name = wdx::text::mdxToWide(irModel.nodes[irCol.nodeIndex].name).c_str();
         else
             name = _T("Wc3Collision");
         node->SetName(name);
@@ -1052,9 +1075,11 @@ void Wc3CollisionBuilder::buildCollisions(
                 translation = irCol.vertices[0];
             }
         }
-        // Only add pivot for animated shapes (NeoDex convention)
-        if (hasTransAnim)
-            translation += pivot;
+        //   v7 — the disassembler hands absolute vertices for every shape
+        //        (it adds the pivot to v1000+ KGTR hitboxes, the only ones
+        //        stored relative), so the pivot is no longer added here:
+        //        v800 shapes with tracks (VegetaMajin, Hagoromo) store
+        //        absolute vertices and moved by their pivot.
 
         Matrix3 tm;
         tm.IdentityMatrix();
@@ -1211,7 +1236,7 @@ void Wc3PopcornBuilder::buildPopcorn(
 
         MSTR name;
         if (irPE.nodeIndex >= 0 && irPE.nodeIndex < static_cast<int32_t>(irModel.nodes.size()))
-            name.printf(_T("%hs"), irModel.nodes[irPE.nodeIndex].name.c_str());
+            name = wdx::text::mdxToWide(irModel.nodes[irPE.nodeIndex].name).c_str();
         else
             name = _T("BlizzPopcorn");
         node->SetName(name);
@@ -1315,7 +1340,7 @@ void Wc3FaceFxBuilder::buildFaceFX(
 
         INode* node = gi->CreateObjectNode(obj);
         MSTR name;
-        name.printf(_T("%hs"), irAtt.name.c_str());
+        name = wdx::text::mdxToWide(irAtt.name).c_str();
         node->SetName(name);
 
         // By name: the plug-in's first parameter is "adsorption" (General
@@ -1517,10 +1542,10 @@ void Wc3SequenceBuilder::buildSequences(
     for (const auto& seq : sequences) {
         // Convert name to wide string, escape backslashes and quotes
         std::wstring wname;
-        for (char c : seq.name) {
-            if (c == '\\') wname += L"\\\\";
-            else if (c == '"') wname += L"\\\"";
-            else wname += static_cast<wchar_t>(c);
+        for (wchar_t c : wdx::text::mdxToWide(seq.name)) {
+            if (c == L'\\') wname += L"\\\\";
+            else if (c == L'"') wname += L"\\\"";
+            else wname += c;
         }
 
         TimeValue endTime = seq.endTime;
@@ -1531,13 +1556,13 @@ void Wc3SequenceBuilder::buildSequences(
 
         // Extent string: "radius minX minY minZ maxX maxY maxZ"
         wchar_t extBuf[256];
-        swprintf_s(extBuf, 256, L"%g %g %g %g %g %g %g",
+        _swprintf_s_l(extBuf, 256, L"%g %g %g %g %g %g %g", numLocale(),
             seq.extentRadius,
             seq.extentMin.x, seq.extentMin.y, seq.extentMin.z,
             seq.extentMax.x, seq.extentMax.y, seq.extentMax.z);
 
         wchar_t line[1024];
-        swprintf_s(line, 1024,
+        _swprintf_s_l(line, 1024,
             L"append rootNode.seqNames \"%s\"\n"
             L"append rootNode.startFrames %d\n"
             L"append rootNode.endFrames %d\n"
@@ -1545,7 +1570,7 @@ void Wc3SequenceBuilder::buildSequences(
             L"append rootNode.rarity %g\n"
             L"append rootNode.moveSpeed %g\n"
             L"append rootNode.seqExtents \"%s\"\n"
-            L"append rootNode.sharedGroup \"\"\n",
+            L"append rootNode.sharedGroup \"\"\n", numLocale(),
             wname.c_str(),
             startF, endF,
             seq.isLooping ? L"false" : L"true",  // nonLooping = !isLooping
@@ -1558,10 +1583,10 @@ void Wc3SequenceBuilder::buildSequences(
     // Create FrameTagManager entries (paired Start/End tags)
     for (const auto& seq : sequences) {
         std::wstring wname;
-        for (char c : seq.name) {
-            if (c == '\\') wname += L"\\\\";
-            else if (c == '"') wname += L"\\\"";
-            else wname += static_cast<wchar_t>(c);
+        for (wchar_t c : wdx::text::mdxToWide(seq.name)) {
+            if (c == L'\\') wname += L"\\\\";
+            else if (c == L'"') wname += L"\\\"";
+            else wname += c;
         }
         TimeValue endTime = seq.endTime;
         if (seq.startTime == endTime) endTime += 160;
@@ -1589,6 +1614,11 @@ void Wc3SequenceBuilder::buildSequences(
         if (seq.startTime < minTime) minTime = seq.startTime;
         if (seq.endTime > maxTime) maxTime = seq.endTime;
     }
+    // At least one frame: a range inside one frame ("main" 0-1 ms of
+    // sharedmodels\popcorntemplate.mdx = 4 ticks) makes 3ds Max divide by
+    // zero frames (EXCEPTION_INT_DIVIDE_BY_ZERO in 3dsmax.exe), and every
+    // import after it in the session fails the same way.
+    if (maxTime - minTime < GetTicksPerFrame()) maxTime = minTime + GetTicksPerFrame();
     gi->SetAnimRange(Interval(minTime, maxTime));
 }
 

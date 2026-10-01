@@ -15,7 +15,7 @@ macroScript WhiteoutDex_SequenceManager
 	on execute do
 	(
 		try (destroyDialog ::WdxSequenceManager.mainRollout) catch()
-		try (createDialog ::WdxSequenceManager.mainRollout width:444 height:402) catch()
+		try (createDialog ::WdxSequenceManager.mainRollout width:444 height:402 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)) catch()
 	)
 )
 
@@ -27,7 +27,7 @@ macroScript WhiteoutDex_VisibilityKeyer
 	on execute do
 	(
 		try (destroyDialog ::WdxVisibilityKeyer.mainRollout) catch()
-		try (createDialog ::WdxVisibilityKeyer.mainRollout width:440 height:242) catch()
+		try (createDialog ::WdxVisibilityKeyer.mainRollout width:440 height:242 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)) catch()
 	)
 )
 
@@ -39,7 +39,7 @@ macroScript WhiteoutDex_AnimGeneral
 	on execute do
 	(
 		try (destroyDialog ::WdxAnimTools.generalRoll) catch()
-		try (createDialog ::WdxAnimTools.generalRoll width:440 height:254) catch()
+		try (createDialog ::WdxAnimTools.generalRoll width:440 height:254 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)) catch()
 	)
 )
 
@@ -51,7 +51,7 @@ macroScript WhiteoutDex_AnimControllers
 	on execute do
 	(
 		try (destroyDialog ::WdxAnimTools.controllersRoll) catch()
-		try (createDialog ::WdxAnimTools.controllersRoll width:440 height:177) catch()
+		try (createDialog ::WdxAnimTools.controllersRoll width:440 height:177 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)) catch()
 	)
 )
 
@@ -63,7 +63,7 @@ macroScript WhiteoutDex_AnimSkin
 	on execute do
 	(
 		try (destroyDialog ::WdxAnimTools.skinRoll) catch()
-		try (createDialog ::WdxAnimTools.skinRoll width:440 height:92) catch()
+		try (createDialog ::WdxAnimTools.skinRoll width:440 height:92 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)) catch()
 	)
 )
 
@@ -75,7 +75,7 @@ macroScript WhiteoutDex_AnimScaler
 	on execute do
 	(
 		try (destroyDialog ::WdxAnimTools.scalerRoll) catch()
-		try (createDialog ::WdxAnimTools.scalerRoll width:440 height:172) catch()
+		try (createDialog ::WdxAnimTools.scalerRoll width:440 height:172 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)) catch()
 	)
 )
 
@@ -87,7 +87,7 @@ macroScript WhiteoutDex_SkinChanger
 	on execute do
 	(
 		try (destroyDialog ::WdxSkinChanger.mainRollout) catch()
-		try (createDialog ::WdxSkinChanger.mainRollout width:440 height:180) catch()
+		try (createDialog ::WdxSkinChanger.mainRollout width:440 height:245 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)) catch()
 	)
 )
 
@@ -99,7 +99,7 @@ macroScript WhiteoutDex_GridDummy
 	on execute do
 	(
 		try (destroyDialog ::WdxGridAndDummyCreator.mainRollout) catch()
-		try (createDialog ::WdxGridAndDummyCreator.mainRollout width:440 height:142) catch()
+		try (createDialog ::WdxGridAndDummyCreator.mainRollout width:440 height:142 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)) catch()
 	)
 )
 
@@ -111,7 +111,7 @@ macroScript WhiteoutDex_ObjectTools
 	on execute do
 	(
 		try (destroyDialog ::WdxObjectManipulationTools.mainRollout) catch()
-		try (createDialog ::WdxObjectManipulationTools.mainRollout width:440 height:362) catch()
+		try (createDialog ::WdxObjectManipulationTools.mainRollout width:440 height:362 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)) catch()
 	)
 )
 
@@ -123,7 +123,7 @@ macroScript WhiteoutDex_NodeManager
 	on execute do
 	(
 		try (destroyDialog ::WdxNodeManager.mainRollout) catch()
-		try (createDialog ::WdxNodeManager.mainRollout width:420 height:365) catch()
+		try (createDialog ::WdxNodeManager.mainRollout width:420 height:365 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)) catch()
 	)
 )
 
@@ -135,7 +135,7 @@ macroScript WhiteoutDex_ObjectSettings
 	on execute do
 	(
 		try (destroyDialog ::WdxObjectSettings.mainRollout) catch()
-		try (createDialog ::WdxObjectSettings.mainRollout width:440 height:232) catch()
+		try (createDialog ::WdxObjectSettings.mainRollout width:440 height:232 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)) catch()
 	)
 )
 
@@ -225,5 +225,21 @@ macroScript WhiteoutDex_MaterialFix
 				fileIn ((::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\MaterialFix.ms")
 			::WdxMaterialFix.open()
 		) catch (messageBox ((::WdxL.t "matfix_open_error_msg") + "\n" + (getCurrentException())))
+	)
+)
+
+macroScript WhiteoutDex_TextureAnimCreator
+	category:"WhiteoutDex Toolkit"
+	toolTip:"Texture Animation Creator"
+	buttonText:"Texture Anim"
+(
+	on execute do
+	(
+		try
+		(
+			if ::WdxTexAnimCreator == undefined do
+				fileIn ((::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\TextureAnimCreator.ms")
+			::WdxTexAnimCreator.open()
+		) catch (messageBox ((::WdxL.t "tac_open_error_msg") + "\n" + (getCurrentException())))
 	)
 )

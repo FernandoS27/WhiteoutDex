@@ -163,7 +163,14 @@ void ensureMipChain(wt::Texture& tex) {
     }
     (void)wasCompressed;
 
-    tex.generateMipmaps();
+    // generateMipmaps() without a count keeps the current one - 1 for a
+    // loaded .tga - and so made nothing: every converted BLP had mip 0 only,
+    // and Warcraft III draws the missing levels black once a model is
+    // zoomed out (MordorCatapult). The full chain down to 1x1 is asked for.
+    uint32_t levels = 1;
+    for (uint32_t s = std::max(tex.width(), tex.height()); s > 1; s >>= 1) ++levels;
+    if (auto err = tex.generateMipmaps(levels))
+        ELOG << "    [mipmaps] " << *err << "\n";
 }
 
 // ── Encoders ────────────────────────────────────────────────────────────────

@@ -233,7 +233,7 @@ extends:Bitmaptexture replaceUI:true version:11
 			tooltip:"Open MPQ/CASC Texture Browser"
 		label			lblSep0		"" height:2
 		dropdownlist	ddReplaceableId	"Replaceable Texture" \
-			items:#("Not Used", "Team Color", "Team Glow", "Cliff", "Lordaeron Tree", "Ashenvale Tree", "Barrens Tree", "Northrend Tree", "Mushroom Tree") \
+			items:#("Not Used", "Team Color", "Team Glow", "Cliff", "Lordaeron Tree", "Ashenvale Tree", "Barrens Tree", "Northrend Tree", "Mushroom Tree", "Ruins Tree", "Outland Mushroom Tree") \
 			width:300 align:#center
 		label			lblSep1		"" height:2
 		checkbox		chkWrapU	"U Tile (Wrap Width)" align:#left across:2
