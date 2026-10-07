@@ -131,3 +131,62 @@ std::vector<ir::Sequence> MdxSequenceManager::extractSequences(Interface* gi) {
     ELOG << "==== end SequenceManager ====\n\n"; EFLUSH;
     return sequences;
 }
+
+// Sequence extents (SEQS) from the exported meshes as Max plays each
+// sequence. The scene keeps the extents an imported model came with (Sequence
+// Manager "seqExtents") and the exporter wrote them back unchecked: fara14.max
+// was moved ~300 units after its import, so six sequences carried boxes that
+// missed the model completely (one with min Y above max Y), and two sequences
+// added later had none and got the bind pose, which Spell Throw leaves by 110
+// units. The game culls a unit by that box. A stored box stays while it holds
+// the meshes at the sequence start (an unedited import keeps its own values);
+// otherwise the meshes are evaluated on every frame of the sequence (at most
+// 61 times) and their world bounds are used; 17 samples still missed 11
+// units of Spell Throw's swing. GetDeformBBox with the node's object TM is
+// the precise box (maxsdk/include/object.h, Object::GetDeformBBox).
+void MdxSequenceManager::sampleExtents(std::vector<ir::Sequence>& sequences,
+                                       const std::vector<INode*>& meshNodes) {
+    if (meshNodes.empty()) return;
+    auto boundsAt = [&](TimeValue t) {
+        Box3 all;
+        for (INode* n : meshNodes) {
+            ObjectState os = n->EvalWorldState(t);
+            if (!os.obj) continue;
+            Matrix3 tm = n->GetObjTMAfterWSM(t);
+            Box3 b;
+            os.obj->GetDeformBBox(t, b, &tm);
+            if (!b.IsEmpty()) all += b;
+        }
+        return all;
+    };
+    const TimeValue tpf = std::max(GetTicksPerFrame(), 1);
+    for (auto& seq : sequences) {
+        if (seq.endTime < seq.startTime) continue;
+        Box3 atStart = boundsAt(seq.startTime);
+        if (atStart.IsEmpty()) continue;
+        if (seq.extentRadius > 0.0f) {
+            const Point3 mn(std::min(seq.extentMin.x, seq.extentMax.x), std::min(seq.extentMin.y, seq.extentMax.y),
+                            std::min(seq.extentMin.z, seq.extentMax.z));
+            const Point3 mx(std::max(seq.extentMin.x, seq.extentMax.x), std::max(seq.extentMin.y, seq.extentMax.y),
+                            std::max(seq.extentMin.z, seq.extentMax.z));
+            const float tol = 0.5f + 0.01f * Length(atStart.pmax - atStart.pmin);
+            bool holds = true;
+            for (int k = 0; k < 3; ++k)
+                holds = holds && mn[k] <= atStart.pmin[k] + tol && mx[k] >= atStart.pmax[k] - tol;
+            if (holds) continue;
+            ELOG << "  seq '" << seq.name << "' stored extent does not hold the meshes -> sampled\n";
+        }
+        const TimeValue span = seq.endTime - seq.startTime;
+        const int n = static_cast<int>(std::min<TimeValue>(60, span / tpf));
+        Box3 box = atStart;
+        for (int k = 1; k <= n; ++k)
+            box += boundsAt(seq.startTime + static_cast<TimeValue>(static_cast<int64_t>(span) * k / n));
+        seq.extentMin = box.pmin;
+        seq.extentMax = box.pmax;
+        seq.extentRadius = 0.5f * Length(box.pmax - box.pmin);
+        ELOG << "  seq '" << seq.name << "' extent sampled at " << (n + 1) << " times: ("
+             << box.pmin.x << "," << box.pmin.y << "," << box.pmin.z << ")..("
+             << box.pmax.x << "," << box.pmax.y << "," << box.pmax.z << ")\n";
+    }
+    EFLUSH;
+}

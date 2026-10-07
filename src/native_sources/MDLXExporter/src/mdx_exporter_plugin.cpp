@@ -280,6 +280,7 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     dialog.step(ExportStep::Meshes);
     core::MeshExtractor meshEx;
     std::vector<int32_t> meshBoneIdxs; // bones minted for unskinned meshes
+    std::vector<INode*> geosetNodes;   // meshes that became geosets (sequence extents)
     size_t meshTotal = 0, meshDone = 0;
     for (auto& sn:sceneResult.nodes) if(sn.category==core::NodeCategory::Mesh) ++meshTotal;
     for (auto& sn:sceneResult.nodes) {
@@ -364,6 +365,7 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
                 v.skinInfluences.push_back({ni, 1.0f});
             }
         }
+        geosetNodes.push_back(sn.maxNode);
         irModel.meshes.push_back(std::move(mesh));
     } EFLUSH;
 
@@ -441,7 +443,6 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     mdx_extract::extractRibbons(sceneResult.nodes,irModel,mtlMap,reporter);
     mdx_extract::extractEvents(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractCollisions(sceneResult.nodes,irModel,reporter);
-    mdx_extract::extractCameras(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractVertexColors(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractGeosetAnims(sceneResult.nodes,irModel,reporter);
     if(opts.version>=1200){mdx_extract::extractPopcorn(sceneResult.nodes,irModel,reporter);mdx_extract::extractFaceFX(sceneResult.nodes,irModel,reporter);}
@@ -449,7 +450,6 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
          << " Lights=" << irModel.lights.size() << " Attach=" << irModel.attachments.size()
          << " PE=" << irModel.particleEmitters.size() << " Ribbons=" << irModel.ribbonEmitters.size()
          << " Events=" << irModel.eventObjects.size() << " Collisions=" << irModel.collisionShapes.size()
-         << " Cameras=" << irModel.cameras.size()
          << " GeosetAnims=" << irModel.geosetAnims.size() << "\n";
     EFLUSH;
 
@@ -483,6 +483,11 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
              << "-" << irModel.sequences[0].endTime << ", looping) ***\n";
     }
     EFLUSH;
+    seqMgr.sampleExtents(irModel.sequences, geosetNodes);
+
+    // Cameras sample their tracks per sequence
+    mdx_extract::extractCameras(sceneResult.nodes,irModel,reporter);
+    ELOG << "Cameras=" << irModel.cameras.size() << "\n"; EFLUSH;
 
     // Bake
     ELOG << "\n==== Animation Bake ====\n";
