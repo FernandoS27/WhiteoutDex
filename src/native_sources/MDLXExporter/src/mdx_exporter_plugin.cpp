@@ -575,10 +575,19 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         // track whose seq-start/end stub keys get reduced away spends
         // the rest of the sequence lerping back to the first key —
         // Mr.War3's spell rays all re-swept at once. Keep every key.
-        std::unordered_set<int32_t> texAnimVec3TrackIndices;
+        std::unordered_set<int32_t> keepVec3TrackIndices;
         for (const auto& ta : irModel.textureAnimations) {
-            if (ta.translationTrackIndex >= 0) texAnimVec3TrackIndices.insert(ta.translationTrackIndex);
-            if (ta.scaleTrackIndex >= 0)       texAnimVec3TrackIndices.insert(ta.scaleTrackIndex);
+            if (ta.translationTrackIndex >= 0) keepVec3TrackIndices.insert(ta.translationTrackIndex);
+            if (ta.scaleTrackIndex >= 0)       keepVec3TrackIndices.insert(ta.scaleTrackIndex);
+        }
+        // Camera KCTR/KTTR, for the same reason: one track spans every
+        // sequence, so a camera holding still at a sequence end lost its end
+        // key (equal to the next sequence's start) and swung back towards its
+        // first key - arthasillidanfight's "Arthas Run 2" camera, last ~4 s.
+        // The extractor has already reduced them per sequence.
+        for (const auto& cam : irModel.cameras) {
+            if (cam.positionTrackIndex >= 0)       keepVec3TrackIndices.insert(cam.positionTrackIndex);
+            if (cam.targetPositionTrackIndex >= 0) keepVec3TrackIndices.insert(cam.targetPositionTrackIndex);
         }
 
         // ── PE2 Rotation Fix (NeoDex-compatible) ─────────────────
@@ -785,10 +794,10 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
             ko.optimize(irModel.floatTracks[i]);
         }
 
-        // Vec3 tracks: skip texture-anim tracks (boundary stubs required)
+        // Vec3 tracks: skip texture-anim and camera tracks (boundary keys required)
         for (size_t i = 0; i < irModel.vec3Tracks.size(); ++i) {
-            if (texAnimVec3TrackIndices.count(static_cast<int32_t>(i))) {
-                ELOG << "  skip vec3Track[" << i << "] (texture-anim, "
+            if (keepVec3TrackIndices.count(static_cast<int32_t>(i))) {
+                ELOG << "  skip vec3Track[" << i << "] (texture-anim/camera, "
                      << irModel.vec3Tracks[i].keys.size() << " keys preserved)\n";
                 continue;
             }
