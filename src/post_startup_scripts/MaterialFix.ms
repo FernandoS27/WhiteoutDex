@@ -40,7 +40,8 @@ struct WdxMatFixProfile
     pathPrefix = "",
     wrapMode = 1,                -- 1 keep, 2 U and V, 3 U only, 4 V only, 5 clamp
     transferNormal = true,       -- HD shader only
-    transferEmissive = true      -- HD shader only
+    transferEmissive = true,     -- HD shader only
+    fromSource = true            -- two-sided, unshaded, filter mode and opacity keys from the source material
 )
 
 struct WdxMaterialFixStruct
@@ -126,6 +127,7 @@ struct WdxMaterialFixStruct
         p.wrapMode            = M.iniInt  (getINISetting f sec "WrapMode") p.wrapMode 1 5
         p.transferNormal      = M.iniBool (getINISetting f sec "TransferNormal") p.transferNormal
         p.transferEmissive    = M.iniBool (getINISetting f sec "TransferEmissive") p.transferEmissive
+        p.fromSource          = M.iniBool (getINISetting f sec "FromSource") p.fromSource
         p
     ),
 
@@ -146,6 +148,7 @@ struct WdxMaterialFixStruct
         setINISetting f sec "WrapMode" (p.wrapMode as string)
         setINISetting f sec "TransferNormal" (b p.transferNormal)
         setINISetting f sec "TransferEmissive" (b p.transferEmissive)
+        setINISetting f sec "FromSource" (b p.fromSource)
     ),
 
     -- The removed export dialog tab kept one set of values in
@@ -315,6 +318,79 @@ struct WdxMaterialFixStruct
         false
     ),
 
+    -- 0 = no alpha, 1 = hard edges only (cut-out), 2 = soft alpha (smoke,
+    -- glow): sampled like texHasAlpha on a 5 x 5 grid.
+    fn texAlphaKind tex =
+    (
+        local nb = ::WdxMaterialFix.nativeBitmap tex
+        if nb == undefined then return 0
+        local b = try (nb.bitmap) catch (undefined)
+        if b == undefined then return 0
+        local w = b.width, h = b.height
+        local kind = 0
+        for iy = 0 to 4 do
+            for ix = 0 to 4 do
+            (
+                local px = (getPixels b [(ix * (w - 1)) / 4, (iy * (h - 1)) / 4] 1)[1]
+                if px != undefined and px.alpha < 250 do
+                (
+                    if px.alpha > 5 then return 2
+                    kind = 1
+                )
+            )
+        kind
+    ),
+
+    -- What the source material itself says. Effects ripped from a game come
+    -- as Standard materials that are two-sided, fully self-illuminated and
+    -- see-through (StandardMaterial: opacityType 0 Filter, 1 Subtractive,
+    -- 2 Additive - MAXScript Help, "StandardMaterial"). Returns
+    -- #(twoSided, unshaded, filter mode or 0 when the source says nothing).
+    fn sourceFlags src diff =
+    (
+        local M = ::WdxMaterialFix
+        local twoSided = (M.prop src #twoSided) == true or (M.prop src #thin_walled) == true
+        local unshaded = false
+        if classOf src == StandardMaterial do
+        (
+            if (M.prop src #useSelfIllumColor) == true then
+            (
+                local c = M.prop src #selfIllumColor
+                unshaded = c != undefined and c.r > 250 and c.g > 250 and c.b > 250
+            )
+            else
+            (
+                local a = M.prop src #selfIllumAmount
+                unshaded = a != undefined and a >= 100
+            )
+        )
+        local fm = 0
+        if classOf src == StandardMaterial and (M.prop src #opacityType) == 2 then fm = 4   -- Additive
+        else if (M.findMap src #opacity) != undefined or (M.sourceOpacity src) < 100 then fm = 3   -- Blend
+        else
+        (
+            local k = M.texAlphaKind diff
+            fm = if k == 2 then 3 else if k == 1 then 2 else 0
+        )
+        #(twoSided, unshaded, fm)
+    ),
+
+    -- Keyed opacity of the source (Standard's opacity) onto the Wc3 material,
+    -- which the exporter writes as the layer's alpha track.
+    fn copyOpacityKeys src wm =
+    (
+        local c = try (getPropertyController src #opacity) catch (undefined)
+        if c == undefined or (try (c.keys.count) catch (0)) == 0 then return false
+        wm.opacity.controller = copy c
+        wm.opacityCtrl = case classOf c of
+        (
+            Linear_Float: 2
+            TCB_Float: 4
+            default: 3
+        )
+        true
+    ),
+
     -- The exporter reads the MDX wrap flags from the bitmap's U/V tiling
     -- (wc3_material_extractor.cpp, GetTextureTiling).
     fn applyWrap tex mode =
@@ -391,9 +467,20 @@ struct WdxMaterialFixStruct
         )
 
         -- Filter mode last: it configures the opacity map the diffuseMap
-        -- handler builds from the diffuse texture.
+        -- handler builds from the diffuse texture. With "from the source
+        -- material" on, a source that is see-through or additive decides the
+        -- mode, two-sided and self-illuminated (unshaded) carry over, and so
+        -- do opacity keys; the profile covers what the source does not say.
         local fm = p.filterMode
-        if fm == 0 do
+        local srcF = if p.fromSource then (M.sourceFlags src diff) else undefined
+        if srcF != undefined do
+        (
+            if srcF[1] do wm.twoSided = true
+            if srcF[2] do wm.unshaded = true
+            M.copyOpacityKeys src wm
+        )
+        if srcF != undefined and srcF[3] > 0 then fm = srcF[3]
+        else if fm == 0 do
             fm = if (M.findMap src #opacity) != undefined or (M.texHasAlpha diff) then 2 else 1
         wm.filterMode = fm
         if fm >= 3 do wm.noDepthSet = p.noDepthSet
@@ -504,13 +591,13 @@ struct WdxMaterialFixStruct
     -- inside the struct body the compiler only resolves the rollout through
     -- the struct member, so a differently named member leaves every
     -- reference to the rollout "Undeclared variable".
-    mainRollout = rollout mainRollout "Material Fix Settings" width:380 height:580
+    mainRollout = rollout mainRollout "Material Fix Settings" width:380 height:602
     (
         label lblHeader "Converts Standard, Physical and PBR materials into Wc3 materials." pos:[10,8] width:360 height:30
         checkbutton tabSD "SD (Classic)" pos:[10,40] width:178 height:24 checked:true
         checkbutton tabHD "HD (Reforged)" pos:[192,40] width:178 height:24
 
-        GroupBox grpRender "Rendering" pos:[10,72] width:360 height:134
+        GroupBox grpRender "Rendering" pos:[10,72] width:360 height:156
         label lblFilter "Filter mode" pos:[22,95] width:104 height:16
         dropdownlist ddFilter "" pos:[130,92] width:228 height:20 items:#("Automatic (alpha -> Transparent)", "None", "Transparent", "Blend", "Additive", "Add alpha", "Modulate", "Modulate 2x")
         checkbox chkTwoSided "Two sided" pos:[22,120] width:170 height:18
@@ -521,31 +608,32 @@ struct WdxMaterialFixStruct
         checkbox chkNoDSet "No depth set" pos:[196,160] width:170 height:18
         checkbox chkAmbOcc "Ambient occlusion (HD)" pos:[22,180] width:170 height:18
         checkbox chkBackShadow "Back faces for shadows (HD)" pos:[196,180] width:170 height:18
+        checkbox chkFromSource "Take two-sided, unshaded and transparency from the source material" pos:[22,202] width:340 height:18
 
-        GroupBox grpTex "Textures" pos:[10,212] width:360 height:114
-        label lblPrefix "Path prefix" pos:[22,235] width:104 height:16
-        edittext edtPrefix "" pos:[126,232] width:152 height:20
-        dropdownlist ddPreset "" pos:[282,232] width:76 height:20 items:#("Presets")
-        label lblWrap "Wrapping" pos:[22,261] width:104 height:16
-        dropdownlist ddWrap "" pos:[130,258] width:228 height:20 items:#("Keep from source", "Wrap U and V", "Wrap U only", "Wrap V only", "Clamp (no wrap)")
-        checkbox chkNormal "Normal / bump map -> Normal (HD)" pos:[22,284] width:340 height:18
-        checkbox chkEmissive "Emission map -> Emissive (HD)" pos:[22,304] width:340 height:18
+        GroupBox grpTex "Textures" pos:[10,234] width:360 height:114
+        label lblPrefix "Path prefix" pos:[22,257] width:104 height:16
+        edittext edtPrefix "" pos:[126,254] width:152 height:20
+        dropdownlist ddPreset "" pos:[282,254] width:76 height:20 items:#("Presets")
+        label lblWrap "Wrapping" pos:[22,283] width:104 height:16
+        dropdownlist ddWrap "" pos:[130,280] width:228 height:20 items:#("Keep from source", "Wrap U and V", "Wrap U only", "Wrap V only", "Clamp (no wrap)")
+        checkbox chkNormal "Normal / bump map -> Normal (HD)" pos:[22,306] width:340 height:18
+        checkbox chkEmissive "Emission map -> Emissive (HD)" pos:[22,326] width:340 height:18
 
-        GroupBox grpFix "Fix all in the export dialog" pos:[10,332] width:360 height:70
-        label lblFixUses "Uses" pos:[22,355] width:104 height:16
-        dropdownlist ddFixProfile "" pos:[130,352] width:228 height:20 items:#("SD settings", "HD settings")
-        checkbox chkSuffix "Add _wc3 to the material name" pos:[22,378] width:340 height:18
+        GroupBox grpFix "Fix all in the export dialog" pos:[10,354] width:360 height:70
+        label lblFixUses "Uses" pos:[22,377] width:104 height:16
+        dropdownlist ddFixProfile "" pos:[130,374] width:228 height:20 items:#("SD settings", "HD settings")
+        checkbox chkSuffix "Add _wc3 to the material name" pos:[22,400] width:340 height:18
 
-        GroupBox grpConvert "Convert now" pos:[10,408] width:360 height:126
-        label lblUses "" pos:[22,428] width:340 height:16
-        label lblSel "" pos:[22,448] width:340 height:16
-        label lblScene "" pos:[22,466] width:340 height:16
-        button btnConvSel "Convert selected objects" pos:[22,486] width:164 height:26
-        button btnConvScene "Convert whole scene" pos:[194,486] width:164 height:26
-        label lblResult "" pos:[22,516] width:340 height:16
+        GroupBox grpConvert "Convert now" pos:[10,430] width:360 height:126
+        label lblUses "" pos:[22,450] width:340 height:16
+        label lblSel "" pos:[22,470] width:340 height:16
+        label lblScene "" pos:[22,488] width:340 height:16
+        button btnConvSel "Convert selected objects" pos:[22,508] width:164 height:26
+        button btnConvScene "Convert whole scene" pos:[194,508] width:164 height:26
+        label lblResult "" pos:[22,538] width:340 height:16
 
-        button btnReset "Reset tab to defaults" pos:[10,544] width:170 height:26
-        button btnClose "Close" pos:[270,544] width:100 height:26
+        button btnReset "Reset tab to defaults" pos:[10,566] width:170 height:26
+        button btnClose "Close" pos:[270,566] width:100 height:26
 
         -- Folder presets for the path prefix; entry 1 is the list's caption.
         local prefixPresets = #("", "Textures\\", "war3mapImported\\", "ReplaceableTextures\\", "UI\\")
@@ -573,6 +661,7 @@ struct WdxMaterialFixStruct
             chkNoDSet.text = M.tr "mat_no_depth_set_chk" chkNoDSet.text
             chkAmbOcc.text = M.tr "matfix_ambient_occlusion_chk" chkAmbOcc.text
             chkBackShadow.text = M.tr "matfix_back_faces_chk" chkBackShadow.text
+            chkFromSource.text = M.tr "matfix_from_source_chk" chkFromSource.text
             grpTex.text = M.tr "matfix_textures_grp" grpTex.text
             lblPrefix.text = M.tr "matfix_prefix_lbl" lblPrefix.text
             lblWrap.text = M.tr "matfix_wrap_lbl" lblWrap.text
@@ -612,6 +701,7 @@ struct WdxMaterialFixStruct
             chkNoDSet.enabled = p.filterMode >= 3
             chkAmbOcc.checked = p.ambientOcclusion
             chkBackShadow.checked = p.backFacesForShadows
+            chkFromSource.checked = p.fromSource
             edtPrefix.text = p.pathPrefix
             ddPreset.selection = 1
             ddWrap.selection = p.wrapMode
@@ -666,6 +756,7 @@ struct WdxMaterialFixStruct
         on chkNoDSet changed s do ( local p = cur(); p.noDepthSet = s; saveNow() )
         on chkAmbOcc changed s do ( local p = cur(); p.ambientOcclusion = s; saveNow() )
         on chkBackShadow changed s do ( local p = cur(); p.backFacesForShadows = s; saveNow() )
+        on chkFromSource changed s do ( local p = cur(); p.fromSource = s; saveNow() )
         on edtPrefix changed txt do ( local p = cur(); p.pathPrefix = txt; saveNow() )
         on ddPreset selected i do
         (
