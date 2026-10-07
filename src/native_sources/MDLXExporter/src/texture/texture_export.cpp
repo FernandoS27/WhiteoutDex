@@ -173,6 +173,48 @@ void ensureMipChain(wt::Texture& tex) {
         ELOG << "    [mipmaps] " << *err << "\n";
 }
 
+// ── Power-of-two size for Classic ───────────────────────────────────────────
+//
+// Warcraft III Classic draws a BLP whose sides are not powers of two wrong or
+// not at all (1536x768 from a ripped game texture). The texture is scaled up
+// to the next power of two per side, bilinear; the UVs stay valid because
+// they are relative to the texture.
+
+uint32_t nextPow2(uint32_t v) {
+    uint32_t p = 1;
+    while (p < v) p <<= 1;
+    return p;
+}
+
+bool resizeToPow2(wt::Texture& tex) {
+    const uint32_t w = tex.width(), h = tex.height();
+    const uint32_t nw = nextPow2(w), nh = nextPow2(h);
+    if (w == 0 || h == 0 || (nw == w && nh == h)) return false;
+    if (tex.format() != wt::PixelFormat::RGBA8) tex.format(wt::PixelFormat::RGBA8);
+    const auto src = tex.mipData(0);
+    if (src.size() < static_cast<size_t>(w) * h * 4) return false;
+    wt::Texture out = wt::Texture::create2D(wt::PixelFormat::RGBA8, nw, nh, 1);
+    auto dst = out.mipData(0);
+    for (uint32_t y = 0; y < nh; ++y) {
+        const float fy = std::clamp((y + 0.5f) * h / nh - 0.5f, 0.0f, float(h - 1));
+        const uint32_t y0 = static_cast<uint32_t>(fy), y1 = std::min(y0 + 1, h - 1);
+        const float ty = fy - y0;
+        for (uint32_t x = 0; x < nw; ++x) {
+            const float fx = std::clamp((x + 0.5f) * w / nw - 0.5f, 0.0f, float(w - 1));
+            const uint32_t x0 = static_cast<uint32_t>(fx), x1 = std::min(x0 + 1, w - 1);
+            const float tx = fx - x0;
+            for (int c = 0; c < 4; ++c) {
+                const float a = src[(size_t(y0) * w + x0) * 4 + c], b = src[(size_t(y0) * w + x1) * 4 + c];
+                const float d = src[(size_t(y1) * w + x0) * 4 + c], e = src[(size_t(y1) * w + x1) * 4 + c];
+                const float v = (a + (b - a) * tx) + ((d + (e - d) * tx) - (a + (b - a) * tx)) * ty;
+                dst[(size_t(y) * nw + x) * 4 + c] = static_cast<whiteout::u8>(std::clamp(v + 0.5f, 0.0f, 255.0f));
+            }
+        }
+    }
+    tex = std::move(out);
+    return true;
+}
+
 // ── Encoders ────────────────────────────────────────────────────────────────
 
 bool writeBlp(const wt::Texture& texIn, const fs::path& dstPath,
@@ -350,6 +392,25 @@ void convertExportTextures(ir::IRModel& model,
         }
         ELOG << "    loaded: " << loaded->width() << "x" << loaded->height()
              << " mips=" << loaded->mipCount() << "\n";
+
+        // Classic BLP: sides a power of two (see resizeToPow2). A source
+        // that came with mipmaps gets a new chain at the new size.
+        bool resized = false;
+        if (!isReforged) {
+            const uint32_t ow = loaded->width(), oh = loaded->height();
+            const bool hadMips = loaded->mipCount() > 1;
+            resized = resizeToPow2(*loaded);
+            if (resized) {
+                ELOG << "    resized " << ow << "x" << oh << " -> " << loaded->width()
+                     << "x" << loaded->height() << " (power of two)\n";
+                std::wstringstream ws;
+                ws << L"Texture scaled to a power of two (" << ow << L"x" << oh << L" -> "
+                   << loaded->width() << L"x" << loaded->height() << L"): "
+                   << widen(tex.sourceDiskPath);
+                reporter.warning(ws.str());
+                if (hadMips && !opts.texGenerateMipmaps) ensureMipChain(*loaded);
+            }
+        }
 
         // Optional mipmap regeneration.
         if (opts.texGenerateMipmaps)

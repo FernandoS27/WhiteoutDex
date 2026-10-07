@@ -505,6 +505,31 @@ static Control* getParamController(ReferenceTarget* ref, const wchar_t* name) {
     return GetControlInterface(anim);
 }
 
+static BitmapTex* unwrapBitmapTex(Texmap* tex);
+
+// The texture's fixed Coordinates (offset, tiling, W angle) onto the layer,
+// to be baked into the geoset UVs. Only explicit map-channel mapping without
+// U/V angles (a 2D transform). Ripped models carry them - the eyes' pupils
+// sit at a U/V offset of 0.5 - and the export used to drop them.
+static void readStaticUVTransform(Texmap* tex, ir::MaterialLayer& layer) {
+    BitmapTex* bmt = unwrapBitmapTex(tex);
+    StdUVGen* uv = bmt ? bmt->GetUVGen() : nullptr;
+    // A texture slot reading a mesh map channel (GetCoordMapping reports 4 for
+    // that in Max 2027, not UVMAP_EXPLICIT - the source and slot are reliable)
+    if (!uv || uv->GetSlotType() != MAPSLOT_TEXTURE || uv->GetUVWSource() != UVWSRC_EXPLICIT) return;
+    const TimeValue t = 0;
+    if (std::fabs(uv->GetUAng(t)) > 1e-6f || std::fabs(uv->GetVAng(t)) > 1e-6f) return;
+    const float uo = uv->GetUOffs(t), vo = uv->GetVOffs(t);
+    const float us = uv->GetUScl(t), vs = uv->GetVScl(t), wa = uv->GetWAng(t);
+    if (std::fabs(uo) < 1e-6f && std::fabs(vo) < 1e-6f && std::fabs(us - 1.0f) < 1e-6f &&
+        std::fabs(vs - 1.0f) < 1e-6f && std::fabs(wa) < 1e-6f)
+        return;
+    layer.hasStaticUV = true;
+    layer.uvOffsetU = uo; layer.uvOffsetV = vo;
+    layer.uvTilingU = us; layer.uvTilingV = vs;
+    layer.uvAngleW = wa;
+}
+
 // Unwrap a Texmap to its native BitmapTex: the texmap itself when it is one,
 // the BitmapTex delegate when it's a Wc3Bitmap wrapper, else nullptr.
 static BitmapTex* unwrapBitmapTex(Texmap* tex) {
@@ -1984,6 +2009,11 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         int32_t taIdx = extractTextureAnimationFromMaterial(mtlRef, model);
         if (taIdx >= 0)
             layer.textureAnimationIndex = taIdx;
+        else {
+            Texmap* diffuseTex = nullptr;
+            readTexmapFB(mtlRef, L"diffuseMap", L"texture", diffuseTex);
+            readStaticUVTransform(diffuseTex, layer);
+        }
     }
 
     // --- Reforged PBR maps ---
@@ -2216,6 +2246,25 @@ void extractCompositeMaterial(Mtl* mtl, ir::IRModel& model,
 // Material Fix's texHasAlpha: alpha below 250 somewhere on a 5 x 5 grid. An
 // alpha channel that is opaque everywhere (common in BLP and TGA) does not
 // count. False when the bitmap is not loaded, as in the tool.
+// 0 = no alpha, 1 = hard edges only (cut-out), 2 = soft alpha - sampled on
+// the same 5 x 5 grid as MaterialFix.ms texAlphaKind.
+static int bitmapAlphaKind(Texmap* tex) {
+    BitmapTex* bmt = unwrapBitmapTex(tex);
+    Bitmap* bm = bmt ? bmt->GetBitmap(0) : nullptr;
+    if (!bm || bm->Width() <= 0 || bm->Height() <= 0) return 0;
+    const int w = bm->Width(), h = bm->Height();
+    int kind = 0;
+    for (int iy = 0; iy <= 4; ++iy)
+        for (int ix = 0; ix <= 4; ++ix) {
+            BMM_Color_64 px;
+            if (bm->GetPixels(ix * (w - 1) / 4, iy * (h - 1) / 4, 1, &px) && px.a < 250 * 257) {
+                if (px.a > 5 * 257) return 2;
+                kind = 1;
+            }
+        }
+    return kind;
+}
+
 static bool bitmapShowsAlpha(Texmap* tex) {
     BitmapTex* bmt = unwrapBitmapTex(tex);
     Bitmap* bm = bmt ? bmt->GetBitmap(0) : nullptr;
@@ -2253,6 +2302,48 @@ void extractForeignMaterial(Mtl* mtl, ir::IRModel& model) {
     layer.unfogged = fix.unfogged;
     layer.twoSided = fix.twoSided;
     layer.noDepthTest = fix.noDepthTest;
+
+    // "From the source material" (MaterialFix.ms sourceFlags / copyOpacityKeys):
+    // two-sided, fully self-illuminated (unshaded), see-through or additive
+    // carry over, and so do opacity keys. Standard's transparency type is
+    // TRANSP_SUBTRACTIVE 0 / TRANSP_ADDITIVE 1 / TRANSP_FILTER 2 (stdmat.h).
+    if (fix.fromSource && mtl) {
+        BOOL thin = FALSE;
+        if (core::ParamBlockReader::readBoolByName(mtl, L"thin_walled", 0, thin) && thin)
+            layer.twoSided = true;
+        int srcFm = 0;
+        if (mtl->ClassID() == Class_ID(DMTL_CLASS_ID, 0)) {
+            StdMat2* sm = static_cast<StdMat2*>(mtl);
+            if (sm->GetTwoSided()) layer.twoSided = true;
+            if (sm->GetSelfIllumColorOn()) {
+                const Color c = sm->GetSelfIllumColor(0);
+                if (c.r > 0.98f && c.g > 0.98f && c.b > 0.98f) layer.unshaded = true;
+            } else if (sm->GetSelfIllum(0) >= 0.999f) {
+                layer.unshaded = true;
+            }
+            if (sm->GetTransparencyType() == TRANSP_ADDITIVE) srcFm = 4;
+        }
+        if (srcFm == 0) {
+            if (wdx::material::OpacityTexmap(mtl) || layer.alpha < 0.999f) srcFm = 3;
+            else {
+                const int k = bitmapAlphaKind(colorTex);
+                srcFm = (k == 2) ? 3 : (k == 1) ? 2 : 0;
+            }
+        }
+        if (srcFm > 0) {
+            filterMode = srcFm;
+            layer.blendMode = blendModeFromFilterDropdown(filterMode);
+        }
+        if (Control* oc = getParamController(mtl, L"opacity")) {
+            ir::InterpolationType interp = detectInterpFromController(oc);
+            if (interp == ir::InterpolationType::None) interp = ir::InterpolationType::Linear;
+            const int32_t trackIdx = extractOpacityTrack(mtl, interp, model);
+            if (trackIdx >= 0) {
+                layer.alphaTrackIndex = trackIdx;
+                layer.alpha = 1.0f;
+            }
+        }
+    }
     layer.noDepthWrite = fix.noDepthSet && filterMode >= 3;
     if (fix.constantColor) mat.flags |= 0x01;
 
@@ -2269,6 +2360,7 @@ void extractForeignMaterial(Mtl* mtl, ir::IRModel& model) {
             ref.slot = ir::TextureSlot::Diffuse;
             layer.textureRefs.push_back(ref);
         }
+        readStaticUVTransform(colorTex, layer);
     }
 
     mat.layers.push_back(std::move(layer));

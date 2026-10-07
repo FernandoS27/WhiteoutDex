@@ -147,6 +147,15 @@ struct MaterialLayer {
     float alpha = 1.0f;
     int32_t uvSetIndex = 0;
 
+    // Fixed (unkeyed) Coordinates of the layer's texture - offset, tiling and
+    // W angle - that MDX can only carry in the UVs. Measured in Max 2027
+    // (renderMap): texel = S(tiling) * R(wAngle) * (uv - 0.5 - offset) + 0.5,
+    // V up. Keyed coordinates become a TXAN instead.
+    bool hasStaticUV = false;
+    float uvOffsetU = 0.0f, uvOffsetV = 0.0f;
+    float uvTilingU = 1.0f, uvTilingV = 1.0f;
+    float uvAngleW = 0.0f;  // radians
+
     bool unshaded = false;
     bool twoSided = false;
     bool noDepthTest = false;

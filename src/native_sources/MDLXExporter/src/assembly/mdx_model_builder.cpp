@@ -444,6 +444,39 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             geo.materialId = 0;
         }
 
+        // A layer whose texture has fixed Coordinates (offset, tiling, W angle)
+        // shows them through this geoset's UVs: MDX has no static texture
+        // transform, so they are baked in (MaterialLayer::hasStaticUV).
+        // One transform per UV set; layers that disagree leave the set as is.
+        const ir::MaterialLayer* staticUV[ir::kMaxUVSets] = {};
+        bool staticUVConflict[ir::kMaxUVSets] = {};
+        bool plainUVLayer[ir::kMaxUVSets] = {};
+        if (irMesh.materialIndex >= 0 && irMesh.materialIndex < static_cast<int32_t>(ir.materials.size())) {
+            for (const auto& L : ir.materials[irMesh.materialIndex].layers) {
+                if (L.uvSetIndex < 0 || L.uvSetIndex >= ir::kMaxUVSets) continue;
+                if (!L.hasStaticUV) { plainUVLayer[L.uvSetIndex] = true; continue; }
+                const ir::MaterialLayer*& slot = staticUV[L.uvSetIndex];
+                if (slot && (slot->uvOffsetU != L.uvOffsetU || slot->uvOffsetV != L.uvOffsetV ||
+                             slot->uvTilingU != L.uvTilingU || slot->uvTilingV != L.uvTilingV ||
+                             slot->uvAngleW != L.uvAngleW))
+                    staticUVConflict[L.uvSetIndex] = true;
+                slot = &L;
+            }
+            for (int k = 0; k < ir::kMaxUVSets; ++k)
+                if (staticUV[k] && plainUVLayer[k]) staticUVConflict[k] = true;
+        }
+        auto bakeUV = [&](int set, Point2 p) -> Point2 {
+            const ir::MaterialLayer* L = staticUV[set];
+            if (!L || staticUVConflict[set]) return p;
+            // stored V points down (1 - v); Max's texel = S * R(w) * (uv - 0.5 - offset) + 0.5
+            const float du = p.x - 0.5f - L->uvOffsetU;
+            const float dv = (1.0f - p.y) - 0.5f - L->uvOffsetV;
+            const float c = std::cos(L->uvAngleW), s = std::sin(L->uvAngleW);
+            const float x = (du * c - dv * s) * L->uvTilingU;
+            const float y = (du * s + dv * c) * L->uvTilingV;
+            return Point2(x + 0.5f, 1.0f - (y + 0.5f));
+        };
+
         // Vertex data
         for (auto& v : irMesh.vertices) {
             geo.vertexPositions.push_back(mdx_transform::position(v.position * invScale));
@@ -454,7 +487,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
                 if (uv >= static_cast<int>(geo.textureCoordinateSets.size()))
                     geo.textureCoordinateSets.resize(static_cast<size_t>(uv + 1));
                 geo.textureCoordinateSets[uv].push_back(
-                    mdx_transform::texcoord(v.uvSets[uv]));
+                    mdx_transform::texcoord(bakeUV(uv, v.uvSets[uv])));
             }
 
             // Tangent
