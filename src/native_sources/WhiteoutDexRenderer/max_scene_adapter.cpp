@@ -3514,7 +3514,7 @@ bool whiteout::flakes::ReadActiveViewportCamera(ViewportCameraPose& out) {
         right = right.normalized();
         const Vector3f upBase = cross(right, fwd).normalized();
         const Vector3f up = MaxDirToDefault(upMax);
-        out.roll = std::atan2(up.dot(right), up.dot(upBase));
+        out.roll = std::atan2(-up.dot(right), up.dot(upBase));  // up = cos·upBase − sin·right
     }
     return true;
 }
