@@ -338,10 +338,11 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
                  << "' has no faces -> helper, no geoset\n";
             continue;
         }
+        // Fixed here, so the log has it and the report stays quiet.
         if (fixInsideOutWinding(mesh))
-            reporter.warning(L"Triangles wound against their normals (inside out in the game); "
-                             L"the winding was reversed in the export, the scene is unchanged.",
-                             sn.maxNode->GetName());
+            reporter.info(L"Triangles wound against their normals (inside out in the game); "
+                          L"the winding was reversed in the export, the scene is unchanged.",
+                          sn.maxNode->GetName());
         ISkin* skin=core::ModifierReader::findSkin(sn.maxNode);
         if(skin) {
             resolveSkinIndices(sn.maxNode,mesh,boneResult.nodeToIndex,irModel.bones);
@@ -964,6 +965,12 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     // open behind it, and before the folder opens.
     dialog.close();
 
+    // The report shows 50 entries and points to the log for the rest.
+    ELOG << "\n==== Report (" << reporter.entries().size() << " entries) ====\n";
+    for (const auto& e : reporter.entries())
+        ELOG << (e.severity == core::Severity::Error ? "ERROR" : e.severity == core::Severity::Warning ? "WARNING" : "INFO")
+             << ": [" << wcharToUtf8(e.nodeName.c_str()) << "] " << wcharToUtf8(e.message.c_str()) << "\n";
+    EFLUSH;
     if (reporter.hasWarnings() || reporter.hasErrors())
         reporter.showSummaryDialog(gi->GetMAXHWnd());
 

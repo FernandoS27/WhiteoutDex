@@ -168,7 +168,7 @@ BoneExtractor::BoneResult BoneExtractor::extract(
         if (name) {
             std::wstring wname(name);
             bone.name.assign(wname.begin(), wname.end());
-            reporter.warning(L"Implicit bone added from Skin modifier: '" + wname + L"'.");
+            reporter.info(L"Implicit bone added from Skin modifier: '" + wname + L"'.");
         }
         bone.nodeIndex = traversalIndexOf(boneNode);
         bone.type = detectBoneType(boneNode);

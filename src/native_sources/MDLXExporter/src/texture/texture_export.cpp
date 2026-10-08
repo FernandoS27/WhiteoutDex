@@ -407,7 +407,7 @@ void convertExportTextures(ir::IRModel& model,
                 ws << L"Texture scaled to a power of two (" << ow << L"x" << oh << L" -> "
                    << loaded->width() << L"x" << loaded->height() << L"): "
                    << widen(tex.sourceDiskPath);
-                reporter.warning(ws.str());
+                reporter.info(ws.str());  // done here, nothing to act on
                 if (hadMips && !opts.texGenerateMipmaps) ensureMipChain(*loaded);
             }
         }
