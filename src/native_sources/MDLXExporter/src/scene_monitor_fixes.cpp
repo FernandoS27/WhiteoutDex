@@ -1085,8 +1085,10 @@ int fixMultiMaterialMeshes(const ScanResult& result) {
 // Fix all
 // ============================================================================
 
-int fixDuplicateMaterials(const ScanResult& result) {
-    if (result.countByType(ProblemType::DuplicateMaterial) == 0) return 0;
+namespace {
+// WdxMergeDuplicateMaterials finds the identical materials itself and merges
+// nothing when there are none.
+int mergeDuplicateMaterials() {
     const wchar_t* script =
         L"if ::WdxMergeDuplicateMaterials == undefined then 0 else (undo \"Merge Identical Materials\" on (::WdxMergeDuplicateMaterials()))";
     FPValue value;
@@ -1105,26 +1107,35 @@ int fixDuplicateMaterials(const ScanResult& result) {
     ELOG << "[matMerge] merged " << merged << " duplicate material(s)\n"; EFLUSH;
     return merged;
 }
+} // namespace
+
+int fixDuplicateMaterials(const ScanResult& result) {
+    if (result.countByType(ProblemType::DuplicateMaterial) == 0) return 0;
+    return mergeDuplicateMaterials();
+}
 
 int fixAll(const ScanResult& result) {
     int n = 0;
     n += fixDuplicateNames(result);
     // The split replaces nodes and hands the pieces sub-materials the first
     // scan never flagged as a node's material, so scan again for the rest.
+    // The identical-material search is nearly all of a scan's time (10 s on
+    // Ichigo's scene), so it runs once, inside the merge, rather than in a
+    // rescan here and again in the merge.
     if (result.countByType(ProblemType::MultiMaterialMesh) > 0) {
         n += fixMultiMaterialMeshes(result);
-        const ScanResult after = scanScene();
+        const ScanResult after = scanScene(false);
         n += fixMeshProblems(after);
         n += fixBoneControllers(after);
         n += fixUnsupportedMaterials(after);
-        n += fixDuplicateMaterials(scanScene());
+        n += mergeDuplicateMaterials();
         return n;
     }
     n += fixMeshProblems(result);
     n += fixBoneControllers(result);
     n += fixUnsupportedMaterials(result);
-    // Materials the conversion made alike are merged too: scan again.
-    n += fixDuplicateMaterials(scanScene());
+    // Materials the conversion made alike are merged too.
+    n += mergeDuplicateMaterials();
     return n;
 }
 

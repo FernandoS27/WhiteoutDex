@@ -23,91 +23,145 @@ global WdxMergeDuplicateMaterials
 global WdxMatSigController
 global WdxMatSigValue
 global WdxMatSceneNodeMaterials
+global WdxMatSigControllerTo
+global WdxMatSigValueTo
+global WdxMatSignatureTo
+
+-- The signature is written into one stringStream: built with "s += ...",
+-- every key copied the whole text so far. Ichigo's eye material has a UV
+-- animation of thousands of keys (a 307,000-character signature): 39 s and
+-- gigabytes of garbage per call, the export dialog took 3 minutes to open
+-- and Fix all ran Max out of memory.
 
 -- A controller's animation: class, out-of-range types and every key
 -- (time, value, tangents). A controller without keys (expression, noise,
 -- list...) by its value at a few frames of the animation range.
-fn WdxMatSigController c =
+fn WdxMatSigControllerTo c ss =
 (
-	if c == undefined do return ""
-	local s = (classOf c) as string
-	s += " ort " + ((try (getBeforeORT c) catch (#none)) as string) + "/" + ((try (getAfterORT c) catch (#none)) as string)
+	if c == undefined do return ok
+	format "%" ((classOf c) as string) to:ss
+	format " ort %/%" ((try (getBeforeORT c) catch (#none)) as string) ((try (getAfterORT c) catch (#none)) as string) to:ss
 	local n = try (numKeys c) catch (-1)
 	if n == undefined do n = -1
 	if n > 0 then
 	(
+		local keys = try (c.keys) catch (undefined)
+		-- Which of these the controller's keys have is asked once, on the
+		-- first key: a Bezier key has no tension, a TCB key no tangents, and
+		-- reading a missing one threw a caught exception on every key.
+		local kp = #(#inTangentType, #outTangentType, #inTangent, #outTangent, #tension, #continuity, #bias)
+		local has = undefined
 		for k = 1 to n do
 		(
 			local t = try (getKeyTime c k) catch (undefined)
-			local key = try (c.keys[k]) catch (undefined)
+			local key = try (keys[k]) catch (undefined)
 			local v = try (at time t c.value) catch ("?")
-			s += " [" + (t as string) + "=" + (v as string)
+			format " [%=%" (t as string) (v as string) to:ss
 			if key != undefined do
 			(
-				s += " " + ((try (key.inTangentType) catch ("")) as string) + "/" + ((try (key.outTangentType) catch ("")) as string)
-				s += " " + ((try (key.inTangent) catch ("")) as string) + "/" + ((try (key.outTangent) catch ("")) as string)
-				s += " " + ((try (key.tension) catch ("")) as string) + "/" + ((try (key.continuity) catch ("")) as string) + "/" + ((try (key.bias) catch ("")) as string)
+				if has == undefined do has = for p in kp collect (try (getProperty key p; true) catch (false))
+				local pv = for i = 1 to kp.count collect (if has[i] then ((try (getProperty key kp[i]) catch ("")) as string) else "")
+				format " %/% %/% %/%/%" pv[1] pv[2] pv[3] pv[4] pv[5] pv[6] pv[7] to:ss
 			)
-			s += "]"
+			format "]" to:ss
 		)
 	)
 	else if n < 0 then
 	(
 		local r = animationRange
 		for t in #(r.start, (r.start + r.end) / 2, r.end) do
-			s += " @" + (t as string) + "=" + ((try (at time t c.value) catch ("?")) as string)
+			format " @%=%" (t as string) ((try (at time t c.value) catch ("?")) as string) to:ss
 	)
 	-- sub-controllers (list controllers, XYZ splits)
 	for i = 1 to (try (c.numSubs) catch (0)) do
 	(
 		local sc = try (c[i].controller) catch (undefined)
-		if sc != undefined do s += " {" + (WdxMatSigController sc) + "}"
+		if sc != undefined do
+		(
+			format " {" to:ss
+			WdxMatSigControllerTo sc ss
+			format "}" to:ss
+		)
 	)
-	s
+	ok
+)
+
+fn WdxMatSigValueTo v depth seen ss =
+(
+	if v == undefined then format "u" to:ss
+	else if isKindOf v Material or isKindOf v TextureMap then WdxMatSignatureTo v (depth + 1) seen ss
+	else if classOf v == BitMap then format "bmp:%" (toLower ((try (v.filename) catch ("")) as string)) to:ss
+	else if classOf v == Array or classOf v == ArrayParameter then
+	(
+		format "[" to:ss
+		for x in v do (WdxMatSigValueTo x depth seen ss; format "," to:ss)
+		format "]" to:ss
+	)
+	else if isValidNode v then format "node:%" v.name to:ss
+	-- coordinates, output curves and other parts of a map (tiling, offset...)
+	else if isKindOf v MAXWrapper and not isKindOf v Controller then WdxMatSignatureTo v (depth + 1) seen ss
+	else if classOf v == String then format "\"%\"" v to:ss
+	else format "%:%" ((classOf v) as string) (v as string) to:ss
+	ok
+)
+
+fn WdxMatSignatureTo m depth seen ss =
+(
+	if m == undefined do (format "u" to:ss; return ok)
+	if depth > 12 do (format "deep" to:ss; return ok)
+	local h = getHandleByAnim m
+	if findItem seen h > 0 do (format "cycle" to:ss; return ok)
+	seen = seen + #(h)
+	format "%(" ((classOf m) as string) to:ss
+	local props = try (getPropNames m) catch (#())
+	for p in props do
+	(
+		local v = try (getProperty m p) catch ("<err>")
+		format "%=" (p as string) to:ss
+		WdxMatSigValueTo v depth seen ss
+		local c = try (getPropertyController m p) catch (undefined)
+		if c != undefined do
+		(
+			format "{" to:ss
+			WdxMatSigControllerTo c ss
+			format "}" to:ss
+		)
+		format ";" to:ss
+	)
+	-- scripted materials and maps keep part of their state in the class
+	-- they extend (Wc3Bitmap: the bitmap file in its Bitmaptexture)
+	local d = try (m.delegate) catch (undefined)
+	if d != undefined and d != m do
+	(
+		format "delegate=" to:ss
+		WdxMatSignatureTo d (depth + 1) seen ss
+	)
+	format ")" to:ss
+	ok
+)
+
+fn WdxMatSigController c =
+(
+	if c == undefined do return ""
+	local ss = stringStream ""
+	WdxMatSigControllerTo c ss
+	ss as string
 )
 
 fn WdxMatSigValue v depth seen =
 (
-	if v == undefined then "u"
-	else if isKindOf v Material or isKindOf v TextureMap then WdxMaterialSignature v depth:(depth + 1) seen:seen
-	else if classOf v == BitMap then "bmp:" + (toLower ((try (v.filename) catch ("")) as string))
-	else if classOf v == Array or classOf v == ArrayParameter then
-	(
-		local s = "["
-		for x in v do s += (WdxMatSigValue x depth seen) + ","
-		s + "]"
-	)
-	else if isValidNode v then "node:" + v.name
-	-- coordinates, output curves and other parts of a map (tiling, offset...)
-	else if isKindOf v MAXWrapper and not isKindOf v Controller then WdxMaterialSignature v depth:(depth + 1) seen:seen
-	else if classOf v == String then "\"" + v + "\""
-	else (classOf v) as string + ":" + (v as string)
+	local ss = stringStream ""
+	WdxMatSigValueTo v depth seen ss
+	ss as string
 )
 
 -- One string that is equal for two materials exactly when they are
 -- interchangeable (see above).
 fn WdxMaterialSignature m depth:0 seen:#() =
 (
-	if m == undefined do return "u"
-	if depth > 12 do return "deep"
-	local h = getHandleByAnim m
-	if findItem seen h > 0 do return "cycle"
-	seen = seen + #(h)
-	local s = (classOf m) as string + "("
-	local props = try (getPropNames m) catch (#())
-	for p in props do
-	(
-		local v = try (getProperty m p) catch ("<err>")
-		s += (p as string) + "=" + (WdxMatSigValue v depth seen)
-		local c = try (getPropertyController m p) catch (undefined)
-		if c != undefined do s += "{" + (WdxMatSigController c) + "}"
-		s += ";"
-	)
-	-- scripted materials and maps keep part of their state in the class
-	-- they extend (Wc3Bitmap: the bitmap file in its Bitmaptexture)
-	local d = try (m.delegate) catch (undefined)
-	if d != undefined and d != m do s += "delegate=" + (WdxMaterialSignature d depth:(depth + 1) seen:seen)
-	s + ")"
+	local ss = stringStream ""
+	WdxMatSignatureTo m depth seen ss
+	ss as string
 )
 
 fn WdxMaterialsIdentical a b =

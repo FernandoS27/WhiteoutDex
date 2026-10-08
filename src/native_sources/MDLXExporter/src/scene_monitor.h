@@ -65,7 +65,9 @@ struct ScanResult {
 
 // Walk the entire scene and produce a fresh ScanResult.
 // Safe to call from the UI thread; does NOT modify the scene.
-ScanResult scanScene();
+// duplicateMaterials=false skips the identical-material search, by far the
+// slowest check (every key of every animated material property).
+ScanResult scanScene(bool duplicateMaterials = true);
 
 // ── Fixing ────────────────────────────────────────────────────────────
 

@@ -594,7 +594,7 @@ void collectDuplicateMaterials(std::vector<Problem>& out) {
     }
 }
 
-ScanResult scanScene() {
+ScanResult scanScene(bool duplicateMaterials) {
     ScanResult result;
     Interface* gi = GetCOREInterface();
     if (!gi) return result;
@@ -605,7 +605,8 @@ ScanResult scanScene() {
     collectMeshProblems(root, result.problems);
     collectBoneControllerProblems(root, result.problems);
     collectMaterialProblems(result.problems);
-    collectDuplicateMaterials(result.problems);
+    if (duplicateMaterials)
+        collectDuplicateMaterials(result.problems);
 
     return result;
 }
