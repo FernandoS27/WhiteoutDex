@@ -2,6 +2,15 @@
 Global attachmentList = #("Head", "Overhead", "Origin", "Foot", "Chest", "Hand", "Weapon", "Sprite")
 Global attachmentAdd1List = #("None", "Right", "Left", "Mount Left", "Mount Right")
 Global attachmentAdd2List = #("None", "RallyPoint", "EatTree", "Gold", "Mount", "Mount Rear", "Rear", "Smart", "Alternate", "First", "Second", "Third", "Fourth", "Fifth", "Sixth")
+-- The four parts the panel builds the node name from - the exporter writes
+-- the node name, e.g. "Chest Mount Left Rear Ref". Mount and side as columns
+-- of their own (as NeoDexPlus has them), so every combination can be picked;
+-- the extra list keeps what the old "Additional" list had besides them.
+-- attachmentAdd1List / attachmentAdd2List stay for the hidden legacy
+-- controls that the saved nameAdd1 / nameAdd2 values are bound to.
+Global attachmentMountList = #("None", "Mount")
+Global attachmentSideList = #("None", "Right", "Left")
+Global attachmentExtraList = #("None", "Rear", "Alternate", "RallyPoint", "EatTree", "Gold", "Smart", "First", "Second", "Third", "Fourth", "Fifth", "Sixth")
 
 plugin simpleManipulator Wdx_Wc3AttachPoint
 name:"Wc3 AttachPoint" 
@@ -180,42 +189,120 @@ category:"Warcraft III Plugins"
 		(
 			label        first_Str  "Type:"        align:#left     width:138   pos:[12,26]
 			dropDownList first                     align:#center   width:138   pos:[12,44]     items:attachmentList
-			label        add1_Str   "Direction:"   align:#left     width:138   pos:[12,71]
-			dropDownList add1                      align:#center   width:138   pos:[12,89]     items:attachmentAdd1List
-			label        add2_Str   "Additional:"  align:#left     width:138   pos:[12,117]
-			dropDownList add2                      align:#center   width:138   pos:[12,134]    items:attachmentAdd2List
+			label        mount_Str  "Mount:"       align:#left     width:138   pos:[12,71]
+			dropDownList ddMount                   align:#center   width:138   pos:[12,89]     items:attachmentMountList
+			label        side_Str   "Side:"        align:#left     width:138   pos:[12,117]
+			dropDownList ddSide                    align:#center   width:138   pos:[12,134]    items:attachmentSideList
+			label        extra_Str  "Extra:"       align:#left     width:138   pos:[12,162]
+			dropDownList ddExtra                   align:#center   width:138   pos:[12,179]    items:attachmentExtraList
 			label        hhf1                      height:0        offset:[999,-1]
 		)
 		group "Extended Parameters 1"
 		(
 			editText    edt2                                           pos:[9999,0]     height:0   width:0
-			label       B1          "Use External Model ............"  align:#left      pos:[12,192]                 width:124
-			checkbox    chk1                                                           pos:[137,192]   height:16   width:16
-			label       B2          "Visibility .........."                           pos:[12,216]                 width:85
-			spinner     Ath_Visibility                                 align:#left     pos:[94,214]    height:16   fieldwidth:45   range:[0.0,1.0,0.00]    type:#float
-			button      btnInfo     "Use Tips"                                        pos:[12,238]     height:24    width:138
+			label       B1          "Use External Model ............"  align:#left      pos:[12,238]                 width:124
+			checkbox    chk1                                                           pos:[137,238]   height:16   width:16
+			label       B2          "Visibility .........."                           pos:[12,262]                 width:85
+			spinner     Ath_Visibility                                 align:#left     pos:[94,260]    height:16   fieldwidth:45   range:[0.0,1.0,0.00]    type:#float
+			button      btnInfo     "Use Tips"                                        pos:[12,284]     height:24    width:138
 			label       hhf2        ""                                                 height:0
 		)
 		group "Extended Parameters 2"
 		(
-			label       B3          "ID ................."           align:#left     pos:[12,300]
-			spinner     spn2        fieldwidth:45   height:16       align:#left     pos:[94,300]    range:[0,100,0] type:#integer
-			label       B4          "Use Attachment ID ..............."  align:#left      pos:[12,323]
-			checkbox    chk2                                                        pos:[137,323]   height:16   width:16
+			label       B3          "ID ................."           align:#left     pos:[12,346]
+			spinner     spn2        fieldwidth:45   height:16       align:#left     pos:[94,346]    range:[0,100,0] type:#integer
+			label       B4          "Use Attachment ID ..............."  align:#left      pos:[12,369]
+			checkbox    chk2                                                        pos:[137,369]   height:16   width:16
 			label       hhf3                        height:0                       offset:[999,-2]
 		)
+		-- The old Direction / Additional controls, hidden and outside every
+		-- group (a group box sizes itself around its controls): nameAdd1 and
+		-- nameAdd2 stay ui:-bound to them, so the parameter definition - and
+		-- with it every saved scene's values - stays as it was.
+		dropDownList add1  width:10  pos:[9999,0]  items:attachmentAdd1List
+		dropDownList add2  width:10  pos:[9999,0]  items:attachmentAdd2List
+
+		-- The node name is the attachment's name in the MDX. The four lists
+		-- are read from it when the panel opens and write it back when one of
+		-- them changes: "<Type>[ Mount][ <Side>][ <Extra>][ <other words>] Ref".
+		-- Words the lists do not know (e.g. "Large") are kept as they are.
+		local otherWords = ""
+		fn thisNode = (try (refs.dependentNodes this firstOnly:true) catch (undefined))
+		fn listIndex list word =
+		(
+			for i = 2 to list.count where (stricmp list[i] word) == 0 do return i
+			0
+		)
+		fn readName =
+		(
+			local node = thisNode()
+			if node == undefined then return false
+			local words = filterString node.name " "
+			-- "Ref" (and NeoDex's "- Ref") end the name; they are added back
+			while words.count > 0 and ((stricmp words[words.count] "Ref") == 0 or words[words.count] == "-") do
+				deleteItem words words.count
+			local t = 0, m = 1, s = 1, e = 1
+			local rest = #()
+			for w in words do
+			(
+				local i = 0
+				if t == 0 do
+				(
+					for k = 1 to attachmentList.count where (stricmp attachmentList[k] w) == 0 do i = k
+					if i > 0 do ( t = i; continue )
+				)
+				i = listIndex attachmentMountList w
+				if i > 0 and m == 1 do ( m = i; continue )
+				i = listIndex attachmentSideList w
+				if i > 0 and s == 1 do ( s = i; continue )
+				i = listIndex attachmentExtraList w
+				if i > 0 and e == 1 do ( e = i; continue )
+				append rest w
+			)
+			if t > 0 do
+			(
+				first.selection = t
+				if nameFirst != t do nameFirst = t
+			)
+			ddMount.selection = m
+			ddSide.selection = s
+			ddExtra.selection = e
+			otherWords = ""
+			for w in rest do otherWords += " " + w
+			true
+		)
+		fn writeName =
+		(
+			local node = thisNode()
+			if node == undefined then return false
+			local n = attachmentList[first.selection]
+			if ddMount.selection > 1 do n += " " + attachmentMountList[ddMount.selection]
+			if ddSide.selection > 1 do n += " " + attachmentSideList[ddSide.selection]
+			if ddExtra.selection > 1 do n += " " + attachmentExtraList[ddExtra.selection]
+			node.name = n + otherWords + " Ref"
+			true
+		)
+		on first selected i do writeName()
+		on ddMount selected i do writeName()
+		on ddSide selected i do writeName()
+		on ddExtra selected i do writeName()
+
 		on btnInfo pressed do
 		(
 			messageBox ((::WdxL.t "attach_model_path_info_msg") + "    ") beep: false
 		)
 		on params open do
 		(
+			add1.visible = false
+			add2.visible = false
+			try (readName()) catch ()
 			if ::WdxL != undefined then
 			(
 				params.title = ::WdxL.t "attach_attachment_parameters_title"
 				first_Str.text = ::WdxL.t "attach_type_lbl"
-				add1_Str.text = ::WdxL.t "attach_direction_lbl"
-				add2_Str.text = ::WdxL.t "attach_additional_lbl"
+				mount_Str.text = ::WdxL.t "attach_mount_lbl"
+				side_Str.text = ::WdxL.t "attach_side_lbl"
+				extra_Str.text = ::WdxL.t "attach_extra_lbl"
 				B1.text = ::WdxL.t "attach_use_external_model_lbl"
 				B2.text = ::WdxL.t "attach_visibility_lbl"
 				btnInfo.text = ::WdxL.t "attach_use_tips_btn"

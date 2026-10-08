@@ -6,6 +6,7 @@
 //   - NeoDex (NEODEX_PARTICLES2):   name-based PB access with NeoDex param names
 //
 #include "wc3_particle2_extractor.h"
+#include <wdx_p2_intervals.h>
 #include "../mdx_class_ids.h"
 #include "visibility_track_helper.h"
 #include "wc3_material_extractor.h"
@@ -252,18 +253,19 @@ void extractParticles2(const std::vector<core::SceneNode>& nodes,
             pe.segmentScale[1] = PBR::readFloat(pb, PB_SCALE_MID, t);
             pe.segmentScale[2] = PBR::readFloat(pb, PB_SCALE_END, t);
 
-            pe.headInterval[0]      = PBR::readInt(pb, PB_HEAD_LIFE_START, t);
-            pe.headInterval[1]      = PBR::readInt(pb, PB_HEAD_LIFE_REPEAT, t);
-            pe.headInterval[2]      = PBR::readInt(pb, PB_HEAD_LIFE_END, t);
-            pe.headDecayInterval[0] = PBR::readInt(pb, PB_HEAD_DECAY_START, t);
-            pe.headDecayInterval[1] = PBR::readInt(pb, PB_HEAD_DECAY_REPEAT, t);
-            pe.headDecayInterval[2] = PBR::readInt(pb, PB_HEAD_DECAY_END, t);
-            pe.tailInterval[0]      = PBR::readInt(pb, PB_TAIL_LIFE_START, t);
-            pe.tailInterval[1]      = PBR::readInt(pb, PB_TAIL_LIFE_REPEAT, t);
-            pe.tailInterval[2]      = PBR::readInt(pb, PB_TAIL_LIFE_END, t);
-            pe.tailDecayInterval[0] = PBR::readInt(pb, PB_TAIL_DECAY_START, t);
-            pe.tailDecayInterval[1] = PBR::readInt(pb, PB_TAIL_DECAY_REPEAT, t);
-            pe.tailDecayInterval[2] = PBR::readInt(pb, PB_TAIL_DECAY_END, t);
+            // MDX {start, end, repeat} from where the panel shows them; an
+            // emitter imported before that fix holds end/repeat the other way
+            // round (wdx_p2_intervals.h).
+            const bool legacyOrder = wdx::p2::legacyIntervalOrder(sn.maxNode);
+            auto readInterval = [&](int start, int end, int repeat, auto& out) {
+                out[0] = PBR::readInt(pb, start, t);
+                out[1] = PBR::readInt(pb, legacyOrder ? repeat : end, t);
+                out[2] = PBR::readInt(pb, legacyOrder ? end : repeat, t);
+            };
+            readInterval(PB_HEAD_LIFE_START, PB_HEAD_LIFE_END, PB_HEAD_LIFE_REPEAT, pe.headInterval);
+            readInterval(PB_HEAD_DECAY_START, PB_HEAD_DECAY_END, PB_HEAD_DECAY_REPEAT, pe.headDecayInterval);
+            readInterval(PB_TAIL_LIFE_START, PB_TAIL_LIFE_END, PB_TAIL_LIFE_REPEAT, pe.tailInterval);
+            readInterval(PB_TAIL_DECAY_START, PB_TAIL_DECAY_END, PB_TAIL_DECAY_REPEAT, pe.tailDecayInterval);
 
             uint32_t flags = 0;
             if (PBR::readInt(pb, PB_SORT, t))       flags |= 0x10000;

@@ -198,18 +198,22 @@ struct WdxCellShadeOps
     ),
     fn createMaterial filterState =
     (
-        local mat = Warcraft3()
+        -- WhiteoutDex's own material. This used NeoDex's Warcraft3 class, so
+        -- the tool failed without NeoDex installed and made a NeoDex material
+        -- with it. The Wc3Material dropdown uses the same filter values
+        -- (1 None, 3 Blend, 4 Additive, 5 AddAlpha).
+        local mat = Wdx_Wc3Material()
         mat.name = "CellShade_Outline"
-        mat.path = "Textures\\"
-        mat.Unshaded = on
-        mat.Unfogged = on
-        mat.filtermode = getFilterModeValue filterState
+        mat.diffusePrefix = "Textures\\"
+        mat.unshaded = on
+        mat.unfogged = on
         local texPath = resolveTexture "Textures\\white.blp"
         if texPath == undefined do texPath = resolveTexture "Textures\\white.tga"
-        if texPath != undefined then mat.texture = Bitmaptexture fileName:texPath
-        else mat.texture = Bitmaptexture fileName:"white.blp"
-        try ( mat.generateOpacity mat.texture ) catch()
-        try ( mat.adjustDelegate mat.retexture mat.filtermode ) catch()
+        local bmp = Wc3Bitmap()
+        bmp.delegate.filename = if texPath != undefined then texPath else "white.blp"
+        mat.diffuseMap = bmp
+        -- after the map: its setter rebuilds the opacity and reapplies the filter
+        mat.filterMode = getFilterModeValue filterState
         showTexturemap mat true
         placeInMaterialEditor mat
         mat
@@ -237,7 +241,7 @@ struct WdxCellShadeOps
                 local pm = Push() ; pm.Push_Value = pushValue ; addModifier o pm
                 local nm = Normalmodifier() ; nm.flip = normalFlip ; addModifier o nm
                 o.material = material
-                try ( local vm = Wc3VertexMod() ; vm.VertexColor = outlineColor ; addModifier o vm ) catch()
+                try ( local vm = Wdx_Wc3VertexMod() ; vm.VertexColor = outlineColor ; addModifier o vm ) catch()
                 o.backfacecull = on
                 if hasSkinModifier o do skinCount += 1
                 append outlineObjects o
@@ -257,8 +261,7 @@ struct WdxCellShadeOps
     (
         if material != undefined do
         (
-            material.filtermode = getFilterModeValue i
-            try(material.adjustDelegate material.retexture material.filtermode)catch()
+            material.filterMode = getFilterModeValue i
         )
     )
 )

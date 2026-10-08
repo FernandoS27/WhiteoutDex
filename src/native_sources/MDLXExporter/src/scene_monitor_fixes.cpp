@@ -14,6 +14,9 @@
 #include <modstack.h>
 #include <iskin.h>          // SKIN_CLASSID
 #include <triobj.h>         // EDITTRIOBJ_CLASS_ID
+#include <decomp.h>         // decomp_affine
+#include <algorithm>
+#include <vector>
 #include <maxscript/maxscript.h>  // ExecuteMAXScriptScript
 #include <maxversion.h>
 
@@ -258,26 +261,81 @@ int fixBoneControllers(const ScanResult& result) {
     Interface* gi = GetCOREInterface();
     if (!gi) return 0;
 
+    // The nodes to fix - re-checked, the user might have fixed one by hand -
+    // parents before children, so a child's motion is put back under its
+    // parent's restored one.
+    std::vector<INode*> nodes;
+    for (auto& p : result.problems) {
+        if (p.type != ProblemType::InvalidController || !p.node) continue;
+        if (hasValidPRS(p.node)) continue;
+        if (std::find(nodes.begin(), nodes.end(), p.node) == nodes.end())
+            nodes.push_back(p.node);
+    }
+    if (nodes.empty()) return 0;
+    auto depth = [](INode* n) {
+        int d = 0;
+        for (INode* q = n->GetParentNode(); q && !q->IsRootNode(); q = q->GetParentNode()) ++d;
+        return d;
+    };
+    std::stable_sort(nodes.begin(), nodes.end(),
+                     [&](INode* a, INode* b) { return depth(a) < depth(b); });
+
+    // A new controller starts empty: swapped in bare, it dropped the node's
+    // pose and animation (a weapon joint driven by a constraint jumped 750
+    // units). So what every node shows is recorded per frame first and set
+    // back as keys on the new controllers afterwards.
+    // Every key of the scene, not just the active time segment: Kyoshiro's
+    // is 450-550 while its sequences start at frame 5, and outside the
+    // recorded frames the new controllers held garbage (a sheath 2.6e11
+    // units away at frame 201).
+    Interval range = gi->GetAnimRange();
+    const Interval keyRange = gi->GetRootNode()->GetTimeRange(
+        TIMERANGE_ALL | TIMERANGE_CHILDNODES | TIMERANGE_CHILDANIMS);
+    if (!keyRange.Empty() && keyRange.Start() <= keyRange.End())
+        range.Set(std::min(range.Start(), keyRange.Start()), std::max(range.End(), keyRange.End()));
+    const TimeValue tpf = std::max<TimeValue>(GetTicksPerFrame(), 1);
+    // A stray key far away must not make this record millions of frames.
+    if ((range.End() - range.Start()) / tpf > 100000)
+        range = gi->GetAnimRange();
+    std::vector<TimeValue> times;
+    for (TimeValue t = range.Start(); t <= range.End(); t += tpf) times.push_back(t);
+    if (times.empty() || times.back() != range.End()) times.push_back(range.End());
+    std::vector<std::vector<Matrix3>> worldTMs(nodes.size());
+    std::vector<std::vector<Matrix3>> parentTMs(nodes.size());
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        worldTMs[i].reserve(times.size());
+        parentTMs[i].reserve(times.size());
+        INode* par = nodes[i]->GetParentNode();
+        const bool hasPar = par && !par->IsRootNode();
+        for (TimeValue t : times) {
+            worldTMs[i].push_back(nodes[i]->GetNodeTM(t));
+            parentTMs[i].push_back(hasPar ? par->GetNodeTM(t) : Matrix3(1));
+        }
+    }
+
     theHold.Begin();
     int fixed = 0;
+    const BOOL wasAnimating = Animating();
 
-    for (auto& p : result.problems) {
-        if (p.type != ProblemType::InvalidController) continue;
-        if (!p.node) continue;
-
-        // Re-check — the user might have already fixed this manually
-        if (hasValidPRS(p.node)) continue;
-
-        Control* tm = p.node->GetTMController();
+    for (size_t ni = 0; ni < nodes.size(); ++ni) {
+        INode* node = nodes[ni];
+        Control* tm = node->GetTMController();
         if (!tm) continue;
+
+        // Only the channels whose controller is replaced get keys back: the
+        // others keep their own. Writing an untouched position of a node that
+        // does not inherit its parent's rotation (the foot of "03 Ik-joe
+        // (Spline IK).max") fed back and threw it 1e13 units away.
+        bool newPos = false, newRot = false, newScl = false;
 
         // If the top-level controller isn't PRS, replace it with one
         if (tm->ClassID() != Class_ID(PRS_CONTROL_CLASS_ID, 0)) {
+            newPos = newRot = newScl = true;
             Control* prs = static_cast<Control*>(
                 gi->CreateInstance(CTRL_MATRIX3_CLASS_ID,
                                    Class_ID(PRS_CONTROL_CLASS_ID, 0)));
             if (!prs) continue;
-            p.node->SetTMController(prs);
+            node->SetTMController(prs);
             tm = prs;
         }
 
@@ -295,7 +353,7 @@ int fixBoneControllers(const ScanResult& result) {
             Control* nc = static_cast<Control*>(gi->CreateInstance(
                 CTRL_POSITION_CLASS_ID,
                 Class_ID(LININTERP_POSITION_CLASS_ID, 0)));
-            if (nc) tm->SetPositionController(nc);
+            if (nc) { tm->SetPositionController(nc); newPos = true; }
         }
         Control* rotC = tm->GetRotationController();
         if (rotC && !((rotC->ClassID() == Class_ID(LININTERP_ROTATION_CLASS_ID,    0)) ||
@@ -306,7 +364,7 @@ int fixBoneControllers(const ScanResult& result) {
             Control* nc = static_cast<Control*>(gi->CreateInstance(
                 CTRL_ROTATION_CLASS_ID,
                 Class_ID(LININTERP_ROTATION_CLASS_ID, 0)));
-            if (nc) tm->SetRotationController(nc);
+            if (nc) { tm->SetRotationController(nc); newRot = true; }
         }
         Control* sclC = tm->GetScaleController();
         if (sclC && !((sclC->ClassID() == Class_ID(LININTERP_SCALE_CLASS_ID,    0)) ||
@@ -317,12 +375,74 @@ int fixBoneControllers(const ScanResult& result) {
             Control* nc = static_cast<Control*>(gi->CreateInstance(
                 CTRL_SCALE_CLASS_ID,
                 Class_ID(LININTERP_SCALE_CLASS_ID, 0)));
-            if (nc) tm->SetScaleController(nc);
+            if (nc) { tm->SetScaleController(nc); newScl = true; }
         }
+
+        // The recorded motion back, one key per frame on the new controllers.
+        // Absolute local values from the recorded world and parent matrices:
+        // SetNodeTM sets a new rotation relative to what the fresh controller
+        // evaluates at that time - under an IK chain (a rotation list with an
+        // orientation constraint on the foot of "03 Ik-joe (Spline IK).max")
+        // that fed back frame after frame and threw the foot 5e29 units away.
+        // A node that does not inherit all of its parent's transform (Link
+        // Info > Inheritance - the foot there does not inherit rotation)
+        // is not simply local = world * inverse(parent): the first key is
+        // checked against what Max then shows and corrected, as the node is
+        // evaluated (world rotation = local rotation * X, X fixed per frame).
+        auto rotOf = [](Matrix3 m) {
+            m.NoTrans();
+            for (int r = 0; r < 3; ++r) {
+                const float l = Length(m.GetRow(r));
+                if (l > 1e-8f) m.SetRow(r, m.GetRow(r) / l);
+            }
+            return m;
+        };
+        Control* posN = tm->GetPositionController();
+        Control* rotN = tm->GetRotationController();
+        Control* sclN = tm->GetScaleController();
+        AnimateOn();
+        Quat prevQ;
+        bool havePrev = false;
+        for (size_t k = 0; k < times.size(); ++k) {
+            const TimeValue t = times[k];
+            const Matrix3 local = worldTMs[ni][k] * Inverse(parentTMs[ni][k]);
+            AffineParts ap;
+            decomp_affine(local, &ap);
+            Quat q = ap.q;
+            if (havePrev && (q.x * prevQ.x + q.y * prevQ.y + q.z * prevQ.z + q.w * prevQ.w) < 0.0f)
+                q = Quat(-q.x, -q.y, -q.z, -q.w);
+            Point3 p = ap.t;
+            ScaleValue sv(ap.k * ap.f, ap.u);
+            if (posN && newPos) posN->SetValue(t, &p, 1, CTRL_ABSOLUTE);
+            if (rotN && newRot) rotN->SetValue(t, &q, 1, CTRL_ABSOLUTE);
+            if (sclN && newScl) sclN->SetValue(t, &sv, 1, CTRL_ABSOLUTE);
+            if (rotN && newRot) {
+                const Matrix3 target = rotOf(worldTMs[ni][k]);
+                for (int pass = 0; pass < 3; ++pass) {
+                    node->InvalidateTreeTM();
+                    const Matrix3 shown = rotOf(node->GetNodeTM(t));
+                    Matrix3 set; q.MakeMatrix(set);
+                    // shown = set * X  ->  wanted local = target * inverse(X)
+                    const Matrix3 x = Inverse(set) * shown;
+                    const Matrix3 want = target * Inverse(x);
+                    Quat nq(want);
+                    nq.Normalize();
+                    const float d = fabsf(nq.x * q.x + nq.y * q.y + nq.z * q.z + nq.w * q.w);
+                    if (d > 0.9999999f) break;
+                    if ((nq.x * q.x + nq.y * q.y + nq.z * q.z + nq.w * q.w) < 0.0f)
+                        nq = Quat(-nq.x, -nq.y, -nq.z, -nq.w);
+                    q = nq;
+                    rotN->SetValue(t, &q, 1, CTRL_ABSOLUTE);
+                }
+            }
+            prevQ = q; havePrev = true;
+        }
+        AnimateOff();
 
         ++fixed;
     }
 
+    if (wasAnimating) AnimateOn(); else AnimateOff();
     theHold.Accept(_M("Fix Bone Controllers"));
     return fixed;
 }
@@ -889,6 +1009,10 @@ const wchar_t* kSplitMultiScript =
     L"      c.name = if getNodeByName base == undefined then base else uniqueName (base + \"_\")\n"
     L"      c.parent = n.parent\n"
     L"      n.layer.addNode c\n"
+    L"      -- A hidden mesh is not exported: its pieces stay hidden too\n"
+    L"      -- (\"women animation mod\": hidden death weapons came back visible)\n"
+    L"      c.isHidden = n.isHidden\n"
+    L"      c.isFrozen = n.isFrozen\n"
     L"      append pieces c\n"
     L"    )\n"
     L"    for ch in (for x in n.children collect x) do ch.parent = pieces[1]\n"
@@ -961,22 +1085,57 @@ int fixMultiMaterialMeshes(const ScanResult& result) {
 // Fix all
 // ============================================================================
 
+namespace {
+// WdxMergeDuplicateMaterials finds the identical materials itself and merges
+// nothing when there are none.
+int mergeDuplicateMaterials() {
+    const wchar_t* script =
+        L"if ::WdxMergeDuplicateMaterials == undefined then 0 else (undo \"Merge Identical Materials\" on (::WdxMergeDuplicateMaterials()))";
+    FPValue value;
+    value.type = TYPE_VOID;
+    BOOL ok = FALSE;
+    try {
+        ok = ExecuteMAXScriptScript(const_cast<MCHAR*>(script),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+                                    MAXScript::ScriptSource::NotSpecified,
+#endif
+                                    TRUE, &value);
+    } catch (...) {
+        ok = FALSE;
+    }
+    const int merged = (ok && value.type == TYPE_INT) ? value.i : 0;
+    ELOG << "[matMerge] merged " << merged << " duplicate material(s)\n"; EFLUSH;
+    return merged;
+}
+} // namespace
+
+int fixDuplicateMaterials(const ScanResult& result) {
+    if (result.countByType(ProblemType::DuplicateMaterial) == 0) return 0;
+    return mergeDuplicateMaterials();
+}
+
 int fixAll(const ScanResult& result) {
     int n = 0;
     n += fixDuplicateNames(result);
     // The split replaces nodes and hands the pieces sub-materials the first
     // scan never flagged as a node's material, so scan again for the rest.
+    // The identical-material search is nearly all of a scan's time (10 s on
+    // Ichigo's scene), so it runs once, inside the merge, rather than in a
+    // rescan here and again in the merge.
     if (result.countByType(ProblemType::MultiMaterialMesh) > 0) {
         n += fixMultiMaterialMeshes(result);
-        const ScanResult after = scanScene();
+        const ScanResult after = scanScene(false);
         n += fixMeshProblems(after);
         n += fixBoneControllers(after);
         n += fixUnsupportedMaterials(after);
+        n += mergeDuplicateMaterials();
         return n;
     }
     n += fixMeshProblems(result);
     n += fixBoneControllers(result);
     n += fixUnsupportedMaterials(result);
+    // Materials the conversion made alike are merged too.
+    n += mergeDuplicateMaterials();
     return n;
 }
 

@@ -509,7 +509,7 @@ category:"Warcraft III Plugins"
 		on btn_baseColor pressed do
 		(
 			local dlg = dotNetObject "System.Windows.Forms.ColorDialog"
-			dlg.color = (dotNetObject "System.Drawing.Color").FromArgb (cpBaseColor.color.r as integer) (cpBaseColor.color.g as integer) (cpBaseColor.color.b as integer)
+			dlg.color = (dotNetClass "System.Drawing.Color").FromArgb (cpBaseColor.color.r as integer) (cpBaseColor.color.g as integer) (cpBaseColor.color.b as integer)
 			dlg.FullOpen = true
 			if (dlg.ShowDialog() == (dotNetClass "System.Windows.Forms.DialogResult").OK) then
 			(

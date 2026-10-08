@@ -1,8 +1,20 @@
 // MaxCore — Scene traversal implementation
 #include "scene_traversal.h"
+#include <wdx_text.h>
 #include "../util/max_helpers.h"
+#include <ilayer.h>
 
 namespace core {
+
+namespace {
+bool isHiddenLodGeoset(INode* node) {
+    int lod = 0;
+    if (!node->GetUserPropInt(_T("Wc3GeosetLod"), lod) || lod <= 0)
+        return false;
+    auto* layer = static_cast<ILayer*>(node->GetReference(NODE_LAYER_REF));
+    return layer && layer->IsHidden();
+}
+} // namespace
 
 SceneTraversal::Result SceneTraversal::traverse(Interface* gi, const NodeClassifier& classifier) {
     Result result;
@@ -22,7 +34,12 @@ void SceneTraversal::visitNode(INode* node, int parentIndex,
     // existing NodeCategory::Ignored behaviour below. The child's
     // parentIndex is forwarded so the hierarchy stays flat over the
     // skipped node.
-    if (node && node->IsHidden()) {
+    // Exception: the importer puts the lower detail levels of an HD model
+    // (geosets with lod > 0) into hidden "Geosets_LOD<N>" layers only to
+    // keep the viewport readable. Such a mesh, hidden by its layer, still
+    // belongs to the model - without it the export loses every LOD and the
+    // bones that carry them. A mesh hidden while its layer shows is skipped.
+    if (node && node->IsHidden() && !isHiddenLodGeoset(node)) {
         int numChildren = node->NumberOfChildren();
         for (int i = 0; i < numChildren; ++i) {
             visitNode(node->GetChildNode(i), parentIndex, classifier, result);
@@ -58,8 +75,9 @@ void SceneTraversal::visitNode(INode* node, int parentIndex,
     const MCHAR* name = node->GetName();
     if (name) {
 #ifdef UNICODE
-        std::wstring wname(name);
-        irn.name = std::string(wname.begin(), wname.end());
+        // MDX bytes: the Windows code page, else UTF-8 (wdx_text.h) -
+        // cutting each character to a byte garbled any non-ASCII name
+        irn.name = wdx::text::wideToMdx(name);
 #else
         irn.name = std::string(name);
 #endif

@@ -12,6 +12,7 @@
 #include <map>
 #include <set>
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <fstream>
 #include <windows.h>
@@ -49,10 +50,22 @@ namespace {
 
 // ── Track conversion helpers ─────────────────────────────────
 
+bool finiteValue(float v) { return std::isfinite(v); }
+bool finiteValue(int32_t) { return true; }
+bool finiteValue(const Point3& p) { return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z); }
+bool finiteValue(const Quat& q) { return std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z) && std::isfinite(q.w); }
+bool finiteValue(const Color& c) { return std::isfinite(c.r) && std::isfinite(c.g) && std::isfinite(c.b); }
+
+// A sampled key can come out NaN (a node scaled to zero decomposes into NaN
+// translation and scale); the game cannot play it. Such keys are left out.
 template <typename MdxT, typename IrT>
-Track<MdxT> convertTrack(const ir::Track<IrT>& irTrack,
+Track<MdxT> convertTrack(const ir::Track<IrT>& irTrackIn,
                           MdxT (*valueFn)(const IrT&))
 {
+    ir::Track<IrT> irTrack = irTrackIn;
+    irTrack.keys.erase(std::remove_if(irTrack.keys.begin(), irTrack.keys.end(), [](const ir::Keyframe<IrT>& k) {
+        return !finiteValue(k.value) || (k.hasTangents && (!finiteValue(k.inTangent) || !finiteValue(k.outTangent)));
+    }), irTrack.keys.end());
     Track<MdxT> out;
     if (irTrack.empty()) return out;
 
@@ -343,9 +356,11 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     for (auto& mat : ir.materials)
         model.materials.push_back(matMapper.map(mat, ir, opts.version));
 
-    // Fallback: if no textures/materials were extracted, create a default
-    // white.blp material so editors and viewers don't choke on dangling MaterialID refs.
-    if (model.textures.empty() && model.materials.empty()) {
+    // Fallback: geosets without any material get a default white.blp
+    // material so editors and viewers don't choke on dangling MaterialID refs.
+    // A model without geosets (emitters, lights, weather) needs none - the
+    // game's own models of that kind have no MTLS at all.
+    if (model.materials.empty() && !ir.meshes.empty()) {
         Texture fallbackTex;
         fallbackTex.fileName = "Textures\\white.blp";
         fallbackTex.replaceableId = 0;
@@ -356,7 +371,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         wdx::Layer layer;
         layer.filterMode = wdx::Layer::FilterMode::None;
         layer.shadingFlags = wdx::Layer::ShadingFlag::None;
-        layer.textureId = 0;
+        layer.textureId = static_cast<uint32_t>(model.textures.size() - 1);
         layer.alpha = 1.0f;
         layer.coordId = 0;
         layer.textureAnimationId = 0xFFFFFFFF;
@@ -429,6 +444,39 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
             geo.materialId = 0;
         }
 
+        // A layer whose texture has fixed Coordinates (offset, tiling, W angle)
+        // shows them through this geoset's UVs: MDX has no static texture
+        // transform, so they are baked in (MaterialLayer::hasStaticUV).
+        // One transform per UV set; layers that disagree leave the set as is.
+        const ir::MaterialLayer* staticUV[ir::kMaxUVSets] = {};
+        bool staticUVConflict[ir::kMaxUVSets] = {};
+        bool plainUVLayer[ir::kMaxUVSets] = {};
+        if (irMesh.materialIndex >= 0 && irMesh.materialIndex < static_cast<int32_t>(ir.materials.size())) {
+            for (const auto& L : ir.materials[irMesh.materialIndex].layers) {
+                if (L.uvSetIndex < 0 || L.uvSetIndex >= ir::kMaxUVSets) continue;
+                if (!L.hasStaticUV) { plainUVLayer[L.uvSetIndex] = true; continue; }
+                const ir::MaterialLayer*& slot = staticUV[L.uvSetIndex];
+                if (slot && (slot->uvOffsetU != L.uvOffsetU || slot->uvOffsetV != L.uvOffsetV ||
+                             slot->uvTilingU != L.uvTilingU || slot->uvTilingV != L.uvTilingV ||
+                             slot->uvAngleW != L.uvAngleW))
+                    staticUVConflict[L.uvSetIndex] = true;
+                slot = &L;
+            }
+            for (int k = 0; k < ir::kMaxUVSets; ++k)
+                if (staticUV[k] && plainUVLayer[k]) staticUVConflict[k] = true;
+        }
+        auto bakeUV = [&](int set, Point2 p) -> Point2 {
+            const ir::MaterialLayer* L = staticUV[set];
+            if (!L || staticUVConflict[set]) return p;
+            // stored V points down (1 - v); Max's texel = S * R(w) * (uv - 0.5 - offset) + 0.5
+            const float du = p.x - 0.5f - L->uvOffsetU;
+            const float dv = (1.0f - p.y) - 0.5f - L->uvOffsetV;
+            const float c = std::cos(L->uvAngleW), s = std::sin(L->uvAngleW);
+            const float x = (du * c - dv * s) * L->uvTilingU;
+            const float y = (du * s + dv * c) * L->uvTilingV;
+            return Point2(x + 0.5f, 1.0f - (y + 0.5f));
+        };
+
         // Vertex data
         for (auto& v : irMesh.vertices) {
             geo.vertexPositions.push_back(mdx_transform::position(v.position * invScale));
@@ -439,7 +487,7 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
                 if (uv >= static_cast<int>(geo.textureCoordinateSets.size()))
                     geo.textureCoordinateSets.resize(static_cast<size_t>(uv + 1));
                 geo.textureCoordinateSets[uv].push_back(
-                    mdx_transform::texcoord(v.uvSets[uv]));
+                    mdx_transform::texcoord(bakeUV(uv, v.uvSets[uv])));
             }
 
             // Tangent
@@ -1022,9 +1070,12 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         //                v1    = (-15.88, -24.03, -40.25) ← local min corner
         //                v2    = ( 15.88,  24.03,   0.00) ← local max corner
         //   + KGTR 554 keys, KGRT 480 keys, parentId = 0xFFFFFFFF
-        const bool isAnimated =
-            cs.node.translationTracks.isUsed ||
-            cs.node.rotationTracks.isUsed;
+        //
+        // Only a moving (KGTR) hitbox is local - the importer reads the same
+        // rule (mdx_model_disassembler.cpp, mapCollisionShapes). A static
+        // shape with nothing but a rest-pose KGRT was written local before
+        // and came back at the model origin.
+        const bool isAnimated = cs.node.translationTracks.isUsed;
         if (opts.version >= 1000 && isAnimated) {
             // Fetch pivot in MDX space for this node
             uint32_t objId = cs.node.objectId;
@@ -1036,25 +1087,11 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
                     vert.z -= pv.z;
                 }
             }
-            // Box-bottom anchor for v1000+ animated shapes.
-            //
-            // The extractor produces a Max-space AABB where the pivot is at
-            // the box's BOTTOM (z ∈ [pos.z, pos.z+height]). That's correct
-            // for the legacy v800 convention and must stay unchanged so
-            // existing v800 models (e.g. Madara hitboxes) keep roundtripping.
-            //
-            // The v1000+ MDX convention, however, places the pivot at the
-            // box's TOP face — local z ∈ [-height, 0]. After the pivot
-            // subtract above we currently have z ∈ [0, +height], so we
-            // shift both Z values down by 'height' to match the ORIG file.
-            //
-            // Reference (KulTirasMarine.mdx, v1000):
-            //   Torso: ORIG v1.z=-40.25, v2.z=0.00 (height 40.25 below pivot)
-            if (irCs.shape == ir::CollisionShape::Shape::Box && cs.vertices.size() == 2) {
-                float height = cs.vertices[1].z - cs.vertices[0].z;
-                cs.vertices[0].z -= height;   // was 0, becomes -height
-                cs.vertices[1].z -= height;   // was +height, becomes 0
-            }
+            // No extra Z shift for boxes: the extractor reads the object TM,
+            // so a box whose pivot sits on its top face (KulTirasMarine:
+            // local z -40.25..0) already comes out that way, and a box made
+            // in Max (pivot at the bottom) keeps 0..height. Shifting by the
+            // height as well moved every animated box down by its height.
             // Animated hitboxes live at root level; they follow their
             // bone through the animation tracks, not through parenting.
             cs.node.parentId = 0xFFFFFFFFu;

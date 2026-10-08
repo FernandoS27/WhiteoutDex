@@ -505,11 +505,9 @@ void RenderWindow::SetSyncCamera(bool on) {
     // parameters in step with every pose it pushed, so switching modes leaves
     // the view where it is and the first drag continues from there.
     //
-    // Roll is the one thing dropped: the two modes build `up` from opposite
-    // signs of it (ComputeUpFromLookDirection adds roll·right, orbital's
-    // ComputeUpFromAngles subtracts it), and carrying a roll the user has no
-    // control to clear into free orbiting is worse than levelling the horizon
-    // on release.
+    // Roll is the one thing dropped: carrying a roll the user has no control
+    // to clear into free orbiting is worse than levelling the horizon on
+    // release.
     auto& cam = service_.Scene().Camera();
     cam.SetOrbitalMode();
     cam.SetRoll(0.0f);

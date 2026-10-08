@@ -16,7 +16,9 @@
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
+#include <cwchar>
 #include <fstream>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -560,6 +562,24 @@ bool writeBytesToDisk(const fs::path& outPath, const std::vector<std::uint8_t>& 
     return true;
 }
 
+// Where an archive file is extracted: next to the model, under its archive
+// path - unless that path is too long for Windows (MAX_PATH, 260). A model
+// in a deep folder plus Blizzard's long HD names ("Doodads/Outland/Plants/
+// Outland_Plant/BC_Environment_OutlandPlants_V1_V8_Diffuse.dds") overflows
+// it; the write then failed and the texture stayed missing although CASC
+// had it. Such a file goes to a short per-path folder in %TEMP% instead.
+// The exporter takes a texture's MDX path from the material, not from where
+// its file lies, so this changes nothing in the export.
+fs::path extractTarget(const fs::path& preferred, const std::string& archiveKey) {
+    if (preferred.wstring().size() < 240) return preferred;
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    wchar_t tag[20];
+    swprintf_s(tag, L"%016llx", static_cast<unsigned long long>(std::hash<std::string>{}(archiveKey)));
+    fs::path shortPath = fs::path(tmp) / L"WhiteoutDexTex" / tag / preferred.filename();
+    RLOG << "[EXT]   path too long, using " << wlog(shortPath.wstring()) << std::endl;
+    return shortPath;
+}
 } // anonymous
 
 TextureResolver::TextureResolver(const std::wstring& modelDir,
@@ -677,7 +697,7 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
 
                 // Write to <modelDir>/<original-subdir>/<stem>.<actualExt>.
                 std::wstring outRel = swapExtension(diskRel, narrowToWide(ext));
-                fs::path outPath = fs::path(impl_->modelDir) / outRel;
+                fs::path outPath = extractTarget(fs::path(impl_->modelDir) / outRel, cascPath);
                 std::error_code ec;
                 if (fs::exists(outPath, ec)) {
                     RLOG << "[CASC]   already on disk: " << wlog(outPath.wstring()) << std::endl;
@@ -705,7 +725,7 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
                 RLOG << "[MPQ] Found: " << mpqPath << " (" << data->size() << " bytes)" << std::endl;
 
                 std::wstring outRel = swapExtension(diskRel, narrowToWide(ext));
-                fs::path outPath = fs::path(impl_->modelDir) / outRel;
+                fs::path outPath = extractTarget(fs::path(impl_->modelDir) / outRel, mpqPath);
                 std::error_code ec;
                 if (fs::exists(outPath, ec)) {
                     RLOG << "[MPQ]   already on disk: " << wlog(outPath.wstring()) << std::endl;

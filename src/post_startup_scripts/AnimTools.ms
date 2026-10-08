@@ -6,7 +6,8 @@ struct WhiteoutDexBoneResult
 	footRight = undefined,
 	handLeft = undefined,
 	handRight = undefined,
-	
+	weapon = undefined,
+
 	-- Prints the results
 	fn printResults =
 	(
@@ -18,6 +19,7 @@ struct WhiteoutDexBoneResult
 		format "Foot Right: %\n" (if footRight != undefined then footRight.name else missing)
 		format "Hand Left: %\n" (if handLeft != undefined then handLeft.name else missing)
 		format "Hand Right: %\n" (if handRight != undefined then handRight.name else missing)
+		format "Weapon: %\n" (if weapon != undefined then weapon.name else missing)
 		format "==========================\n"
 	)
 )
@@ -91,7 +93,7 @@ struct WhiteoutDexBoneFinder
         if score == 0 then return 0
         
         -- Penalty for helper/end bones that are not real rig bones
-        local penaltyWords = #("nub", "tip", "ref", "helper", "dummy", "null", "target", "goal", "ik", "pole", "twist", "roll", "effector")
+        local penaltyWords = #("nub", "tip", "ref", "helper", "dummy", "null", "target", "goal", "ik", "pole", "twist", "roll", "effector", "finger", "thumb", "ctrl")
         for pw in penaltyWords do
         (
             if this.isWholeWord parts pw then
@@ -125,6 +127,12 @@ struct WhiteoutDexBoneFinder
             )
         )
         
+        -- Secondary chains (cloth, cape, hair...) are never a Ref's bone:
+        -- "R_foot_cloth_01_bind_jnt" was taken for the right foot
+        for cw in #("cloth", "cape", "cloak", "skirt", "hair", "tail", "strap", "belt", "sleeve", "tassel", "ribbon", "chain")
+            where this.isWholeWord parts cw do score -= 20
+        if score <= 0 then return 0
+
         -- Bonus for shorter names (more likely the actual bone than a helper object)
         if parts.count <= 2 then score += 3
         else if parts.count <= 3 then score += 1
@@ -166,6 +174,69 @@ struct WhiteoutDexBoneFinder
         (findString lowerName ".r" != undefined)
     ),
     
+    -- Side of a bone: the words above, then a side letter glued to the
+    -- keyword ("HandR", "RHand", "FootL" - Mixamo, CAT and many custom rigs)
+    fn sideOf boneName keywords =
+    (
+        if this.isLeft boneName then return #left
+        if this.isRight boneName then return #right
+        local parts = filterString (toLower boneName) " _.-:"
+        for part in parts do
+            for kw in keywords do
+            (
+                if part == ("l" + kw) or part == (kw + "l") then return #left
+                if part == ("r" + kw) or part == (kw + "r") then return #right
+            )
+        undefined
+    ),
+
+    -- Best left and right bone for keywords. A bone whose name gives no side
+    -- goes by where it stands at frame 0: Warcraft III models face -Y in Max,
+    -- so their right side is -X (Blizzard's Hand/Foot Right Ref all sit
+    -- there). minScore 10 = whole words only.
+    fn pickSided allBones keywords minScore:1 =
+    (
+        local best = #(undefined, undefined), bestScore = #(0, 0)
+        local unsided = #()
+        for bone in allBones do
+        (
+            local s = this.scoreBone bone.name keywords
+            if s < minScore do continue
+            local side = this.sideOf bone.name keywords
+            if side == undefined then append unsided #(s, bone)
+            else
+            (
+                local i = if side == #left then 1 else 2
+                if s > bestScore[i] do (bestScore[i] = s; best[i] = bone)
+            )
+        )
+        for u in unsided do
+        (
+            local x = try ((at time 0 u[2].transform.pos).x) catch (0.0)
+            local i = if x < 0 then 2 else 1
+            if best[i] == undefined or u[1] > bestScore[i] do (bestScore[i] = u[1]; best[i] = u[2])
+        )
+        best
+    ),
+
+    -- Lowest bone per side among keyword matches: the ankle end of a leg
+    -- chain. Blizzard's HD rigs have no "foot" bone - the Foot Refs sit on
+    -- bone_leg_right / R_leg_04_bind_jnt, the lowest leg joint.
+    fn pickLowestSided allBones keywords =
+    (
+        local best = #(undefined, undefined), bestZ = #(1e30, 1e30)
+        for bone in allBones do
+        (
+            if (this.scoreBone bone.name keywords) <= 0 do continue
+            local p = try ((at time 0 bone.transform).pos) catch (undefined)
+            if p == undefined do continue
+            local side = this.sideOf bone.name keywords
+            local i = if side == #left then 1 else if side == #right then 2 else (if p.x < 0 then 2 else 1)
+            if p.z < bestZ[i] do (bestZ[i] = p.z; best[i] = bone)
+        )
+        best
+    ),
+
     -- Extended bone scan function
 
     fn scanBonesWithRegex =
@@ -195,7 +266,7 @@ struct WhiteoutDexBoneFinder
         local bestHeadScore = 0
         for bone in allBones do
         (
-            local s = this.scoreBone bone.name #("head")
+            local s = this.scoreBone bone.name #("head", "skull")
             if s > bestHeadScore then
             (
                 bestHeadScore = s
@@ -203,13 +274,17 @@ struct WhiteoutDexBoneFinder
             )
         )
         
+        -- Blizzard HD rigs: the Head Ref sits on hd_anim_bind_jnt (below bone_head)
+        for bone in allBones where findString (toLower bone.name) "hd_anim" != undefined do
+            (result.head = bone; exit)
+
         -- =============================================
         -- Find CHEST (best score wins)
         -- =============================================
         local bestChestScore = 0
         for bone in allBones do
         (
-            local s = this.scoreBone bone.name #("chest", "thorax", "ribcage")
+            local s = this.scoreBone bone.name #("chest", "upperchest", "thorax", "ribcage", "ribs", "rib", "torso")
             if s > bestChestScore then
             (
                 bestChestScore = s
@@ -249,109 +324,90 @@ struct WhiteoutDexBoneFinder
             )
         )
         
+        -- No chest bone: the spine joint at ~0.78 of the head's height
+        -- (Blizzard chest/head height ratio 0.77 HD, 0.80 SD). The spine
+        -- number said little: "spine_C0_0_jnt" and "spine_C0_2_jnt" both
+        -- read as 0, and the pelvis spine won.
         if result.chest == undefined and highestSpine != undefined then
-            result.chest = highestSpine
-        
-        -- =============================================
-        -- Find HAND (best score per side)
-        -- =============================================
-        local handKeywords = #("hand", "finger", "wrist", "palm")
-        local bestHandLeftScore = 0
-        local bestHandRightScore = 0
-        local bestHandUnknownScore = 0
-        local bestHandUnknown = undefined
-        
-        for bone in allBones do
         (
-            local s = this.scoreBone bone.name handKeywords
-            if s > 0 then
+            local headZ = try ((at time 0 result.head.transform).pos.z) catch (undefined)
+            local bestD = 1e30
+            for bone in allBones where findString (toLower bone.name) "spine" != undefined do
             (
-                if this.isLeft bone.name then
-                (
-                    if s > bestHandLeftScore then
-                    (
-                        bestHandLeftScore = s
-                        result.handLeft = bone
-                    )
-                )
-                else if this.isRight bone.name then
-                (
-                    if s > bestHandRightScore then
-                    (
-                        bestHandRightScore = s
-                        result.handRight = bone
-                    )
-                )
-                else
-                (
-                    if s > bestHandUnknownScore then
-                    (
-                        bestHandUnknownScore = s
-                        bestHandUnknown = bone
-                    )
-                )
+                local z = try ((at time 0 bone.transform).pos.z) catch (undefined)
+                if z == undefined do continue
+                local d = if headZ != undefined then abs (z - 0.78 * headZ) else -z
+                if d < bestD do (bestD = d; result.chest = bone)
+            )
+            if result.chest == undefined do result.chest = highestSpine
+        )
+        
+        -- =============================================
+        -- HANDS / FEET / WEAPON (attachment study of 2,089 Blizzard models:
+        -- a Ref sits on the pivot of the wrist / ankle bone, not on fingers
+        -- or toes - "Bip01 R Finger0" used to tie with "Bip01 R Hand")
+        -- =============================================
+        local hands = this.pickSided allBones #("hand", "wrist", "palm", "fist", "claw", "paw")
+        -- No hand bone: the end of the arm chain, as Blizzard does
+        -- (arm_L0_4_jnt - the deepest arm joint, not a finger)
+        if hands[1] == undefined or hands[2] == undefined do
+        (
+            local deep = #(undefined, undefined), deepD = #(-1, -1)
+            for bone in allBones where (this.scoreBone bone.name #("arm", "forearm", "lowerarm")) > 0 do
+            (
+                local d = 0
+                local q = bone.parent
+                while q != undefined do (d += 1; q = q.parent)
+                local side = this.sideOf bone.name #("arm", "forearm", "lowerarm")
+                local x = try ((at time 0 bone.transform).pos.x) catch (0.0)
+                local i = if side == #left then 1 else if side == #right then 2 else (if x < 0 then 2 else 1)
+                if d > deepD[i] do (deepD[i] = d; deep[i] = bone)
+            )
+            for i = 1 to 2 where hands[i] == undefined do hands[i] = deep[i]
+        )
+        result.handLeft = hands[1]
+        result.handRight = hands[2]
+
+        local feet = this.pickSided allBones #("foot", "ankle", "hoof", "talon")
+        -- Only toes: the foot is the toe's parent (Biped "L Toe0" -> "L Foot")
+        if feet[1] == undefined or feet[2] == undefined do
+        (
+            local toes = this.pickSided allBones #("toe", "ball")
+            -- The toe's parent is the ankle only when it is near the ground:
+            -- a rig without an ankle bone parents its toe to the calf, whose
+            -- pivot is the knee (chernyak_archer14: 0.33 of the height;
+            -- Blizzard's Foot Refs sit at 0.08) - then the toe itself.
+            local headZ = try ((at time 0 result.head.transform).pos.z) catch (undefined)
+            for i = 1 to 2 where feet[i] == undefined and toes[i] != undefined do
+            (
+                local par = toes[i].parent
+                local parZ = try ((at time 0 par.transform).pos.z) catch (undefined)
+                feet[i] = if isValidNode par and (headZ == undefined or (parZ != undefined and parZ < 0.2 * headZ)) then par else toes[i]
             )
         )
-        
-        -- Unknown side as fallback
-        if bestHandUnknown != undefined then
+        if feet[1] == undefined or feet[2] == undefined do
+            for bone in allBones where matchPattern bone.name pattern:"bone_leg_*" do
+            (
+                local side = this.sideOf bone.name #("leg")
+                if side == #left and feet[1] == undefined do feet[1] = bone
+                if side == #right and feet[2] == undefined do feet[2] = bone
+            )
+        if feet[1] == undefined or feet[2] == undefined do
         (
-            if result.handLeft == undefined then
-                result.handLeft = bestHandUnknown
-            else if result.handRight == undefined then
-                result.handRight = bestHandUnknown
+            local legs = this.pickLowestSided allBones #("leg", "calf", "shin")
+            for i = 1 to 2 where feet[i] == undefined do feet[i] = legs[i]
         )
-        
-        -- =============================================
-        -- Find FOOT (best score per side)
-        -- =============================================
-        local footKeywords = #("foot", "toe", "ankle")
-        local bestFootLeftScore = 0
-        local bestFootRightScore = 0
-        local bestFootUnknownScore = 0
-        local bestFootUnknown = undefined
-        
+        result.footLeft = feet[1]
+        result.footRight = feet[2]
+
+        -- A weapon bone only by whole word: "bow" is also in "elbow"
+        local bestWeaponScore = 0
         for bone in allBones do
         (
-            local s = this.scoreBone bone.name footKeywords
-            if s > 0 then
-            (
-                if this.isLeft bone.name then
-                (
-                    if s > bestFootLeftScore then
-                    (
-                        bestFootLeftScore = s
-                        result.footLeft = bone
-                    )
-                )
-                else if this.isRight bone.name then
-                (
-                    if s > bestFootRightScore then
-                    (
-                        bestFootRightScore = s
-                        result.footRight = bone
-                    )
-                )
-                else
-                (
-                    if s > bestFootUnknownScore then
-                    (
-                        bestFootUnknownScore = s
-                        bestFootUnknown = bone
-                    )
-                )
-            )
+            local s = this.scoreBone bone.name #("weapon", "wep", "sword", "blade", "axe", "hammer", "mace", "staff", "spear", "lance", "bow", "gun")
+            if s >= 10 and s > bestWeaponScore do (bestWeaponScore = s; result.weapon = bone)
         )
-        
-        -- Unknown side as fallback
-        if bestFootUnknown != undefined then
-        (
-            if result.footLeft == undefined then
-                result.footLeft = bestFootUnknown
-            else if result.footRight == undefined then
-                result.footRight = bestFootUnknown
-        )
-        
+
         result -- return
     ),
     
@@ -397,12 +453,13 @@ struct WdxAnimTools
 		button createCollBoxBtn "One Click Collision Box" pos:[224, 204] width:202 height:22 tooltip:"Creates a collision box sized from the model, as Blizzard does for buildings."
 		
         -- Functions
-        mapped fn setContinuityToZero o time &controllerFunc =
+        mapped fn setContinuityToZero o time controllerFunc =
         (
             local c = controllerFunc o
             if (c != undefined) then
             (
-                local index = ArrayFindItemEx c.keys time (fn tmp a b = a.time == b)
+                -- the key at this time (0 = none); built-in, works on every keyable controller
+                local index = getKeyIndex c time
                 if (index != 0) then c.keys[index].continuity = 0
             )
         )
@@ -414,6 +471,36 @@ struct WdxAnimTools
             v
         )
 		
+		-- Top of the visible mesh: the Overhead Ref goes there. Bones, Biped
+		-- and CAT parts are GeometryClass too but no part of the model's look.
+		-- Height of the Overhead Ref. Blizzard's sit a fixed step above the
+		-- head bone - 0.12 of the model height (hd_anim_bind_jnt 123.8 ->
+		-- 140.8, 91.5 -> 109.4, 154.6 -> 171.6) - not on the mesh top, which
+		-- hair, horns or a raised weapon push up. Without a head bone: the
+		-- mesh top. The model's height leaves out the portrait backdrop HD
+		-- units carry ("Portrait_Background", 1200 units on a 170 unit Chen)
+		-- and shadow planes; bones, Biped and CAT parts do not count either.
+		fn getOverheadZ headNode =
+		(
+			local lo = undefined, hi = undefined
+			for obj in objects where superClassOf obj == GeometryClass and not obj.isHidden \
+				and classOf obj != BoneGeometry and classOf obj != Biped_Object \
+				and (try (classOf obj != CATBone and classOf obj != HubObject) catch (true)) \
+				and (local n = toLower obj.name; findString n "portrait" == undefined and findString n "background" == undefined and findString n "shadow" == undefined) do
+			(
+				try
+				(
+					local bb = nodeGetBoundingBox obj (matrix3 1)
+					if lo == undefined or bb[1].z < lo do lo = bb[1].z
+					if hi == undefined or bb[2].z > hi do hi = bb[2].z
+				)
+				catch ()
+			)
+			if hi == undefined do return 100.0
+			local headZ = try ((at time 0 headNode.transform).pos.z) catch (undefined)
+			if headZ == undefined then hi else headZ + 0.12 * (hi - lo)
+		)
+
 		-- Computes the model height from all visible geometry objects
 		fn getModelHeight =
 		(
@@ -442,12 +529,16 @@ struct WdxAnimTools
 			if found then (maxZ - minZ) else 100.0
 		)
 		
-		fn createAttachmentNode rigBone type modelHeight =
+		-- Blizzard's own models (attachment study, 2,089 units/buildings): a
+		-- Ref sits on its bone's pivot - wrist, ankle, skull base, upper chest -
+		-- with no rotation and no scale of its own; Overhead above the top of
+		-- the mesh at x/y 0, Origin at 0,0,0, both without a parent. The Ref
+		-- used to copy the bone's whole transform: its rotation (an Overhead
+		-- turned 90 degrees) and its scale - under a rig scaled 0.01 the Refs
+		-- came out huge, and the gizmo "fix" scaled them by model height / 100,
+		-- which the export then wrote as a KGSC of 148.
+		fn createAttachmentNode rigBone type modelTop =
 		(
-			-- Scale factor: the gizmo is ~10 units, which fits a 100 unit model
-			local scaleFactor = modelHeight / 100.0
-			if scaleFactor < 0.01 then scaleFactor = 0.01
-			
 			local obj = Wdx_Wc3AttachPoint()
 			case type of
 			(
@@ -497,23 +588,26 @@ struct WdxAnimTools
 					obj.name = "Overhead Ref"
 					obj.nameFirst = 2
 				)
-			)
-			
-			if rigBone != undefined then
-			(
-				obj.transform = rigBone.transform
-				obj.parent = rigBone
-				
-				if type == #overhead then
+				#weapon:
 				(
-					-- Proportional overhead offset
-					obj.pos.z += 50.0 * scaleFactor
+					obj.name = "Weapon Ref"
+					obj.nameFirst = 7
 				)
 			)
 			
-			-- Scale the gizmo size proportionally to the model
-			obj.scale = [scaleFactor, scaleFactor, scaleFactor]
-			
+			local pos = [0, 0, 0]
+			if type == #overhead then pos = [0, 0, modelTop]
+			else if rigBone != undefined do pos = (at time 0 rigBone.transform).pos
+			-- world-aligned, world scale 1; parenting keeps that world transform
+			-- at time 0: sliderTime = 0 is clamped to the start of the animation
+			-- range, and a Ref aligned there turned with its bone at frame 0
+			at time 0 obj.transform = transMatrix pos
+			if rigBone != undefined and type != #overhead and type != #origin do
+			(
+				obj.parent = rigBone
+				at time 0 obj.transform = transMatrix pos
+			)
+
 			local attachmentsLayer = LayerManager.getLayerFromName "Attachments"
 			if attachmentsLayer == undefined then
 			(
@@ -522,18 +616,20 @@ struct WdxAnimTools
 			attachmentsLayer.addnode obj
 			
 			print (substituteString (substituteString (::WdxL.t "anim_attach_point_created_msg") \
-					"%1" obj.name) "%2" (scaleFactor as string))
+					"%1" obj.name) "%2" (if obj.parent != undefined then obj.parent.name else "-"))
 		)
         
         mapped fn fixSquadRotation s =
         (
-            local c = s.rotation.controller
-            local b = (classOf c == tcb_rotation or classOf c == bezier_rotation)
+            -- A target camera/light (LookAt controller) has no .rotation:
+            -- skip it instead of aborting the rest of the selection
+            local c = try (s.rotation.controller) catch (undefined)
+            local b = c != undefined and (classOf c == tcb_rotation or classOf c == bezier_rotation)
             if (b and c.keys.count > 1) then
             (
                 local faults = #()
                 local keys = c.keys
-                local hasParent = s.parent != undefined and (classOf s.parent != Uvwmap) -- For UVW Gizmo
+                local hasParent = s.parent != undefined and (classOf s.parent != Uvwmap) and (try (s.parent.rotation; true) catch (false)) -- For UVW Gizmo / LookAt parent
                 local r = (inverse s.rotation)
                 local pr = (quat 0 0 0 1)
                 if hasParent then pr = (inverse s.parent.rotation)
@@ -541,13 +637,36 @@ struct WdxAnimTools
                 (
                     local v = GetRot keys[i-1].time s r pr hasParent
                     local w = GetRot keys[i].time s r pr hasParent
-                    if (CheckLock v w) then
+                    if (::WdxUtils.CheckLock v w) then
                         append faults (interval keys[i-1].time keys[i].time)
                 )
                 for f in faults do addNewKey c ((f.start + f.end) * 0.5)
             )
         )
         
+        -- addNewKey on a time that already has a key adds nothing, but it
+        -- re-smooths that key's Bezier tangents: the in-tangent of a
+        -- sequence's last key took the slope of the short gap to the next
+        -- sequence and the curve overshot by hundreds of units (Footman
+        -- Bone_Root in "Decay Flesh"). So only missing keys are added, and
+        -- XYZ controllers get them per axis, where the keys live.
+        -- (Rollout-level: a function local to createStartEndkeys could not
+        -- call another one - "No outer local variable references".)
+        fn seAddKeyIfMissing c t =
+        (
+            local has = try ((getKeyIndex c t) > 0) catch (false)
+            if not has do addNewKey c t
+        )
+        fn seAddBoundaryKeys c =
+        (
+            seAddKeyIfMissing c 0f
+            for i = 1 to animToolsSequences.count do
+            (
+                seAddKeyIfMissing c animToolsSequences[i].start
+                seAddKeyIfMissing c animToolsSequences[i].end
+            )
+        )
+
         fn createStartEndkeys sel =
         (
             if animToolsSequences.count == 0 then
@@ -560,14 +679,16 @@ struct WdxAnimTools
             (
                 if c != undefined then
                 (
-                    local superKeys = ::WdxUtils.getKeysOnSequences c.keys animToolsSequences
-                    local count = animToolsSequences.count
-                    addNewKey c 0f
-                    for i = 1 to count do
+                    local cls = classOf c
+                    if cls == Position_XYZ or cls == Euler_XYZ or cls == ScaleXYZ then
                     (
-                        addNewKey c animToolsSequences[i].start 
-                        addNewKey c animToolsSequences[i].end 
+                        for i = 1 to 3 do
+                        (
+                            local sc = try (c[i].controller) catch (undefined)
+                            if sc != undefined do seAddBoundaryKeys sc
+                        )
                     )
+                    else seAddBoundaryKeys c
                 )
             )
             
@@ -872,29 +993,21 @@ struct WdxAnimTools
 				-- Move the slider to frame 0 so bone transforms are read from the initial pose
 				local savedTime = sliderTime
 				sliderTime = 0
-				
+
 				::WhiteoutDexBoneFinder.scan()
-				local mHeight = getModelHeight()
-				
-				if not isValidNode $'Origin Ref' then createAttachmentNode undefined #origin mHeight
-				
-				if not isValidNode $'Head Ref' \
-					and isValidNode ::WhiteoutDexBoneFinder.scanResult.head then
-				(
-					createAttachmentNode ::WhiteoutDexBoneFinder.scanResult.head #head mHeight
-					createAttachmentNode ::WhiteoutDexBoneFinder.scanResult.head #overhead mHeight
-				)
-				if not isValidNode $'Chest Ref' \
-					and isValidNode ::WhiteoutDexBoneFinder.scanResult.chest then createAttachmentNode ::WhiteoutDexBoneFinder.scanResult.chest #chest mHeight
-				if not isValidNode $'Foot Left Ref' \
-					and isValidNode ::WhiteoutDexBoneFinder.scanResult.footLeft then createAttachmentNode ::WhiteoutDexBoneFinder.scanResult.footLeft #footLeft mHeight
-				if not isValidNode $'Foot Right Ref' \
-					and isValidNode ::WhiteoutDexBoneFinder.scanResult.footRight then createAttachmentNode ::WhiteoutDexBoneFinder.scanResult.footRight #footRight mHeight
-				if not isValidNode $'Hand Left Ref' \
-					and isValidNode ::WhiteoutDexBoneFinder.scanResult.handLeft then createAttachmentNode ::WhiteoutDexBoneFinder.scanResult.handLeft #handLeft mHeight
-				if not isValidNode $'Hand Right Ref' \
-					and isValidNode ::WhiteoutDexBoneFinder.scanResult.handRight then createAttachmentNode ::WhiteoutDexBoneFinder.scanResult.handRight #handRight mHeight
-				
+				local r = ::WhiteoutDexBoneFinder.scanResult
+				local top = getOverheadZ r.head
+
+				if not isValidNode $'Origin Ref' then createAttachmentNode undefined #origin top
+				if not isValidNode $'Overhead Ref' then createAttachmentNode undefined #overhead top
+				if not isValidNode $'Head Ref' and isValidNode r.head then createAttachmentNode r.head #head top
+				if not isValidNode $'Chest Ref' and isValidNode r.chest then createAttachmentNode r.chest #chest top
+				if not isValidNode $'Foot Left Ref' and isValidNode r.footLeft then createAttachmentNode r.footLeft #footLeft top
+				if not isValidNode $'Foot Right Ref' and isValidNode r.footRight then createAttachmentNode r.footRight #footRight top
+				if not isValidNode $'Hand Left Ref' and isValidNode r.handLeft then createAttachmentNode r.handLeft #handLeft top
+				if not isValidNode $'Hand Right Ref' and isValidNode r.handRight then createAttachmentNode r.handRight #handRight top
+				if not isValidNode $'Weapon Ref' and isValidNode r.weapon then createAttachmentNode r.weapon #weapon top
+
 				-- Slider back to its original position
 				sliderTime = savedTime
 			)

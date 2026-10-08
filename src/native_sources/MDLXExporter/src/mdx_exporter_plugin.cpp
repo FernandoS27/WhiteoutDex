@@ -1,6 +1,7 @@
 // MDLXExporter — MdxExporterPlugin implementation
 // DEBUG: Logs to %TEMP%\mdlx_export_debug.log
 #include "mdx_exporter_plugin.h"
+#include <wdx_text.h>
 #include "mdx_export_options.h"
 #include "mdx_class_ids.h"
 #include "mdx_node_registration.h"
@@ -187,12 +188,47 @@ void resolveSkinIndices(INode* meshNode, ir::Mesh& mesh,
         for (auto& inf : v.skinInfluences) { int r=inf.boneIndex; if(r>=0&&r<numBones) inf.boneIndex=skinToNodeIndex[r]; else inf.boneIndex=-1; }
 }
 
+// Turns a mesh whose triangles wind against their own normals. Some ripped
+// and converted models come that way (Beerus: every face of body and heads
+// wound inward, the explicit normals outward). Max draws back faces and
+// shades by the normals, so the scene looks right; Warcraft III culls by
+// the winding and showed the inside. Only a mesh where at least 90% of the
+// triangles disagree is turned: a normal mesh has ~3% (creases, thin parts),
+// and an intentionally inverted shell (cell-shade outline) flips winding and
+// normals together, so it agrees with itself and is left as it is.
+bool fixInsideOutWinding(ir::Mesh& mesh) {
+    const size_t tris = mesh.indices.size() / 3;
+    if (tris == 0) return false;
+    size_t against = 0;
+    for (size_t f = 0; f < tris; ++f) {
+        const auto& a = mesh.vertices[mesh.indices[3 * f]];
+        const auto& b = mesh.vertices[mesh.indices[3 * f + 1]];
+        const auto& c = mesh.vertices[mesh.indices[3 * f + 2]];
+        const Point3 faceN = CrossProd(b.position - a.position, c.position - a.position);
+        if (DotProd(faceN, a.normal + b.normal + c.normal) < 0.0f) ++against;
+    }
+    if (against * 10 < tris * 9) return false;
+    for (size_t f = 0; f < tris; ++f) std::swap(mesh.indices[3 * f + 1], mesh.indices[3 * f + 2]);
+    ELOG << "  mesh '" << mesh.name << "' wound against its normals (" << against << "/" << tris
+         << " triangles) -> winding reversed\n";
+    return true;
+}
+
 } // namespace
+
 
 int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi, BOOL suppressPrompts, DWORD)
 {
     core::ExportErrorReporter reporter;
     MdxExportOptions opts;
+
+    // Names and paths go out in the code page the importer found in the
+    // model (root user property Wc3CodePage, wdx_text.h); a scene made in
+    // Max has none and gets the Windows code page, GBK or UTF-8.
+    int sceneCodePage = 0;
+    if (gi && gi->GetRootNode())
+        gi->GetRootNode()->GetUserPropInt(_T("Wc3CodePage"), sceneCodePage);
+    wdx::text::CodePageScope codePageScope(static_cast<UINT>(sceneCodePage));
 
     ELOG << "==== MDLXExporter::DoExport ====\n";
     ELOG << "File: " << wcharToUtf8(name) << "\n"; EFLUSH;
@@ -302,6 +338,10 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
                  << "' has no faces -> helper, no geoset\n";
             continue;
         }
+        if (fixInsideOutWinding(mesh))
+            reporter.warning(L"Triangles wound against their normals (inside out in the game); "
+                             L"the winding was reversed in the export, the scene is unchanged.",
+                             sn.maxNode->GetName());
         ISkin* skin=core::ModifierReader::findSkin(sn.maxNode);
         if(skin) {
             resolveSkinIndices(sn.maxNode,mesh,boneResult.nodeToIndex,irModel.bones);
@@ -431,7 +471,6 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     mdx_extract::extractRibbons(sceneResult.nodes,irModel,mtlMap,reporter);
     mdx_extract::extractEvents(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractCollisions(sceneResult.nodes,irModel,reporter);
-    mdx_extract::extractCameras(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractVertexColors(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractGeosetAnims(sceneResult.nodes,irModel,reporter);
     if(opts.version>=1200){mdx_extract::extractPopcorn(sceneResult.nodes,irModel,reporter);mdx_extract::extractFaceFX(sceneResult.nodes,irModel,reporter);}
@@ -439,7 +478,6 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
          << " Lights=" << irModel.lights.size() << " Attach=" << irModel.attachments.size()
          << " PE=" << irModel.particleEmitters.size() << " Ribbons=" << irModel.ribbonEmitters.size()
          << " Events=" << irModel.eventObjects.size() << " Collisions=" << irModel.collisionShapes.size()
-         << " Cameras=" << irModel.cameras.size()
          << " GeosetAnims=" << irModel.geosetAnims.size() << "\n";
     EFLUSH;
 
@@ -473,6 +511,11 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
              << "-" << irModel.sequences[0].endTime << ", looping) ***\n";
     }
     EFLUSH;
+    seqMgr.sampleExtents(irModel.sequences, irModel);
+
+    // Cameras sample their tracks per sequence
+    mdx_extract::extractCameras(sceneResult.nodes,irModel,reporter);
+    ELOG << "Cameras=" << irModel.cameras.size() << "\n"; EFLUSH;
 
     // Bake
     ELOG << "\n==== Animation Bake ====\n";
@@ -560,10 +603,19 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         // track whose seq-start/end stub keys get reduced away spends
         // the rest of the sequence lerping back to the first key —
         // Mr.War3's spell rays all re-swept at once. Keep every key.
-        std::unordered_set<int32_t> texAnimVec3TrackIndices;
+        std::unordered_set<int32_t> keepVec3TrackIndices;
         for (const auto& ta : irModel.textureAnimations) {
-            if (ta.translationTrackIndex >= 0) texAnimVec3TrackIndices.insert(ta.translationTrackIndex);
-            if (ta.scaleTrackIndex >= 0)       texAnimVec3TrackIndices.insert(ta.scaleTrackIndex);
+            if (ta.translationTrackIndex >= 0) keepVec3TrackIndices.insert(ta.translationTrackIndex);
+            if (ta.scaleTrackIndex >= 0)       keepVec3TrackIndices.insert(ta.scaleTrackIndex);
+        }
+        // Camera KCTR/KTTR, for the same reason: one track spans every
+        // sequence, so a camera holding still at a sequence end lost its end
+        // key (equal to the next sequence's start) and swung back towards its
+        // first key - arthasillidanfight's "Arthas Run 2" camera, last ~4 s.
+        // The extractor has already reduced them per sequence.
+        for (const auto& cam : irModel.cameras) {
+            if (cam.positionTrackIndex >= 0)       keepVec3TrackIndices.insert(cam.positionTrackIndex);
+            if (cam.targetPositionTrackIndex >= 0) keepVec3TrackIndices.insert(cam.targetPositionTrackIndex);
         }
 
         // ── PE2 Rotation Fix (NeoDex-compatible) ─────────────────
@@ -770,10 +822,10 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
             ko.optimize(irModel.floatTracks[i]);
         }
 
-        // Vec3 tracks: skip texture-anim tracks (boundary stubs required)
+        // Vec3 tracks: skip texture-anim and camera tracks (boundary keys required)
         for (size_t i = 0; i < irModel.vec3Tracks.size(); ++i) {
-            if (texAnimVec3TrackIndices.count(static_cast<int32_t>(i))) {
-                ELOG << "  skip vec3Track[" << i << "] (texture-anim, "
+            if (keepVec3TrackIndices.count(static_cast<int32_t>(i))) {
+                ELOG << "  skip vec3Track[" << i << "] (texture-anim/camera, "
                      << irModel.vec3Tracks[i].keys.size() << " keys preserved)\n";
                 continue;
             }

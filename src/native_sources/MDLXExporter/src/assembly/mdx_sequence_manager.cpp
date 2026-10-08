@@ -1,6 +1,7 @@
 // MDLXExporter — Sequence manager implementation
 // DEBUG: Logs to %TEMP%\mdlx_export_debug.log
 #include "mdx_sequence_manager.h"
+#include <wdx_text.h>
 #include "../mdx_export_debug.h"
 
 #include <icustattribcontainer.h>
@@ -11,9 +12,19 @@
 #include <cstdio>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
+#include <string>
 #include <cwctype>
+#include <locale.h>
 
 namespace {
+// "Rarity=0.5" / "MoveSpeed=270.5" in note keys always use '.': _wtof follows
+// the host's LC_NUMERIC, and 3ds Max 2027 on a German Windows runs with ','
+// (270.5 read as 270). The "C" locale variant ignores that.
+float noteFloat(const wchar_t* s) {
+    static _locale_t c = _create_locale(LC_NUMERIC, "C");
+    return static_cast<float>(c ? _wtof_l(s, c) : _wtof(s));
+}
 enum SeqParamID : ParamID { PID_SeqNames=0,PID_StartFrames=1,PID_EndFrames=2,PID_NonLooping=3,PID_Rarity=4,PID_MoveSpeed=5,PID_SeqExtents=6,PID_SharedGroup=7 };
 
 IParamBlock2* findSequenceCA(INode* rootNode) {
@@ -49,7 +60,11 @@ std::string wstrToUtf8(const wchar_t* wstr) {
 }
 void parseExtentString(const wchar_t* str,float& bound,Point3& mn,Point3& mx) {
     if(!str||!str[0]) return;
-    swscanf_s(str,L"%f %f %f %f %f %f %f",&bound,&mn.x,&mn.y,&mn.z,&mx.x,&mx.y,&mx.z);
+    // space separated, '.' decimals; a scene imported where LC_NUMERIC used
+    // ',' (older builds under Max 2027 on a German Windows) wrote commas
+    std::wstring v(str); for(auto& ch:v) if(ch==L',') ch=L'.';
+    static _locale_t c=_create_locale(LC_NUMERIC,"C");
+    _swscanf_s_l(v.c_str(),L"%f %f %f %f %f %f %f",c,&bound,&mn.x,&mn.y,&mn.z,&mx.x,&mx.y,&mx.z);
 }
 
 // Note track fallback
@@ -75,7 +90,7 @@ std::vector<ir::Sequence> extractFromNoteTracks(INode* rootNode) {
     for(int i=0;i<numKeys;i++){NoteKey* nk=nt->keys[i];if(!nk)continue;const wchar_t* val=nk->note.data();if(!val||!val[0])continue;std::wstring key(val);NoteKeyEntry entry;entry.value=key;entry.time=nk->time;if(groups.find(key)==groups.end())groupOrder.push_back(key);groups[key].push_back(entry);}
     struct SeqParsed{std::string name;TimeValue startTime,endTime;bool nonLooping;float rarity,moveSpeed;};
     std::vector<SeqParsed> parsed;
-    for(auto& keyStr:groupOrder){auto& grp=groups[keyStr];if(grp.size()<2)continue;std::sort(grp.begin(),grp.end(),[](const NoteKeyEntry& a,const NoteKeyEntry& b){return a.time<b.time;});size_t pairCount=grp.size()/2;for(size_t p=0;p<pairCount;p++){auto& k1=grp[p*2];auto& k2=grp[p*2+1];auto tokens=tokenizeNoteValue(k1.value.c_str());std::string seqName=tokens.empty()?"Unknown":wstrToUtf8(tokens[0].c_str());bool nonLoop=false;float rare=0,speed=0;for(size_t t=1;t<tokens.size();t++){if(wcsieq(tokens[t],L"NonLooping"))nonLoop=true;else if(wcsistartswith(tokens[t],L"Rarity",6))rare=(float)_wtof(tokens[t].c_str()+6);else if(wcsistartswith(tokens[t],L"MoveSpeed",9))speed=(float)_wtof(tokens[t].c_str()+9);}SeqParsed sp;sp.name=seqName;sp.startTime=std::min(k1.time,k2.time);sp.endTime=std::max(k1.time,k2.time);sp.nonLooping=nonLoop;sp.rarity=rare;sp.moveSpeed=speed;parsed.push_back(std::move(sp));}}
+    for(auto& keyStr:groupOrder){auto& grp=groups[keyStr];if(grp.size()<2)continue;std::sort(grp.begin(),grp.end(),[](const NoteKeyEntry& a,const NoteKeyEntry& b){return a.time<b.time;});size_t pairCount=grp.size()/2;for(size_t p=0;p<pairCount;p++){auto& k1=grp[p*2];auto& k2=grp[p*2+1];auto tokens=tokenizeNoteValue(k1.value.c_str());std::string seqName=tokens.empty()?"Unknown":wdx::text::wideToMdx(tokens[0].c_str());bool nonLoop=false;float rare=0,speed=0;for(size_t t=1;t<tokens.size();t++){if(wcsieq(tokens[t],L"NonLooping"))nonLoop=true;else if(wcsistartswith(tokens[t],L"Rarity",6))rare=noteFloat(tokens[t].c_str()+6);else if(wcsistartswith(tokens[t],L"MoveSpeed",9))speed=noteFloat(tokens[t].c_str()+9);}SeqParsed sp;sp.name=seqName;sp.startTime=std::min(k1.time,k2.time);sp.endTime=std::max(k1.time,k2.time);sp.nonLooping=nonLoop;sp.rarity=rare;sp.moveSpeed=speed;parsed.push_back(std::move(sp));}}
     std::sort(parsed.begin(),parsed.end(),[](const SeqParsed& a,const SeqParsed& b){return a.startTime<b.startTime;});
     for(auto& sp:parsed){ir::Sequence seq;seq.name=sp.name;seq.startTime=sp.startTime;seq.endTime=sp.endTime;seq.isLooping=!sp.nonLooping;seq.rarity=sp.rarity;seq.moveSpeed=sp.moveSpeed;sequences.push_back(std::move(seq));}
     return sequences;
@@ -103,7 +118,7 @@ std::vector<ir::Sequence> MdxSequenceManager::extractSequences(Interface* gi) {
     sequences.reserve(count);
     for(int i=0;i<count;i++){
         ir::Sequence seq; Interval valid=FOREVER;
-        const MCHAR* name=nullptr; pb->GetValue(PID_SeqNames,0,name,valid,i); seq.name=wstrToUtf8(name);
+        const MCHAR* name=nullptr; pb->GetValue(PID_SeqNames,0,name,valid,i); seq.name=wdx::text::wideToMdx(name);
         int sf=0,ef=0; pb->GetValue(PID_StartFrames,0,sf,valid,i); pb->GetValue(PID_EndFrames,0,ef,valid,i);
         seq.startTime=sf*tpf; seq.endTime=ef*tpf;
         int nl=0; pb->GetValue(PID_NonLooping,0,nl,valid,i); seq.isLooping=(nl==0);
@@ -117,4 +132,116 @@ std::vector<ir::Sequence> MdxSequenceManager::extractSequences(Interface* gi) {
     }
     ELOG << "==== end SequenceManager ====\n\n"; EFLUSH;
     return sequences;
+}
+
+// Sequence extents (SEQS) from the exported meshes as Max plays each
+// sequence. The scene keeps the extents an imported model came with (Sequence
+// Manager "seqExtents") and the exporter wrote them back unchecked: fara14.max
+// was moved ~300 units after its import, so six sequences carried boxes that
+// missed the model completely (one with min Y above max Y), and two sequences
+// added later had none and got the bind pose, which Spell Throw leaves by 110
+// units. The game culls a unit by that box. A stored box stays while it holds
+// the meshes at the sequence start (an unedited import keeps its own values);
+// otherwise the bounds are taken on every frame of the sequence (at most 61
+// times); 17 samples still missed 11 units of Spell Throw's swing.
+//
+// The bounds come from the exported vertices skinned by their bones: a vertex
+// at frame 0 goes with bone i as v0 * Inverse(W_i(0)) * W_i(t), W = the
+// node's world TM, blended by the skin weights. Evaluating the Max meshes
+// instead (EvalWorldState + GetDeformBBox per mesh and time) cost Ichigo's
+// scene, 340,000 vertices in 112 meshes over 121 sequences, three of its
+// four export minutes. Equal vertices (position and influences) are folded
+// first. The box of the per-bone positions alone would be quicker still, but
+// on a cape blended between distant bones it grew past the model's own
+// stored extents, which an unedited import then lost.
+void MdxSequenceManager::sampleExtents(std::vector<ir::Sequence>& sequences,
+                                       const ir::IRModel& model) {
+    struct Influence {
+        uint32_t slot;   // index into nodes
+        Point3 local;    // frame-0 position in the bone's frame-0 space
+        float weight;    // normalized
+    };
+    std::vector<INode*> nodes;
+    std::unordered_map<int32_t, uint32_t> slotOf;
+    std::vector<Influence> infl;
+    std::vector<std::pair<uint32_t, uint32_t>> verts;  // first influence, count
+    std::unordered_set<std::string> seen;
+    Box3 unbound;  // vertices that follow no node
+    std::string key;
+    for (const auto& mesh : model.meshes) {
+        for (const auto& v : mesh.vertices) {
+            key.assign(reinterpret_cast<const char*>(&v.position), sizeof(Point3));
+            float sum = 0.0f;
+            for (const auto& inf : v.skinInfluences) {
+                if (inf.weight <= 0.0f || inf.boneIndex < 0 ||
+                    inf.boneIndex >= static_cast<int32_t>(model.nodes.size()) ||
+                    !model.nodes[inf.boneIndex].maxNode)
+                    continue;
+                key.append(reinterpret_cast<const char*>(&inf), sizeof(inf));
+                sum += inf.weight;
+            }
+            if (sum <= 0.0f) { unbound += v.position; continue; }
+            if (!seen.insert(key).second) continue;
+            const uint32_t first = static_cast<uint32_t>(infl.size());
+            for (const auto& inf : v.skinInfluences) {
+                if (inf.weight <= 0.0f || inf.boneIndex < 0 ||
+                    inf.boneIndex >= static_cast<int32_t>(model.nodes.size()) ||
+                    !model.nodes[inf.boneIndex].maxNode)
+                    continue;
+                auto [it, fresh] = slotOf.try_emplace(inf.boneIndex, static_cast<uint32_t>(nodes.size()));
+                if (fresh) nodes.push_back(model.nodes[inf.boneIndex].maxNode);
+                infl.push_back({it->second, v.position, inf.weight / sum});
+            }
+            verts.emplace_back(first, static_cast<uint32_t>(infl.size()) - first);
+        }
+    }
+    if (verts.empty() && unbound.IsEmpty()) return;
+    {
+        std::vector<Matrix3> toLocal;
+        toLocal.reserve(nodes.size());
+        for (INode* n : nodes) toLocal.push_back(Inverse(n->GetNodeTM(0)));
+        for (auto& i : infl) i.local = i.local * toLocal[i.slot];
+    }
+    std::vector<Matrix3> tms(nodes.size());
+    auto boundsAt = [&](TimeValue t) {
+        for (size_t i = 0; i < nodes.size(); ++i) tms[i] = nodes[i]->GetNodeTM(t);
+        Box3 all = unbound;
+        for (const auto& [first, count] : verts) {
+            Point3 p(0.0f, 0.0f, 0.0f);
+            for (uint32_t k = first; k < first + count; ++k)
+                p += (infl[k].local * tms[infl[k].slot]) * infl[k].weight;
+            all += p;
+        }
+        return all;
+    };
+    const TimeValue tpf = std::max(GetTicksPerFrame(), 1);
+    for (auto& seq : sequences) {
+        if (seq.endTime < seq.startTime) continue;
+        Box3 atStart = boundsAt(seq.startTime);
+        if (atStart.IsEmpty()) continue;
+        if (seq.extentRadius > 0.0f) {
+            const Point3 mn(std::min(seq.extentMin.x, seq.extentMax.x), std::min(seq.extentMin.y, seq.extentMax.y),
+                            std::min(seq.extentMin.z, seq.extentMax.z));
+            const Point3 mx(std::max(seq.extentMin.x, seq.extentMax.x), std::max(seq.extentMin.y, seq.extentMax.y),
+                            std::max(seq.extentMin.z, seq.extentMax.z));
+            const float tol = 0.5f + 0.01f * Length(atStart.pmax - atStart.pmin);
+            bool holds = true;
+            for (int k = 0; k < 3; ++k)
+                holds = holds && mn[k] <= atStart.pmin[k] + tol && mx[k] >= atStart.pmax[k] - tol;
+            if (holds) continue;
+            ELOG << "  seq '" << seq.name << "' stored extent does not hold the meshes -> sampled\n";
+        }
+        const TimeValue span = seq.endTime - seq.startTime;
+        const int n = static_cast<int>(std::min<TimeValue>(60, span / tpf));
+        Box3 box = atStart;
+        for (int k = 1; k <= n; ++k)
+            box += boundsAt(seq.startTime + static_cast<TimeValue>(static_cast<int64_t>(span) * k / n));
+        seq.extentMin = box.pmin;
+        seq.extentMax = box.pmax;
+        seq.extentRadius = 0.5f * Length(box.pmax - box.pmin);
+        ELOG << "  seq '" << seq.name << "' extent sampled at " << (n + 1) << " times: ("
+             << box.pmin.x << "," << box.pmin.y << "," << box.pmin.z << ")..("
+             << box.pmax.x << "," << box.pmax.y << "," << box.pmax.z << ")\n";
+    }
+    EFLUSH;
 }

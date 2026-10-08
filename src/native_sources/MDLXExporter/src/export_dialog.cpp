@@ -1152,7 +1152,8 @@ void updateSceneStatus(HWND hDlg, DialogState* ds) {
                     + result.countByType(ProblemType::EditMeshAboveSkin)
                     + result.countByType(ProblemType::MultiMaterialMesh);
     ds->controllers = result.countByType(ProblemType::InvalidController);
-    ds->materials   = result.countByType(ProblemType::UnsupportedMaterial);
+    ds->materials   = result.countByType(ProblemType::UnsupportedMaterial)
+                    + result.countByType(ProblemType::DuplicateMaterial);
 
     const bool problems = ds->total > 0;
     HWND focus = GetFocus();

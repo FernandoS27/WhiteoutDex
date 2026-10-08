@@ -18,7 +18,7 @@
 plugin material Wdx_Wc3Material
 name:"Wc3Material"
 classID:#(0x4b8e20a3, 0x1f6c3d57)
-extends:Standard replaceUI:true version:13
+extends:Standard replaceUI:true version:14
 (
 	local isLoading = false
 	
@@ -109,6 +109,7 @@ extends:Standard replaceUI:true version:13
 		) catch()
 		-- Occlusion is read out of the ORM map, which the SD shader has none of.
 		try ( this.basicRollout.chkAmbOcc.enabled = not isSD ) catch()
+		try ( this.basicRollout.chkUnlit.enabled = not isSD ) catch()
 		try (
 			this.reforgedRollout.spnEmGain.enabled		= not isSD
 			this.reforgedRollout.spnFrR.enabled			= not isSD
@@ -258,6 +259,9 @@ extends:Standard replaceUI:true version:13
 		-- cull in the shadow pass so the layer casts from its back faces.
 		ambientOcclusion	type:#boolean	animatable:false	default:false	ui:chkAmbOcc
 		backFacesForShadows	type:#boolean	animatable:false	default:false	ui:chkBackShadow
+		-- Layer ShadingFlag 0x100 (Reforged "Unlit"): the layer skips the
+		-- lighting pipeline. Kept so HD models export with the flag they had.
+		unlit			type:#boolean	animatable:false	default:false	ui:chkUnlit
 		sortOrder		type:#integer	animatable:false	default:1	ui:ddSortOrder
 		priorityPlane	type:#integer	animatable:false	default:0	ui:spnPriority
 		-- replaceableId: moved here from Wc3Bitmap (1 = Not Used, 2+ = replaceable type)
@@ -388,12 +392,13 @@ extends:Standard replaceUI:true version:13
 		checkbox	chkNoDSet		"No Depth Set"	align:#left across:3 enabled:false
 		checkbox	chkUnsel		"Unselectable"	align:#left
 		checkbox	chkAmbOcc		"Ambient Occlusion"	align:#left
-		checkbox	chkBackShadow	"Back Faces for Shadows"	align:#left
+		checkbox	chkBackShadow	"Back Faces for Shadows"	align:#left across:2
+		checkbox	chkUnlit		"Unlit"	align:#left
 		label		lblSep2		"" height:2
 		dropdownlist	ddSortOrder	"Sort Order ..................................................." items:#("Not Used", "Near to far", "Far to near") width:300 align:#center enabled:false
 		spinner		spnPriority		"Priority Plane ................." range:[-20,20,0] type:#integer fieldwidth:55 align:#right
 		label		lblSep2b	"" height:2
-		dropdownlist	ddReplaceable	"Replaceable Texture ................................" items:#("Not Used", "Team Color", "Team Glow", "Cliff", "Lord Cliffington") width:300 align:#center
+		dropdownlist	ddReplaceable	"Replaceable Texture ................................" items:#("Not Used", "Team Color", "Team Glow", "Cliff", "Lordaeron Tree", "Ashenvale Tree", "Barrens Tree", "Northrend Tree", "Mushroom Tree", "Ruins Tree", "Outland Mushroom Tree") width:300 align:#center
 		
 		on basicRollout open do
 		(
@@ -430,6 +435,7 @@ extends:Standard replaceUI:true version:13
 				chkUnsel.text			= ::WdxL.t "mat_unselectable_chk_2"
 				chkAmbOcc.text			= ::WdxL.t "mat_ambient_occlusion_chk"
 				chkBackShadow.text		= ::WdxL.t "mat_back_faces_shadows_chk"
+				chkUnlit.text			= ::WdxL.t "mat_unlit_chk"
 
 				ddFilterMode.items	= ::WdxL.tList "mat_filter_mode_items"
 				ddSortOrder.items	= ::WdxL.tList "mat_sort_order_items"
