@@ -188,6 +188,32 @@ void resolveSkinIndices(INode* meshNode, ir::Mesh& mesh,
         for (auto& inf : v.skinInfluences) { int r=inf.boneIndex; if(r>=0&&r<numBones) inf.boneIndex=skinToNodeIndex[r]; else inf.boneIndex=-1; }
 }
 
+// Turns a mesh whose triangles wind against their own normals. Some ripped
+// and converted models come that way (Beerus: every face of body and heads
+// wound inward, the explicit normals outward). Max draws back faces and
+// shades by the normals, so the scene looks right; Warcraft III culls by
+// the winding and showed the inside. Only a mesh where at least 90% of the
+// triangles disagree is turned: a normal mesh has ~3% (creases, thin parts),
+// and an intentionally inverted shell (cell-shade outline) flips winding and
+// normals together, so it agrees with itself and is left as it is.
+bool fixInsideOutWinding(ir::Mesh& mesh) {
+    const size_t tris = mesh.indices.size() / 3;
+    if (tris == 0) return false;
+    size_t against = 0;
+    for (size_t f = 0; f < tris; ++f) {
+        const auto& a = mesh.vertices[mesh.indices[3 * f]];
+        const auto& b = mesh.vertices[mesh.indices[3 * f + 1]];
+        const auto& c = mesh.vertices[mesh.indices[3 * f + 2]];
+        const Point3 faceN = CrossProd(b.position - a.position, c.position - a.position);
+        if (DotProd(faceN, a.normal + b.normal + c.normal) < 0.0f) ++against;
+    }
+    if (against * 10 < tris * 9) return false;
+    for (size_t f = 0; f < tris; ++f) std::swap(mesh.indices[3 * f + 1], mesh.indices[3 * f + 2]);
+    ELOG << "  mesh '" << mesh.name << "' wound against its normals (" << against << "/" << tris
+         << " triangles) -> winding reversed\n";
+    return true;
+}
+
 } // namespace
 
 
@@ -312,6 +338,10 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
                  << "' has no faces -> helper, no geoset\n";
             continue;
         }
+        if (fixInsideOutWinding(mesh))
+            reporter.warning(L"Triangles wound against their normals (inside out in the game); "
+                             L"the winding was reversed in the export, the scene is unchanged.",
+                             sn.maxNode->GetName());
         ISkin* skin=core::ModifierReader::findSkin(sn.maxNode);
         if(skin) {
             resolveSkinIndices(sn.maxNode,mesh,boneResult.nodeToIndex,irModel.bones);
