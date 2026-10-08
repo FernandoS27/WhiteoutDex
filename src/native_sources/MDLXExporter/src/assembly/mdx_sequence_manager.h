@@ -12,5 +12,5 @@ public:
 
     // Fill every sequence's extent whose stored box does not hold the
     // exported meshes with the bounds of those meshes over the sequence.
-    void sampleExtents(std::vector<ir::Sequence>& sequences, const std::vector<INode*>& meshNodes);
+    void sampleExtents(std::vector<ir::Sequence>& sequences, const ir::IRModel& model);
 };

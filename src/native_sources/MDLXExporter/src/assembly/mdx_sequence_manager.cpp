@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
+#include <string>
 #include <cwctype>
 #include <locale.h>
 
@@ -140,22 +142,75 @@ std::vector<ir::Sequence> MdxSequenceManager::extractSequences(Interface* gi) {
 // added later had none and got the bind pose, which Spell Throw leaves by 110
 // units. The game culls a unit by that box. A stored box stays while it holds
 // the meshes at the sequence start (an unedited import keeps its own values);
-// otherwise the meshes are evaluated on every frame of the sequence (at most
-// 61 times) and their world bounds are used; 17 samples still missed 11
-// units of Spell Throw's swing. GetDeformBBox with the node's object TM is
-// the precise box (maxsdk/include/object.h, Object::GetDeformBBox).
+// otherwise the bounds are taken on every frame of the sequence (at most 61
+// times); 17 samples still missed 11 units of Spell Throw's swing.
+//
+// The bounds come from the exported vertices skinned by their bones: a vertex
+// at frame 0 goes with bone i as v0 * Inverse(W_i(0)) * W_i(t), W = the
+// node's world TM, blended by the skin weights. Evaluating the Max meshes
+// instead (EvalWorldState + GetDeformBBox per mesh and time) cost Ichigo's
+// scene, 340,000 vertices in 112 meshes over 121 sequences, three of its
+// four export minutes. Equal vertices (position and influences) are folded
+// first. The box of the per-bone positions alone would be quicker still, but
+// on a cape blended between distant bones it grew past the model's own
+// stored extents, which an unedited import then lost.
 void MdxSequenceManager::sampleExtents(std::vector<ir::Sequence>& sequences,
-                                       const std::vector<INode*>& meshNodes) {
-    if (meshNodes.empty()) return;
+                                       const ir::IRModel& model) {
+    struct Influence {
+        uint32_t slot;   // index into nodes
+        Point3 local;    // frame-0 position in the bone's frame-0 space
+        float weight;    // normalized
+    };
+    std::vector<INode*> nodes;
+    std::unordered_map<int32_t, uint32_t> slotOf;
+    std::vector<Influence> infl;
+    std::vector<std::pair<uint32_t, uint32_t>> verts;  // first influence, count
+    std::unordered_set<std::string> seen;
+    Box3 unbound;  // vertices that follow no node
+    std::string key;
+    for (const auto& mesh : model.meshes) {
+        for (const auto& v : mesh.vertices) {
+            key.assign(reinterpret_cast<const char*>(&v.position), sizeof(Point3));
+            float sum = 0.0f;
+            for (const auto& inf : v.skinInfluences) {
+                if (inf.weight <= 0.0f || inf.boneIndex < 0 ||
+                    inf.boneIndex >= static_cast<int32_t>(model.nodes.size()) ||
+                    !model.nodes[inf.boneIndex].maxNode)
+                    continue;
+                key.append(reinterpret_cast<const char*>(&inf), sizeof(inf));
+                sum += inf.weight;
+            }
+            if (sum <= 0.0f) { unbound += v.position; continue; }
+            if (!seen.insert(key).second) continue;
+            const uint32_t first = static_cast<uint32_t>(infl.size());
+            for (const auto& inf : v.skinInfluences) {
+                if (inf.weight <= 0.0f || inf.boneIndex < 0 ||
+                    inf.boneIndex >= static_cast<int32_t>(model.nodes.size()) ||
+                    !model.nodes[inf.boneIndex].maxNode)
+                    continue;
+                auto [it, fresh] = slotOf.try_emplace(inf.boneIndex, static_cast<uint32_t>(nodes.size()));
+                if (fresh) nodes.push_back(model.nodes[inf.boneIndex].maxNode);
+                infl.push_back({it->second, v.position, inf.weight / sum});
+            }
+            verts.emplace_back(first, static_cast<uint32_t>(infl.size()) - first);
+        }
+    }
+    if (verts.empty() && unbound.IsEmpty()) return;
+    {
+        std::vector<Matrix3> toLocal;
+        toLocal.reserve(nodes.size());
+        for (INode* n : nodes) toLocal.push_back(Inverse(n->GetNodeTM(0)));
+        for (auto& i : infl) i.local = i.local * toLocal[i.slot];
+    }
+    std::vector<Matrix3> tms(nodes.size());
     auto boundsAt = [&](TimeValue t) {
-        Box3 all;
-        for (INode* n : meshNodes) {
-            ObjectState os = n->EvalWorldState(t);
-            if (!os.obj) continue;
-            Matrix3 tm = n->GetObjTMAfterWSM(t);
-            Box3 b;
-            os.obj->GetDeformBBox(t, b, &tm);
-            if (!b.IsEmpty()) all += b;
+        for (size_t i = 0; i < nodes.size(); ++i) tms[i] = nodes[i]->GetNodeTM(t);
+        Box3 all = unbound;
+        for (const auto& [first, count] : verts) {
+            Point3 p(0.0f, 0.0f, 0.0f);
+            for (uint32_t k = first; k < first + count; ++k)
+                p += (infl[k].local * tms[infl[k].slot]) * infl[k].weight;
+            all += p;
         }
         return all;
     };

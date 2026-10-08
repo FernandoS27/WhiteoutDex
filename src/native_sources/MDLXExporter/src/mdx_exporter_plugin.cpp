@@ -280,7 +280,6 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     dialog.step(ExportStep::Meshes);
     core::MeshExtractor meshEx;
     std::vector<int32_t> meshBoneIdxs; // bones minted for unskinned meshes
-    std::vector<INode*> geosetNodes;   // meshes that became geosets (sequence extents)
     size_t meshTotal = 0, meshDone = 0;
     for (auto& sn:sceneResult.nodes) if(sn.category==core::NodeCategory::Mesh) ++meshTotal;
     for (auto& sn:sceneResult.nodes) {
@@ -365,7 +364,6 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
                 v.skinInfluences.push_back({ni, 1.0f});
             }
         }
-        geosetNodes.push_back(sn.maxNode);
         irModel.meshes.push_back(std::move(mesh));
     } EFLUSH;
 
@@ -483,7 +481,7 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
              << "-" << irModel.sequences[0].endTime << ", looping) ***\n";
     }
     EFLUSH;
-    seqMgr.sampleExtents(irModel.sequences, geosetNodes);
+    seqMgr.sampleExtents(irModel.sequences, irModel);
 
     // Cameras sample their tracks per sequence
     mdx_extract::extractCameras(sceneResult.nodes,irModel,reporter);
