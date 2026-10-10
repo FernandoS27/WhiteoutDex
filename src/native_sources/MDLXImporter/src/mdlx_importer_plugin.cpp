@@ -2988,8 +2988,9 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     // and writes archive bytes into modelDir with the actual extension.
     std::optional<mdx_scene::TextureResolver> resolverOpt;
     if (opts.core.importTextures) {
+        // Classic (v800) models take the classic MPQs first, Reforged CASC.
         resolverOpt.emplace(modelDir, opts.cascDirectory, opts.mpqDirectory,
-                            opts.mpqArchives, artTier);
+                            opts.mpqArchives, artTier, opts.detectedVersion < 900);
     }
     mdx_scene::TextureResolver* resolver = resolverOpt ? &*resolverOpt : nullptr;
 

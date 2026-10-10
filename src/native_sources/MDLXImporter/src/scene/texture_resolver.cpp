@@ -159,7 +159,8 @@ std::wstring tryDiskAtTier(const std::wstring& dirWithSlash,
                            const std::wstring& tierWithSlash,
                            const std::wstring& stem,
                            const std::wstring& origExt,
-                           const std::wstring& origExtLower) {
+                           const std::wstring& origExtLower,
+                           ExtProbe probe) {
     auto tryPath = [](const std::wstring& candidate) -> bool {
         std::error_code ec;
         bool ok = fs::exists(candidate, ec);
@@ -167,10 +168,11 @@ std::wstring tryDiskAtTier(const std::wstring& dirWithSlash,
              << (ok ? "FOUND" : "miss") << std::endl;
         return ok;
     };
-    if (!origExt.empty()) {
+    if (!origExt.empty() && probe != ExtProbe::Aliases) {
         std::wstring c = dirWithSlash + tierWithSlash + stem + origExt;
         if (tryPath(c)) return c;
     }
+    if (probe == ExtProbe::Exact) return {};
     auto [alts, n] = AltsForExtW(origExtLower);
     for (std::size_t i = 0; i < n; ++i) {
         std::wstring extW = alts[i];
@@ -233,7 +235,8 @@ std::string stripModChain(const std::string& archiveRel) {
 // ============================================================================
 
 std::wstring resolveTexturePath(const std::wstring& modelDir,
-                                const std::wstring& relPath) {
+                                const std::wstring& relPath,
+                                ExtProbe probe) {
     if (relPath.empty()) return {};
 
     // Normalize separators, trim trailing whitespace/nulls, strip leading
@@ -284,7 +287,7 @@ std::wstring resolveTexturePath(const std::wstring& modelDir,
     // texture sits at `<modelDir>\path2\Foo.tif` or `<modelDir>\Foo.tif`.
     std::wstring tier = relDir;
     while (true) {
-        if (auto hit = tryDiskAtTier(dir, tier, stem, origExt, origExtLower); !hit.empty())
+        if (auto hit = tryDiskAtTier(dir, tier, stem, origExt, origExtLower, probe); !hit.empty())
             return hit;
         if (tier.empty()) break;
         auto sep = tier.find(L'\\');
@@ -313,6 +316,10 @@ struct TextureResolver::Impl {
     // The scene's art tier, which orders the CASC overlays (see
     // wdx_scene_art_tier.h).
     wdx::scene::ArtTier artTier = wdx::scene::ArtTier::Auto;
+
+    // A classic (v800) model reads the classic MPQs before CASC; a Reforged
+    // one CASC first.
+    bool mpqFirst = false;
 
 #if defined(WHITEOUT_HAS_CASC)
     std::optional<whiteout::storages::casc::Storage> casc;
@@ -586,16 +593,19 @@ TextureResolver::TextureResolver(const std::wstring& modelDir,
                                  const std::wstring& cascDir,
                                  const std::wstring& mpqDir,
                                  const std::vector<std::wstring>& mpqArchives,
-                                 wdx::scene::ArtTier artTier)
+                                 wdx::scene::ArtTier artTier,
+                                 bool mpqFirst)
     : impl_(std::make_unique<Impl>()) {
     impl_->modelDir = modelDir;
     impl_->modChain = detectModChain(modelDir);
     impl_->artTier = artTier;
+    impl_->mpqFirst = mpqFirst;
 
     RLOG << "[RES] TextureResolver ctor:"
          << " modelDir='" << wlog(modelDir) << "'"
          << " modChain='" << impl_->modChain << "'"
          << " artTier=" << wdx::scene::ArtTierName(artTier)
+         << " order=" << (mpqFirst ? "MPQ,CASC" : "CASC,MPQ")
          << " cascDir='" << wlog(cascDir) << "'"
          << " mpqDir='" << wlog(mpqDir) << "'"
          << " listed=" << mpqArchives.size() << std::endl;
@@ -633,19 +643,6 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
          << " mpq=" << impl_->mpqArchives.size() << " archives"
          << std::endl;
 
-    // 1) Local disk first (with subdir peeling + alias fallback). When the
-    //    resolved path actually exists, return it verbatim — no archive
-    //    extraction needed.
-    {
-        std::wstring local = resolveTexturePath(impl_->modelDir, relPath);
-        std::error_code ec;
-        if (!local.empty() && fs::exists(local, ec)) {
-            RLOG << "[RES] disk hit: '" << wlog(local) << "'" << std::endl;
-            RLOG.flush();
-            return local;
-        }
-    }
-
     // Common archive lookup state.
     std::string archiveRel = normalizeArchivePath(relPath);
     std::string mdxExt = extractMdxExt(archiveRel);
@@ -659,19 +656,43 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
     const std::string plainStem = stripModChain(archiveStem);
     const std::wstring diskRel = diskPathFromArchivePath(relPath);
 
+    // Order: the file the MDX names on disk, the two archives (each with the
+    // MDX extension first, then the aliases), and only then a disk file under
+    // another extension. CASC always went before the MPQs, so a v800 model
+    // asking for a .blp got CASC's .dds although the classic MPQ held the
+    // .blp - and that .dds, extracted next to the model, then won every later
+    // import from disk. A v800 model now reads the MPQs first, a Reforged one
+    // CASC.
+
+    // Write an archive hit to <modelDir>/<original-subdir>/<stem>.<actualExt>.
+    auto extract = [&](const char* tag, const std::string& key, const std::string& ext,
+                       const std::vector<std::uint8_t>& data) -> std::wstring {
+        RLOG << "[" << tag << "] Found: '" << key << "' (" << data.size() << " bytes)" << std::endl;
+        std::wstring outRel = swapExtension(diskRel, narrowToWide(ext));
+        fs::path outPath = extractTarget(fs::path(impl_->modelDir) / outRel, key);
+        std::error_code ec;
+        if (fs::exists(outPath, ec)) {
+            RLOG << "[" << tag << "]   already on disk: " << wlog(outPath.wstring()) << std::endl;
+            return outPath.wstring();
+        }
+        if (writeBytesToDisk(outPath, data)) {
+            RLOG << "[" << tag << "]   extracted to: " << wlog(outPath.wstring()) << std::endl;
+            return outPath.wstring();
+        }
+        return {};
+    };
+
+    // CASC. The overlay the MODEL came from goes first when we know it:
+    // 3.0.0's three art sets use the same logical texture paths but ship
+    // genuinely different atlases, so a _de model must read _de's textures
+    // or it comes out wearing _hd's unwrap (see detectModChain above).
+    // After it, the scene's art tier orders the overlays: Classic (and
+    // Auto) is SD, HD, Definitive; Reforged starts at HD; Definitive at DE.
+    // The deprecated bucket is always last (some assets were moved out of
+    // the main war3.w3mod tree across patches and only live there now).
+    auto searchCasc = [&](const std::vector<std::string>& exts) -> std::wstring {
 #if defined(WHITEOUT_HAS_CASC)
-    // 2) CASC. The overlay the MODEL came from goes first when we know it:
-    //    3.0.0's three art sets use the same logical texture paths but ship
-    //    genuinely different atlases, so a _de model must read _de's textures
-    //    or it comes out wearing _hd's unwrap (see detectModChain above).
-    //    After it, the scene's art tier orders the overlays: Classic (and
-    //    Auto) is SD, HD, Definitive; Reforged starts at HD; Definitive at DE.
-    //    The deprecated bucket is always last (some assets were moved out of
-    //    the main war3.w3mod tree across patches and only live there now).
-    //    MDX-stated extension is tried before any alias inside each prefix so
-    //    a real MDX `.tif` request that has a CASC `.dds` lands extracted as
-    //    `.dds` only when no `.tif` lives in CASC.
-    if (impl_->casc) {
+        if (!impl_->casc || exts.empty()) return {};
         std::vector<std::string> prefixes;
         if (!impl_->modChain.empty())
             prefixes.push_back("war3.w3mod:" + impl_->modChain + ":");
@@ -686,57 +707,54 @@ std::wstring TextureResolver::Resolve(const std::wstring& relPath) {
                                 archiveStem);
         for (const std::string& prefix : prefixes)
             cascStems.push_back(prefix + plainStem);
-        RLOG << "[CASC] Searching for: '" << archiveStem
-             << "' (mdxExt='" << mdxExt << "')" << std::endl;
         for (const std::string& stem : cascStems) {
-            for (const std::string& ext : orderedExts) {
+            for (const std::string& ext : exts) {
                 std::string cascPath = stem + ext;
                 auto data = impl_->casc->readFile(cascPath);
                 if (!data || data->empty()) continue;
-                RLOG << "[CASC] Found: '" << cascPath << "' (" << data->size() << " bytes)" << std::endl;
-
-                // Write to <modelDir>/<original-subdir>/<stem>.<actualExt>.
-                std::wstring outRel = swapExtension(diskRel, narrowToWide(ext));
-                fs::path outPath = extractTarget(fs::path(impl_->modelDir) / outRel, cascPath);
-                std::error_code ec;
-                if (fs::exists(outPath, ec)) {
-                    RLOG << "[CASC]   already on disk: " << wlog(outPath.wstring()) << std::endl;
-                    return outPath.wstring();
-                }
-                if (writeBytesToDisk(outPath, *data)) {
-                    RLOG << "[CASC]   extracted to: " << wlog(outPath.wstring()) << std::endl;
-                    return outPath.wstring();
-                }
+                if (auto hit = extract("CASC", cascPath, ext, *data); !hit.empty()) return hit;
             }
         }
-    }
+#else
+        (void)exts;
 #endif
+        return {};
+    };
 
-    // 3) MPQ. Each archive in load order; MDX extension first, then aliases.
-    if (!impl_->mpqArchives.empty()) {
-        RLOG << "[MPQ] Searching for: " << archiveStem
-             << " (mdxExt='" << mdxExt << "')" << std::endl;
+    // MPQ. Each archive in load order.
+    auto searchMpq = [&](const std::vector<std::string>& exts) -> std::wstring {
         for (const auto& storage : impl_->mpqArchives) {
             if (!storage) continue;
-            for (const std::string& ext : orderedExts) {
+            for (const std::string& ext : exts) {
                 std::string mpqPath = plainStem + ext;
                 auto data = storage.readFile(mpqPath);
                 if (!data || data->empty()) continue;
-                RLOG << "[MPQ] Found: " << mpqPath << " (" << data->size() << " bytes)" << std::endl;
-
-                std::wstring outRel = swapExtension(diskRel, narrowToWide(ext));
-                fs::path outPath = extractTarget(fs::path(impl_->modelDir) / outRel, mpqPath);
-                std::error_code ec;
-                if (fs::exists(outPath, ec)) {
-                    RLOG << "[MPQ]   already on disk: " << wlog(outPath.wstring()) << std::endl;
-                    return outPath.wstring();
-                }
-                if (writeBytesToDisk(outPath, *data)) {
-                    RLOG << "[MPQ]   extracted to: " << wlog(outPath.wstring()) << std::endl;
-                    return outPath.wstring();
-                }
+                if (auto hit = extract("MPQ", mpqPath, ext, *data); !hit.empty()) return hit;
             }
         }
+        return {};
+    };
+
+    // A model pulled out of a CASC overlay, or a path naming its overlay,
+    // belongs to CASC's textures even when the model is v800.
+    const bool mpqFirst = impl_->mpqFirst && impl_->modChain.empty() && !explicitChain;
+    RLOG << "[RES]   order: disk, " << (mpqFirst ? "MPQ, CASC" : "CASC, MPQ")
+         << ", disk aliases" << std::endl;
+    auto diskHit = [&](ExtProbe probe) -> std::wstring {
+        std::wstring local = resolveTexturePath(impl_->modelDir, relPath, probe);
+        std::error_code ec;
+        if (local.empty() || !fs::exists(local, ec)) return {};
+        RLOG << "[RES] disk hit: '" << wlog(local) << "'" << std::endl;
+        return local;
+    };
+    std::wstring hit;
+    if (!mdxExt.empty()) hit = diskHit(ExtProbe::Exact);
+    if (hit.empty()) hit = mpqFirst ? searchMpq(orderedExts) : searchCasc(orderedExts);
+    if (hit.empty()) hit = mpqFirst ? searchCasc(orderedExts) : searchMpq(orderedExts);
+    if (hit.empty()) hit = diskHit(ExtProbe::Aliases);
+    if (!hit.empty()) {
+        RLOG.flush();
+        return hit;
     }
 
     // 4) Nothing — fallback to the local-disk best-guess (MDX path under
