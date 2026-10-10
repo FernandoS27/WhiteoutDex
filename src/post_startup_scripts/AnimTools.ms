@@ -444,7 +444,7 @@ struct WdxAnimTools
         button continuityBtn "Set Continuity to Zero" pos:[160,102] width:122 height:22 tooltip:"Sets the continuity parameter to zero for the current keyframes of selected objects"
 
         groupBox smoothRotationsGrpB "Smooth Rotations" pos:[296, 22] width:138 height:110
-        button fixSquadbtn "Fix non-linear\nrotation problems\non selection" pos:[304,38] width:122 height:86 tooltip:"Non-linear rotation keys may animate improperly in wc3 if they go beyond 90\xC2\xB0. This tool will apply fixes to those keys by creating a new key between them. Note that you may have to run the tool more than once in some weird occasions where you created rotations of over 180\xC2\xB0"
+        button fixSquadbtn "Fix non-linear\nrotation problems\non selection" pos:[304,38] width:122 height:86 tooltip:"Non-linear rotation keys may animate improperly in wc3 if they go beyond 90°. This tool will apply fixes to those keys by creating a new key between them. Note that you may have to run the tool more than once in some weird occasions where you created rotations of over 180°"
 
 		groupBox boneToolsGrpB "One Click Tools" pos:[8, 136] width:426 height:98
 		button createAttachmentPointsBtn "One Click Attachment Points" pos:[16, 152] width:410 height:22 tooltip:"Automatically create Attachment Points for Bones that have known names."
