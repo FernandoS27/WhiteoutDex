@@ -292,10 +292,16 @@ void extractParticles2(const std::vector<core::SceneNode>& nodes,
             auto* xp = static_cast<const MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PREFIX_IID));
             if (xp && xp->Length() > 0) texPrefix = wcharToUtf8(xp->data());
             if (!texName.empty()) {
+                // The path is the texture file on disk (the importer and the
+                // plugin's browser store it absolute): pass it on as the
+                // source, or the texture conversion skipped every emitter
+                // texture and the model went out without them. A bare file
+                // name (an import that found no file) stays a reference only.
                 size_t ls = texName.find_last_of("\\/");
+                const std::string source = ls != std::string::npos ? texName : std::string();
                 if (ls != std::string::npos) texName = texName.substr(ls + 1);
                 std::string fp = texPrefix + texName;
-                pe.textureIndex = findOrAddTexture(model, fp, pe.replaceableId, false, false);
+                pe.textureIndex = findOrAddTexture(model, fp, pe.replaceableId, false, false, source);
             }
 
         } else {
