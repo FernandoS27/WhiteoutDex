@@ -11,6 +11,8 @@
 #include "whiteout/flakes/util/team_glow_data.h"
 #include "whiteout/flakes/util/texture_image_usage.h"
 #include "wdx_foreign_material.h"
+#include "wdx_replaceable_ids.h"
+#include "wdx_p2_intervals.h"
 
 #include <algorithm>
 #include <cctype>
@@ -812,7 +814,7 @@ MaxSceneAdapter::MaterialSnapshot MaxSceneAdapter::SnapshotMaterial(Mtl* mtl) {
     MaterialSnapshot snap;
     snap.filterMode = MapFilterMode(PB2IntOr(mtl, L"filterMode", 0, 1) - 1);
     snap.flags = ReadWc3MaterialFlags(mtl);
-    snap.replaceableTexture = std::max(0, PB2IntOr(mtl, L"replaceableId", 0, 1) - 1);
+    snap.replaceableTexture = wdx::replaceable::IdFromDropdown(PB2IntOr(mtl, L"replaceableId", 0, 1));
     // Shader dropdown is 1-based (1=SD, 2=HD, 3=SDOnHD, 4=Crystal → renderer 24).
     i32 shaderType = PB2IntOr(mtl, L"shaderType", 0, 1);
     snap.shaderId = (shaderType == 4) ? 24 : std::max(0, shaderType - 1);
@@ -1252,7 +1254,7 @@ void MaxSceneAdapter::CollectGeometry() {
             PB2Texmap(mtl, L"diffuseMap", diffTex);
             i32 retex = 0;
             if (diffTex && diffTex->ClassID() == WC3_BITMAP_CLASS_ID) {
-                retex = std::max(0, PB2IntOr(diffTex, L"replaceableId", 0, 1) - 1);
+                retex = wdx::replaceable::IdFromDropdown(PB2IntOr(diffTex, L"replaceableId", 0, 1));
             }
             if (retex >= 4 && !diffTex) {
                 mprintf(_M("  [Skipped replaceable %d geoset '%s']\n"), retex, node->GetName());
@@ -1284,7 +1286,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textur
     layer.filterMode = MapFilterMode(filterMode - 1);
     layer.alpha = std::min(PB2FloatOr(mtl, L"opacity", 0, 100.0f) / 100.0f, 1.0f);
     layer.replaceableTexture =
-        textureLayerOnly ? 0 : std::max(0, PB2IntOr(mtl, L"replaceableId", 0, 1) - 1);
+        textureLayerOnly ? 0 : wdx::replaceable::IdFromDropdown(PB2IntOr(mtl, L"replaceableId", 0, 1));
     // NeoDex keeps the wrap flags on the material; its bitmap tiling is
     // crossed (U_Tile holds Wrap_Height), so the material is the truth.
     auto wrapFlagsFor = [&](Texmap* tex) -> u32 {
@@ -1354,7 +1356,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textur
         const bool hasTexmap = PB2Texmap(mtl, L"teamColorMap", tcTex) && tcTex;
         const bool isWc3Bitmap = hasTexmap && tcTex->ClassID() == WC3_BITMAP_CLASS_ID;
         const i32 tcReplId =
-            isWc3Bitmap ? std::max(0, PB2IntOr(tcTex, L"replaceableId", 0, 1) - 1) : 0;
+            isWc3Bitmap ? wdx::replaceable::IdFromDropdown(PB2IntOr(tcTex, L"replaceableId", 0, 1)) : 0;
 
         // The MDLXImporter writes plain BitmapTex (not Wc3Bitmap) for every
         // texture entry, so a Reforged HD model arrives here with the canonical
@@ -2589,23 +2591,26 @@ std::vector<ParticleEmitterConfig> MaxSceneAdapter::GetParticleConfigs() {
         cfg.lineEmitter = neoDex ? PB2IntOr(obj, L"LineEmitter", 0, 1) == 2
                                  : PB2BoolOr(obj, L"LineEmitter", 0, cfg.lineEmitter);
 
-        // Head/tail UV animation frames. Match the MDX upload
-        // (MdxModelAdapter: interval[0]=start, [1]=end, [2]=repeat): the
-        // importer stores interval[1] in the *Repeat param and interval[2] in
-        // the *End param (and the exporter reads them back the same way), so
-        // those two params are swapped relative to what the renderer expects.
+        // Head/tail UV animation frames, MDX {start, end, repeat}
+        // (MdxModelAdapter). The params hold them where the panel shows them;
+        // an emitter imported before that fix has end/repeat the other way
+        // round (wdx_p2_intervals.h).
+        const bool legacy = wdx::p2::legacyIntervalOrder(pi.node);
+        const wchar_t* E = legacy ? L"Repeat" : L"End";
+        const wchar_t* R = legacy ? L"End" : L"Repeat";
+        auto name = [](const wchar_t* a, const wchar_t* b) { return std::wstring(a) + b; };
         cfg.headLifeStart = PB2IntOr(obj, L"HeadLifeStart", 0, cfg.headLifeStart);
-        cfg.headLifeEnd = PB2IntOr(obj, L"HeadLifeRepeat", 0, cfg.headLifeEnd);
-        cfg.headLifeRepeat = PB2IntOr(obj, L"HeadLifeEnd", 0, cfg.headLifeRepeat);
+        cfg.headLifeEnd = PB2IntOr(obj, name(L"HeadLife", E).c_str(), 0, cfg.headLifeEnd);
+        cfg.headLifeRepeat = PB2IntOr(obj, name(L"HeadLife", R).c_str(), 0, cfg.headLifeRepeat);
         cfg.headDecayStart = PB2IntOr(obj, L"HeadDecayStart", 0, cfg.headDecayStart);
-        cfg.headDecayEnd = PB2IntOr(obj, L"HeadDecayRepeat", 0, cfg.headDecayEnd);
-        cfg.headDecayRepeat = PB2IntOr(obj, L"HeadDecayEnd", 0, cfg.headDecayRepeat);
+        cfg.headDecayEnd = PB2IntOr(obj, name(L"HeadDecay", E).c_str(), 0, cfg.headDecayEnd);
+        cfg.headDecayRepeat = PB2IntOr(obj, name(L"HeadDecay", R).c_str(), 0, cfg.headDecayRepeat);
         cfg.tailLifeStart = PB2IntOr(obj, L"TailLifeStart", 0, cfg.tailLifeStart);
-        cfg.tailLifeEnd = PB2IntOr(obj, L"TailLifeRepeat", 0, cfg.tailLifeEnd);
-        cfg.tailLifeRepeat = PB2IntOr(obj, L"TailLifeEnd", 0, cfg.tailLifeRepeat);
+        cfg.tailLifeEnd = PB2IntOr(obj, name(L"TailLife", E).c_str(), 0, cfg.tailLifeEnd);
+        cfg.tailLifeRepeat = PB2IntOr(obj, name(L"TailLife", R).c_str(), 0, cfg.tailLifeRepeat);
         cfg.tailDecayStart = PB2IntOr(obj, L"TailDecayStart", 0, cfg.tailDecayStart);
-        cfg.tailDecayEnd = PB2IntOr(obj, L"TailDecayRepeat", 0, cfg.tailDecayEnd);
-        cfg.tailDecayRepeat = PB2IntOr(obj, L"TailDecayEnd", 0, cfg.tailDecayRepeat);
+        cfg.tailDecayEnd = PB2IntOr(obj, name(L"TailDecay", E).c_str(), 0, cfg.tailDecayEnd);
+        cfg.tailDecayRepeat = PB2IntOr(obj, name(L"TailDecay", R).c_str(), 0, cfg.tailDecayRepeat);
         if (neoDex) {
             // NeoDex names them start / end / repeat in MDX order.
             cfg.headLifeStart = PB2IntOr(obj, L"startLifespanHead", 0, cfg.headLifeStart);
@@ -3509,7 +3514,7 @@ bool whiteout::flakes::ReadActiveViewportCamera(ViewportCameraPose& out) {
         right = right.normalized();
         const Vector3f upBase = cross(right, fwd).normalized();
         const Vector3f up = MaxDirToDefault(upMax);
-        out.roll = std::atan2(up.dot(right), up.dot(upBase));
+        out.roll = std::atan2(-up.dot(right), up.dot(upBase));  // up = cos·upBase − sin·right
     }
     return true;
 }

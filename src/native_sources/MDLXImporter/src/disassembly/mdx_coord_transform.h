@@ -38,12 +38,19 @@ inline Quat rotation(float x, float y, float z, float w) {
 // Snaps to nearest whole frame to avoid keys landing between frames.
 // NeoDex does the same: readMDXTime rounds to whole frames via
 //   round(ms * framerate / 100) / 10 → always lands on exact frames.
-inline TimeValue msToTicks(uint32_t ms) {
-    int64_t rawTicks = static_cast<int64_t>(ms) * 4800 / 1000;
-    int tpf = GetTicksPerFrame();
-    // Round to nearest whole frame
-    rawTicks = ((rawTicks + tpf / 2) / tpf) * tpf;
-    return static_cast<TimeValue>(rawTicks);
+//
+// MDX times are signed 32-bit milliseconds (WhiteoutLib hands them over as
+// u32): cinematics start sequences and keys before 0 - Human 06 intro shot 140
+// has "Stand" from -3600 ms. Read as unsigned that was 4294963696 ms, a
+// sequence 50 days long, and the export then walked millions of frames.
+inline TimeValue msToTicks(uint32_t raw) {
+    const int64_t ms = static_cast<int32_t>(raw);
+    const int64_t rawTicks = ms * 4800 / 1000;
+    const int64_t tpf = GetTicksPerFrame();
+    // Round to the nearest whole frame (floor division: correct below 0 too)
+    int64_t f = rawTicks + tpf / 2;
+    f = (f >= 0) ? f / tpf : -((-f + tpf - 1) / tpf);
+    return static_cast<TimeValue>(f * tpf);
 }
 
 } // namespace mdx_coord

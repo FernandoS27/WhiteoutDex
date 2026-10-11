@@ -910,7 +910,8 @@
                             local extStr = rootNode.seqExtents[i]
                             if extStr != undefined and extStr != "" then
                             (
-                                local parts = filterString extStr " "
+                                -- decimal commas: scenes imported while Max ran with a ',' locale
+                                local parts = for p in (filterString extStr " ") collect (substituteString p "," ".")
                                 if parts.count == 7 then
                                 (
                                     ext = WdxWc3Extent \
@@ -954,7 +955,9 @@
         -- Fallback: Read from NoteTracks (legacy scenes)
         format "** WDX LoadSeq: Trying NoteTracks fallback (hasNT: %)\n" (HasNoteTracks Rootnode)
         this.cleanEmptyKeysFromSequences()
-        ::WdxUtils.ArrayMap (GetSequenceData ()) (fn tmp a = readSequenceData a[1] a[2])
+        -- a plain loop: Max 2016 throws "Unknown system exception" when a fn
+        -- literal defined here calls readSequenceData through ArrayMap
+        for a in (this.GetSequenceData()) collect (this.readSequenceData a[1] a[2])
     ),
     
     fn playSequence i =
@@ -2680,19 +2683,26 @@
             
             callbacks.removeScripts id:#WhiteoutDex
             
-            callbacks.addScript #filePostOpen sceneChangeCallback id:#WhiteoutDex
-            callbacks.addScript #systemPostReset sceneChangeCallback id:#WhiteoutDex
-            callbacks.addScript #systemPostNew sceneChangeCallback id:#WhiteoutDex
-			
-			callbacks.addScript #sceneUndo listUpdateAfterUndoRedo id:#WhiteoutDex
-			callbacks.addScript #sceneRedo listUpdateAfterUndoRedo id:#WhiteoutDex
+            -- Script strings, not function values: callbacks.addScript takes a
+            -- function only in 3ds Max 2021 and higher (MAXScript Help,
+            -- "General Event Callback Mechanism"); 2016-2020 threw here and
+            -- the rest of this handler never ran.
+            local scScript = "try (::WdxSequenceManager.sceneChangeCallback()) catch ()"
+            local undoScript = "try (::WdxSequenceManager.listUpdateAfterUndoRedo()) catch ()"
+            local importScript = "try (::WdxSequenceManager.importChangeCallback()) catch ()"
+            callbacks.addScript #filePostOpen scScript id:#WhiteoutDex
+            callbacks.addScript #systemPostReset scScript id:#WhiteoutDex
+            callbacks.addScript #systemPostNew scScript id:#WhiteoutDex
+
+			callbacks.addScript #sceneUndo undoScript id:#WhiteoutDex
+			callbacks.addScript #sceneRedo undoScript id:#WhiteoutDex
 
 			-- An import or merge replaces the scene's sequence data without going
 			-- through this dialog. Pick the new data up right away so the list is
 			-- correct and the close handler has nothing stale to write back.
 			-- try/catch because not every Max version broadcasts every event.
-			try ( callbacks.addScript #postImport importChangeCallback id:#WhiteoutDex ) catch ()
-			try ( callbacks.addScript #filePostMerge importChangeCallback id:#WhiteoutDex ) catch ()
+			try ( callbacks.addScript #postImport importScript id:#WhiteoutDex ) catch ()
+			try ( callbacks.addScript #filePostMerge importScript id:#WhiteoutDex ) catch ()
 
 			-- Localization
 			if ::WdxL != undefined then
@@ -2797,7 +2807,7 @@
     
     fn showUI =
     (
-        if not this.mainRollout.isDisplayed then CreateDialog this.mainRollout
+        if not this.mainRollout.isDisplayed then CreateDialog this.mainRollout style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)
     ),
     
     fn hideUI =

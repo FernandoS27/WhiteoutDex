@@ -384,6 +384,26 @@ struct WhiteoutDexUtilityStruct
         if s == undefined then #NormalSkin else InterfaceToSkin (s as integer)
     ),
     
+    -- deleteUserProp exists from 3ds Max 2019.1 on (MAXScript Help, "Node
+    -- User-Defined Properties"); older versions drop the "key = value" line
+    -- from the user property buffer (same key match as getUserProp)
+    fn removeUserProp o key =
+    (
+        if ::deleteUserProp != undefined then
+            deleteUserProp o key
+        else
+        (
+            local buf = ""
+            for l in (filterString (getUserPropBuffer o) "\r\n") do
+            (
+                local p = findString l "="
+                if p == undefined or (trimLeft (trimRight (substring l 1 (p - 1)))) != key do
+                    buf += l + "\r\n"
+            )
+            setUserPropBuffer o buf
+        )
+    ),
+
     fn getBillboardFlags o =
     (
         -- Migrate the old property if it is present
@@ -395,7 +415,7 @@ struct WhiteoutDexUtilityStruct
             setUserProp o "BillboardedLockX"  (if val == 3 then 1 else 0)
             setUserProp o "BillboardedLockY"  (if val == 4 then 1 else 0)
             setUserProp o "BillboardedLockZ"  (if val == 5 then 1 else 0)
-            deleteUserProp o "Billboard"
+            this.removeUserProp o "Billboard"
         )
         local bb   = getUserProp o "Billboarded"
         local bbX  = getUserProp o "BillboardedLockX"

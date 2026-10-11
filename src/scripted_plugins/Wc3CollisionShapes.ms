@@ -53,19 +53,20 @@ extends:dummy
 			)
 		)
 	)
+	-- Only the finished mesh is kept. Keeping the Sphere made by
+	-- createInstance alive (as before) made the Set Keys button flicker for
+	-- as long as the shape was drawn in a viewport; the temporary object is
+	-- let go right after its mesh is copied.
 	on getDisplayMesh do
 	(
-		if (meshObj == undefined) do 
+		if meshObj == undefined or radius != lastRadius do
 		(
-			meshObj = createInstance sphere radius:radius
+			local s = createInstance sphere radius:radius
+			meshObj = copy s.mesh
+			s = undefined
 			lastRadius = radius
 		)
-		if radius != lastRadius do 
-		(
-			meshObj.radius = radius
-			lastRadius = radius
-		)
-		meshObj.mesh
+		meshObj
 	)
 	tool create 
 	( 
@@ -155,32 +156,19 @@ extends:dummy
 			)
 		)
 	)
+	-- Only the finished mesh is kept (see Wdx_Wc3CollisionSphere).
 	on getDisplayMesh do
 	(
-		if (meshObj == undefined) do 
+		if meshObj == undefined or length != lastLength or width != lastWidth or height != lastHeight do
 		(
-			meshObj = createInstance box length:length \
-			width:width	height:height
+			local b = createInstance box length:length width:width height:height
+			meshObj = copy b.mesh
+			b = undefined
 			lastLength	= length
 			lastWidth	= width
 			lastHeight	= height
 		)
-		if length != lastLength do 
-		(
-			meshObj.length = length
-			lastLength = length
-		)
-		if width != lastWidth do 
-		(
-			meshObj.width = width
-			lastWidth = width
-		)
-		if height != lastHeight do 
-		(
-			meshObj.height = height
-			lastHeight = height
-		)
-		meshObj.mesh
+		meshObj
 	)
 	tool create 
 	( 

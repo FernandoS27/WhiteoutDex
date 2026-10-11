@@ -330,7 +330,7 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 		button mpqOrderBtn "Edit Load Order..." pos:[20,168] width:150 height:22 tooltip:"Choose which MPQ archives are searched and in what order, including your own"
 		label mpqOrderLbl "" pos:[178,172] width:142 height:16
 
-		groupBox cascGrp "CASC Archives (Reforged v1200)" pos:[8,210] width:324 height:122
+		groupBox cascGrp "CASC Archives (Reforged)" pos:[8,210] width:324 height:122
 		label cascLabel "Warcraft III Reforged:" pos:[20,230] width:140 height:16
 		edittext cascPathEdt "" pos:[20,248] width:260 height:20 readOnly:true
 		button cascBrowseBtn "..." pos:[284,248] width:38 height:20 tooltip:"Browse for Warcraft III Reforged installation folder"
@@ -592,11 +592,13 @@ tooltip:"WhiteoutDex Settings - Language / 语言 / Sprache / Язык / 言語 
 				settingsRollout.title = ::WdxL.t "set_settings_title"
 				langLabel.text = ::WdxL.t "set_language_lbl"
 				closeBtn.text = ::WdxL.t "common_ok_btn"
-				-- The "(Classic v800)" / "(Reforged v1200)" suffixes are MDX
-				-- format versions, so they are appended here rather than
+				-- The "(Classic v800)" / "(Reforged)" suffixes name the game the
+				-- archives belong to, so they are appended here rather than
 				-- carried in the catalog where they could be mistranslated.
+				-- Reforged has no single MDX version (its models run from v900
+				-- to v1800, the exporter writes v1800), so it carries none.
 				mpqGrp.text = (::WdxL.t "set_mpq_archives_grp") + " (Classic v800)"
-				cascGrp.text = (::WdxL.t "set_casc_archives_grp") + " (Reforged v1200)"
+				cascGrp.text = (::WdxL.t "set_casc_archives_grp") + " (Reforged)"
 				mpqLabel.text = ::WdxL.t "set_mpq_directory_lbl"
 				mpqBrowseBtn.tooltip = ::WdxL.t "set_mpq_browse_tip"
 				mpqClearBtn.text = ::WdxL.t "set_mpq_clear_btn"

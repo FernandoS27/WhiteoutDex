@@ -100,6 +100,7 @@ struct WhiteoutDexMenuStruct
         addAction m "A72E1B34-5D89-4F01-B6C3-E8D7F2A19045" "WhiteoutDex_KeyframeOptimizer" "menu_keyframe_optimizer"
         addAction m "B83F2C45-6E9A-4012-C7D4-F9E803B2A156" "WhiteoutDex_CellShadeCreator"  "menu_cell_shade"
         addAction m "6C0F3E1A-94B2-4D7E-A5C8-2F71D9B04E63" "WhiteoutDex_MaterialFix"       "menu_material_fix"
+        addAction m "559B97A0-3238-41C8-A032-F850BEAE8052" "WhiteoutDex_TextureAnimCreator" "menu_texture_anim_creator"
         m.CreateSeparator "D4944802-FCEE-4586-BBF2-E839D506F4CC"
         addAction m "EF9A6CC4-C7A8-4646-92D3-09DCF207D636" "WhiteoutDex_Renderer"          "menu_renderer"
         addAction m "378079A3-999E-46F6-9D2F-F8015B5BDF1A" "WhiteoutDex_Settings"          "menu_settings"

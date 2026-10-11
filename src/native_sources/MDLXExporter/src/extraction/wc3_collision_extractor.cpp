@@ -107,6 +107,16 @@ void extractCollisions(const std::vector<core::SceneNode>& nodes,
         Matrix3 tm = sn.maxNode->GetObjectTM(t);
         Point3 pos = tm.GetTrans();
 
+        // The shape's own scale (the helper scaled in Max, with its pivot
+        // offset), not what it inherits: a hitbox parented to a bone whose
+        // frame-0 animation scales it (Ichibi: 1.8) must keep its radius -
+        // the game scales it with the bone.
+        Matrix3 own = tm;
+        if (INode* par = sn.maxNode->GetParentNode()) {
+            if (!par->IsRootNode()) own = tm * Inverse(par->GetNodeTM(t));
+        }
+        const Point3 ownScale(Length(own.GetRow(0)), Length(own.GetRow(1)), Length(own.GetRow(2)));
+
         const MCHAR* nm = sn.maxNode->GetName();
         cl_log("  %s '%ls' pos=(%.2f, %.2f, %.2f)\n",
                isSphere ? "Sphere" : "Box",
@@ -115,8 +125,12 @@ void extractCollisions(const std::vector<core::SceneNode>& nodes,
         if (isSphere) {
             cs.shape = ir::CollisionShape::Shape::Sphere;
 
-            // Radius from the scripted plugin parameter
+            // Radius from the scripted plugin parameter, times the node's
+            // scale: the helper draws radius in object space, so a sphere
+            // scaled 2x shows (and must export) twice the radius. MDX has
+            // one radius - the largest axis scale covers the drawn shape.
             PBR::readFloatByName(ref, L"radius", t, cs.radius);
+            cs.radius *= std::max(ownScale.x, std::max(ownScale.y, ownScale.z));
 
             // Sphere center = node position in Max space.
             // Builder's mdx_transform::position swizzles to MDX space.
@@ -134,9 +148,10 @@ void extractCollisions(const std::vector<core::SceneNode>& nodes,
             PBR::readFloatByName(ref, L"length", t, length);
             PBR::readFloatByName(ref, L"height", t, height);
 
-            // Max-space AABB per spec:
+            // Max-space AABB per spec, the extents times the box's own scale:
             //   min = (pos.x - w/2, pos.y - l/2, pos.z)
             //   max = (pos.x + w/2, pos.y + l/2, pos.z + h)
+            width *= ownScale.x; length *= ownScale.y; height *= ownScale.z;
             Point3 bboxMin(pos.x - width  * 0.5f,
                            pos.y - length * 0.5f,
                            pos.z);

@@ -226,6 +226,9 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
     result.vertices.resize(numVerts);
     result.indices.resize(numVerts);
 
+    // Zero-area triangles draw nothing; one log line per mesh, not one
+    // report row per triangle (50,000 rows on some ripped models).
+    int degenerate = 0;
     for (int f = 0; f < numFaces; ++f) {
         Face& face = mesh.faces[f];
 
@@ -236,10 +239,7 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
         Point3 edge1 = v1 - v0;
         Point3 edge2 = v2 - v0;
         Point3 cross = CrossProd(edge1, edge2);
-        if (Length(cross) < 1e-8f) {
-            reporter.warning(L"Degenerate triangle at face " + std::to_wstring(f) +
-                             L" on node '" + std::wstring(nodeName ? nodeName : L"") + L"'.");
-        }
+        if (Length(cross) < 1e-8f) ++degenerate;
 
         for (int v = 0; v < 3; ++v) {
             int outIdx = f * 3 + v;
@@ -259,6 +259,9 @@ ir::Mesh MeshExtractor::extract(INode* node, int nodeIndex, TimeValue t,
             result.indices[outIdx] = outIdx;
         }
     }
+    if (degenerate > 0)
+        reporter.info(std::to_wstring(degenerate) + L" zero-area triangle(s), exported as they are.",
+                      nodeName ? nodeName : L"");
 
     // Transform vertices & normals from object-space to world-space.
     // Vertices from EvalWorldState are in OBJECT space (before object offset).
@@ -410,6 +413,7 @@ void MeshExtractor::extractSkinWeights(INode* node, ir::Mesh& out,
     // did drop them, kept an arbitrary 4 instead of the 4 heaviest.
     std::vector<std::vector<ir::SkinInfluence>> origWeights(origVertCount);
 
+    int unweighted = 0;
     for (int v = 0; v < origVertCount; ++v) {
         int nw = ctx->GetNumAssignedBones(v);
         float totalW = 0.0f;
@@ -434,12 +438,15 @@ void MeshExtractor::extractSkinWeights(INode* node, ir::Mesh& out,
                       return a.weight > b.weight;
                   });
 
-        if (totalW < 0.001f) {
-            const MCHAR* name = node->GetName();
-            reporter.warning(L"Vertex " + std::to_wstring(v) +
-                             L" on '" + std::wstring(name ? name : L"") +
-                             L"' has zero skin weights.");
-        }
+        if (totalW < 0.001f) ++unweighted;
+    }
+    // One report row per mesh (it was one per vertex: 235,000 rows on a
+    // ripped Minato). These vertices get no bone of their own in the export.
+    if (unweighted > 0) {
+        const MCHAR* name = node->GetName();
+        reporter.warning(std::to_wstring(unweighted) +
+                         L" vertex/vertices without skin weights; they may move wrongly in the game.",
+                         name ? name : L"");
     }
 
     // Map expanded vertices back to original vertex weights

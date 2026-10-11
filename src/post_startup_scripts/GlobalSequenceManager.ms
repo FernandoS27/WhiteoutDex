@@ -750,9 +750,11 @@ struct WdxGlobalSequenceManager
 		for obj in this.recordedObjects do
 		(
 			local tm = at time 0 obj.transform
-			local posClass = classOf obj.pos.controller
-			local rotClass = classOf obj.rotation.controller
-			local sclClass = classOf obj.scale.controller
+			-- A target camera/light (LookAt controller) has no .rotation:
+			-- it must not abort the recording of the rest of the selection
+			local posClass = try (classOf obj.pos.controller) catch (undefined)
+			local rotClass = try (classOf obj.rotation.controller) catch (undefined)
+			local sclClass = try (classOf obj.scale.controller) catch (undefined)
 			append this.savedTransforms #(obj, tm, posClass, rotClass, sclClass)
 		)
 

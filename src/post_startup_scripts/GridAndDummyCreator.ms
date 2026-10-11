@@ -236,7 +236,7 @@ struct WdxGridAndDummyCreator
    
     fn showUI =
     (
-        if not this.mainRollout.isDisplayed then CreateDialog this.mainRollout width:456
+        if not this.mainRollout.isDisplayed then CreateDialog this.mainRollout width:456 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)
     ),
    
     fn hideUI =

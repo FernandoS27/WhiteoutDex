@@ -2,6 +2,7 @@
 #include "mdx_model_disassembler.h"
 #include "mdx_coord_transform.h"
 #include "mdx_track_mapper.h"
+#include <set>
 #include <fstream>
 #include <windows.h>
 
@@ -179,6 +180,13 @@ ir::IRModel MdxModelDisassembler::disassemble(
 {
     ir::IRModel ir;
     version_ = mdxModel.version;
+
+    // Every mapped global-sequence track is fitted to its duration
+    // (mdx_track_mapper.h fitToGlobalSequence) while this model is mapped.
+    struct GlobalSequenceScope {
+        explicit GlobalSequenceScope(const std::vector<uint32_t>* d) { mdx_disasm::currentGlobalSequences() = d; }
+        ~GlobalSequenceScope() { mdx_disasm::currentGlobalSequences() = nullptr; }
+    } gsScope(&mdxModel.globalSequences);
 
     hierarchy_.build(mdxModel);
 
@@ -405,6 +413,8 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                 wdx::Layer::ShadingFlag::BackFacesForShadows);
             irLayer.ambientOcclusion = wdx::hasFlag(layer.shadingFlags,
                 wdx::Layer::ShadingFlag::AmbientOcclusion);
+            irLayer.unlit = wdx::hasFlag(layer.shadingFlags,
+                wdx::Layer::ShadingFlag::Unlit);
 
             // The parser fills the shader for every version: from disk at
             // v1100+, from the material's shader name for v900/v1000, and SD
@@ -437,12 +447,44 @@ void MdxModelDisassembler::mapMaterials(const wdx::Model& mdx, ir::IRModel& ir) 
                     ir::TextureSlot::Environment   // TeamColor was not a layer slot in v800/v1100
                 };
 
+                // The HD shader binds a layer's textures by their position
+                // (diffuse, normal, ORM, emissive, team colour, environment).
+                // Blizzard's own files sometimes repeat a slot value - the
+                // animated water of the Shrine of Azshara has its normal
+                // flipbook at position 1 marked "diffuse" - so when a slot
+                // repeats, the position decides.
+                static const ir::TextureSlot kHdPositionOrder[] = {
+                    ir::TextureSlot::Diffuse, ir::TextureSlot::Normal, ir::TextureSlot::ORM,
+                    ir::TextureSlot::Emissive, ir::TextureSlot::TeamColor, ir::TextureSlot::Environment
+                };
+                bool byPosition = false;
+                if (!allDiffuseSlots && layer.subTextures.size() > 1 && layer.subTextures.size() <= 6) {
+                    std::set<uint32_t> seenSlots;
+                    for (const auto& sub : layer.subTextures)
+                        if (!seenSlots.insert(static_cast<uint32_t>(sub.slot)).second) byPosition = true;
+                }
+                // Max keeps one flipbook per layer (the first animated
+                // texture, below). Another animated slot shows the first
+                // frame of its own flipbook rather than its static id, which
+                // Blizzard leaves at 0 - the layer's diffuse, a wrong normal.
+                bool flipbookTaken = layer.textureIdTracks.isUsed;
+
                 for (size_t si = 0; si < layer.subTextures.size(); si++) {
                     const auto& sub = layer.subTextures[si];
                     ir::TextureRef ref;
                     ref.textureIndex = static_cast<int32_t>(sub.textureId);
+                    if (sub.tracks.isUsed) {
+                        if (flipbookTaken) {
+                            auto frames = sub.tracks.keys();
+                            if (frames.size() > 0 && frames[0] < mdx.textures.size())
+                                ref.textureIndex = static_cast<int32_t>(frames[0]);
+                        }
+                        flipbookTaken = true;
+                    }
 
-                    if (allDiffuseSlots) {
+                    if (byPosition) {
+                        ref.slot = kHdPositionOrder[si];
+                    } else if (allDiffuseSlots) {
                         ref.slot = (si < 5) ? kHdSlotOrder[si] : ir::TextureSlot::Diffuse;
                     } else {
                         switch (sub.slot) {
@@ -1133,8 +1175,19 @@ void MdxModelDisassembler::mapCollisionShapes(const wdx::Model& mdx, ir::IRModel
         case wdx::CollisionShape::ShapeType::Plane:     irCol.shape = ir::CollisionShape::Shape::Plane; break;
         }
 
+        // v1000+ hitboxes that move (KGTR) store their vertices relative to
+        // the pivot; everything else - every v800 model, animated or not,
+        // and static v1000 ones - stores them absolute. The IR always holds
+        // absolute vertices; the exporter writes the same rule back
+        // (mdx_model_builder.cpp, collision shapes).
+        Point3 offset(0.0f, 0.0f, 0.0f);
+        if (version_ >= 1000 && col.node.translationTracks.isUsed &&
+            col.node.objectId < mdx.pivotPoints.size()) {
+            const auto& pv = mdx.pivotPoints[col.node.objectId];
+            offset = Point3(pv.x, pv.y, pv.z);
+        }
         for (const auto& v : col.vertices)
-            irCol.vertices.push_back(Point3(v.x, v.y, v.z));
+            irCol.vertices.push_back(Point3(v.x, v.y, v.z) + offset);
 
         irCol.radius = col.radius;
         ir.collisionShapes.push_back(std::move(irCol));

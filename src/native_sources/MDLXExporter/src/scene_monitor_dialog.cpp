@@ -39,27 +39,29 @@ struct DialogState {
 };
 
 // The list view holds a pointer per row, so the translated names have to
-// outlive populateListView. One static table, filled on first use: the
-// language cannot change while a modal dialog is up.
+// outlive populateListView. One static table, refilled each time the dialog
+// opens: the language cannot change while the modal dialog is up, but it can
+// between two openings (Settings switches it without a restart).
+std::wstring g_problemTypeNames[8];
+
+void loadProblemTypeNames() {
+    const std::vector<std::wstring> v = wdx::l10n::TranslateMany({
+        "exp_problem_duplicate_name", "exp_problem_empty_mesh",
+        "exp_problem_editable_poly",  "exp_problem_editmesh_above_skin",
+        "exp_problem_invalid_controller", "exp_problem_unsupported_material",
+        "exp_problem_multi_material", "exp_problem_duplicate_material",
+    });
+    for (size_t i = 0; i < 8; ++i)
+        g_problemTypeNames[i] = i < v.size() ? v[i] : std::wstring();
+}
+
 const wchar_t* problemTypeName(ProblemType t) {
     static const wchar_t* kFallback[] = {
         L"Duplicate Name",     L"Empty Mesh",          L"Editable Poly",
         L"Edit_Mesh ↑ Skin",   L"Invalid Controller",  L"Unsupported Material",
-        L"Multi/Sub-Object Material",
+        L"Multi/Sub-Object Material", L"Duplicate Material",
     };
-    static std::wstring cached[7];
-    static bool loaded = false;
-    if (!loaded) {
-        loaded = true;
-        const std::vector<std::wstring> v = wdx::l10n::TranslateMany({
-            "exp_problem_duplicate_name", "exp_problem_empty_mesh",
-            "exp_problem_editable_poly",  "exp_problem_editmesh_above_skin",
-            "exp_problem_invalid_controller", "exp_problem_unsupported_material",
-            "exp_problem_multi_material",
-        });
-        for (size_t i = 0; i < 7 && i < v.size(); ++i)
-            cached[i] = v[i];
-    }
+    const std::wstring* cached = g_problemTypeNames;
     int idx = -1;
     switch (t) {
     case ProblemType::DuplicateName:        idx = 0; break;
@@ -69,6 +71,7 @@ const wchar_t* problemTypeName(ProblemType t) {
     case ProblemType::InvalidController:    idx = 4; break;
     case ProblemType::UnsupportedMaterial:  idx = 5; break;
     case ProblemType::MultiMaterialMesh:    idx = 6; break;
+    case ProblemType::DuplicateMaterial:    idx = 7; break;
     }
     if (idx < 0)
         return L"?";
@@ -133,7 +136,8 @@ void updateStatusLabel(HWND hDlg, const ScanResult& result) {
     int es  = result.countByType(ProblemType::EditMeshAboveSkin)
             + result.countByType(ProblemType::MultiMaterialMesh);
     int ic  = result.countByType(ProblemType::InvalidController);
-    int um  = result.countByType(ProblemType::UnsupportedMaterial);
+    int um  = result.countByType(ProblemType::UnsupportedMaterial)
+            + result.countByType(ProblemType::DuplicateMaterial);
 
     // The catalog value keeps all five %d in the same order; a translation
     // that reorders or drops one would corrupt the stack, so a value whose
@@ -187,6 +191,8 @@ void runFixForSelectedTypes(HWND hDlg, DialogState* ds,
         fixBoneControllers(subset);
     if (types.count(ProblemType::UnsupportedMaterial))
         fixUnsupportedMaterials(subset);
+    if (types.count(ProblemType::DuplicateMaterial))
+        fixDuplicateMaterials(subset);
 
     rescanAndRefresh(hDlg, ds);
 }
@@ -199,6 +205,7 @@ INT_PTR CALLBACK ProblemDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
         ds = reinterpret_cast<DialogState*>(lParam);
         SetWindowLongPtr(hDlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ds));
         wdx::ApplyWindowIcon(hDlg, IDI_WHITEOUTDEX_ICON);
+        loadProblemTypeNames();
         {
             constexpr wdx::l10n::DialogString kStrings[] = {
                 {0, "exp_scene_problems_title"},
