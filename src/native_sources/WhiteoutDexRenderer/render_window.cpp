@@ -789,7 +789,7 @@ void RenderWindow::ActivateCameraPreset(i32 idx) {
             seqEnd = 1 << 30;
         const i32 sampleMs =
             focus ? focus->animation.TimeMs() : service_.Scene().GetAnimationTime();
-        preset.animator(pos, tgt, roll, sampleMs, seqStart, seqEnd);
+        preset.animator(pos, tgt, roll, whiteout::flakes::CameraPresetClock{sampleMs, seqStart, seqEnd});
     }
 
     cam.SetDirectPose(pos, tgt, roll);
@@ -824,7 +824,7 @@ void RenderWindow::UpdateCameraPresetAnimator() {
     Vector3f tgt = preset.target;
     f32 roll = preset.staticRoll;
     const i32 sampleMs = focus ? focus->animation.TimeMs() : service_.Scene().GetAnimationTime();
-    preset.animator(pos, tgt, roll, sampleMs, seqStart, seqEnd);
+    preset.animator(pos, tgt, roll, whiteout::flakes::CameraPresetClock{sampleMs, seqStart, seqEnd});
     service_.Scene().Camera().SetDirectPose(pos, tgt, roll);
 }
 
