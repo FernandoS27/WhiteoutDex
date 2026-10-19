@@ -14,6 +14,25 @@ bool isHiddenLodGeoset(INode* node) {
     auto* layer = static_cast<ILayer*>(node->GetReference(NODE_LAYER_REF));
     return layer && layer->IsHidden();
 }
+
+bool isSkippedHidden(INode* node) {
+    return node->IsHidden() && !isHiddenLodGeoset(node);
+}
+
+// True when something below the node exports: a visible descendant the
+// classifier does not ignore.
+bool hasExportableDescendant(INode* node, const NodeClassifier& classifier) {
+    std::string tag;
+    for (int i = 0; i < node->NumberOfChildren(); ++i) {
+        INode* c = node->GetChildNode(i);
+        if (!c) continue;
+        if (!isSkippedHidden(c) && classifier.classify(c, tag) != NodeCategory::Ignored)
+            return true;
+        if (hasExportableDescendant(c, classifier))
+            return true;
+    }
+    return false;
+}
 } // namespace
 
 SceneTraversal::Result SceneTraversal::traverse(Interface* gi, const NodeClassifier& classifier) {
@@ -39,16 +58,30 @@ void SceneTraversal::visitNode(INode* node, int parentIndex,
     // keep the viewport readable. Such a mesh, hidden by its layer, still
     // belongs to the model - without it the export loses every LOD and the
     // bones that carry them. A mesh hidden while its layer shows is skipped.
-    if (node && node->IsHidden() && !isHiddenLodGeoset(node)) {
-        int numChildren = node->NumberOfChildren();
-        for (int i = 0; i < numChildren; ++i) {
-            visitNode(node->GetChildNode(i), parentIndex, classifier, result);
-        }
-        return;
-    }
-
+    // A hidden node that something exportable hangs on (an emitter or an
+    // attachment linked to a hidden bone, a ribbon on a hidden sword) stays
+    // in the hierarchy as a plain helper: no geometry, no emitter of its
+    // own, but its animation, which the children follow in Max. Skipping it
+    // linked them to the next visible ancestor and they lost that motion.
     std::string customTag;
-    NodeCategory cat = classifier.classify(node, customTag);
+    NodeCategory cat = NodeCategory::Ignored;
+    if (node && isSkippedHidden(node)) {
+        if (hasExportableDescendant(node, classifier))
+            cat = classifier.classify(node, customTag);
+        if (cat == NodeCategory::Ignored) {
+            int numChildren = node->NumberOfChildren();
+            for (int i = 0; i < numChildren; ++i) {
+                visitNode(node->GetChildNode(i), parentIndex, classifier, result);
+            }
+            return;
+        }
+        if (cat != NodeCategory::Bone) {
+            cat = NodeCategory::Helper;
+            customTag.clear();
+        }
+    } else {
+        cat = classifier.classify(node, customTag);
+    }
 
     if (cat == NodeCategory::Ignored) {
         // Still traverse children — they may be exportable
