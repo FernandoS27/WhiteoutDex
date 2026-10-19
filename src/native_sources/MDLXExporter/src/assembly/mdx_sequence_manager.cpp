@@ -97,6 +97,32 @@ std::vector<ir::Sequence> extractFromNoteTracks(INode* rootNode) {
 }
 } // namespace
 
+// Sequences the Sequence Manager's "Ignore" box marks stay out of the export,
+// as its tooltip says ("ignored during export"). The dialog keeps them in the
+// root node's user property WhiteoutDex_IgnoredSequences, names joined by
+// ';', and nothing read it: an ignored sequence was exported like any other.
+static void dropIgnoredSequences(INode* rootNode, std::vector<ir::Sequence>& sequences) {
+    MSTR prop;
+    if (!rootNode || !rootNode->GetUserPropString(_M("WhiteoutDex_IgnoredSequences"), prop))
+        return;
+    std::unordered_set<std::string> ignored;
+    const std::wstring all(prop.data() ? prop.data() : L"");
+    size_t pos = 0;
+    while (pos < all.size()) {
+        size_t end = all.find(L';', pos);
+        if (end == std::wstring::npos) end = all.size();
+        const std::wstring name = all.substr(pos, end - pos);
+        if (!name.empty()) ignored.insert(wdx::text::wideToMdx(name.c_str()));
+        pos = end + 1;
+    }
+    if (ignored.empty()) return;
+    const size_t before = sequences.size();
+    sequences.erase(std::remove_if(sequences.begin(), sequences.end(),
+                                   [&](const ir::Sequence& q) { return ignored.count(q.name) > 0; }),
+                    sequences.end());
+    ELOG << "  Ignored in the Sequence Manager: " << (before - sequences.size()) << " sequence(s) left out\n";
+}
+
 std::vector<ir::Sequence> MdxSequenceManager::extractSequences(Interface* gi) {
     std::vector<ir::Sequence> sequences;
     ELOG << "\n==== SequenceManager::extractSequences ====\n";
@@ -106,6 +132,7 @@ std::vector<ir::Sequence> MdxSequenceManager::extractSequences(Interface* gi) {
     IParamBlock2* pb=findSequenceCA(rootNode);
     if(!pb){
         auto result=extractFromNoteTracks(rootNode);
+        dropIgnoredSequences(rootNode, result);
         ELOG << "  Note tracks extracted: " << result.size() << " sequences\n";
         for(auto& s:result) ELOG << "    '" << s.name << "' " << s.startTime << "-" << s.endTime << "\n";
         ELOG << "==== end SequenceManager ====\n\n"; EFLUSH;
@@ -130,6 +157,7 @@ std::vector<ir::Sequence> MdxSequenceManager::extractSequences(Interface* gi) {
              << " " << (seq.isLooping?"loop":"nonloop") << "\n";
         sequences.push_back(std::move(seq));
     }
+    dropIgnoredSequences(rootNode, sequences);
     ELOG << "==== end SequenceManager ====\n\n"; EFLUSH;
     return sequences;
 }

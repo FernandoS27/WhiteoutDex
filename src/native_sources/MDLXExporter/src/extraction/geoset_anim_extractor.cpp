@@ -312,6 +312,42 @@ int32_t extractColorTrack(Modifier* mod, ir::IRModel& model,
                i, (int)t, val.x, val.y, val.z);
     }
 
+    // STEP and LINEAR keys, read off the curve itself (GetValue only, as
+    // above): every span holding its first key up to the next one is MDX
+    // DontInterp, every span a straight line is Linear. A Bezier track would
+    // fade where Max switches (the importer keys a DontInterp KGAC as STEP).
+    if (track.interpolation == ir::InterpolationType::Bezier && track.keys.size() > 1) {
+        auto sampleBGR = [&](TimeValue t) {
+            Point3 v(1.0f, 1.0f, 1.0f);
+            Interval iv = FOREVER;
+            ctrl->GetValue(t, &v, iv);
+            return Color(v.z, v.y, v.x);
+        };
+        auto same = [](const Color& a, const Color& b) {
+            return std::fabs(a.r - b.r) < 1e-3f && std::fabs(a.g - b.g) < 1e-3f &&
+                   std::fabs(a.b - b.b) < 1e-3f;
+        };
+        bool allStep = true, allLinear = true;
+        for (size_t i = 0; i + 1 < track.keys.size(); i++) {
+            const auto& a = track.keys[i];
+            const auto& b = track.keys[i + 1];
+            const TimeValue span = b.time - a.time;
+            if (span <= 2) continue;
+            const TimeValue t1 = a.time + span / 3, t2 = a.time + 2 * span / 3;
+            const Color s1 = sampleBGR(t1), s2 = sampleBGR(t2), sEnd = sampleBGR(b.time - 1);
+            if (!same(s1, a.value) || !same(s2, a.value) || !same(sEnd, a.value))
+                allStep = false;
+            const float u1 = static_cast<float>(t1 - a.time) / span;
+            const float u2 = static_cast<float>(t2 - a.time) / span;
+            if (!same(s1, a.value + (b.value - a.value) * u1) ||
+                !same(s2, a.value + (b.value - a.value) * u2))
+                allLinear = false;
+        }
+        if (allStep)        track.interpolation = ir::InterpolationType::None;
+        else if (allLinear) track.interpolation = ir::InterpolationType::Linear;
+        ga_log("    [extractColorTrack] curve: step=%d linear=%d\n", (int)allStep, (int)allLinear);
+    }
+
     // Bezier / Hermite keys carry tangents into the MDX, and zero ones are
     // black control points the colour dips towards between keys. Rebuild
     // them the way the material float tracks do (NeoDex FloatKeys /

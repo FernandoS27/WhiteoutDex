@@ -1,6 +1,7 @@
 // MDLXExporter — MDX geoset merger implementation
 // CHANGES: Added debug logging for merge decisions and results
 #include "mdx_geoset_merger.h"
+#include <algorithm>
 #include <unordered_map>
 
 #include <max.h>
@@ -80,6 +81,15 @@ void MdxGeosetMerger::merge(std::vector<Geoset>& geosets,
                 merged.push_back(std::move(geo));
                 continue;
             }
+            // v800 skins through GNDX, one byte per vertex: the merged
+            // geoset can address 256 matrix groups at most.
+            const bool skinChunk = !target.skinData.empty() || !geo.skinData.empty();
+            if (!skinChunk && target.matrixGroups.size() + geo.matrixGroups.size() > 256) {
+                MDX_LOG(_T("  ⚠ Overflow: can't merge (would exceed 256 matrix groups), keeping separate\n"));
+                remap[gi] = static_cast<uint32_t>(merged.size());
+                merged.push_back(std::move(geo));
+                continue;
+            }
             remap[gi] = static_cast<uint32_t>(it->second);
 
             MDX_LOG(_T("  Merging into group %d (mat=%u): +%d verts, +%d faces\n"),
@@ -139,10 +149,23 @@ void MdxGeosetMerger::merge(std::vector<Geoset>& geosets,
                 }
             }
 
-            target.matrixGroups.insert(target.matrixGroups.end(),
-                geo.matrixGroups.begin(), geo.matrixGroups.end());
-            target.matrixIndices.insert(target.matrixIndices.end(),
-                geo.matrixIndices.begin(), geo.matrixIndices.end());
+            if (skinChunk) {
+                // v1200+: SKIN holds object ids that index MATS, which is
+                // the identity [0..maxBone] (one group per bone). Appending
+                // the second geoset's list sent its bones above the first
+                // geoset's maximum to the wrong object; the identity just
+                // has to cover both.
+                const size_t n = std::max(target.matrixIndices.size(), geo.matrixIndices.size());
+                target.matrixGroups.assign(n, 1);
+                target.matrixIndices.resize(n);
+                for (size_t i = 0; i < n; ++i)
+                    target.matrixIndices[i] = static_cast<uint32_t>(i);
+            } else {
+                target.matrixGroups.insert(target.matrixGroups.end(),
+                    geo.matrixGroups.begin(), geo.matrixGroups.end());
+                target.matrixIndices.insert(target.matrixIndices.end(),
+                    geo.matrixIndices.begin(), geo.matrixIndices.end());
+            }
 
             target.faceGroups.push_back(static_cast<uint32_t>(geo.faces.size()));
             target.faceTypeGroups.push_back(4);

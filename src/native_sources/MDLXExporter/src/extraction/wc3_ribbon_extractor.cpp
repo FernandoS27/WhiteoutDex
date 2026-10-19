@@ -146,6 +146,9 @@ void extractRibbons(const std::vector<core::SceneNode>& nodes,
             rib.textureSlotTrackIndex = extractIntControllerTrack(
                 getParamControllerDirect(ref, L"slots"), model);
         }
+        // KRCO keys are stored blue first; the static colour stays red first.
+        if (rib.colorTrackIndex >= 0)
+            swapRedBlue(model.colorTracks[rib.colorTrackIndex]);
 
         // Common: visibility
         rib.visibilityTrackIndex = extractVisibilityTrack(sn.maxNode, model);

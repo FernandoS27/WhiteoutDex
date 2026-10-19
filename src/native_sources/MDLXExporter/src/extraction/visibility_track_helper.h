@@ -79,6 +79,22 @@ inline bool bezierKeysAllStep(IKeyControl* ikc) {
     return true;
 }
 
+// The same for keys whose tangents are all LINEAR: straight spans, which is
+// MDX Linear (the importer keys a Linear light or colour track this way).
+inline bool bezierKeysAllLinear(IKeyControl* ikc) {
+    if (!ikc) return false;
+    int n = ikc->GetNumKeys();
+    if (n <= 0) return false;
+
+    for (int i = 0; i < n; ++i) {
+        IBezFloatKey k;
+        ikc->GetKey(i, &k);
+        if (GetInTanType(k.flags) != BEZKEY_LINEAR || GetOutTanType(k.flags) != BEZKEY_LINEAR)
+            return false;
+    }
+    return true;
+}
+
 // Is this controller class one of the three documented IKeyControl
 // clients (linear/bezier/tcb float)? Other controllers — including
 // boolean_float and on_off — may return a non-null IKeyControl pointer
@@ -285,6 +301,25 @@ inline int32_t extractVisibilityTrackFromController(Control* ctrl, ir::IRModel& 
         key.inTangent  = 0.0f;
         key.outTangent = 0.0f;
         key.hasTangents = false;
+    }
+    // An On/Off controller toggles at its keys, so before the first one it
+    // shows the other state, not the first key's. Hold that state from one
+    // frame before the first key: the sequence-boundary keys added later read
+    // the track as Max holds it (see mdx_sequence_boundary_keys.h).
+    if (!useTypedKeys && !track.keys.empty() &&
+        track.keys.front().time >= GetTicksPerFrame() &&
+        core::anim::getGlobalSequenceDuration(ctrl) == 0) {
+        const TimeValue first = track.keys.front().time;
+        float before = 0.0f;
+        Interval valid = FOREVER;
+        ctrl->GetValue(first - 1, &before, valid);
+        if (isNone) before = detail::snapBoolValue(before);
+        if (std::fabs(before - track.keys.front().value) > 1e-4f) {
+            ir::Keyframe<float> lead;
+            lead.time  = first - GetTicksPerFrame();
+            lead.value = before;
+            track.keys.insert(track.keys.begin(), lead);
+        }
     }
     } // else
 

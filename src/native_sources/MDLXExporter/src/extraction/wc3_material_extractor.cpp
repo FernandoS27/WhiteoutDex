@@ -833,6 +833,48 @@ static void readFloatKeys(Control* ctrl,
     }
 }
 
+// Tangents of one channel at the merged key times of a vector track. Each
+// merged span is sampled at 1/3 and 2/3 and its cubic solved (NeoDex
+// ProcessBezier, as readFloatKeys does per controller), so a channel without
+// a key at a merged time still follows its own curve; taking the channel's own
+// key tangents left 0 there, a control point the value dipped towards (a
+// U-only tiling animation pulled V tiling down to 0.25 mid-span). Bezier keeps
+// the control points, Hermite wants the slopes 3 * (c1 - p0), 3 * (p1 - c2).
+static void channelTangentsOnTimes(Control* ctrl, float dflt, float sign,
+                                   const std::vector<TimeValue>& times, bool hermite,
+                                   std::vector<float>& inT, std::vector<float>& outT)
+{
+    const size_t n = times.size();
+    std::vector<float> v(n);
+    for (size_t i = 0; i < n; i++) v[i] = evalFloat(ctrl, times[i], dflt) * sign;
+    inT.assign(n, 0.0f);
+    outT.assign(n, 0.0f);
+    for (size_t i = 0; i < n; i++) {
+        float in = v[i], out = v[i];
+        if (i > 0) {
+            const TimeValue t0 = times[i-1], span = times[i] - t0;
+            const float pe = evalFloat(ctrl, t0 + static_cast<TimeValue>(span / 3.0), dflt) * sign;
+            const float pd = evalFloat(ctrl, t0 + static_cast<TimeValue>(2.0 * span / 3.0), dflt) * sign;
+            in = 3.0f*pd + (2.0f*v[i-1] - 9.0f*pe - 5.0f*v[i]) / 6.0f;
+        }
+        if (i + 1 < n) {
+            const TimeValue t0 = times[i], span = times[i+1] - t0;
+            const float pe = evalFloat(ctrl, t0 + static_cast<TimeValue>(span / 3.0), dflt) * sign;
+            const float pd = evalFloat(ctrl, t0 + static_cast<TimeValue>(2.0 * span / 3.0), dflt) * sign;
+            out = 3.0f*pe + (2.0f*v[i+1] - 5.0f*v[i] - 9.0f*pd) / 6.0f;
+        }
+        if (fabsf(in - v[i]) < 0.01f)  in = v[i];
+        if (fabsf(out - v[i]) < 0.01f) out = v[i];
+        if (hermite) {
+            inT[i]  = 3.0f * (v[i] - in);
+            outT[i] = 3.0f * (out - v[i]);
+        } else {
+            inT[i]  = in;
+            outT[i] = out;
+        }
+    }
+}
+
 // Extract a Vec3 track from two float controllers (U, V). The third
 // component gets `defaultW`. negateFactor is applied to the U component
 // (use -1.0f to match importer convention where MDX X = -U_Offset).
@@ -862,11 +904,6 @@ static int32_t extractVec3FromTwoCtrls(Control* ctrlU, Control* ctrlV,
     std::sort(times.begin(), times.end());
     times.erase(std::unique(times.begin(), times.end()), times.end());
 
-    // Tangent lookup by time
-    std::unordered_map<TimeValue, size_t> tanIdxU, tanIdxV;
-    for (size_t i = 0; i < kTimesU.size(); i++) tanIdxU[kTimesU[i]] = i;
-    for (size_t i = 0; i < kTimesV.size(); i++) tanIdxV[kTimesV[i]] = i;
-
     bool useTans = (tanU || tanV) &&
                    (interp == ir::InterpolationType::Hermite ||
                     interp == ir::InterpolationType::Bezier);
@@ -874,7 +911,17 @@ static int32_t extractVec3FromTwoCtrls(Control* ctrlU, Control* ctrlV,
     ir::Track<Point3> track;
     track.interpolation = interp;
 
-    for (TimeValue t : times) {
+    const bool hermite = interp == ir::InterpolationType::Hermite;
+    std::vector<float> uIn, uOut, vIn, vOut;
+    if (useTans) {
+        channelTangentsOnTimes(ctrlU, defaultU, negateFactor, times, hermite, uIn, uOut);
+        channelTangentsOnTimes(ctrlV, defaultV, 1.0f, times, hermite, vIn, vOut);
+    }
+    // W has no controller: a constant, flat on both sides.
+    const float wTan = hermite ? 0.0f : defaultW;
+
+    for (size_t ti = 0; ti < times.size(); ++ti) {
+        const TimeValue t = times[ti];
         float u = evalFloat(ctrlU, t, defaultU);
         float v = evalFloat(ctrlV, t, defaultV);
 
@@ -884,19 +931,8 @@ static int32_t extractVec3FromTwoCtrls(Control* ctrlU, Control* ctrlV,
         key.value = Point3(u * negateFactor, v, defaultW);
 
         if (useTans) {
-            float uiIn = 0.0f, uiOut = 0.0f, viIn = 0.0f, viOut = 0.0f;
-            auto itU = tanIdxU.find(t);
-            if (itU != tanIdxU.end() && tanU) {
-                uiIn  = kTiU[itU->second] * negateFactor;
-                uiOut = kToU[itU->second] * negateFactor;
-            }
-            auto itV = tanIdxV.find(t);
-            if (itV != tanIdxV.end() && tanV) {
-                viIn  = kTiV[itV->second];
-                viOut = kToV[itV->second];
-            }
-            key.inTangent  = Point3(uiIn,  viIn,  0.0f);
-            key.outTangent = Point3(uiOut, viOut, 0.0f);
+            key.inTangent  = Point3(uIn[ti],  vIn[ti],  wTan);
+            key.outTangent = Point3(uOut[ti], vOut[ti], wTan);
             key.hasTangents = true;
         }
     }
@@ -1118,17 +1154,13 @@ static TimeValue getGlobalSequenceDuration(Control* ctrl) {
     int afterORT = ctrl->GetORT(ORT_AFTER);
     if (afterORT != ORT_CYCLE && afterORT != ORT_LOOP) return 0;
 
-    // Duration = time of last key
+    // Duration = time of last key. Read through the typed key of the
+    // controller's own class: GetKey writes a whole key, and a TCB key is
+    // larger than an IBezFloatKey.
     IKeyControl* ikc = GetKeyControlInterface(ctrl);
     if (!ikc) return 0;
-    int n = ikc->GetNumKeys();
-    if (n == 0) return 0;
-
-    // All float key struct layouts start with TimeValue, so reading
-    // as IBezFloatKey is safe just for the time field.
-    IBezFloatKey key;
-    ikc->GetKey(n - 1, &key);
-    return key.time;
+    const std::vector<TimeValue> times = core::anim::collectKeyTimes(ctrl);
+    return times.empty() ? 0 : times.back();
 }
 
 // Register a duration with the IRModel, returning its 0-based index.
@@ -1199,12 +1231,6 @@ static int32_t extractVec3FromThreeCtrls(Control* ctrlA, Control* ctrlB,
     std::sort(times.begin(), times.end());
     times.erase(std::unique(times.begin(), times.end()), times.end());
 
-    // Tangent lookup by time
-    std::unordered_map<TimeValue, size_t> tanIdxA, tanIdxB, tanIdxC;
-    for (size_t i = 0; i < kTimesA.size(); i++) tanIdxA[kTimesA[i]] = i;
-    for (size_t i = 0; i < kTimesB.size(); i++) tanIdxB[kTimesB[i]] = i;
-    for (size_t i = 0; i < kTimesC.size(); i++) tanIdxC[kTimesC[i]] = i;
-
     bool useTans = (tanA || tanB || tanC) &&
                    (interp == ir::InterpolationType::Hermite ||
                     interp == ir::InterpolationType::Bezier);
@@ -1212,7 +1238,16 @@ static int32_t extractVec3FromThreeCtrls(Control* ctrlA, Control* ctrlB,
     ir::Track<Point3> track;
     track.interpolation = interp;
 
-    for (TimeValue t : times) {
+    const bool hermite = interp == ir::InterpolationType::Hermite;
+    std::vector<float> aIn, aOut, bIn, bOut, cIn, cOut;
+    if (useTans) {
+        channelTangentsOnTimes(ctrlA, defaultA, signA, times, hermite, aIn, aOut);
+        channelTangentsOnTimes(ctrlB, defaultB, 1.0f, times, hermite, bIn, bOut);
+        channelTangentsOnTimes(ctrlC, defaultC, 1.0f, times, hermite, cIn, cOut);
+    }
+
+    for (size_t ti = 0; ti < times.size(); ++ti) {
+        const TimeValue t = times[ti];
         float a = evalFloat(ctrlA, t, defaultA) * signA;
         float b = evalFloat(ctrlB, t, defaultB);
         float c = evalFloat(ctrlC, t, defaultC);
@@ -1223,26 +1258,8 @@ static int32_t extractVec3FromThreeCtrls(Control* ctrlA, Control* ctrlB,
         key.value = Point3(a, b, c);
 
         if (useTans) {
-            float aiIn = 0.0f, aiOut = 0.0f;
-            float biIn = 0.0f, biOut = 0.0f;
-            float ciIn = 0.0f, ciOut = 0.0f;
-            auto itA = tanIdxA.find(t);
-            if (itA != tanIdxA.end() && tanA) {
-                aiIn  = kTiA[itA->second] * signA;
-                aiOut = kToA[itA->second] * signA;
-            }
-            auto itB = tanIdxB.find(t);
-            if (itB != tanIdxB.end() && tanB) {
-                biIn  = kTiB[itB->second];
-                biOut = kToB[itB->second];
-            }
-            auto itC = tanIdxC.find(t);
-            if (itC != tanIdxC.end() && tanC) {
-                ciIn  = kTiC[itC->second];
-                ciOut = kToC[itC->second];
-            }
-            key.inTangent  = Point3(aiIn,  biIn,  ciIn);
-            key.outTangent = Point3(aiOut, biOut, ciOut);
+            key.inTangent  = Point3(aIn[ti],  bIn[ti],  cIn[ti]);
+            key.outTangent = Point3(aOut[ti], bOut[ti], cOut[ti]);
             key.hasTangents = true;
         }
     }

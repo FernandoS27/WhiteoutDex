@@ -2,6 +2,7 @@
 #include "wc3_popcorn_extractor.h"
 #include "../mdx_class_ids.h"
 #include "visibility_track_helper.h"
+#include "controller_track_helper.h"
 #include <scene/paramblock_reader.h>
 #include <animation/global_sequence_helper.h>
 #include <control.h>
@@ -26,75 +27,23 @@ namespace {
 //   alpha        → KPPA   baseColor → KPPC
 // KPPV is the node's own visibility controller, handled separately.
 
+// The keys are read like every other parameter animation
+// (controller_track_helper.h): STEP keys stay DontInterp, LINEAR keys Linear
+// and Bezier keys keep their curve. Forcing Linear turned a stepped emission
+// rate into a ramp.
 int32_t extractCornFloatTrack(ReferenceTarget* ref, const wchar_t* paramName,
                               ir::IRModel& model)
 {
-    Control* ctrl = core::anim::getParamControllerDirect(ref, paramName);
-    if (!ctrl) return -1;
-    const int numKeys = ctrl->NumKeys();
-    if (numKeys <= 0) return -1;
-
-    ir::Track<float> track;
-    // Linear, matching the light extractor: tangent recovery off a scripted
-    // plugin's controller is error-prone, and every CORN track Blizzard ships
-    // is interpolationType 0 or 1 anyway.
-    track.interpolation = ir::InterpolationType::Linear;
-
-    for (int i = 0; i < numKeys; ++i) {
-        TimeValue t = ctrl->GetKeyTime(i);
-        float v = 0.0f;
-        Interval iv = FOREVER;
-        ctrl->GetValue(t, &v, iv);
-        ir::Keyframe<float> key;
-        key.time = t;
-        key.value = v;
-        track.keys.push_back(key);
-    }
-
-    const int afterORT = ctrl->GetORT(ORT_AFTER);
-    if ((afterORT == ORT_CYCLE || afterORT == ORT_LOOP) && !track.keys.empty()) {
-        int32_t gsIdx = core::anim::registerGlobalSequence(model, track.keys.back().time);
-        if (gsIdx >= 0) track.globalSequenceIndex = gsIdx;
-    }
-
-    int32_t idx = static_cast<int32_t>(model.floatTracks.size());
-    model.floatTracks.push_back(std::move(track));
-    return idx;
+    return extractFloatControllerTrack(core::anim::getParamControllerDirect(ref, paramName), model);
 }
 
+// KPPC keys are stored blue first like KRCO (3.0's reader treats them the
+// same, WhiteoutLib SwapRedBlue); the static colour stays red first.
 int32_t extractCornColorTrack(ReferenceTarget* ref, const wchar_t* paramName,
                               ir::IRModel& model)
 {
-    Control* ctrl = core::anim::getParamControllerDirect(ref, paramName);
-    if (!ctrl) return -1;
-    const int numKeys = ctrl->NumKeys();
-    if (numKeys <= 0) return -1;
-
-    ir::Track<Color> track;
-    track.interpolation = ir::InterpolationType::Linear;
-
-    for (int i = 0; i < numKeys; ++i) {
-        TimeValue t = ctrl->GetKeyTime(i);
-        Point3 val(1.0f, 1.0f, 1.0f);
-        Interval iv = FOREVER;
-        ctrl->GetValue(t, &val, iv);
-        ir::Keyframe<Color> key;
-        key.time = t;
-        // No BGR swap. Unlike LITE, the CORN colour path is straight RGB on
-        // both sides — the disassembler's mapColorTrack and the static
-        // corn.color field below both pass x,y,z through untouched.
-        key.value = Color(val.x, val.y, val.z);
-        track.keys.push_back(key);
-    }
-
-    const int afterORT = ctrl->GetORT(ORT_AFTER);
-    if ((afterORT == ORT_CYCLE || afterORT == ORT_LOOP) && !track.keys.empty()) {
-        int32_t gsIdx = core::anim::registerGlobalSequence(model, track.keys.back().time);
-        if (gsIdx >= 0) track.globalSequenceIndex = gsIdx;
-    }
-
-    int32_t idx = static_cast<int32_t>(model.colorTracks.size());
-    model.colorTracks.push_back(std::move(track));
+    const int32_t idx = extractColorControllerTrack(core::anim::getParamControllerDirect(ref, paramName), model);
+    if (idx >= 0) swapRedBlue(model.colorTracks[idx]);
     return idx;
 }
 

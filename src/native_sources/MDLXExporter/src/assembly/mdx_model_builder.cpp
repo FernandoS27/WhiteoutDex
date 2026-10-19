@@ -308,6 +308,108 @@ Node::NodeFlag particleEmitter1SpawnFlag(const std::string& path) {
     return static_cast<Node::NodeFlag>(isImage ? 0x10000u : 0x8000u);
 }
 
+// Warcraft III spans a ribbon along its node's local +Y. The node frame
+// written here is Max's own turned by the axis remap (mdx_coord_transform.h),
+// in which MDX +Y is Max's local +X - a ribbon came out a quarter turn away
+// from its gizmo, its viewport trail and the renderer. This is the local
+// rotation that turns MDX +Y onto the object's own +Y, the gizmo's line,
+// which follows the object offset: an imported ribbon carries one (the
+// importer turns the object, not the keys), so its rotation goes out as it
+// came in. Identity when the offset is not a rotation (a mirror).
+Quaternion ribbonAxisRotation(INode* node)
+{
+    Quaternion q{};
+    q.x = 0.0f; q.y = 0.0f; q.z = 0.0f; q.w = 1.0f;
+    if (!node) return q;
+    // object axes in the node's frame (Max rows: the image of each axis)
+    const Matrix3 off = node->GetObjectTM(0) * Inverse(node->GetNodeTM(0));
+    Point3 r[3];
+    for (int i = 0; i < 3; ++i) r[i] = Normalize(off.GetRow(i));
+    if (DotProd(CrossProd(r[0], r[1]), r[2]) < 0.5f) r[0] = Point3(1, 0, 0), r[1] = Point3(0, 1, 0), r[2] = Point3(0, 0, 1);
+    // ... in MDX axes: the columns of the rotation
+    Point3 c[3];
+    for (int i = 0; i < 3; ++i) c[i] = Point3(-r[i].y, r[i].x, r[i].z);
+    const float m00 = c[0].x, m10 = c[0].y, m20 = c[0].z;
+    const float m01 = c[1].x, m11 = c[1].y, m21 = c[1].z;
+    const float m02 = c[2].x, m12 = c[2].y, m22 = c[2].z;
+    const float tr = m00 + m11 + m22;
+    if (tr > 0.0f) {
+        const float s = std::sqrt(tr + 1.0f) * 2.0f;
+        q.w = 0.25f * s; q.x = (m21 - m12) / s; q.y = (m02 - m20) / s; q.z = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+        q.w = (m21 - m12) / s; q.x = 0.25f * s; q.y = (m01 + m10) / s; q.z = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+        q.w = (m02 - m20) / s; q.x = (m01 + m10) / s; q.y = 0.25f * s; q.z = (m12 + m21) / s;
+    } else {
+        const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+        q.w = (m10 - m01) / s; q.x = (m02 + m20) / s; q.y = (m12 + m21) / s; q.z = 0.25f * s;
+    }
+    const float len = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if (len > 0.0f) { q.x /= len; q.y /= len; q.z /= len; q.w /= len; }
+    return q;
+}
+
+// A node's rotation turned by a constant local rotation |r|: every key times
+// |r|, a curved key's tangents as well (the game's squad and slerp both keep a
+// constant right factor). A sequence the track has no key in played the
+// default, identity, and must play |r| now, so it gets a key at its start
+// and end; a node without a rotation track gets one.
+void turnRotationTrack(Track<Quaternion>& tr, const Quaternion& r,
+                       const std::vector<Sequence>& sequences)
+{
+    using TK = Track<Quaternion>::TangentKey;
+    const bool curved = wdx::isSmoothInterpolation(tr.interpolationType);
+    std::vector<std::pair<int32_t, TK>> keys;
+    if (tr.isUsed && tr.keyCount > 0) {
+        for (size_t k = 0; k < tr.timestamps.size(); ++k) {
+            TK key;
+            if (curved) {
+                key = tr.tangentKeys()[k];
+                key.inTan = key.inTan * r;
+                key.outTan = key.outTan * r;
+            } else {
+                key.value = tr.keys()[k];
+            }
+            key.value = key.value * r;
+            keys.emplace_back(wdx::keyTime(tr.timestamps[k]), key);
+        }
+    } else {
+        tr = Track<Quaternion>{};
+        tr.isUsed = true;
+        tr.interpolationType = InterpolationType::Linear;
+    }
+    if (tr.globalSequenceId == Track<Quaternion>::kNoGlobalSequence) {
+        std::vector<std::pair<int32_t, TK>> added;
+        for (const auto& seq : sequences) {
+            const int32_t s = static_cast<int32_t>(seq.intervalStart);
+            const int32_t e = static_cast<int32_t>(seq.intervalEnd);
+            bool keyed = false;
+            for (const auto& k : keys) keyed = keyed || (k.first >= s && k.first <= e);
+            if (keyed) continue;
+            TK key;
+            key.value = key.inTan = key.outTan = r;
+            added.emplace_back(s, key);
+            if (e != s) added.emplace_back(e, key);
+        }
+        keys.insert(keys.end(), added.begin(), added.end());
+        std::stable_sort(keys.begin(), keys.end(),
+                         [](const auto& a, const auto& b) { return a.first < b.first; });
+    }
+    tr.timestamps.clear();
+    tr.keys_data.clear();
+    for (const auto& [t, key] : keys) {
+        tr.timestamps.push_back(static_cast<u32>(t));
+        tr.keys_data.push_back(key.value);
+        if (curved) {
+            tr.keys_data.push_back(key.inTan);
+            tr.keys_data.push_back(key.outTan);
+        }
+    }
+    tr.keyCount = tr.timestamps.size();
+}
+
 } // anonymous namespace
 
 Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts) {
@@ -941,6 +1043,16 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         rib.node = buildNode(ir, irRib.nodeIndex, hierarchy,
                              Node::NodeType::RibbonEmitter,
                              Node::NodeFlag::RibbonEmitter, invScale);
+        // Ribbon direction as the gizmo shows it (ribbonAxisRotation). Turning
+        // the node would turn whatever is linked under it too, so a ribbon
+        // with children keeps the old frame.
+        if (irRib.nodeIndex >= 0 && irRib.nodeIndex < static_cast<int32_t>(ir.nodes.size())) {
+            bool hasChildren = false;
+            for (const auto& n : ir.nodes) hasChildren = hasChildren || n.parentIndex == irRib.nodeIndex;
+            const Quaternion turn = ribbonAxisRotation(ir.nodes[irRib.nodeIndex].maxNode);
+            if (!hasChildren && std::fabs(turn.w) < 0.999999f)
+                turnRotationTrack(rib.node.rotationTracks, turn, model.sequences);
+        }
         rib.heightAbove = irRib.heightAbove;
         rib.heightBelow = irRib.heightBelow;
         rib.alpha = irRib.alpha;
@@ -1002,22 +1114,15 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
 
     // 14. Collision shapes
     //
-    // Two wire formats for CLID:
-    //   * v800 / v1000+ static: vertices[] are absolute world positions,
-    //                           PIVT for this node is (0, 0, 0) or pos,
-    //                           no animation tracks.
-    //   * v1000+ animated:      vertices[] are LOCAL extents centered
-    //                           around the pivot; PIVT is the world-space
-    //                           anchor the hitbox follows; parentId forced
-    //                           to root (0xFFFFFFFF); KGTR/KGRT tracks
-    //                           animate the offset from that anchor.
-    //
-    // Detection is per-node: a single model may mix static decorative
-    // hitboxes with animated bone-following hitboxes. We pick the
-    // animated branch when the node has at least one translation or
-    // rotation key AND the export version supports it (v1000+).
-    //
-    // See exporter_handoff_collision_shapes.md §3-4 for the contract.
+    // CLID vertices, every version: a sphere's one vertex is its centre in
+    // model space; a box, plane or cylinder stores its corners around the
+    // node's pivot. The game models say so: all 254 spheres hold their pivot,
+    // and HippoGryph's three boxes (pivots at both wings and the body, corners
+    // centred on (33.9, 0, 0) or (72, 0, 0)) only land on the wings and the
+    // body that way - read as model space, both wing boxes coincide on the
+    // x axis and the body box sits behind the model, half underground.
+    // KulTirasMarine (v1000) agrees: pivot z 54.26, corners z -40.25..0.
+    // WhiteoutFlakes reads CLID the same way (MdxModelAdapter).
     for (auto& irCs : ir.collisionShapes) {
         CollisionShape cs;
         cs.node = buildNode(ir, irCs.nodeIndex, hierarchy,
@@ -1053,31 +1158,10 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
 
         cs.radius = irCs.radius * invScale;
 
-        // ── v1000+ animated collision: convert absolute → local ──
-        //
-        // If the builder is emitting v1000 or higher AND this collision's
-        // node has animated transform tracks, rewrite the vertices to be
-        // pivot-relative (local extents) and set parentId to root.
-        //
-        // The absolute vertices we have are `pivot + local_extent`
-        // (produced by the extractor from node.pos + box half-sizes).
-        // Subtracting the pivot (in MDX space) gives the local extent
-        // directly. Tracks already animate around that pivot, so they
-        // need no modification.
-        //
-        // Reference model (KulTirasMarine.mdx, v1000):
-        //   B_KGS_Torso: pivot = ( 0.99,  0.00, 54.26)   ← world anchor
-        //                v1    = (-15.88, -24.03, -40.25) ← local min corner
-        //                v2    = ( 15.88,  24.03,   0.00) ← local max corner
-        //   + KGTR 554 keys, KGRT 480 keys, parentId = 0xFFFFFFFF
-        //
-        // Only a moving (KGTR) hitbox is local - the importer reads the same
-        // rule (mdx_model_disassembler.cpp, mapCollisionShapes). A static
-        // shape with nothing but a rest-pose KGRT was written local before
-        // and came back at the model origin.
-        const bool isAnimated = cs.node.translationTracks.isUsed;
-        if (opts.version >= 1000 && isAnimated) {
-            // Fetch pivot in MDX space for this node
+        // The extractor hands absolute vertices (`pivot + extent`); all
+        // but a sphere's are written around the pivot.
+        const bool isSphere = irCs.shape == ir::CollisionShape::Shape::Sphere;
+        if (!isSphere) {
             uint32_t objId = cs.node.objectId;
             if (objId < model.pivotPoints.size()) {
                 const auto& pv = model.pivotPoints[objId];
@@ -1087,15 +1171,11 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
                     vert.z -= pv.z;
                 }
             }
-            // No extra Z shift for boxes: the extractor reads the object TM,
-            // so a box whose pivot sits on its top face (KulTirasMarine:
-            // local z -40.25..0) already comes out that way, and a box made
-            // in Max (pivot at the bottom) keeps 0..height. Shifting by the
-            // height as well moved every animated box down by its height.
-            // Animated hitboxes live at root level; they follow their
-            // bone through the animation tracks, not through parenting.
-            cs.node.parentId = 0xFFFFFFFFu;
         }
+        // The parent stays. Its tracks are parent-relative (AnimDispatcher),
+        // so forcing the root here left a hitbox linked to a moving bone
+        // standing where the bone started; the node hierarchy carries it
+        // along like any other node.
 
         model.collisionShapes.push_back(std::move(cs));
     }
