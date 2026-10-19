@@ -139,10 +139,16 @@ struct WdxCellShadeOps
             isValidNode i and (classof i == Editable_Poly or classof i == Editable_mesh or classof i == PolyMeshObject)
         ) collect i
     ),
+    -- The outlines to edit: the selected ones, else the ones just made, and
+    -- only outlines (createOutlines names them *_cellshade and gives them the
+    -- CellShade_Outline material). With the source model still selected -
+    -- pick a colour, then Create - the colour went into the model's own Wc3
+    -- Vertex Color, an imported model's geoset colour, with no undo.
+    fn isOutline o = ( matchPattern o.name pattern:"*_cellshade" or (o.material != undefined and o.material.name == "CellShade_Outline") ),
     fn getWorkingSet =
     (
-        if selection.count != 0 then getValidMeshObjects (selection as array)
-        else getValidMeshObjects outlineObjects
+        local sel = for o in (getValidMeshObjects (selection as array)) where isOutline o collect o
+        if sel.count != 0 then sel else getValidMeshObjects outlineObjects
     ),
     fn getFilterModeValue idx =
     (
@@ -254,9 +260,9 @@ struct WdxCellShadeOps
         if outlineObjects.count > 0 do select outlineObjects
         #(outlineObjects.count, skinCount)
     ),
-    fn updateColor c     = ( for o in (getWorkingSet()) do try(o.modifiers[#Wc3_Vertex_Color].VertexColor=c)catch() ),
-    fn updateThickness v = ( for o in (getWorkingSet()) do try(o.modifiers[#Push].Push_Value=v)catch() ),
-    fn updateNormals f   = ( for o in (getWorkingSet()) do try(o.modifiers[#Normal].flip=f)catch() ),
+    fn updateColor c     = ( undo "CellShade Colour" on (for o in (getWorkingSet()) do try(o.modifiers[#Wc3_Vertex_Color].VertexColor=c)catch()) ),
+    fn updateThickness v = ( undo "CellShade Thickness" on (for o in (getWorkingSet()) do try(o.modifiers[#Push].Push_Value=v)catch()) ),
+    fn updateNormals f   = ( undo "CellShade Normals" on (for o in (getWorkingSet()) do try(o.modifiers[#Normal].flip=f)catch()) ),
     fn updateFilterMode i =
     (
         if material != undefined do

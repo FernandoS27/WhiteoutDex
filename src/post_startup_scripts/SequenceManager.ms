@@ -1095,6 +1095,9 @@
     fn sceneChangeCallback =
     (
         print "SequenceManager updated"
+        -- The new scene's ignore list, too: the old one stayed in memory and
+        -- closing the dialog wrote it into the scene just opened or reset.
+        ::WdxSequenceManager.loadIgnoredSequences()
         ::WdxSequenceManager.sequences = ::WdxSequenceManager.LoadSequences()
 		::WdxSequenceManager.scanGlobalSequences()
         ::WdxSequenceManager.saveSequences()
@@ -1799,7 +1802,13 @@
 					
 					local seq = self.sequences[seqId]
 					local newName = self.getNewSequenceName seq.name
-					local newStartTime = self.sequences[self.sequences.count].endtime + 10f
+					-- After the sequence that ends last, not the last one in the
+					-- list: New appends, so a sequence made in a gap stood last in
+					-- the list and the duplicate was placed onto the next
+					-- sequence, overwriting its keys.
+					local lastEnd = self.sequences[1].endtime
+					for q in self.sequences where q.endtime > lastEnd do lastEnd = q.endtime
+					local newStartTime = lastEnd + 10f
 					local newEndTime = newStartTime + (seq.endtime - seq.starttime)
 					
 					self.addSequence newName newStartTime newEndTime seq.loop seq.rarity seq.movespeed
@@ -2256,7 +2265,10 @@
                     counter += 1
                     local currentName = newName + (if selectionCount > 1 then counter as string else "")
                     
-                    local sequenceNames = for seq in self.sequences collect seq.name
+                    -- The sequence's own name does not count as taken: Enter on
+                    -- an unchanged name renamed "Stand" to "Stand_1".
+                    local ownSeq = seqFromListId id
+                    local sequenceNames = for seq in self.sequences where seq != ownSeq collect seq.name
                     local uniqueCounter = 0
                     while findItem sequenceNames currentName != 0 do
                     (
@@ -2565,8 +2577,10 @@
                         local rarity, movespeed
                         local sequenceName = loadedSequences[i][1]
                         if stricmp loadedSequences[i][2] "true" == 0 then noLoop = true
-                        if stricmp loadedSequences[i][3] "" != 0 then rarity = (substring loadedSequences[i][3] 1 1) as integer
-                        if stricmp loadedSequences[i][4] "" != 0 then movespeed = (substring loadedSequences[i][4] 1 1) as integer
+                        -- The whole number: only its first digit was read (MoveSpeed 270
+                        -- came back as 2, Rarity 12 as 1).
+                        if stricmp loadedSequences[i][3] "" != 0 then rarity = loadedSequences[i][3] as integer
+                        if stricmp loadedSequences[i][4] "" != 0 then movespeed = loadedSequences[i][4] as integer
                         local newStartTime = loadedSequences[i][5] as time
                         local newEndTime = loadedSequences[i][6] as time
                         local SequenceData = WdxWc3Sequence sequenceName newStartTime newEndTime noLoop rarity movespeed undefined

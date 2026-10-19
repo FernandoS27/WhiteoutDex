@@ -118,8 +118,12 @@ struct WdxPPT_Ops
 		
 		if doMirror do
 		(
-			if mirrorMode == 1 do (mirrorCenter = [0,0,0] * (inverse obj.transform))
-			if mirrorMode == 2 do (mirrorCenter = [0,0,0])
+			-- The copied positions are world positions (getVertPos on a node), so
+			-- World mirrors about the world origin and Pivot about the pivot's
+			-- world position. The two had it the other way: Pivot mirrored about
+			-- the world origin, World about the origin seen from the object.
+			if mirrorMode == 1 do (mirrorCenter = [0,0,0])
+			if mirrorMode == 2 do (mirrorCenter = obj.pos)
 			if mirrorMode == 3 and total > 0 do
 			(
 				local sum = [0,0,0]

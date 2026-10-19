@@ -5,14 +5,21 @@ category:"Warcraft III Plugins"
 extends:dummy 
 (
 	local lastRadius, meshObj
+	-- ONE block named `pblock`. It used to be two blocks both named `pblock`
+	-- (`adsorption` under rollout:General, the rest under rollout:params1). A
+	-- scene saved with an older definition is matched to the current one BY
+	-- BLOCK NAME, and with two current blocks of one name both saved blocks
+	-- landed on the first: the first time the definition changed at all, every
+	-- old scene lost its radius.
+	-- With one `pblock` both saved blocks find their
+	-- parameters here (the same fix as Wc3Light).
+	-- `adsorption` has no ui: binding - a block binds to one rollout - so the
+	-- General rollout reads and writes it by hand.
 	parameters pblock rollout:params1
 	(
+		adsorption  type:#string  default:""
 		radius type:#float animatable:false ui:amount default:1.0
 	)
-	parameters pblock rollout:General
-    (
-        adsorption  type:#string ui:Temp_adsorption 
-    )
     rollout General "General Features"
     (
         PickButton btn_adsorption "Select Object (Adsorb)" pos:[12,7] width:138 height:24
@@ -25,6 +32,7 @@ extends:dummy
                 (
                     selection[1].pos = obj.pos
                     selection[1].parent = obj
+                    adsorption = obj.name
                     Temp_adsorption.text = obj.name
                     btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
                 )
@@ -32,6 +40,9 @@ extends:dummy
         )
         on General open do 
         (
+            -- Not ui:-bound any more (see the parameters block). An object saved
+            -- without the parameter carries undefined, which an edittext refuses.
+            Temp_adsorption.text = if adsorption == undefined then "" else adsorption
             if Temp_adsorption.text != "" then
                 btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
             else
@@ -100,16 +111,25 @@ category:"Warcraft III Plugins"
 extends:dummy 
 (
 	local lastLength, lastHeight, lastWidth, meshObj
+	-- ONE block named `pblock`. It used to be two blocks both named `pblock`
+	-- (`adsorption` under rollout:General, the rest under rollout:params1). A
+	-- scene saved with an older definition is matched to the current one BY
+	-- BLOCK NAME, and with two current blocks of one name both saved blocks
+	-- landed on the first: the first time the definition changed at all, every
+	-- old scene lost its width, length and height.
+	-- With one `pblock` both saved blocks find their
+	-- parameters here (the same fix as Wc3Light).
+	-- `adsorption` has no ui: binding - a block binds to one rollout - so the
+	-- General rollout reads and writes it by hand.
 	parameters pblock rollout:params1
 	(
-		width	type:#float animatable:false ui:amount1 default:1.0
-		length	type:#float animatable:false ui:amount2 default:1.0
+		adsorption  type:#string  default:""
+		-- The first spinner is labelled Length (Y, the box's length), the second
+		-- Width (X); width was bound to the first, so "Length" edited X.
+		width	type:#float animatable:false ui:amount2 default:1.0
+		length	type:#float animatable:false ui:amount1 default:1.0
 		height	type:#float animatable:false ui:amount3 default:1.0
 	)
-	parameters pblock rollout:General
-    (
-        adsorption  type:#string ui:Temp_adsorption
-    )
     rollout General "General Features"
     (
         PickButton btn_adsorption "Select Object (Adsorb)" pos:[12,7] width:138 height:24
@@ -122,6 +142,7 @@ extends:dummy
                 (
                     selection[1].pos = obj.pos
                     selection[1].parent = obj
+                    adsorption = obj.name
                     Temp_adsorption.text = obj.name
                     btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
                 )
@@ -129,6 +150,9 @@ extends:dummy
         )
         on General open do 
         (
+            -- Not ui:-bound any more (see the parameters block). An object saved
+            -- without the parameter carries undefined, which an edittext refuses.
+            Temp_adsorption.text = if adsorption == undefined then "" else adsorption
             if Temp_adsorption.text != "" then
                 btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
             else

@@ -390,42 +390,61 @@ struct WdxGlobalSequenceManager
 			
 			local kc = kCtrl.keys.count
 			format "DEBUG     scaleKeys class=% keys=% old=% new=%\n" (classOf kCtrl) kc oldLast newLast
-			-- Back to front (avoids sorting problems)
-			for k = kc to 1 by -1 do
+			-- Target frame per key: the last one exactly on the new end, a key
+			-- at 0 stays, the ones between in proportion (rounded, 1..end-1).
+			local target = for k = 1 to kc collect
 			(
 				local oldFrame = kCtrl.keys[k].time.frame as integer
-				if k == kc then
-				(
-					-- Last key: set EXACTLY to the target
-					kCtrl.keys[k].time = newLast as time
-					format "DEBUG       key[%] %f -> %f (LAST)\n" k oldFrame newLast
-				)
+				if k == kc then newLast
 				else if oldFrame > 0 then
 				(
-					-- Middle keys: scale proportionally, rounding correctly
-					local newFrame = ((oldFrame as float / oldLast as float) * newLast as float + 0.5) as integer
-					if newFrame < 1 then newFrame = 1
-					if newFrame >= newLast then newFrame = newLast - 1
-					format "DEBUG       key[%] %f -> %f\n" k oldFrame newFrame
-					kCtrl.keys[k].time = newFrame as time
+					local f = ((oldFrame as float / oldLast as float) * newLast as float + 0.5) as integer
+					if f < 1 then f = 1
+					if f >= newLast then f = newLast - 1
+					f
 				)
-				else
-					format "DEBUG       key[%] %f -> 0f (KEEP)\n" k oldFrame
+				else 0
 			)
+			-- Shrinking packs keys onto one frame (a key on every frame of 30
+			-- frames going to 10 put two or three on each), and keys sharing a
+			-- time are undefined in Max. One key per frame stays, the first.
+			for k = kc - 1 to 2 by -1 where target[k] <= target[k - 1] do
+			(
+				deleteKey kCtrl k
+				deleteItem target k
+			)
+			-- Every key keeps its place in the order: moving earlier (shrink)
+			-- front to back, later (stretch) back to front.
+			local n = target.count
+			local order = if newLast <= oldLast then (for k = 1 to n collect k) else (for k = n to 1 by -1 collect k)
+			for k in order do
+			(
+				format "DEBUG       key[%] -> %f\n" k target[k]
+				kCtrl.keys[k].time = target[k] as time
+			)
+			try (sortKeys kCtrl) catch ()
 		)
 		
 		-- Sub-Controller (Euler_XYZ, Position_XYZ etc.)
+		local subScaled = false
 		for i = 1 to 3 do
 		(
 			try
 			(
 				local sc = ctrl[i].controller
-				if sc != undefined then scaleKeys sc oldLastFrame newLastFrame
+				if sc != undefined and (isProperty sc #keys) and sc.keys != undefined and sc.keys.count > 0 then
+				(
+					scaleKeys sc oldLastFrame newLastFrame
+					subScaled = true
+				)
 			)
 			catch()
 		)
-		-- Main controller (Linear_Position, Bezier_Scale etc.)
-		try (scaleKeys ctrl oldLastFrame newLastFrame) catch()
+		-- Main controller (Linear_Position, Bezier_Scale etc.). Not after its
+		-- sub-controllers: a Position_XYZ lists their keys as its own, so a
+		-- second pass scaled the already scaled keys again, and deleting one
+		-- of them deleted it in every sub-controller.
+		if not subScaled do try (scaleKeys ctrl oldLastFrame newLastFrame) catch()
 	),
 	
 	fn changeDuration entryIndex newDuration =
@@ -706,7 +725,10 @@ struct WdxGlobalSequenceManager
 			append this.savedTransforms #(obj, (at time 0 obj.transform), \
 			                              (classOf obj.pos.controller), \
 			                              (classOf obj.rotation.controller), \
-			                              (classOf obj.scale.controller))
+			                              (classOf obj.scale.controller), \
+			                              (try (copy obj.pos.controller) catch (undefined)), \
+			                              (try (copy obj.rotation.controller) catch (undefined)), \
+			                              (try (copy obj.scale.controller) catch (undefined)))
 			appendIfUnique this.recordedObjects obj
 		)
 		catch (return false)
@@ -755,7 +777,14 @@ struct WdxGlobalSequenceManager
 			local posClass = try (classOf obj.pos.controller) catch (undefined)
 			local rotClass = try (classOf obj.rotation.controller) catch (undefined)
 			local sclClass = try (classOf obj.scale.controller) catch (undefined)
-			append this.savedTransforms #(obj, tm, posClass, rotClass, sclClass)
+			-- Copies of the controllers themselves: Cancel puts them back. A new
+			-- one built from the class (createControllerFromClass) knows no
+			-- list or constraint controller, so a Position_List came back as
+			-- the recording's Position_XYZ and its animation was gone.
+			local posCopy = try (copy obj.pos.controller) catch (undefined)
+			local rotCopy = try (copy obj.rotation.controller) catch (undefined)
+			local sclCopy = try (copy obj.scale.controller) catch (undefined)
+			append this.savedTransforms #(obj, tm, posClass, rotClass, sclClass, posCopy, rotCopy, sclCopy)
 		)
 
 		-- Follow selection changes while recording. Not saved with the scene:
@@ -1047,6 +1076,10 @@ struct WdxGlobalSequenceManager
 		this.stopSelectionTracking()
 
 		-- ALWAYS restore the original controllers (Spin/assignControllers may have changed them)
+		-- Channels that get their saved copy back already hold their keys:
+		-- the key restore below would only rewrite them through a controller
+		-- type it may not know (it emptied a Position_List).
+		local fromCopy = #()
 		for entry in this.savedTransforms do
 		(
 			local obj = entry[1]
@@ -1056,20 +1089,25 @@ struct WdxGlobalSequenceManager
 			try
 			(
 				-- Only restore if the controller type actually changed
+				-- The saved copy first (entries 6-8), the class only for entries
+				-- saved without one.
 				if classOf obj.pos.controller != origPosClass then
 				(
-					local newPos = this.createControllerFromClass origPosClass
+					local newPos = if entry.count >= 6 and entry[6] != undefined then entry[6] else this.createControllerFromClass origPosClass
 					if newPos != undefined then obj.pos.controller = newPos
+					if entry.count >= 6 and entry[6] != undefined then append fromCopy #(obj, "pos")
 				)
 				if classOf obj.rotation.controller != origRotClass then
 				(
-					local newRot = this.createControllerFromClass origRotClass
+					local newRot = if entry.count >= 7 and entry[7] != undefined then entry[7] else this.createControllerFromClass origRotClass
 					if newRot != undefined then obj.rotation.controller = newRot
+					if entry.count >= 7 and entry[7] != undefined then append fromCopy #(obj, "rot")
 				)
 				if classOf obj.scale.controller != origSclClass then
 				(
-					local newScl = this.createControllerFromClass origSclClass
+					local newScl = if entry.count >= 8 and entry[8] != undefined then entry[8] else this.createControllerFromClass origSclClass
 					if newScl != undefined then obj.scale.controller = newScl
+					if entry.count >= 8 and entry[8] != undefined then append fromCopy #(obj, "scl")
 				)
 				format "DEBUG   restored controllers for %: pos=% rot=% scl=%\n" obj.name (classOf obj.pos.controller) (classOf obj.rotation.controller) (classOf obj.scale.controller)
 			)
@@ -1082,6 +1120,9 @@ struct WdxGlobalSequenceManager
 			local obj = entry[1]
 			local channel = entry[2]
 			local keyData = entry[3]
+			local restored = false
+			for c in fromCopy while not restored do restored = (c[1] == obj and c[2] == channel)
+			if restored then continue
 			format "DEBUG   restoring %.% keyData entries=%\n" obj.name channel keyData.count
 			try
 			(

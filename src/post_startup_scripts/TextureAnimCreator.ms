@@ -184,7 +184,9 @@ fn WdxTAC_DetectGrid fname =
 (
 	local cols = 1, rows = 1, how = ""
 	local nm = getFilenameFile fname
-	local rx = try (dotNetObject "System.Text.RegularExpressions.Regex" "(\\d{1,2})\\s*[xX\\u00D7]\\s*(\\d{1,2})") catch (undefined)
+	-- Whole numbers only: without the digit fences "fire_256x256" (one
+	-- 256 px picture) read as a 56 x 25 sheet.
+	local rx = try (dotNetObject "System.Text.RegularExpressions.Regex" "(?<!\\d)(\\d{1,2})\\s*[xX\\u00D7]\\s*(\\d{1,2})(?!\\d)") catch (undefined)
 	if rx != undefined do
 	(
 		local mt = rx.Match nm

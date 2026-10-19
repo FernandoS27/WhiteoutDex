@@ -18,12 +18,19 @@ classID:#(0x7A1B2C01, 0x3D4E5F01)
 category:"Warcraft III Plugins" 
 (
     -------------------------------------------------------------------------------------------------------
-    parameters pblock rollout:General
-    (
-        adsorption  type:#string ui:Temp_adsorption
-    )
+    -- ONE block named `pblock`. It used to be two blocks both named `pblock`
+    -- (`adsorption` under rollout:General, the rest under rollout:params). A
+    -- scene saved with an older definition is matched to the current one BY
+    -- BLOCK NAME, and with two current blocks of one name both saved blocks
+    -- landed on the first: the first time the definition changed at all, every
+    -- old scene lost its name, external model, attachment id and visibility.
+    -- With one `pblock` both saved blocks find their parameters here (the
+    -- same fix as Wc3Light).
+    -- `adsorption` has no ui: binding - a block binds to one rollout - so the
+    -- General rollout reads and writes it by hand.
     parameters pblock rollout:params
     (
+        adsorption  type:#string  default:""
         nameFirst           type:#integer  animatable:false    ui:first                default:1
         nameAdd1            type:#integer  animatable:false    ui:add1                 default:1
         nameAdd2            type:#integer  animatable:false    ui:add2                 default:1
@@ -44,12 +51,16 @@ category:"Warcraft III Plugins"
 			(
 				selection[1].pos     = obj.pos
 				selection[1].parent  = obj
+				adsorption = obj.name
 				Temp_adsorption.text = obj.name
 				btn_adsorption.text = (::WdxL.t "common_parent_prefix") + Temp_adsorption.text
 			)catch()
 		)
 		on General open do
 		(
+			-- Not ui:-bound any more (see the parameters block). A shape saved
+			-- without the parameter carries undefined, which an edittext refuses.
+			Temp_adsorption.text = if adsorption == undefined then "" else adsorption
 			if ::WdxL != undefined then
 			(
 				General.title = ::WdxL.t "attach_general_functions_title"

@@ -246,12 +246,13 @@ struct WhiteoutDexBoneFinder
         local highestSpine = undefined
         local highestSpineNum = -1
         
-        -- Collect all bones AND other relevant objects
+        -- Collect all bones AND other relevant objects. CAT's bone class is
+        -- CATBone; "CAT_Bone" is undefined, so no CAT bone was ever collected.
         for obj in objects do
         (
             if classof obj == BoneGeometry \
                 or classof obj == Biped_Object \
-                or classof obj == CAT_Bone \
+                or classof obj == CATBone \
                 or classof obj == Dummy \
                 or classof obj == Point \
                 or classof obj == Helper do
@@ -446,12 +447,13 @@ struct WdxAnimTools
         groupBox smoothRotationsGrpB "Smooth Rotations" pos:[296, 22] width:138 height:110
         button fixSquadbtn "Fix non-linear\nrotation problems\non selection" pos:[304,38] width:122 height:86 tooltip:"Non-linear rotation keys may animate improperly in wc3 if they go beyond 90°. This tool will apply fixes to those keys by creating a new key between them. Note that you may have to run the tool more than once in some weird occasions where you created rotations of over 180°"
 
-		groupBox boneToolsGrpB "One Click Tools" pos:[8, 136] width:426 height:98
+		groupBox boneToolsGrpB "One Click Tools" pos:[8, 136] width:426 height:124
 		button createAttachmentPointsBtn "One Click Attachment Points" pos:[16, 152] width:410 height:22 tooltip:"Automatically create Attachment Points for Bones that have known names."
 		button createPortraitCamBtn "One Click Portrait Camera" pos:[16, 178] width:410 height:22 tooltip:"Creates a portrait camera framing the selected object. Without a selection the upper part of the model is used as the head."
 		button createCollSphereBtn "One Click Collision Spheres" pos:[16, 204] width:202 height:22 tooltip:"Creates two collision spheres sized from the model, as Blizzard does for units."
 		button createCollBoxBtn "One Click Collision Box" pos:[224, 204] width:202 height:22 tooltip:"Creates a collision box sized from the model, as Blizzard does for buildings."
-		
+		button turnOldRibbonsBtn "Ribbons from an older import: show the game direction" pos:[16, 230] width:410 height:22 tooltip:"Ribbons imported before this version are drawn turned 90 degrees against the game. Turns the object (not the animation) of the selected ribbons - all ribbons when none is selected - so the gizmo shows what the game shows; the export stays the same. Only for ribbons that came from an MDX import."
+
         -- Functions
         mapped fn setContinuityToZero o time controllerFunc =
         (
@@ -986,6 +988,28 @@ struct WdxAnimTools
 			undo "Create Collision Box" on ( createCollisionShapes true )
 		)
 
+		-- An import before the ribbon fix left the node frame Warcraft III
+		-- draws the ribbon in with the object unturned, so the gizmo (the
+		-- object's +Y) lay a quarter turn off. The importer now turns the
+		-- object by this offset; doing the same here shows the old scene's
+		-- ribbons as the game draws them, and the exporter, which follows
+		-- the object, writes them as before. A ribbon whose object is already
+		-- turned is left alone.
+		on turnOldRibbonsBtn pressed do
+		(
+			local q = (matrix3 [0,-1,0] [1,0,0] [0,0,1] [0,0,0]) as quat
+			local ribs = for o in selection where isValidNode o and (classOf o) as string == "Wc3Ribbon" collect o
+			if ribs.count == 0 do ribs = for o in objects where isValidNode o and (classOf o) as string == "Wc3Ribbon" collect o
+			local n = 0
+			undo "Turn Ribbons" on
+				for o in ribs where (abs o.objectOffsetRot.w) > 0.9999 do
+				(
+					o.objectOffsetRot = q
+					n += 1
+				)
+			messageBox (substituteString (::WdxL.t "anim_old_ribbons_turned_msg") "%1" (n as string)) title:"WhiteoutDex" beep:false
+		)
+
 		on createAttachmentPointsBtn pressed do
 		(
 			undo "Create Attachment Points" on
@@ -1055,7 +1079,7 @@ struct WdxAnimTools
 			)
 			
 			::WdxAnimTools.isGeneralPoppedOut = true
-			createDialog generalRoll width:440 height:254 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
+			createDialog generalRoll width:440 height:280 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox, #style_maximizebox, #style_resizing)
 		)
 		
 		on generalRoll close do
@@ -1122,6 +1146,8 @@ struct WdxAnimTools
 				try (createCollSphereBtn.tooltip = ::WdxL.t "anim_creates_two_collision_spheres_tip") catch ()
 				createCollBoxBtn.text = ::WdxL.t "anim_one_click_collision_box_btn"
 				try (createCollBoxBtn.tooltip = ::WdxL.t "anim_creates_a_collision_box_sized_tip") catch ()
+				turnOldRibbonsBtn.text = ::WdxL.t "anim_old_ribbons_btn"
+				try (turnOldRibbonsBtn.tooltip = ::WdxL.t "anim_old_ribbons_tip") catch ()
 			)
 		)
     ),
@@ -1589,6 +1615,9 @@ struct WdxAnimTools
         )
 
         -- WC3 Plugin Scaling
+        -- Distances scale with the model: PE2 size (ScaleStart/Mid/End - the old
+        -- startscale/middlescale/endscale names do not exist, and each try hid
+        -- it), PE1 speed (PE1 has no radius).
         fn scaleWc3 factor =
         (
             local count = 0
@@ -1596,9 +1625,9 @@ struct WdxAnimTools
             (
                 local cn = (classOf obj) as string
                 if cn == "Wc3Particles2" do
-                ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.speed *= factor)catch(); try(obj.gravity *= factor)catch(); try(obj.startscale *= factor)catch(); try(obj.middlescale *= factor)catch(); try(obj.endscale *= factor)catch(); try(obj.taillength *= factor)catch(); count += 1 )
+                ( try(obj.width *= factor)catch(); try(obj.length *= factor)catch(); try(obj.speed *= factor)catch(); try(obj.gravity *= factor)catch(); try(obj.ScaleStart *= factor)catch(); try(obj.ScaleMid *= factor)catch(); try(obj.ScaleEnd *= factor)catch(); try(obj.taillength *= factor)catch(); count += 1 )
                 if cn == "Wc3Particles1" do
-                ( try(obj.radius *= factor)catch(); try(obj.Gravity *= factor)catch(); count += 1 )
+                ( try(obj.Speed *= factor)catch(); try(obj.Gravity *= factor)catch(); count += 1 )
                 if cn == "Wc3Ribbon" do
                 ( try(setProperty obj "Height Above" ((getProperty obj "Height Above") * factor))catch(); try(setProperty obj "Height Below" ((getProperty obj "Height Below") * factor))catch(); try(obj.gravity *= factor)catch(); count += 1 )
                 if cn == "Wdx_Wc3CollisionSphere" do ( try(obj.radius *= factor)catch(); count += 1 )
