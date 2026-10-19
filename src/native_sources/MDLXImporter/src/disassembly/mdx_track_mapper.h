@@ -117,12 +117,15 @@ ir::Track<DstT> mapTrack(const whiteout::mdx::Track<SrcT>& src, Convert convert)
     dst.globalSequenceIndex = (src.globalSequenceId == whiteout::mdx::Track<SrcT>::kNoGlobalSequence)
         ? -1 : static_cast<int32_t>(src.globalSequenceId);
 
+    auto toTicks = [&](uint32_t ms) {
+        return dst.globalSequenceIndex >= 0 ? mdx_coord::msToTicks(ms) : mdx_coord::seqMsToTicks(ms);
+    };
     if (whiteout::mdx::isSmoothInterpolation(src.interpolationType)) {
         auto keys = src.tangentKeys();
         dst.keys.reserve(keys.size());
         for (size_t i = 0; i < keys.size(); ++i) {
             ir::Keyframe<DstT> kf;
-            kf.time = mdx_coord::msToTicks(src.timestamps[i]);
+            kf.time = toTicks(src.timestamps[i]);
             kf.value = convert(keys[i].value);
             kf.inTangent = convert(keys[i].inTan);
             kf.outTangent = convert(keys[i].outTan);
@@ -134,7 +137,7 @@ ir::Track<DstT> mapTrack(const whiteout::mdx::Track<SrcT>& src, Convert convert)
         dst.keys.reserve(keys.size());
         for (size_t i = 0; i < keys.size(); ++i) {
             ir::Keyframe<DstT> kf;
-            kf.time = mdx_coord::msToTicks(src.timestamps[i]);
+            kf.time = toTicks(src.timestamps[i]);
             kf.value = convert(keys[i]);
             dst.keys.push_back(kf);
         }
@@ -176,11 +179,14 @@ inline ir::IntTrack mapIntTrack(const whiteout::mdx::Track<uint32_t>& src)
     dst.interpolation = mapInterpolation(src.interpolationType);
     dst.globalSequenceIndex = (src.globalSequenceId == whiteout::mdx::Track<uint32_t>::kNoGlobalSequence)
         ? -1 : static_cast<int32_t>(src.globalSequenceId);
+    auto toTicks = [&](uint32_t ms) {
+        return dst.globalSequenceIndex >= 0 ? mdx_coord::msToTicks(ms) : mdx_coord::seqMsToTicks(ms);
+    };
     auto keys = src.keys();
     dst.keys.reserve(keys.size());
     for (size_t i = 0; i < keys.size(); ++i) {
         ir::Keyframe<int32_t> kf;
-        kf.time = mdx_coord::msToTicks(src.timestamps[i]);
+        kf.time = toTicks(src.timestamps[i]);
         kf.value = static_cast<int32_t>(keys[i]);
         dst.keys.push_back(kf);
     }

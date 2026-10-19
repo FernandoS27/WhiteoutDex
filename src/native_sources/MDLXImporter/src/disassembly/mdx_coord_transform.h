@@ -5,6 +5,8 @@
 // Scale:     Exporter Max(x,y,z) → MDX(y, x, z) → Importer MDX(x,y,z) → Max(y, x, z)
 #pragma once
 
+#include <vector>
+
 #include <max.h>
 #include <whiteout/vector_types.h>
 
@@ -51,6 +53,31 @@ inline TimeValue msToTicks(uint32_t raw) {
     int64_t f = rawTicks + tpf / 2;
     f = (f >= 0) ? f / tpf : -((-f + tpf - 1) / tpf);
     return static_cast<TimeValue>(f * tpf);
+}
+
+// A sequence that starts within the frame the one before it ends on (1 ms
+// after it, say) would share that frame with it: its first key and the other
+// sequence's last key would snap onto one tick, and only one of them could
+// stay. Such a sequence and the keys on its first frame start one frame later
+// instead. The disassembler fills the list for the model it maps.
+struct SequenceSplit {
+    int32_t   startMs;      // the later sequence's first millisecond
+    TimeValue prevEndTick;  // the frame the earlier sequence ends on
+};
+
+inline std::vector<SequenceSplit>& currentSequenceSplits() {
+    static std::vector<SequenceSplit> splits;
+    return splits;
+}
+
+// msToTicks for times inside the sequence timeline (not a global sequence's).
+inline TimeValue seqMsToTicks(uint32_t raw) {
+    TimeValue t = msToTicks(raw);
+    const int32_t ms = static_cast<int32_t>(raw);
+    for (const auto& sp : currentSequenceSplits())
+        if (ms >= sp.startMs && t <= sp.prevEndTick)
+            t = sp.prevEndTick + GetTicksPerFrame();
+    return t;
 }
 
 } // namespace mdx_coord

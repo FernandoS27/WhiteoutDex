@@ -222,6 +222,7 @@ enum P1Params : ParamID {
     P1_PB_COUNT = 0, P1_PB_SPEED = 1, P1_PB_EMISSION_RATE = 2,
     P1_PB_LIFE = 3, P1_PB_ACCELERATION = 4,
     P1_PB_LATITUDE = 5, P1_PB_LONGITUDE = 6, P1_PB_SCALE = 7,
+    P1_PB_MODEL_FILE = 8, P1_PB_MODEL_PREFIX = 9,
 };
 
 enum P2Params : ParamID {
@@ -240,7 +241,7 @@ enum P2Params : ParamID {
     PB_SORT = 37, PB_LINE_EMIT = 38, PB_UNSHADED = 39,
     PB_PRIORITY = 41, PB_UNFOGGED = 42,
     PB_MODELSPACE = 43, PB_XYQUAD = 44, PB_REPLACEABLE_ID = 45,
-    PB_LONGITUDE = 46,
+    PB_LONGITUDE = 46, PB_TEXTURE_FILE = 47, PB_TEXTURE_PREFIX = 48,
 };
 
 enum RibbonParams : ParamID {
@@ -250,10 +251,6 @@ enum RibbonParams : ParamID {
     pb_material = 7, pb_color = 8, pb_alpha = 9, pb_gravity = 10,
 };
 
-constexpr ULONG WC3P1_MODEL_PATH_IID   = 0x7B3C8D01;
-constexpr ULONG WC3P1_MODEL_PREFIX_IID = 0x7B3C8D02;
-constexpr ULONG WC3P2_TEXTURE_PATH_IID   = 0x7B3C8D10;
-constexpr ULONG WC3P2_TEXTURE_PREFIX_IID = 0x7B3C8D11;
 
 } // anonymous namespace
 
@@ -583,10 +580,12 @@ void Wc3Particle1Builder::buildParticles(
             std::wstring prefix, filename;
             splitMdxPath(irPE.modelPath, prefix, filename);
 
-            auto* pathPtr = static_cast<MSTR*>(obj->GetInterface(WC3P1_MODEL_PATH_IID));
-            if (pathPtr) *pathPtr = filename.c_str();
-            auto* prefixPtr = static_cast<MSTR*>(obj->GetInterface(WC3P1_MODEL_PREFIX_IID));
-            if (prefixPtr) *prefixPtr = prefix.c_str();
+            // The plugin's parameters (Unicode, undoable, MAXScript-visible);
+            // the interface pointers are read-only caches since then.
+            if (pb) {
+                pb->SetValue(P1_PB_MODEL_FILE, 0, filename.c_str());
+                pb->SetValue(P1_PB_MODEL_PREFIX, 0, prefix.c_str());
+            }
 
             // Side effect: make sure the model file exists on disk so the
             // renderer / viewport can locate it via <modelDir>\<relPath>.
@@ -717,11 +716,10 @@ void Wc3Particle2Builder::buildParticles(
             pb->SetValue(PB_SQUIRT, 0, (f & 1) ? 1 : 0);
         }
 
-        // Texture path via custom interface.
-        //
-        // The Wc3Particles2 plugin stores two separate fields:
-        //   m_texturePrefix : directory portion (e.g. "Textures\")
-        //   m_particlePath  : filename only     (e.g. "Fireball.blp")
+        // Texture file and prefix: the plugin's TextureFile / TexturePrefix
+        // parameters, two separate fields:
+        //   TexturePrefix : directory portion (e.g. "Textures\")
+        //   TextureFile   : filename only     (e.g. "Fireball.blp")
         //
         // On export the plugin concatenates them back into an MDX texture
         // path. The plugin's own CASC browser callback (see Particles.cpp
@@ -769,8 +767,12 @@ void Wc3Particle2Builder::buildParticles(
                     ? resolver->Resolve(relW)
                     : mdx_scene::resolveTexturePath(modelDir, relW);
 
-                auto* pathPtr   = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PATH_IID));
-                auto* prefixPtr = static_cast<MSTR*>(obj->GetInterface(WC3P2_TEXTURE_PREFIX_IID));
+                // The plugin's TextureFile / TexturePrefix parameters.
+                auto setTexture = [&](const std::wstring& file, const std::wstring& pre) {
+                    if (!pb) return;
+                    pb->SetValue(PB_TEXTURE_FILE, 0, file.c_str());
+                    pb->SetValue(PB_TEXTURE_PREFIX, 0, pre.c_str());
+                };
 
                 // Prefer the resolved absolute disk path (mirrors what
                 // BrowseForMdlFile does in the plugin). Fall back to the
@@ -782,12 +784,10 @@ void Wc3Particle2Builder::buildParticles(
 
                 std::error_code ec;
                 if (!fullDiskPath.empty() && std::filesystem::exists(fullDiskPath, ec)) {
-                    if (pathPtr)   *pathPtr   = fullDiskPath.c_str();
-                    if (prefixPtr) *prefixPtr = prefix.c_str();   // keeps re-export prefix info
+                    setTexture(fullDiskPath, prefix);   // prefix keeps re-export info
                 } else {
                     // Texture not extractable — fall back to MDX-relative split
-                    if (pathPtr)   *pathPtr   = filename.c_str();
-                    if (prefixPtr) *prefixPtr = prefix.c_str();
+                    setTexture(filename, prefix);
                 }
             }
         }
@@ -828,6 +828,19 @@ void Wc3RibbonBuilder::buildRibbons(
         positionAtPivot(node, irRib.nodeIndex, irModel);
         setupNodeProperties(node, irRib.nodeIndex, irModel);
         attachToParent(node, irRib.nodeIndex, irModel, nodeMap);
+
+        // Warcraft III spans a ribbon along its node's +Y in MDX space, which
+        // is the node's +X here (the axis remap). The gizmo, the viewport
+        // trail and the renderer draw the object's +Y, so the object is turned
+        // onto it; the node and its keys stay as the file has them, and the
+        // exporter turns MDX +Y back onto the object's +Y.
+        {
+            Matrix3 off(1);
+            off.SetRow(0, Point3(0.0f, -1.0f, 0.0f));
+            off.SetRow(1, Point3(1.0f, 0.0f, 0.0f));
+            off.SetRow(2, Point3(0.0f, 0.0f, 1.0f));
+            node->SetObjOffsetRot(Quat(off));
+        }
 
         // Paramblock setup
         auto* ref = dynamic_cast<ReferenceTarget*>(obj);

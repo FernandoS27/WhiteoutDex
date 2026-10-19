@@ -2132,12 +2132,17 @@ void remapVisibilityTrack(ir::FloatTrack& track,
             newKeys.push_back(ek);
         } else {
             // Start boundary: if no key lands exactly at newStart,
-            // insert a stub with the first in-sequence key's value.
+            // insert a stub with the first in-sequence key's value. A
+            // DontInterp track plays its LAST key there: before the first
+            // key the game runs the wrap from the last key round to the
+            // first (WhiteoutLib FindBracket), which holds the last.
             TimeValue firstRemapped = track.keys[seqKeyIdx[0]].time + offset;
             if (firstRemapped != r.newStart) {
                 ir::Keyframe<float> sk{};
                 sk.time = r.newStart;
-                sk.value = track.keys[seqKeyIdx[0]].value;
+                sk.value = (track.interpolation == ir::InterpolationType::None)
+                    ? track.keys[seqKeyIdx.back()].value
+                    : track.keys[seqKeyIdx[0]].value;
                 newKeys.push_back(sk);
             }
 
@@ -2306,6 +2311,10 @@ void remapTrackKeys(ir::Track<T>& track,
             newKeys.push_back(sk);
             newKeys.push_back(ek);
         } else {
+            // A DontInterp track plays its LAST key before the first one
+            // and after the last (the wrap, WhiteoutLib FindBracket).
+            const bool stepped = track.interpolation == ir::InterpolationType::None;
+
             // Start boundary
             if (track.keys[seqKeyIdx[0]].time + offset != r.newStart) {
                 ir::Keyframe<T> sk{};
@@ -2316,7 +2325,8 @@ void remapTrackKeys(ir::Track<T>& track,
                 // Now: always use the first in-sequence key's value — the
                 // emitter "enters" each sequence at whatever the author wrote
                 // as the first keyframe. This matches what NeoDex does.
-                sk.value = track.keys[seqKeyIdx[0]].value;
+                sk.value = stepped ? track.keys[seqKeyIdx.back()].value
+                                   : track.keys[seqKeyIdx[0]].value;
                 newKeys.push_back(sk);
             }
 
@@ -2332,7 +2342,7 @@ void remapTrackKeys(ir::Track<T>& track,
             if (track.keys[lastKi].time + offset != r.newEnd) {
                 ir::Keyframe<T> ek{};
                 ek.time = r.newEnd;
-                ek.value = r.isLooping
+                ek.value = (r.isLooping && !stepped)
                     ? track.keys[seqKeyIdx[0]].value   // loop closure
                     : track.keys[lastKi].value;         // hold last
                 newKeys.push_back(ek);
@@ -2466,10 +2476,65 @@ void remapTimeline(ir::IRModel& irModel) {
         if (ta.scaleTrackIndex >= 0)       uvScaleTracks.insert(ta.scaleTrackIndex);
     }
 
+    // A value keyed in some sequence but not in the one playing does not keep
+    // the value held from another sequence: the game plays the default its
+    // caller passes (WhiteoutFlakes mdx_model_adapter `restOf`, from
+    // SetEmitterValues, SetEmitter2Values, SetRibbonValues, SetLightValues,
+    // AnimateAllMaterialLayers). 0 for emitter, ribbon and light values and a
+    // fresnel's opacity and team colour, 1 for an emissive gain and the
+    // popcorn multipliers and alpha. Held, an emitter keyed only in Death
+    // showed - and exported - its Death rate in every other sequence.
+    std::map<int32_t, float> floatGameDefaults;
+    auto gameDefault = [&](int32_t idx, float v) { if (idx >= 0) floatGameDefaults[idx] = v; };
+    for (const auto& pe : irModel.particleEmitters) {
+        if (pe.variant == 1 || pe.variant == 2) {
+            for (int32_t idx : {pe.speedTrackIndex, pe.variationTrackIndex, pe.latitudeTrackIndex,
+                                pe.longitudeTrackIndex, pe.gravityTrackIndex,
+                                pe.emissionRateTrackIndex, pe.lifespanTrackIndex,
+                                pe.widthTrackIndex, pe.lengthTrackIndex})
+                gameDefault(idx, 0.0f);
+        } else if (pe.variant == 3) {
+            for (int32_t idx : {pe.emissionRateTrackIndex, pe.speedTrackIndex,
+                                pe.lifespanTrackIndex, pe.alphaTrackIndex})
+                gameDefault(idx, 1.0f);
+        }
+    }
+    for (const auto& rib : irModel.ribbonEmitters)
+        for (int32_t idx : {rib.heightAboveTrackIndex, rib.heightBelowTrackIndex, rib.alphaTrackIndex})
+            gameDefault(idx, 0.0f);
+    for (const auto& light : irModel.lights)
+        for (int32_t idx : {light.intensityTrackIndex, light.ambIntensityTrackIndex})
+            gameDefault(idx, 0.0f);
+    for (const auto& mat : irModel.materials)
+        for (const auto& layer : mat.layers) {
+            gameDefault(layer.fresnelAlphaTrackIndex, 0.0f);
+            gameDefault(layer.fresnelTeamColorTrackIndex, 0.0f);
+            gameDefault(layer.emissiveGainTrackIndex, 1.0f);
+        }
+
+    // Keyed colours of geosets, lights, ribbons and popcorn play black there
+    // (the keyed default the same callers pass), and a ribbon's texture slot 0.
+    std::set<int32_t> colourResetTracks, intResetTracks;
+    for (const auto& ga : irModel.geosetAnims)
+        if (ga.colorTrackIndex >= 0) colourResetTracks.insert(ga.colorTrackIndex);
+    for (const auto& light : irModel.lights) {
+        if (light.colorTrackIndex >= 0) colourResetTracks.insert(light.colorTrackIndex);
+        if (light.ambColorTrackIndex >= 0) colourResetTracks.insert(light.ambColorTrackIndex);
+    }
+    for (const auto& rib : irModel.ribbonEmitters) {
+        if (rib.colorTrackIndex >= 0) colourResetTracks.insert(rib.colorTrackIndex);
+        if (rib.textureSlotTrackIndex >= 0) intResetTracks.insert(rib.textureSlotTrackIndex);
+    }
+    for (const auto& pe : irModel.particleEmitters)
+        if (pe.variant == 3 && pe.colorTrackIndex >= 0) colourResetTracks.insert(pe.colorTrackIndex);
+
     for (size_t i = 0; i < irModel.floatTracks.size(); ++i) {
         const int32_t idx = static_cast<int32_t>(i);
+        const auto gd = floatGameDefaults.find(idx);
         if (visTrackIndices.count(idx)) {
             remapVisibilityTrack(irModel.floatTracks[i], ranges);
+        } else if (gd != floatGameDefaults.end()) {
+            remapTrackKeys(irModel.floatTracks[i], ranges, gd->second, true, true);
         } else {
             remapTrackKeys(irModel.floatTracks[i], ranges, 1.0f, true,
                            layerAlphaTracks.count(idx) > 0);
@@ -2486,10 +2551,15 @@ void remapTimeline(ir::IRModel& irModel) {
     for (size_t i = 0; i < irModel.quatTracks.size(); ++i)
         remapTrackKeys(irModel.quatTracks[i], ranges, Quat(0.0f, 0.0f, 0.0f, 1.0f), false,
                        uvRotationTracks.count(static_cast<int32_t>(i)) > 0);
-    for (auto& t : irModel.colorTracks)
-        remapTrackKeys(t, ranges, Color(1.0f, 1.0f, 1.0f), false);
-    for (auto& t : irModel.intTracks)
-        remapTrackKeys(t, ranges, int32_t(0), true);
+    for (size_t i = 0; i < irModel.colorTracks.size(); ++i) {
+        if (colourResetTracks.count(static_cast<int32_t>(i)))
+            remapTrackKeys(irModel.colorTracks[i], ranges, Color(0.0f, 0.0f, 0.0f), false, true);
+        else
+            remapTrackKeys(irModel.colorTracks[i], ranges, Color(1.0f, 1.0f, 1.0f), false);
+    }
+    for (size_t i = 0; i < irModel.intTracks.size(); ++i)
+        remapTrackKeys(irModel.intTracks[i], ranges, int32_t(0), true,
+                       intResetTracks.count(static_cast<int32_t>(i)) > 0);
     for (auto& t : irModel.vec4Tracks)
         remapTrackKeys(t, ranges, Point4(0.0f, 0.0f, 0.0f, 0.0f), false);
 
@@ -3768,6 +3838,25 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                                     }
                                     rotFloat.keys.push_back(fk);
                                 }
+                                // The Euler angle comes back in -180..180, so a turn
+                                // past 180 jumped by 360 between keys (0/120/240/360
+                                // read 0/120/-120/0) and Max spun the long way. The
+                                // game slerps each span the short way: keep every key
+                                // within half a turn of the one before, and each
+                                // tangent angle within half a turn of its key.
+                                auto nearAngle = [](float a, float ref) {
+                                    while (a - ref > 180.0f) a -= 360.0f;
+                                    while (a - ref < -180.0f) a += 360.0f;
+                                    return a;
+                                };
+                                for (size_t ki = 0; ki < rotFloat.keys.size(); ++ki) {
+                                    auto& fk = rotFloat.keys[ki];
+                                    if (ki > 0) fk.value = nearAngle(fk.value, rotFloat.keys[ki - 1].value);
+                                    if (fk.hasTangents) {
+                                        fk.inTangent = nearAngle(fk.inTangent, fk.value);
+                                        fk.outTangent = nearAngle(fk.outTangent, fk.value);
+                                    }
+                                }
 
                                 Control* wCtrl = createFloatController(rotFloat);
 
@@ -3791,8 +3880,11 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                             ta.scaleTrackIndex < (int32_t)irModel.vec3Tracks.size()) {
                             const auto& v3track = irModel.vec3Tracks[ta.scaleTrackIndex];
                             if (!v3track.empty()) {
-                                auto uTrack = splitVec3Channel(v3track, 0);
-                                auto vTrack = splitVec3Channel(v3track, 1);
+                                // transformToMaxCoordinates swapped the
+                                // channels (swizzleScale), so the MDX X the
+                                // exporter writes U_Tiling to is channel 1 now.
+                                auto uTrack = splitVec3Channel(v3track, 1);
+                                auto vTrack = splitVec3Channel(v3track, 0);
                                 Control* uCtrl = createFloatController(uTrack);
                                 Control* vCtrl = createFloatController(vTrack);
 
@@ -4214,6 +4306,17 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                              << narrow(meshNode->GetName()) << "' vis keys=" << track.keys.size() << "\n";
                         insertVisibilityKeys(meshNode, track, irModel.sequences);
                     }
+                } else if (ga.alpha < 0.999f) {
+                    // A static geoset alpha without a track (a geoset hidden
+                    // for good, or half see-through) is the node's constant
+                    // visibility; the exporter reads it back from
+                    // GetVisibility(0). Without it the geoset came in opaque.
+                    SuspendAnimate();
+                    AnimateOff();
+                    meshNode->SetVisibility(0, std::max(0.0f, ga.alpha));
+                    ResumeAnimate();
+                    ILOG << "  geosetAnim mesh[" << ga.meshIndex << "] '"
+                         << narrow(meshNode->GetName()) << "' static alpha " << ga.alpha << "\n";
                 }
 
                 // Color → animate Wc3VertexMod.VertexColor on the mesh node's modifier
@@ -4500,10 +4603,11 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                     rib.textureSlotTrackIndex < static_cast<int32_t>(irModel.intTracks.size())) {
                     const auto& slots = irModel.intTracks[rib.textureSlotTrackIndex];
                     ir::FloatTrack slotTrack;
-                    // An integer track carries no tangents, so Bezier/Hermite
-                    // come in as Linear; the exporter reads them back the same.
-                    slotTrack.interpolation = (slots.interpolation == ir::InterpolationType::None)
-                        ? ir::InterpolationType::None : ir::InterpolationType::Linear;
+                    // The game holds an integer from its key to the next
+                    // whatever the track's interpolation (EvaluateTrackU32), so
+                    // the slot steps in Max too; a Linear controller showed the
+                    // slots in between.
+                    slotTrack.interpolation = ir::InterpolationType::None;
                     slotTrack.globalSequenceIndex = slots.globalSequenceIndex;
                     for (const auto& k : slots.keys) {
                         ir::Keyframe<float> fk;

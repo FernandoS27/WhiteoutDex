@@ -188,6 +188,29 @@ ir::IRModel MdxModelDisassembler::disassemble(
         ~GlobalSequenceScope() { mdx_disasm::currentGlobalSequences() = nullptr; }
     } gsScope(&mdxModel.globalSequences);
 
+    // Sequences that start on the frame the previous one ends on
+    // (mdx_coord_transform.h, SequenceSplit).
+    struct SequenceSplitScope {
+        explicit SequenceSplitScope(const wdx::Model& m) {
+            auto& splits = mdx_coord::currentSequenceSplits();
+            splits.clear();
+            for (const auto& later : m.sequences) {
+                const int32_t start = static_cast<int32_t>(later.intervalStart);
+                const wdx::Sequence* prev = nullptr;
+                for (const auto& other : m.sequences) {
+                    const int32_t end = static_cast<int32_t>(other.intervalEnd);
+                    if (end < start && (!prev || end > static_cast<int32_t>(prev->intervalEnd)))
+                        prev = &other;
+                }
+                if (!prev) continue;
+                const TimeValue prevEnd = mdx_coord::msToTicks(prev->intervalEnd);
+                if (mdx_coord::msToTicks(later.intervalStart) <= prevEnd)
+                    splits.push_back({start, prevEnd});
+            }
+        }
+        ~SequenceSplitScope() { mdx_coord::currentSequenceSplits().clear(); }
+    } splitScope(mdxModel);
+
     hierarchy_.build(mdxModel);
 
     mapNodes(mdxModel, ir);
@@ -347,8 +370,8 @@ void MdxModelDisassembler::mapSequences(const wdx::Model& mdx, ir::IRModel& ir) 
     for (const auto& seq : mdx.sequences) {
         ir::Sequence irSeq;
         irSeq.name = seq.name;
-        irSeq.startTime = mdx_coord::msToTicks(seq.intervalStart);
-        irSeq.endTime = mdx_coord::msToTicks(seq.intervalEnd);
+        irSeq.startTime = mdx_coord::seqMsToTicks(seq.intervalStart);
+        irSeq.endTime = mdx_coord::seqMsToTicks(seq.intervalEnd);
         irSeq.isLooping = !hasFlag(seq.flags, wdx::Sequence::Flag::NonLooping);
         irSeq.rarity = seq.rarity;
         irSeq.moveSpeed = seq.moveSpeed;
@@ -1082,9 +1105,15 @@ void MdxModelDisassembler::mapRibbonEmitters(const wdx::Model& mdx, ir::IRModel&
         if (rib.alphaTracks.isUsed)
             irRib.alphaTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(rib.alphaTracks));
-        if (rib.colorTracks.isUsed)
-            irRib.colorTrackIndex = storeColorTrack(ir,
-                mapColorTrack(rib.colorTracks));
+        if (rib.colorTracks.isUsed) {
+            // Keyed KRCO / KPPC colours are blue first like KGAC and the
+            // light colours (3.0 reads them as stored and reverses only the
+            // static colour, WhiteoutLib SwapRedBlue); RGB for Max.
+            auto bgrTrack = mapTrack<whiteout::Vector3f, Color>(
+                rib.colorTracks,
+                [](const whiteout::Vector3f& v) { return Color(v.z, v.y, v.x); });
+            irRib.colorTrackIndex = storeColorTrack(ir, std::move(bgrTrack));
+        }
         if (rib.visibilityTracks.isUsed)
             irRib.visibilityTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(rib.visibilityTracks));
@@ -1113,10 +1142,12 @@ void MdxModelDisassembler::mapEventObjects(const wdx::Model& mdx, ir::IRModel& i
             irEvt.eventCode = name;
         }
 
+        const bool onGlobalSequence = evt.globalSequenceId != 0xFFFFFFFFu &&
+                                      evt.globalSequenceId < mdx.globalSequences.size();
         for (auto time : evt.eventTrackTimes)
-            irEvt.keyTimes.push_back(mdx_coord::msToTicks(time));
-        if (evt.globalSequenceId != 0xFFFFFFFFu &&
-            evt.globalSequenceId < mdx.globalSequences.size())
+            irEvt.keyTimes.push_back(onGlobalSequence ? mdx_coord::msToTicks(time)
+                                                      : mdx_coord::seqMsToTicks(time));
+        if (onGlobalSequence)
             irEvt.globalSequenceIndex = static_cast<int32_t>(evt.globalSequenceId);
 
         ir.eventObjects.push_back(std::move(irEvt));
@@ -1175,13 +1206,12 @@ void MdxModelDisassembler::mapCollisionShapes(const wdx::Model& mdx, ir::IRModel
         case wdx::CollisionShape::ShapeType::Plane:     irCol.shape = ir::CollisionShape::Shape::Plane; break;
         }
 
-        // v1000+ hitboxes that move (KGTR) store their vertices relative to
-        // the pivot; everything else - every v800 model, animated or not,
-        // and static v1000 ones - stores them absolute. The IR always holds
-        // absolute vertices; the exporter writes the same rule back
-        // (mdx_model_builder.cpp, collision shapes).
+        // A sphere's vertex is its centre in model space; a box, plane or
+        // cylinder stores its corners around the pivot - in every version,
+        // moving or not (see the exporter, mdx_model_builder.cpp, collision
+        // shapes). The IR holds absolute vertices.
         Point3 offset(0.0f, 0.0f, 0.0f);
-        if (version_ >= 1000 && col.node.translationTracks.isUsed &&
+        if (col.type != wdx::CollisionShape::ShapeType::Sphere &&
             col.node.objectId < mdx.pivotPoints.size()) {
             const auto& pv = mdx.pivotPoints[col.node.objectId];
             offset = Point3(pv.x, pv.y, pv.z);
@@ -1232,9 +1262,15 @@ void MdxModelDisassembler::mapCornEmitters(const wdx::Model& mdx, ir::IRModel& i
         if (corn.visibilityTracks.isUsed)
             irPE.visibilityTrackIndex = storeFloatTrack(ir,
                 mapFloatTrack(corn.visibilityTracks));
-        if (corn.colorTracks.isUsed)
-            irPE.colorTrackIndex = storeColorTrack(ir,
-                mapColorTrack(corn.colorTracks));
+        if (corn.colorTracks.isUsed) {
+            // Keyed KRCO / KPPC colours are blue first like KGAC and the
+            // light colours (3.0 reads them as stored and reverses only the
+            // static colour, WhiteoutLib SwapRedBlue); RGB for Max.
+            auto bgrTrack = mapTrack<whiteout::Vector3f, Color>(
+                corn.colorTracks,
+                [](const whiteout::Vector3f& v) { return Color(v.z, v.y, v.x); });
+            irPE.colorTrackIndex = storeColorTrack(ir, std::move(bgrTrack));
+        }
         // KPPA. WhiteoutLib used to land this chunk in `lifeSpanTracks`; the
         // parser now routes it to its own field, so read it by name and keep
         // it off the lifespan slot (KPPL) it used to collide with.
