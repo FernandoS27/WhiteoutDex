@@ -85,6 +85,8 @@ namespace whiteout::flakes {
 struct BoneInfo {
     INode* node = nullptr;
     Matrix3 inverseBind;
+    // Inverse of the bone's stretch TM at frame 0 (CollectBones).
+    Matrix3 stretchBaseInverse;
     i32 index = 0;
 };
 
@@ -246,6 +248,11 @@ public:
 
     // ---- IAnimationSource ----
     renderer::model::FrameState Evaluate(const PoseRequest& req) const override;
+    // A billboarded node (or one below it) in the collected scene: its pose
+    // follows the preview's camera, not only Max's time.
+    bool HasBillboards() const {
+        return !billboardFlags_.empty();
+    }
     std::vector<renderer::model::SequenceInfo> GetSequences() const override;
 
     // Camera presets from scene (Max cameras + "Active Viewport")
@@ -360,6 +367,9 @@ private:
     std::vector<RibbonEmitterInfo> ribbons_;
     std::vector<CollisionShapeInfo> collisions_;
     std::vector<LightInfo> lights_;
+    // Nodes carrying an MDX billboard flag (Billboarded, BillboardedLock*,
+    // CameraAnchored), with those Node::NodeFlag bits, read at collect time.
+    std::unordered_map<INode*, u32> billboardFlags_;
 
     std::unordered_map<std::wstring, i32> texPathToId_;
     // Texture paths found nowhere (disk, CASC, MPQ) since the last CollectScene.

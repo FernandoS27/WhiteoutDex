@@ -36,6 +36,7 @@
 #include <climits>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -121,9 +122,12 @@ static bool g_sceneStale = false;
 
 // Convert Max time (TimeValue ticks) to milliseconds. Returns 0 if Max
 // reports a missing tick rate (rare; tested WhiteoutFlakesStart paths).
+// Rounded: truncating put two of every three 30 fps frames a millisecond
+// early (frame 2, 66.7 ms, became 66 ms), and MaxSceneAdapter::Evaluate turns
+// the milliseconds back into ticks before the frame's own.
 static i32 MaxTimeToMs(TimeValue t) {
     i32 tpf = GetTicksPerFrame(), fps = GetFrameRate();
-    return (tpf > 0 && fps > 0) ? (i32)((f32)t / (f32)tpf * 1000.0f / (f32)fps) : 0;
+    return (tpf > 0 && fps > 0) ? (i32)std::lround((f64)t / (f64)tpf * 1000.0 / (f64)fps) : 0;
 }
 
 // ---- Effect re-simulation ----
@@ -810,6 +814,21 @@ static void CALLBACK ViewportSyncTimer(HWND, UINT, UINT_PTR, DWORD) {
     if (i32 req = -1; g_renderWindow->ConsumeSequenceRequest(req))
         ApplySequenceRequest(ip, req);
     PublishActiveSequence(ip);
+
+    // A billboard faces the preview's camera, which moves while Max's time
+    // stands still (playback evaluates every frame anyway): evaluate again
+    // once the camera has moved.
+    if (g_adapter && g_adapter->HasBillboards() && g_actor && g_renderer && !ip->IsAnimPlaying()) {
+        const auto ctx = g_renderer->MakeActorEvalContext();
+        static Vector3f lastCamPos{};
+        static Matrix44f lastView{};
+        if (std::memcmp(&ctx.camPos, &lastCamPos, sizeof lastCamPos) != 0 ||
+            std::memcmp(&ctx.view, &lastView, sizeof lastView) != 0) {
+            lastCamPos = ctx.camPos;
+            lastView = ctx.view;
+            EvalFromMax(MaxTimeToMs(ip->GetTime()));
+        }
+    }
 
     if (!g_renderWindow->SyncCamera())
         return;
