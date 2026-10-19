@@ -99,10 +99,12 @@ enum P1ParamBlockIndex : ParamID {
     P1_PB_LATITUDE       = 5,  ///< Emission cone latitude half-angle in degrees (TYPE_FLOAT, animatable).
     P1_PB_LONGITUDE      = 6,  ///< Emission cone longitude half-angle in degrees (TYPE_FLOAT, animatable).
     P1_PB_SCALE          = 7,  ///< Particle scale (TYPE_FLOAT).
+    P1_PB_MODEL_FILE     = 8,  ///< Spawned model file (TYPE_STRING; MAXScript .ModelFile).
+    P1_PB_MODEL_PREFIX   = 9,  ///< Model path prefix (TYPE_STRING; .ModelPrefix).
 };
 
 constexpr int P1_PARAM_COUNT_MAX = 500;  ///< Hard cap on live particle count.
-constexpr int P1_NUM_PARAMS      = 8;    ///< Total number of parameters.
+constexpr int P1_NUM_PARAMS      = 10;   ///< Total number of parameters.
 constexpr int P1_TICKS_PER_SEC   = 4800; ///< 3ds Max ticks per second.
 
 /// Interface ID for cross-plugin model path query via Animatable::GetInterface(ULONG).
@@ -128,8 +130,14 @@ class Wc3Particles1DlgProc;
  */
 class GenParticle1 : public SimpleParticle {
 public:
-    MSTR                m_modelPath;        ///< Model filename.
-    MSTR                m_modelPrefix;      ///< Model path prefix.
+    MSTR                m_modelPath;        ///< Model filename (cache of P1_PB_MODEL_FILE for GetInterface).
+    MSTR                m_modelPrefix;      ///< Model path prefix (cache of P1_PB_MODEL_PREFIX).
+    MSTR                m_legacyFile;       ///< Chunk 1000 of an older file.
+    MSTR                m_legacyPrefix;     ///< Chunk 1001 of an older file.
+    MSTR    ModelFile();
+    MSTR    ModelPrefix();
+    void    SetModelFile(const MCHAR* v);
+    void    SetModelPrefix(const MCHAR* v);
     int                 stepSize = 0;       ///< Integration step size in ticks.
     IParamBlock2*       pblock2 = nullptr;  ///< Owned ParamBlock2 reference (ref index 0).
     std::mt19937        m_rng;              ///< PRNG for deterministic particle birth.

@@ -131,7 +131,7 @@ static ParamBlockDesc2 wc3particles2_param_blk(
     // [8] PB_MIDTIME
     PB_MIDTIME, _M("MidTime"), TYPE_FLOAT, 0, IDS_PARAM_MIDTIME,
         p_default,  0.5f,
-        p_range,    0.05f, 0.95f,
+        p_range,    0.0f, 1.0f,
         p_ui,       MAP_PARTICLE, TYPE_SPINNER, EDITTYPE_FLOAT,
                     IDC_EDIT_MIDTIME, IDC_SPIN_MIDTIME, 0.05f,
     p_end,
@@ -181,7 +181,7 @@ static ParamBlockDesc2 wc3particles2_param_blk(
     // [15] PB_SCALE_START
     PB_SCALE_START, _M("ScaleStart"), TYPE_FLOAT, 0, IDS_PARAM_SCALE_START,
         p_default,  10.0f,
-        p_range,    0.001f, 500.0f,
+        p_range,    0.0f, 1000000.0f,
         p_ui,       MAP_PARTICLE, TYPE_SPINNER, EDITTYPE_FLOAT,
                     IDC_EDIT_STARTSIZE, IDC_SPIN_STARTSIZE, 0.1f,
     p_end,
@@ -189,7 +189,7 @@ static ParamBlockDesc2 wc3particles2_param_blk(
     // [16] PB_SCALE_MID
     PB_SCALE_MID, _M("ScaleMid"), TYPE_FLOAT, 0, IDS_PARAM_SCALE_MID,
         p_default,  10.0f,
-        p_range,    0.001f, 500.0f,
+        p_range,    0.0f, 1000000.0f,
         p_ui,       MAP_PARTICLE, TYPE_SPINNER, EDITTYPE_FLOAT,
                     IDC_EDIT_MIDSIZE, IDC_SPIN_MIDSIZE, 0.1f,
     p_end,
@@ -197,7 +197,7 @@ static ParamBlockDesc2 wc3particles2_param_blk(
     // [17] PB_SCALE_END
     PB_SCALE_END, _M("ScaleEnd"), TYPE_FLOAT, 0, IDS_PARAM_SCALE_END,
         p_default,  10.0f,
-        p_range,    0.001f, 500.0f,
+        p_range,    0.0f, 1000000.0f,
         p_ui,       MAP_PARTICLE, TYPE_SPINNER, EDITTYPE_FLOAT,
                     IDC_EDIT_ENDSIZE, IDC_SPIN_ENDSIZE, 0.1f,
     p_end,
@@ -267,7 +267,7 @@ static ParamBlockDesc2 wc3particles2_param_blk(
     // [26] PB_ROWS
     PB_ROWS, _M("TextureRows"), TYPE_INT, 0, 0,
         p_default,  1,
-        p_range,    1, 16,
+        p_range,    1, 256,
         p_ui,       MAP_TEXTURE, TYPE_SPINNER, EDITTYPE_INT,
                     IDC_EDIT_ROWS, IDC_SPIN_ROWS, 1.0f,
     p_end,
@@ -275,7 +275,7 @@ static ParamBlockDesc2 wc3particles2_param_blk(
     // [27] PB_COLS
     PB_COLS, _M("TextureCols"), TYPE_INT, 0, 0,
         p_default,  1,
-        p_range,    1, 16,
+        p_range,    1, 256,
         p_ui,       MAP_TEXTURE, TYPE_SPINNER, EDITTYPE_INT,
                     IDC_EDIT_COLS, IDC_SPIN_COLS, 1.0f,
     p_end,
@@ -342,7 +342,11 @@ static ParamBlockDesc2 wc3particles2_param_blk(
     // [36] PB_GRAVITY
     PB_GRAVITY, _M("Gravity"), TYPE_FLOAT, P_ANIMATABLE, IDS_PARAM_GRAVITY,
         p_default,  0.0f,
-        p_range,    0.0f, 100.0f,
+        // Game models go beyond the old spinner range (negative gravity, MidTime
+        // outside 0.05..0.95, more than 16 rows or columns, scale 0 or above
+        // 500): the spinner showed them clamped and wrote the clamp back on
+        // the first touch.
+        p_range,    -1000000.0f, 1000000.0f,
         p_ui,       MAP_EMITTER, TYPE_SPINNER, EDITTYPE_FLOAT,
                     IDC_EDIT_GRAVITY, IDC_SPIN_GRAVITY, 0.1f,
     p_end,
@@ -405,6 +409,21 @@ static ParamBlockDesc2 wc3particles2_param_blk(
     // [46] PB_LONGITUDE — internal, derived from line-emitter state. Not user-editable.
     PB_LONGITUDE, _M("Longitude"), TYPE_FLOAT, P_INVISIBLE, 0,
         p_default,  180.0f,
+    p_end,
+
+    // [47] PB_TEXTURE_FILE / [48] PB_TEXTURE_PREFIX — parameters, so MAXScript
+    // reads and sets them ($.TextureFile, $.TexturePrefix), the listener
+    // records an edit, undo covers it and the scene saves them as Unicode.
+    // They were object members saved as ANSI before (chunks 1000 / 1001):
+    // invisible to MAXScript, and a Chinese path came back garbled.
+    PB_TEXTURE_FILE, _M("TextureFile"), TYPE_STRING, 0, 0,
+        p_default,  _M(""),
+        p_ui,       MAP_TEXTURE, TYPE_EDITBOX, IDC_CUSTOMEDIT_PATH,
+    p_end,
+
+    PB_TEXTURE_PREFIX, _M("TexturePrefix"), TYPE_STRING, 0, 0,
+        p_default,  _M("Textures\\"),
+        p_ui,       MAP_TEXTURE, TYPE_EDITBOX, IDC_EDIT_PATH_PREFIX,
     p_end,
 
     p_end   // Final terminator
@@ -569,20 +588,41 @@ int EmitterCreateCallback::proc(ViewExp* vpt, int msg, int point, int flags,
 /// @name Wc3Particles2DlgProc implementation
 /// @{
 
+// The highest value a parameter takes: now and at each of its keys. Count
+// bounds the live particles over the whole animation, so it must not follow
+// an emission rate keyed to 0 on the frame the panel opens at: just selecting
+// such an emitter set Count to 0 (no particle on any frame) and saved it.
+static float HighestKeyedValue(IParamBlock2* pb, ParamID id, TimeValue t)
+{
+    float v = 0.0f;
+    Interval iv = FOREVER;
+    pb->GetValue(id, t, v, iv);
+    if (Control* c = pb->GetControllerByID(id)) {
+        for (int i = 0; i < c->NumKeys(); ++i) {
+            float k = 0.0f;
+            Interval kv = FOREVER;
+            pb->GetValue(id, c->GetKeyTime(i), k, kv);
+            v = std::max(v, k);
+        }
+    }
+    return v;
+}
+
 void Wc3Particles2DlgProc::SetupMaxRate(HWND hWnd, IParamBlock2* pb, TimeValue t)
 {
-    float life = 0.0f;
-    float emission = 0.0f;
-    Interval forever = FOREVER;
-
-    pb->GetValue(PB_LIFE, t, life, forever);
-    pb->GetValue(PB_INITVEL, t, emission, forever);
+    const float life = HighestKeyedValue(pb, PB_LIFE, t);
+    const float emission = HighestKeyedValue(pb, PB_INITVEL, t);
 
     /// Auto-compute count = emission_rate * life, clamped to PARAM_COUNT_MAX.
     int count = 0;
     if (life > 0.0f && emission > 0.0f)
         count = std::min(static_cast<int>(emission * life), PARAM_COUNT_MAX);
-    pb->SetValue(PB_COUNT, t, count);
+    // Only a change is written: opening the panel left the scene modified.
+    int cur = 0;
+    Interval civ = FOREVER;
+    pb->GetValue(PB_COUNT, t, cur, civ);
+    if (cur != count)
+        pb->SetValue(PB_COUNT, t, count);
 
     /// Update the (read-only) count spinner to reflect the new value.
     ISpinnerControl* spin = GetISpinner(GetDlgItem(hWnd, IDC_SPIN_COUNT));
@@ -634,7 +674,9 @@ void Wc3Particles2DlgProc::BrowseForMdlFile(HWND hWnd)
             auto* uni = reinterpret_cast<UNIVERSAL_NAME_INFO*>(uncBuf);
             _tcscpy_s(fileBuf, uni->lpUniversalName);
         }
-        po->m_particlePath = fileBuf;
+        theHold.Begin();
+        po->SetTextureFile(fileBuf);
+        theHold.Accept(_M("Particle Texture"));
 
         ICustEdit* ce = GetICustEdit(GetDlgItem(hWnd, IDC_CUSTOMEDIT_PATH));
         if (ce) {
@@ -661,8 +703,10 @@ void Wc3Particles2DlgProc::ApplyTexturePath(HWND hWnd, const MCHAR* relPath)
                                                             : full.substr(0, sep + 1);
     const std::wstring name = (sep == std::wstring::npos) ? full : full.substr(sep + 1);
 
-    po->m_texturePrefix = prefix.c_str();
-    po->m_particlePath  = name.c_str();
+    theHold.Begin();
+    po->SetTexturePrefix(prefix.c_str());
+    po->SetTextureFile(name.c_str());
+    theHold.Accept(_M("Particle Texture"));
 
     ICustEdit* cePrefix = GetICustEdit(GetDlgItem(hWnd, IDC_EDIT_PATH_PREFIX));
     if (cePrefix) {
@@ -698,10 +742,12 @@ void Wc3Particles2DlgProc::BrowseTextureFromArchives(HWND hWnd)
     //   "C"        cancelled
     //   "P<path>"  picked; <path> is the archive-relative path MDX stores
     std::wstring initial;
-    if (po->m_texturePrefix.length() > 0)
-        initial += po->m_texturePrefix.data();
-    if (po->m_particlePath.length() > 0)
-        initial += po->m_particlePath.data();
+    const MSTR curPrefix = po->TexturePrefix();
+    const MSTR curFile = po->TextureFile();
+    if (curPrefix.length() > 0)
+        initial += curPrefix.data();
+    if (curFile.length() > 0)
+        initial += curFile.data();
     // The file field can hold an absolute disk path — "Import Particle
     // Texture" puts one there, and so does an import whose texture was
     // resolved on disk. That is not something the archive picker can open on,
@@ -926,11 +972,11 @@ static void SetupCtrlCombo(HWND hWnd, int comboID, IParamBlock2* pb, ParamID pid
 static void SwitchControllerType(IParamBlock2* pb, ParamID pid, int type)
 {
     int tabIndex = pb->GetDesc()->IDtoIndex(pid);
+    Control* oldCtrl = pb->GetControllerByIndex(tabIndex);
     Control* newCtrl = nullptr;
     switch (type) {
     case 0: // None — remove controller
-        pb->SetControllerByIndex(tabIndex, 0, nullptr);
-        return;
+        break;
     case 1: // Linear
         newCtrl = static_cast<Control*>(
             CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(LININTERP_FLOAT_CLASS_ID, 0)));
@@ -943,8 +989,18 @@ static void SwitchControllerType(IParamBlock2* pb, ParamID pid, int type)
             CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(TCBINTERP_FLOAT_CLASS_ID, 0)));
         break;
     }
-    if (newCtrl)
-        pb->SetControllerByIndex(tabIndex, 0, newCtrl);
+    // Undoable, and the keys carried over: Track View's Assign Controller
+    // hands the old controller to the new one (Control::Copy), which takes
+    // over what it can of its keys; replacing it bare dropped every key, with
+    // no way back. "None" removes the animation, as it says.
+    theHold.Begin();
+    if (type == 0) {
+        pb->SetControllerByIndex(tabIndex, 0, nullptr);
+    } else if (newCtrl) {
+        if (oldCtrl) newCtrl->Copy(oldCtrl);
+        pb->SetControllerByIndex(tabIndex, 0, newCtrl, FALSE);
+    }
+    theHold.Accept(_M("Controller Type"));
 }
 
 /// Mapping of controller combobox IDs to ParamBlock parameter IDs.
@@ -989,23 +1045,10 @@ INT_PTR Wc3Particles2DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
             }
         }
 
-        /// Set particle path edit control.
-        ICustEdit* ce = GetICustEdit(GetDlgItem(hWnd, IDC_CUSTOMEDIT_PATH));
-        if (ce) {
-            ce->SetText(po->m_particlePath.data());
-            ReleaseICustEdit(ce);
-        }
-
-        /// Set texture path prefix edit control. An empty prefix is a real
-        /// value — a texture at the archive root ("Fire.blp") — so show it as
-        /// is; new emitters get "Textures\" from the GenParticle constructor.
-        {
-            ICustEdit* cePrefix = GetICustEdit(GetDlgItem(hWnd, IDC_EDIT_PATH_PREFIX));
-            if (cePrefix) {
-                cePrefix->SetText(po->m_texturePrefix.data());
-                ReleaseICustEdit(cePrefix);
-            }
-        }
+        /// The texture file and prefix edit controls belong to their
+        /// parameters (PB_TEXTURE_FILE / PB_TEXTURE_PREFIX): the param map
+        /// fills them and writes an edit back. An empty prefix is a real
+        /// value — a texture at the archive root ("Fire.blp").
 
         /// Build and populate blend mode combo.
         {
@@ -1104,31 +1147,6 @@ INT_PTR Wc3Particles2DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
         int spinID = LOWORD(wParam);
         if (spinID == IDC_SPIN_LIFE || spinID == IDC_SPIN_INITVEL)
             SetupMaxRate(hWnd, map->GetParamBlock(), t);
-        break;
-    }
-
-    case WM_CUSTEDIT_ENTER:
-    {
-        if (LOWORD(wParam) == IDC_CUSTOMEDIT_PATH) {
-            MCHAR buf[MAX_PATH] = {};
-            ICustEdit* ce = GetICustEdit(reinterpret_cast<HWND>(lParam));
-            if (ce) {
-                ce->GetText(buf, MAX_PATH);
-                po->m_particlePath = buf;
-                ReleaseICustEdit(ce);
-            }
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDC_EDIT_PATH_PREFIX) {
-            MCHAR buf[MAX_PATH] = {};
-            ICustEdit* ce = GetICustEdit(reinterpret_cast<HWND>(lParam));
-            if (ce) {
-                ce->GetText(buf, MAX_PATH);
-                po->m_texturePrefix = buf;
-                ReleaseICustEdit(ce);
-            }
-            return TRUE;
-        }
         break;
     }
 
@@ -1361,9 +1379,9 @@ void ConfigDlgProc::ExportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     pb->GetValue(PB_UNFOGGED,  t, iVal, iv); IniWriteInt(f, "Unfogged", iVal);
     pb->GetValue(PB_REPLACEABLE_ID, t, iVal, iv); IniWriteInt(f, "ReplaceableId", iVal);
     {
-        std::string narrowPfx = NarrowPath(po->m_texturePrefix.data());
+        std::string narrowPfx = NarrowPath(po->TexturePrefix().data());
         IniWrite(f, "PreFix", narrowPfx.c_str());
-        std::string narrowTex = NarrowPath(po->m_particlePath.data());
+        std::string narrowTex = NarrowPath(po->TextureFile().data());
         IniWrite(f, "File", narrowTex.c_str());
     }
 
@@ -1471,10 +1489,10 @@ void ConfigDlgProc::ImportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     {
         // "PreFix=" is a saved empty prefix, not a missing one.
         if (ini.count("PreFix"))
-            po->m_texturePrefix = WidenPath(IniGetStr(ini, "PreFix"));
+            po->SetTexturePrefix(WidenPath(IniGetStr(ini, "PreFix")).data());
         std::string tex = IniGetStr(ini, "File");
         if (!tex.empty())
-            po->m_particlePath = WidenPath(tex);
+            po->SetTextureFile(WidenPath(tex).data());
     }
 
     // Particle
@@ -2373,6 +2391,8 @@ MSTR GenParticle::GetParameterName(int pbIndex)
     case PB_MODELSPACE: s = _T("Model Space"); break;
     case PB_XYQUAD:     s = _T("XY Quad"); break;
     case PB_REPLACEABLE_ID: s = _T("Replaceable Texture ID"); break;
+    case PB_TEXTURE_FILE:   s = _T("Texture File"); break;
+    case PB_TEXTURE_PREFIX: s = _T("Texture Prefix"); break;
     default:            break;
     }
     return MSTR(s ? s : _T(""));
@@ -2455,10 +2475,64 @@ void GenParticle::DeleteThis()
  * with scene files written by earlier versions of the plugin.
  */
 
+MSTR GenParticle::TextureFile()
+{
+    const MCHAR* v = nullptr;
+    Interval iv = FOREVER;
+    if (pblock2 && pblock2->GetValue(PB_TEXTURE_FILE, 0, v, iv) && v)
+        return MSTR(v);
+    return MSTR();
+}
+
+MSTR GenParticle::TexturePrefix()
+{
+    const MCHAR* v = nullptr;
+    Interval iv = FOREVER;
+    if (pblock2 && pblock2->GetValue(PB_TEXTURE_PREFIX, 0, v, iv) && v)
+        return MSTR(v);
+    return MSTR();
+}
+
+void GenParticle::SetTextureFile(const MCHAR* v)
+{
+    if (pblock2) pblock2->SetValue(PB_TEXTURE_FILE, 0, v ? v : _M(""));
+    m_particlePath = v ? v : _M("");
+}
+
+void GenParticle::SetTexturePrefix(const MCHAR* v)
+{
+    if (pblock2) pblock2->SetValue(PB_TEXTURE_PREFIX, 0, v ? v : _M(""));
+    m_texturePrefix = v ? v : _M("");
+}
+
+namespace {
+// A file from before the texture parameters (no chunk 1002) carried the
+// texture file and prefix in chunks 1000 / 1001 only; the parameter block,
+// loaded by then, still holds the defaults. Moves them across.
+class TextureParamsPostLoad : public PostLoadCallback {
+public:
+    explicit TextureParamsPostLoad(GenParticle* p) : po(p) {}
+    void proc(ILoad*) override
+    {
+        if (po && po->pblock2) {
+            po->pblock2->SetValue(PB_TEXTURE_FILE, 0, po->m_legacyFile.data());
+            po->pblock2->SetValue(PB_TEXTURE_PREFIX, 0, po->m_legacyPrefix.data());
+        }
+        delete this;
+    }
+private:
+    GenParticle* po;
+};
+} // namespace
+
 IOResult GenParticle::Save(ISave* isave)
 {
     ULONG nb = 0;
 
+    // Chunks 1000 / 1001 still carry the two strings for builds from before
+    // the parameters; 1002 tells this build the block has them.
+    m_particlePath = TextureFile();
+    m_texturePrefix = TexturePrefix();
     CStr ansiPath(m_particlePath.ToCStr());
     int len = static_cast<int>(strlen(ansiPath.data())) + 1;
 
@@ -2475,27 +2549,43 @@ IOResult GenParticle::Save(ISave* isave)
     isave->Write(ansiPrefix.data(), plen, &nb);
     isave->EndChunk();
 
+    isave->BeginChunk(1002);
+    isave->EndChunk();
+
     return IO_OK;
 }
 
 IOResult GenParticle::Load(ILoad* iload)
 {
     IOResult res;
+    bool inBlock = false;
+    m_legacyPrefix = m_texturePrefix;   // the constructor's "Textures\"
     while ((res = iload->OpenChunk()) == IO_OK) {
         if (iload->CurChunkID() == 1000)
-            LoadAnsiChunk(iload, m_particlePath);
+            LoadAnsiChunk(iload, m_legacyFile);
         else if (iload->CurChunkID() == 1001)
-            LoadAnsiChunk(iload, m_texturePrefix);
+            LoadAnsiChunk(iload, m_legacyPrefix);
+        else if (iload->CurChunkID() == 1002)
+            inBlock = true;
         iload->CloseChunk();
     }
+    if (!inBlock)
+        iload->RegisterPostLoadCallback(new TextureParamsPostLoad(this));
 
     return IO_OK;
 }
 
+// Readers (exporter, renderer) get the parameter's current value.
 void* GenParticle::GetInterface(ULONG id)
 {
-    if (id == WC3P2_TEXTURE_PATH_IID)   return &m_particlePath;
-    if (id == WC3P2_TEXTURE_PREFIX_IID) return &m_texturePrefix;
+    if (id == WC3P2_TEXTURE_PATH_IID) {
+        m_particlePath = TextureFile();
+        return &m_particlePath;
+    }
+    if (id == WC3P2_TEXTURE_PREFIX_IID) {
+        m_texturePrefix = TexturePrefix();
+        return &m_texturePrefix;
+    }
     return SimpleParticle::GetInterface(id);
 }
 

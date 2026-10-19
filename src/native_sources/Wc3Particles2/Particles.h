@@ -141,10 +141,12 @@ enum ParamBlockIndex : ParamID {
     PB_XYQUAD       = 44,   ///< Align quads to the XY plane instead of facing the camera (TYPE_INT).
     PB_REPLACEABLE_ID = 45,  ///< Replaceable texture slot: 0=none, 1=TeamColor, 2=TeamGlow (TYPE_INT).
     PB_LONGITUDE    = 46,   ///< Internal — derived from LineEmitter flag (TYPE_FLOAT, invisible).
+    PB_TEXTURE_FILE   = 47, ///< Particle texture file (TYPE_STRING; MAXScript .TextureFile).
+    PB_TEXTURE_PREFIX = 48, ///< Texture path prefix, e.g. "Textures\" (TYPE_STRING; .TexturePrefix).
 };
 
 constexpr int PARAM_COUNT_MAX   = 500;  ///< Hard cap on live particle count.
-constexpr int NUM_PARAMS        = 47;   ///< Total number of parameters in the PB2 descriptor.
+constexpr int NUM_PARAMS        = 49;   ///< Total number of parameters in the PB2 descriptor.
 constexpr int TICKS_PER_SEC     = 4800; ///< 3ds Max timeline ticks per second (fixed at 4800).
 
 /**
@@ -174,8 +176,19 @@ class Wc3Particles2DlgProc;
  */
 class GenParticle : public SimpleParticle {
 public:
-    MSTR                    m_particlePath;     ///< Texture filename.
-    MSTR                    m_texturePrefix;    ///< Texture path prefix (e.g. "Textures\\").
+    /// The texture file and prefix live in the parameter block
+    /// (PB_TEXTURE_FILE / PB_TEXTURE_PREFIX). These two hold a copy for
+    /// GetInterface(WC3P2_TEXTURE_*_IID), refreshed there, and the values a
+    /// file from before the parameters carried (chunks 1000 / 1001) until
+    /// the post-load callback moves them into the block.
+    MSTR                    m_particlePath;     ///< Texture filename (copy).
+    MSTR                    m_texturePrefix;    ///< Texture path prefix (copy).
+    MSTR                    m_legacyFile;       ///< Chunk 1000 of an older file.
+    MSTR                    m_legacyPrefix;     ///< Chunk 1001 of an older file.
+    MSTR    TextureFile();
+    MSTR    TexturePrefix();
+    void    SetTextureFile(const MCHAR* v);
+    void    SetTexturePrefix(const MCHAR* v);
     int                     stepSize = 0;       ///< Integration step size in timeline ticks.
     std::vector<Point3>     birthPos;           ///< World position at birth, per slot (used for tail quads).
     IParamBlock2*           pblock2 = nullptr;  ///< Owned ParamBlock2 reference (ref index 0).

@@ -93,7 +93,10 @@ static ParamBlockDesc2 wc3particles1_param_blk(
     // [4] P1_PB_ACCELERATION — gravity along -Z (matches m_acceleration)
     P1_PB_ACCELERATION, _M("Gravity"), TYPE_FLOAT, P_ANIMATABLE, IDS_P1_PARAM_ACCEL,
         p_default,  0.0f,
-        p_range,    0.0f, 100.0f,
+        // Game models carry negative gravity (rising particles) and values
+        // above 100; a 0..100 spinner showed them clamped and wrote the clamp
+        // back on the first touch.
+        p_range,    -1000000.0f, 1000000.0f,
         p_ui,       P1_MAP_EMITTER, TYPE_SPINNER, EDITTYPE_FLOAT,
                     IDC_P1_EDIT_ACCEL, IDC_P1_SPIN_ACCEL, 0.1f,
     p_end,
@@ -117,11 +120,29 @@ static ParamBlockDesc2 wc3particles1_param_blk(
     p_end,
 
     // [7] P1_PB_SCALE — particle scale (matches m_scale, default 1.0)
-    P1_PB_SCALE, _M("Scale"), TYPE_FLOAT, 0, IDS_P1_PARAM_SCALE,
+    // Named ModelScale for MAXScript: "Scale" was hidden behind the node's own
+    // .scale ($.Scale read [1,1,1], and a recorded spinner edit scaled the
+    // node instead).
+    P1_PB_SCALE, _M("ModelScale"), TYPE_FLOAT, 0, IDS_P1_PARAM_SCALE,
         p_default,  1.0f,
         p_range,    0.001f, 500.0f,
         p_ui,       P1_MAP_MODEL, TYPE_SPINNER, EDITTYPE_FLOAT,
                     IDC_P1_EDIT_SCALE, IDC_P1_SPIN_SCALE, 0.1f,
+    p_end,
+
+    // [8] P1_PB_MODEL_FILE / [9] P1_PB_MODEL_PREFIX — parameters, so MAXScript
+    // reads and sets them ($.ModelFile, $.ModelPrefix), the listener records an
+    // edit, undo covers it and the scene saves them as Unicode. They were
+    // object members saved as ANSI before (chunks 1000 / 1001): invisible to
+    // MAXScript, and a Chinese path came back garbled. Same as Wc3Particles2.
+    P1_PB_MODEL_FILE, _M("ModelFile"), TYPE_STRING, 0, 0,
+        p_default,  _M(""),
+        p_ui,       P1_MAP_MODEL, TYPE_EDITBOX, IDC_P1_CUSTOMEDIT_PATH,
+    p_end,
+
+    P1_PB_MODEL_PREFIX, _M("ModelPrefix"), TYPE_STRING, 0, 0,
+        p_default,  _M(""),
+        p_ui,       P1_MAP_MODEL, TYPE_EDITBOX, IDC_P1_EDIT_PATH_PREFIX,
     p_end,
 
     p_end   // Final terminator
@@ -354,11 +375,11 @@ static void SetupCtrlCombo(HWND hWnd, int comboID, IParamBlock2* pb, ParamID pid
 static void SwitchControllerType(IParamBlock2* pb, ParamID pid, int type)
 {
     int tabIndex = pb->GetDesc()->IDtoIndex(pid);
+    Control* oldCtrl = pb->GetControllerByIndex(tabIndex);
     Control* newCtrl = nullptr;
     switch (type) {
     case 0:
-        pb->SetControllerByIndex(tabIndex, 0, nullptr);
-        return;
+        break;
     case 1:
         newCtrl = static_cast<Control*>(
             CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(LININTERP_FLOAT_CLASS_ID, 0)));
@@ -371,8 +392,18 @@ static void SwitchControllerType(IParamBlock2* pb, ParamID pid, int type)
             CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(TCBINTERP_FLOAT_CLASS_ID, 0)));
         break;
     }
-    if (newCtrl)
-        pb->SetControllerByIndex(tabIndex, 0, newCtrl);
+    // Undoable, and the keys carried over: Track View's Assign Controller
+    // hands the old controller to the new one (Control::Copy), which takes
+    // over what it can of its keys; replacing it bare dropped every key, with
+    // no way back. "None" removes the animation, as it says.
+    theHold.Begin();
+    if (type == 0) {
+        pb->SetControllerByIndex(tabIndex, 0, nullptr);
+    } else if (newCtrl) {
+        if (oldCtrl) newCtrl->Copy(oldCtrl);
+        pb->SetControllerByIndex(tabIndex, 0, newCtrl, FALSE);
+    }
+    theHold.Accept(_M("Controller Type"));
 }
 
 struct CtrlComboMapping { int comboID; ParamID paramID; };
@@ -389,19 +420,40 @@ static constexpr int s_p1CtrlMappingCount = static_cast<int>(std::size(s_p1CtrlM
 // Wc3Particles1DlgProc implementation
 // ============================================================================
 
+// The highest value a parameter takes: now and at each of its keys. Count
+// bounds the live particles over the whole animation, so it must not follow
+// an emission rate keyed to 0 on the frame the panel opens at: just selecting
+// such an emitter set Count to 0 (no particle on any frame) and saved it.
+static float HighestKeyedValue(IParamBlock2* pb, ParamID id, TimeValue t)
+{
+    float v = 0.0f;
+    Interval iv = FOREVER;
+    pb->GetValue(id, t, v, iv);
+    if (Control* c = pb->GetControllerByID(id)) {
+        for (int i = 0; i < c->NumKeys(); ++i) {
+            float k = 0.0f;
+            Interval kv = FOREVER;
+            pb->GetValue(id, c->GetKeyTime(i), k, kv);
+            v = std::max(v, k);
+        }
+    }
+    return v;
+}
+
 void Wc3Particles1DlgProc::SetupMaxRate(HWND hWnd, IParamBlock2* pb, TimeValue t)
 {
-    float life = 0.0f;
-    float emission = 0.0f;
-    Interval forever = FOREVER;
-
-    pb->GetValue(P1_PB_LIFE, t, life, forever);
-    pb->GetValue(P1_PB_EMISSION_RATE, t, emission, forever);
+    const float life = HighestKeyedValue(pb, P1_PB_LIFE, t);
+    const float emission = HighestKeyedValue(pb, P1_PB_EMISSION_RATE, t);
 
     int count = 0;
     if (life > 0.0f && emission > 0.0f)
         count = std::min(static_cast<int>(emission * life), P1_PARAM_COUNT_MAX);
-    pb->SetValue(P1_PB_COUNT, t, count);
+    // Only a change is written: opening the panel left the scene modified.
+    int cur = 0;
+    Interval civ = FOREVER;
+    pb->GetValue(P1_PB_COUNT, t, cur, civ);
+    if (cur != count)
+        pb->SetValue(P1_PB_COUNT, t, count);
 
     ISpinnerControl* spin = GetISpinner(GetDlgItem(hWnd, IDC_P1_SPIN_COUNT));
     if (spin) {
@@ -430,7 +482,9 @@ void Wc3Particles1DlgProc::BrowseForModelFile(HWND hWnd)
             auto* uni = reinterpret_cast<UNIVERSAL_NAME_INFO*>(uncBuf);
             _tcscpy_s(fileBuf, uni->lpUniversalName);
         }
-        po->m_modelPath = fileBuf;
+        theHold.Begin();
+        po->SetModelFile(fileBuf);
+        theHold.Accept(_M("Particle Model"));
 
         ICustEdit* ce = GetICustEdit(GetDlgItem(hWnd, IDC_P1_CUSTOMEDIT_PATH));
         if (ce) {
@@ -454,8 +508,10 @@ void Wc3Particles1DlgProc::ApplyModelPath(HWND hWnd, const MCHAR* relPath)
                                                             : full.substr(0, sep + 1);
     const std::wstring name = (sep == std::wstring::npos) ? full : full.substr(sep + 1);
 
-    po->m_modelPrefix = prefix.c_str();
-    po->m_modelPath   = name.c_str();
+    theHold.Begin();
+    po->SetModelPrefix(prefix.c_str());
+    po->SetModelFile(name.c_str());
+    theHold.Accept(_M("Particle Model"));
 
     ICustEdit* cePrefix = GetICustEdit(GetDlgItem(hWnd, IDC_P1_EDIT_PATH_PREFIX));
     if (cePrefix) {
@@ -481,10 +537,12 @@ void Wc3Particles1DlgProc::BrowseModelFromArchives(HWND hWnd)
     //   "C"        cancelled
     //   "P<path>"  picked; <path> is the archive-relative path MDX stores
     std::wstring initial;
-    if (po->m_modelPrefix.length() > 0)
-        initial += po->m_modelPrefix.data();
-    if (po->m_modelPath.length() > 0)
-        initial += po->m_modelPath.data();
+    const MSTR curPrefix = po->ModelPrefix();
+    const MSTR curFile = po->ModelFile();
+    if (curPrefix.length() > 0)
+        initial += curPrefix.data();
+    if (curFile.length() > 0)
+        initial += curFile.data();
 
     // MaxScript string literals take backslash escapes, and asset paths are all
     // backslash — without this "units\nightelf\..." reaches the parser as
@@ -570,21 +628,7 @@ INT_PTR Wc3Particles1DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
             }
         }
 
-        // Set model path edit control
-        ICustEdit* ce = GetICustEdit(GetDlgItem(hWnd, IDC_P1_CUSTOMEDIT_PATH));
-        if (ce) {
-            ce->SetText(po->m_modelPath.data());
-            ReleaseICustEdit(ce);
-        }
-
-        // Set model path prefix edit control
-        {
-            ICustEdit* cePrefix = GetICustEdit(GetDlgItem(hWnd, IDC_P1_EDIT_PATH_PREFIX));
-            if (cePrefix) {
-                cePrefix->SetText(po->m_modelPrefix.data());
-                ReleaseICustEdit(cePrefix);
-            }
-        }
+        // The model file and prefix edits are parameter-mapped (TYPE_EDITBOX).
 
         // Populate controller-type comboboxes
         for (int m = 0; m < s_p1CtrlMappingCount; m++)
@@ -628,30 +672,6 @@ INT_PTR Wc3Particles1DlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
         break;
     }
 
-    case WM_CUSTEDIT_ENTER:
-    {
-        if (LOWORD(wParam) == IDC_P1_CUSTOMEDIT_PATH) {
-            MCHAR buf[MAX_PATH] = {};
-            ICustEdit* ce = GetICustEdit(reinterpret_cast<HWND>(lParam));
-            if (ce) {
-                ce->GetText(buf, MAX_PATH);
-                po->m_modelPath = buf;
-                ReleaseICustEdit(ce);
-            }
-            return TRUE;
-        }
-        if (LOWORD(wParam) == IDC_P1_EDIT_PATH_PREFIX) {
-            MCHAR buf[MAX_PATH] = {};
-            ICustEdit* ce = GetICustEdit(reinterpret_cast<HWND>(lParam));
-            if (ce) {
-                ce->GetText(buf, MAX_PATH);
-                po->m_modelPrefix = buf;
-                ReleaseICustEdit(ce);
-            }
-            return TRUE;
-        }
-        break;
-    }
     }
     return FALSE;
 }
@@ -859,9 +879,9 @@ void Config1DlgProc::ExportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     // Model
     pb->GetValue(P1_PB_SCALE, t, fVal, iv); IniWriteFloat(f, "Scale", fVal);
     {
-        std::string narrowPfx = NarrowPath(po->m_modelPrefix.data());
+        std::string narrowPfx = NarrowPath(po->ModelPrefix().data());
         IniWrite(f, "PreFix", narrowPfx.c_str());
-        std::string narrowPath = NarrowPath(po->m_modelPath.data());
+        std::string narrowPath = NarrowPath(po->ModelFile().data());
         IniWrite(f, "File", narrowPath.c_str());
     }
 
@@ -917,10 +937,10 @@ void Config1DlgProc::ImportConfig(HWND hWnd, IParamBlock2* pb, TimeValue t)
     {
         // "PreFix=" is a saved empty prefix, not a missing one.
         if (ini.count("PreFix"))
-            po->m_modelPrefix = WidenPath(IniGetStr(ini, "PreFix"));
+            po->SetModelPrefix(WidenPath(IniGetStr(ini, "PreFix")).data());
         std::string mdl = IniGetStr(ini, "File");
         if (!mdl.empty())
-            po->m_modelPath = WidenPath(mdl);
+            po->SetModelFile(WidenPath(mdl).data());
     }
 
     theHold.Accept(_M("Import Particle1 Config"));
@@ -1574,10 +1594,64 @@ void GenParticle1::DeleteThis()
     delete this;
 }
 
+MSTR GenParticle1::ModelFile()
+{
+    const MCHAR* v = nullptr;
+    Interval iv = FOREVER;
+    if (pblock2 && pblock2->GetValue(P1_PB_MODEL_FILE, 0, v, iv) && v)
+        return MSTR(v);
+    return MSTR();
+}
+
+MSTR GenParticle1::ModelPrefix()
+{
+    const MCHAR* v = nullptr;
+    Interval iv = FOREVER;
+    if (pblock2 && pblock2->GetValue(P1_PB_MODEL_PREFIX, 0, v, iv) && v)
+        return MSTR(v);
+    return MSTR();
+}
+
+void GenParticle1::SetModelFile(const MCHAR* v)
+{
+    if (pblock2) pblock2->SetValue(P1_PB_MODEL_FILE, 0, v ? v : _M(""));
+    m_modelPath = v ? v : _M("");
+}
+
+void GenParticle1::SetModelPrefix(const MCHAR* v)
+{
+    if (pblock2) pblock2->SetValue(P1_PB_MODEL_PREFIX, 0, v ? v : _M(""));
+    m_modelPrefix = v ? v : _M("");
+}
+
+namespace {
+// A file from before the model parameters (no chunk 1002) carried the model
+// file and prefix in chunks 1000 / 1001 only; the parameter block, loaded by
+// then, still holds the defaults. Moves them across.
+class ModelParamsPostLoad : public PostLoadCallback {
+public:
+    explicit ModelParamsPostLoad(GenParticle1* p) : po(p) {}
+    void proc(ILoad*) override
+    {
+        if (po && po->pblock2) {
+            po->pblock2->SetValue(P1_PB_MODEL_FILE, 0, po->m_legacyFile.data());
+            po->pblock2->SetValue(P1_PB_MODEL_PREFIX, 0, po->m_legacyPrefix.data());
+        }
+        delete this;
+    }
+private:
+    GenParticle1* po;
+};
+} // namespace
+
 IOResult GenParticle1::Save(ISave* isave)
 {
     ULONG nb = 0;
 
+    // Chunks 1000 / 1001 still carry the two strings for builds from before
+    // the parameters; 1002 tells this build the block has them.
+    m_modelPath = ModelFile();
+    m_modelPrefix = ModelPrefix();
     CStr ansiPath(m_modelPath.ToCStr());
     int len = static_cast<int>(strlen(ansiPath.data())) + 1;
 
@@ -1594,25 +1668,40 @@ IOResult GenParticle1::Save(ISave* isave)
     isave->Write(ansiPrefix.data(), plen, &nb);
     isave->EndChunk();
 
+    isave->BeginChunk(1002);
+    isave->EndChunk();
+
     return IO_OK;
 }
 
 IOResult GenParticle1::Load(ILoad* iload)
 {
     IOResult res;
+    bool inBlock = false;
     while ((res = iload->OpenChunk()) == IO_OK) {
         if (iload->CurChunkID() == 1000)
-            LoadAnsiChunk(iload, m_modelPath);
+            LoadAnsiChunk(iload, m_legacyFile);
         else if (iload->CurChunkID() == 1001)
-            LoadAnsiChunk(iload, m_modelPrefix);
+            LoadAnsiChunk(iload, m_legacyPrefix);
+        else if (iload->CurChunkID() == 1002)
+            inBlock = true;
         iload->CloseChunk();
     }
+    if (!inBlock)
+        iload->RegisterPostLoadCallback(new ModelParamsPostLoad(this));
     return IO_OK;
 }
 
+// Readers (exporter, renderer) get the parameters' current values.
 void* GenParticle1::GetInterface(ULONG id) {
-    if (id == WC3P1_MODEL_PATH_IID)   return &m_modelPath;
-    if (id == WC3P1_MODEL_PREFIX_IID) return &m_modelPrefix;
+    if (id == WC3P1_MODEL_PATH_IID) {
+        m_modelPath = ModelFile();
+        return &m_modelPath;
+    }
+    if (id == WC3P1_MODEL_PREFIX_IID) {
+        m_modelPrefix = ModelPrefix();
+        return &m_modelPrefix;
+    }
     return SimpleParticle::GetInterface(id);
 }
 
