@@ -1,0 +1,10 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":2,"y":30,"w":514,"h":306},
+{"id":3,"parent_id":0,"class":"Static","text":"Растр:","x":22,"y":41,"w":48,"h":20},
+{"id":4,"parent_id":0,"class":"Edit","text":"","x":40,"y":68,"w":444,"h":30},
+{"id":6,"parent_id":0,"class":"CustButton","text":"Выбрать растр...","x":34,"y":105,"w":450,"h":33},
+{"id":7,"parent_id":0,"class":"CustButton","text":"Открыть браузер текстур","x":34,"y":146,"w":450,"h":33},
+{"id":10,"parent_id":0,"class":"Static","text":"Заменяемая текстура","x":34,"y":197,"w":141,"h":20},
+{"id":9,"parent_id":0,"class":"ComboBox","text":"","x":34,"y":224,"w":450,"h":27},
+{"id":12,"parent_id":0,"class":"Button","text":"U-повтор (по ширине)","x":22,"y":275,"w":202,"h":23},
+{"id":13,"parent_id":0,"class":"Button","text":"V-повтор (по высоте)","x":259,"y":275,"w":196,"h":23},
+{"id":14,"parent_id":0,"class":"Button","text":"Сферическая карта окружения","x":22,"y":305,"w":264,"h":23}]}

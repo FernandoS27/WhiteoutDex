@@ -1,0 +1,10 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":2,"y":30,"w":514,"h":306},
+{"id":3,"parent_id":0,"class":"Static","text":"비트맵:","x":22,"y":41,"w":55,"h":20},
+{"id":4,"parent_id":0,"class":"Edit","text":"","x":40,"y":68,"w":444,"h":30},
+{"id":6,"parent_id":0,"class":"CustButton","text":"비트맵 선택...","x":34,"y":105,"w":450,"h":33},
+{"id":7,"parent_id":0,"class":"CustButton","text":"텍스처 브라우저 열기","x":34,"y":146,"w":450,"h":33},
+{"id":10,"parent_id":0,"class":"Static","text":"교체 가능 텍스처","x":34,"y":197,"w":141,"h":20},
+{"id":9,"parent_id":0,"class":"ComboBox","text":"","x":34,"y":224,"w":450,"h":27},
+{"id":12,"parent_id":0,"class":"Button","text":"U 타일 (가로 랩)","x":22,"y":275,"w":155,"h":23},
+{"id":13,"parent_id":0,"class":"Button","text":"V 타일 (세로 랩)","x":259,"y":275,"w":154,"h":23},
+{"id":14,"parent_id":0,"class":"Button","text":"구형 환경 맵","x":22,"y":305,"w":127,"h":23}]}

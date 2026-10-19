@@ -1,0 +1,7 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":12,"y":30,"w":243,"h":231},
+{"id":3,"parent_id":0,"class":"Static","text":"- Prefisso del percorso del modello -","x":-6,"y":41,"w":258,"h":20},
+{"id":4,"parent_id":0,"class":"Edit","text":"","x":30,"y":68,"w":207,"h":30},
+{"id":6,"parent_id":0,"class":"Static","text":"- File del modello -","x":52,"y":105,"w":134,"h":20},
+{"id":7,"parent_id":0,"class":"Edit","text":"","x":30,"y":132,"w":207,"h":30},
+{"id":9,"parent_id":0,"class":"CustButton","text":"Importa modello MDX","x":30,"y":174,"w":207,"h":36},
+{"id":10,"parent_id":0,"class":"CustButton","text":"Sfoglia gli archivi del gioco","x":30,"y":216,"w":207,"h":36}]}

@@ -1,0 +1,9 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":12,"y":30,"w":243,"h":129},
+{"id":3,"parent_id":0,"class":"Static","text":"—— - ベースカラー - ——","x":51,"y":41,"w":166,"h":20},
+{"id":4,"parent_id":0,"class":"ColorSwatch","text":"","x":30,"y":68,"w":128,"h":48},
+{"id":8,"parent_id":0,"class":"CustButton","text":"...","x":189,"y":68,"w":48,"h":48},
+{"id":9,"parent_id":0,"class":"Static","text":"カラー倍率 ........","x":30,"y":126,"w":128,"h":20},
+{"id":12,"parent_id":0,"class":"CustEdit","text":"","x":158,"y":126,"w":62,"h":24},
+{"id":0,"parent_id":12,"class":"EDITDUMMY","text":"","x":160,"y":128,"w":58,"h":20},
+{"id":0,"parent_id":0,"class":"Edit","text":"","x":162,"y":127,"w":58,"h":26},
+{"id":10,"parent_id":0,"class":"SpinnerControl","text":"","x":219,"y":126,"w":18,"h":24}]}

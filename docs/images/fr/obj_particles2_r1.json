@@ -1,0 +1,4 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":10,"y":30,"w":248,"h":110},
+{"id":1030,"parent_id":0,"class":"Button","text":"Importer","x":26,"y":40,"w":101,"h":35},
+{"id":1031,"parent_id":0,"class":"Button","text":"Exporter","x":138,"y":40,"w":101,"h":35},
+{"id":1032,"parent_id":0,"class":"Button","text":"Charger les valeurs dynamiques","x":26,"y":90,"w":203,"h":25}]}

@@ -1,0 +1,13 @@
+{"title":"MPQ 로드 순서","controls":[{"id":3,"parent_id":0,"class":"Static","text":"아카이브는 위에서 아래로 검색되며, 파일을 가진 첫 번째 것이 우선합니다.","x":26,"y":57,"w":765,"h":24},
+{"id":4,"parent_id":0,"class":"ListBox","text":"","x":26,"y":87,"w":555,"h":263},
+{"id":6,"parent_id":0,"class":"CustButton","text":"위로","x":599,"y":111,"w":189,"h":36},
+{"id":7,"parent_id":0,"class":"CustButton","text":"아래로","x":599,"y":153,"w":189,"h":36},
+{"id":8,"parent_id":0,"class":"CustButton","text":"제거","x":599,"y":201,"w":189,"h":36},
+{"id":9,"parent_id":0,"class":"CustButton","text":"아카이브 추가...","x":599,"y":255,"w":189,"h":36},
+{"id":10,"parent_id":0,"class":"CustButton","text":"폴더 추가...","x":599,"y":297,"w":189,"h":36},
+{"id":11,"parent_id":0,"class":"CustButton","text":"게임 폴더 검색","x":599,"y":351,"w":189,"h":36},
+{"id":12,"parent_id":0,"class":"CustButton","text":"기본값","x":599,"y":393,"w":189,"h":36},
+{"id":13,"parent_id":0,"class":"Static","text":"기준: C:\\Program Files (x86)\\Warcraft III","x":26,"y":363,"w":555,"h":24},
+{"id":14,"parent_id":0,"class":"Static","text":"목록이 비어 있으면 기본 순서를 사용합니다.","x":26,"y":393,"w":555,"h":24},
+{"id":15,"parent_id":0,"class":"CustButton","text":"확인","x":470,"y":456,"w":150,"h":39},
+{"id":16,"parent_id":0,"class":"CustButton","text":"취소","x":632,"y":456,"w":150,"h":39}]}
