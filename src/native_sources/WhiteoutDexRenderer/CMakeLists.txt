@@ -8,8 +8,10 @@
 # consume the WhiteoutFlakesLib + cubeb static libraries the submodule builds.
 #
 # MaxScript primitives exposed: WhiteoutFlakesStart / Stop / PushSequences /
-# RefreshMaterials (dllmain.cpp) and the WdxBrowser* storage-browser family
-# (storage_browser_primitives.cpp).
+# RefreshMaterials (dllmain.cpp), the WdxBrowser* storage-browser family
+# (storage_browser_primitives.cpp) and WdxFillVertexPaint, which the Wc3
+# Vertex Color modifier uses to show its geoset colour on a primitive
+# (vertex_paint_primitives.cpp).
 # ============================================================================
 
 set(WHITEOUTFLAKES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../external/WhiteoutFlakes")
@@ -32,6 +34,7 @@ add_library(WhiteoutDexRenderer SHARED
     # already the one linking WhiteoutFlakesLib.
     asset_picker_window.cpp
     storage_browser_primitives.cpp
+    vertex_paint_primitives.cpp
     resource.rc
     WhiteoutDexExtractor.def
 
