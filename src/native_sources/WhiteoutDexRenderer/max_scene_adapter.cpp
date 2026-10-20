@@ -3033,14 +3033,27 @@ Matrix3 RawMatrix3(const Matrix44f& m) {
     auto row = [&](i32 r) { return Point3(m.data[r][0], m.data[r][1], m.data[r][2]); };
     return Matrix3(row(0), row(1), row(2), row(3));
 }
+// Between Max's axes and the renderer's, which are the MDX file's: the
+// exporter writes Max (x, y, z) as (-y, x, z) (mdx_coord_transform.h), the
+// same turn as CoordSpace Max -> Blizzard.
+Matrix44f ToRenderer(const Matrix3& tm) {
+    return CoordinateSystem::ConvertTransform(CoordSpace::Max, CoordinateSystem::Default(),
+                                              RawMatrix44(tm));
+}
+Matrix3 FromRenderer(const Matrix44f& m) {
+    return RawMatrix3(
+        CoordinateSystem::ConvertTransform(CoordinateSystem::Default(), CoordSpace::Max, m));
+}
+
 
 // Node world TMs at one time with Warcraft III's billboards applied. The game
 // turns a billboarded node toward the camera inside its hierarchy walk
 // (MdxHierarchy::Evaluate, MdxBillboardNodeMatrix) and every node below it
-// follows; Max's node TMs know nothing of that. The exporter writes Max's own
-// axes into the MDX, so the turn is worked out in Max space, on the node's MDX
-// frame: its Max TM with its frame-0 rotation, the skin's bind (GetSkeleton),
-// taken out. Nodes neither billboarded nor below one keep GetNodeTM.
+// follows; Max's node TMs know nothing of that. The turn is worked out on the
+// node's MDX frame - its Max TM with its frame-0 rotation, the skin's bind
+// (GetSkeleton), taken out - in the renderer's axes, which are the MDX file's:
+// the game faces MDX +X to the camera, which is Max's -Y. Nodes neither
+// billboarded nor below one keep GetNodeTM.
 class BillboardWalk {
 public:
     BillboardWalk(const std::unordered_map<INode*, u32>& flags, const MdxBillboardCamera& camera,
@@ -3067,17 +3080,19 @@ public:
                 parentBind = parent->GetNodeTM(0);
                 parentBind.NoTrans();
             }
-            const Point3 parentPivot = hasParent ? parentTurned.GetTrans() : Point3(0, 0, 0);
-            Matrix44f out = MdxBillboardNodeMatrix(RawMatrix44(Inverse(bind) * result), f->second,
-                                                   camera_, {parentPivot.x, parentPivot.y, parentPivot.z});
+            const Point3 pp = hasParent ? parentTurned.GetTrans() : Point3(0, 0, 0);
+            const Vector3f parentPivot = CoordinateSystem::ConvertPoint(
+                CoordSpace::Max, CoordinateSystem::Default(), Vector3f{pp.x, pp.y, pp.z});
+            Matrix44f out = MdxBillboardNodeMatrix(ToRenderer(Inverse(bind) * result), f->second,
+                                                   camera_, parentPivot);
             // A free billboard then turns by the node's own rotation in its
             // frame (BillboardStack's `localR`): the rotation of its MDX frame
             // against its parent's, before either was turned.
             if (f->second & 0x8) {
                 const Matrix3 local = Inverse(bind) * own * Inverse(Inverse(parentBind) * parentOwn);
-                TurnByLocal(out, local);
+                TurnByLocal(out, ToRenderer(local));
             }
-            result = bind * RawMatrix3(out);
+            result = bind * FromRenderer(out);
         }
         world_[node] = result;
         return result;
@@ -3097,11 +3112,11 @@ private:
     // Rows i of `out` are the billboard basis row i times the row's length;
     // the basis becomes R * basis, R the local rotation in row form (the
     // rows of `local` with their scale divided out).
-    static void TurnByLocal(Matrix44f& out, const Matrix3& local) {
+    static void TurnByLocal(Matrix44f& out, const Matrix44f& local) {
         Point3 rot[3];
         bool identity = true;
         for (i32 r = 0; r < 3; r++) {
-            rot[r] = local.GetRow(r);
+            rot[r] = Point3(local.data[r][0], local.data[r][1], local.data[r][2]);
             const f32 len = Length(rot[r]);
             if (len < 1e-6f)
                 return;
@@ -3164,8 +3179,8 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
 
     FrameState state;
 
-    // The billboards' camera in Max space (= the MDX's): MdxModelAdapter's
-    // reading of the request, then back from the renderer's axes to Max's.
+    // The billboards' camera in the model's renderer (= MDX) axes, read off
+    // the request as MdxModelAdapter does.
     std::optional<BillboardWalk> billboards;
     MdxBillboardCamera camera;
     if (!billboardFlags_.empty()) {
@@ -3179,14 +3194,10 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
         if (noCamera)
             forward = Vector3f{req.world.data[3][0], req.world.data[3][1], req.world.data[3][2]} -
                       req.cameraPos;
-        const CoordSpace rendererSpace = CoordinateSystem::Default();
-        camera.eye = CoordinateSystem::ConvertPoint(
-            rendererSpace, CoordSpace::Max, whiteout::transform_point(req.cameraPos, inv));
-        forward = CoordinateSystem::ConvertDirection(rendererSpace, CoordSpace::Max,
-                                                     whiteout::transform_normal(forward, inv));
+        camera.eye = whiteout::transform_point(req.cameraPos, inv);
+        forward = whiteout::transform_normal(forward, inv);
         camera.forward = forward.length() > 1e-6f ? forward.normalized() : Vector3f{-1, 0, 0};
-        const Vector3f up = CoordinateSystem::ConvertDirection(
-            rendererSpace, CoordSpace::Max, whiteout::transform_normal(Vector3f{0, 0, 1}, inv));
+        const Vector3f up = whiteout::transform_normal(Vector3f{0, 0, 1}, inv);
         camera.up = up.length() > 1e-6f ? up.normalized() : Vector3f{0, 0, 1};
         billboards.emplace(billboardFlags_, camera, t);
     }
@@ -3315,9 +3326,16 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
         FrameState::RibbonFrameState rs;
         rs.emitterId = ri.emitterId;
         // The ribbon spans the object's +Y - the gizmo's line, which follows
-        // the object offset - from the node's pivot, as the exporter writes it.
+        // the object offset - from the node's pivot, as the exporter writes it
+        // (ribbonAxisRotation). Flakes spans a ribbon along the transform's
+        // +Y in its own axes, which is +X in Max's, so a quarter turn first
+        // puts the object's +Y there. An imported ribbon's object offset is
+        // the opposite turn: it draws on its node, as the file has it.
+        static const Matrix3 kObjectYOnX(Point3(0, 1, 0), Point3(-1, 0, 0), Point3(0, 0, 1),
+                                         Point3(0, 0, 0));
         const Matrix3 ribbonNodeTM = nodeTM(ri.node);
-        Matrix3 ribbonTM = ri.node->GetObjectTM(t) * Inverse(ri.node->GetNodeTM(t)) * ribbonNodeTM;
+        Matrix3 ribbonTM = kObjectYOnX * ri.node->GetObjectTM(t) * Inverse(ri.node->GetNodeTM(t)) *
+                           ribbonNodeTM;
         ribbonTM.SetTrans(ribbonNodeTM.GetTrans());
         rs.transform = PackMatrix(ribbonTM);
         rs.above = PB2FloatOr(obj, L"Height Above", t, 20.0f);
