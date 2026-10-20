@@ -257,6 +257,23 @@ inline std::wstring IflUtf8ToWide(const std::string& s) {
     return out;
 }
 
+// A path handed to Flakes' content provider, which reads it as UTF-8. Copying
+// each wchar_t into a char instead kept only the low byte, so the attachment
+// model "by_动漫终焉之战.mdx" reached Flakes as "by_" + six stray bytes: on a
+// Chinese Windows those bytes are invalid in code page 936, std::filesystem
+// threw from an IO worker thread and 3ds Max was terminated.
+inline std::string PathToFlakesUtf8(const std::wstring& w) {
+    if (w.empty())
+        return {};
+    const int n = static_cast<int>(w.size());
+    const int len = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), n, nullptr, 0, nullptr, nullptr);
+    if (len <= 0)
+        return {};
+    std::string out(static_cast<size_t>(len), '\0');
+    ::WideCharToMultiByte(CP_UTF8, 0, w.data(), n, out.data(), len, nullptr, nullptr);
+    return out;
+}
+
 // Read the frame paths out of a .ifl file — one path per line (the importer
 // writes absolute paths). Trims whitespace, skips blank lines; returns empty
 // when the file can't be opened.
@@ -1968,7 +1985,7 @@ void MaxSceneAdapter::CollectAttachments() {
                              pblock->GetValue(pid, 0, sv, iv);
                              if (sv && sv[0]) {
                                  std::wstring wp(sv);
-                                 ai.modelPath = std::string(wp.begin(), wp.end());
+                                 ai.modelPath = PathToFlakesUtf8(wp);
                              }
                          });
         }
@@ -2130,11 +2147,11 @@ void MaxSceneAdapter::CollectParticleEmitters() {
                                       _wcsicmp(wp.c_str() + wp.size() - 4, L".mdx") == 0))
                     wp.resize(wp.size() - 4);
                 if (!wp.empty())
-                    pi.modelPath = std::string(wp.begin(), wp.end()) + ".MDL";
+                    pi.modelPath = PathToFlakesUtf8(wp) + ".MDL";
             } else if (auto* p = static_cast<const MSTR*>(baseObj->GetInterface(WC3P1_MODEL_PATH_IID));
                        p && p->Length() > 0) {
                 std::wstring wp = p->data();
-                pi.modelPath = std::string(wp.begin(), wp.end());
+                pi.modelPath = PathToFlakesUtf8(wp);
             }
             mprintf(_M("  [PE1 '%s'] model='%S'\n"), node->GetName(), pi.modelPath.c_str());
             if (!pi.modelPath.empty())
@@ -2207,7 +2224,7 @@ void MaxSceneAdapter::CollectParticleEmitters() {
                 if (!std::filesystem::is_regular_file(std::filesystem::path(pathW), existsEc))
                     pathW = prefixW + pathW.substr(pathW.find_last_of(L"\\/") + 1);
             }
-            pi.pkbPath = EnsurePopcornExtension(std::string(pathW.begin(), pathW.end()));
+            pi.pkbPath = EnsurePopcornExtension(PathToFlakesUtf8(pathW));
             readStr(L"rawFlags", pi.animVisibilityGuide);
             // NeoDex rebuilds an empty rawFlags from its flag checkboxes, as
             // the exporter does (NeoDexSceneParser LoadCornEmitter).
