@@ -33,6 +33,7 @@
 #include "wc3_light_extractor.h"
 #include "../mdx_class_ids.h"
 #include "visibility_track_helper.h"
+#include "controller_track_helper.h"
 #include <scene/paramblock_reader.h>
 #include <animation/global_sequence_helper.h>
 #include <iparamb2.h>
@@ -69,7 +70,9 @@ std::ofstream& liteLog() {
 //
 // We use getParamControllerDirect (Autodesk-recommended GetControllerByID
 // path) — same pattern as GEOA Patch B, which is validated to work on
-// scripted simpleManipulator plugins.
+// scripted simpleManipulator plugins. The keys are read like every other
+// parameter animation (controller_track_helper.h), so STEP keys stay
+// DontInterp, LINEAR keys Linear and Bezier keys keep their curve.
 int32_t extractLightFloatTrack(ReferenceTarget* ref, const wchar_t* paramName,
                                 ir::IRModel& model, const char* tagName)
 {
@@ -79,60 +82,22 @@ int32_t extractLightFloatTrack(ReferenceTarget* ref, const wchar_t* paramName,
              << (paramName ? "<name>" : "?") << "'\n";
         return -1;
     }
-
-    int numKeys = ctrl->NumKeys();
-    if (numKeys <= 0) {
+    const int32_t idx = extractFloatControllerTrack(ctrl, model);
+    if (idx < 0) {
         LLOG << "    [" << tagName << "] controller has 0 keys — static only\n";
         return -1;
     }
-
-    ir::Track<float> track;
-    // Default interpolation: Linear. Bezier/Hermite would require
-    // tangent extraction which is error-prone on scripted plugins.
-    // Light animations in MDX are almost always Linear in the wild.
-    track.interpolation = ir::InterpolationType::Linear;
-
-    for (int i = 0; i < numKeys; ++i) {
-        TimeValue t = ctrl->GetKeyTime(i);
-        float v = 0.0f;
-        Interval iv = FOREVER;
-        ctrl->GetValue(t, &v, iv);
-
-        ir::Keyframe<float> key;
-        key.time = t;
-        key.value = v;
-        track.keys.push_back(key);
-
-        LLOG << "      key[" << i << "] t=" << t
-             << " v=" << v << "\n";
-    }
-
-    // Global Sequence detection via ORT
-    int afterORT = ctrl->GetORT(ORT_AFTER);
-    if (afterORT == ORT_CYCLE || afterORT == ORT_LOOP) {
-        if (!track.keys.empty()) {
-            TimeValue duration = track.keys.back().time;
-            int32_t gsIdx = core::anim::registerGlobalSequence(model, duration);
-            if (gsIdx >= 0) {
-                track.globalSequenceIndex = gsIdx;
-                LLOG << "    [" << tagName << "] → GlobalSequence idx="
-                     << gsIdx << " dur=" << duration << "\n";
-            }
-        }
-    }
-
-    int32_t idx = static_cast<int32_t>(model.floatTracks.size());
-    model.floatTracks.push_back(std::move(track));
-    LLOG << "    [" << tagName << "] " << numKeys
-         << " keys → floatTrack[" << idx << "]\n";
+    const auto& track = model.floatTracks[idx];
+    LLOG << "    [" << tagName << "] " << track.keys.size() << " keys, interp "
+         << static_cast<int>(track.interpolation) << ", gs " << track.globalSequenceIndex
+         << " → floatTrack[" << idx << "]\n";
     return idx;
 }
 
 // ── Color track extraction ──
 //
-// Same procedural-sampling pattern as the float version but reads a
-// Point3 value and applies BGR swap before storing. This mirrors
-// geoset_anim_extractor's Patch B (KGAC).
+// The same reading for a colour, then red and blue exchanged in the values
+// and the tangents: MDX stores a keyed colour blue first.
 int32_t extractLightColorTrack(ReferenceTarget* ref, const wchar_t* paramName,
                                 ir::IRModel& model, const char* tagName)
 {
@@ -141,51 +106,16 @@ int32_t extractLightColorTrack(ReferenceTarget* ref, const wchar_t* paramName,
         LLOG << "    [" << tagName << "] no controller\n";
         return -1;
     }
-
-    int numKeys = ctrl->NumKeys();
-    if (numKeys <= 0) {
+    const int32_t idx = extractColorControllerTrack(ctrl, model);
+    if (idx < 0) {
         LLOG << "    [" << tagName << "] controller has 0 keys — static only\n";
         return -1;
     }
-
-    ir::Track<Color> track;
-    track.interpolation = ir::InterpolationType::Linear;
-
-    for (int i = 0; i < numKeys; ++i) {
-        TimeValue t = ctrl->GetKeyTime(i);
-        Point3 val(1.0f, 1.0f, 1.0f);
-        Interval iv = FOREVER;
-        ctrl->GetValue(t, &val, iv);
-
-        ir::Keyframe<Color> key;
-        key.time = t;
-        // BGR swap: Max gives us RGB in val.{x,y,z}; MDX stores BGR
-        // in color.{r,g,b} (those fields become byte-stream order).
-        key.value = Color(val.z, val.y, val.x);
-        track.keys.push_back(key);
-
-        LLOG << "      key[" << i << "] t=" << t
-             << " RGB=(" << val.x << "," << val.y << "," << val.z << ")"
-             << " → BGR stored\n";
-    }
-
-    int afterORT = ctrl->GetORT(ORT_AFTER);
-    if (afterORT == ORT_CYCLE || afterORT == ORT_LOOP) {
-        if (!track.keys.empty()) {
-            TimeValue duration = track.keys.back().time;
-            int32_t gsIdx = core::anim::registerGlobalSequence(model, duration);
-            if (gsIdx >= 0) {
-                track.globalSequenceIndex = gsIdx;
-                LLOG << "    [" << tagName << "] → GlobalSequence idx="
-                     << gsIdx << " dur=" << duration << "\n";
-            }
-        }
-    }
-
-    int32_t idx = static_cast<int32_t>(model.colorTracks.size());
-    model.colorTracks.push_back(std::move(track));
-    LLOG << "    [" << tagName << "] " << numKeys
-         << " keys → colorTrack[" << idx << "]\n";
+    auto& track = model.colorTracks[idx];
+    swapRedBlue(track);
+    LLOG << "    [" << tagName << "] " << track.keys.size() << " keys, interp "
+         << static_cast<int>(track.interpolation) << ", gs " << track.globalSequenceIndex
+         << " → colorTrack[" << idx << "] (BGR)\n";
     return idx;
 }
 

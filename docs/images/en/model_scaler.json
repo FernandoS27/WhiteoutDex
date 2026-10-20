@@ -1,0 +1,11 @@
+{"title":"Model Scaler","controls":[{"id":3,"parent_id":0,"class":"Button","text":"Scale to Target Height","x":23,"y":78,"w":639,"h":105},
+{"id":4,"parent_id":0,"class":"ComboBox","text":"","x":35,"y":105,"w":465,"h":27},
+{"id":6,"parent_id":0,"class":"CustButton","text":"Scale","x":512,"y":105,"w":135,"h":33},
+{"id":7,"parent_id":0,"class":"Button","text":"Manual Factor","x":23,"y":186,"w":639,"h":69},
+{"id":9,"parent_id":0,"class":"Static","text":"Factor:","x":119,"y":213,"w":50,"h":20},
+{"id":10,"parent_id":0,"class":"CustEdit","text":"","x":172,"y":213,"w":86,"h":24},
+{"id":0,"parent_id":10,"class":"EDITDUMMY","text":"","x":174,"y":215,"w":82,"h":20},
+{"id":0,"parent_id":0,"class":"Edit","text":"","x":176,"y":214,"w":82,"h":26},
+{"id":8,"parent_id":0,"class":"SpinnerControl","text":"","x":257,"y":213,"w":18,"h":24},
+{"id":11,"parent_id":0,"class":"CustButton","text":"Apply","x":512,"y":210,"w":135,"h":33},
+{"id":12,"parent_id":0,"class":"Static","text":"","x":35,"y":261,"w":630,"h":21}]}

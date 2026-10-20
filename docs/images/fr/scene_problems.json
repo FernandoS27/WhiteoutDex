@@ -1,0 +1,8 @@
+{"title":"Problèmes de la scène","controls":[{"id":2005,"parent_id":0,"class":"Static","text":"Problèmes (double-cliquez sur une ligne pour sélectionner le nœud) :","x":27,"y":58,"w":599,"h":20},
+{"id":2000,"parent_id":0,"class":"SysListView32","text":"","x":27,"y":85,"w":599,"h":363},
+{"id":0,"parent_id":2000,"class":"SysHeader32","text":"","x":29,"y":87,"w":595,"h":25},
+{"id":2001,"parent_id":0,"class":"Static","text":"3 au total : 2 noms, 0 maillages, 0 contrôleurs, 1 matériaux","x":27,"y":458,"w":599,"h":20},
+{"id":2004,"parent_id":0,"class":"Button","text":"Réanalyser","x":27,"y":490,"w":113,"h":35},
+{"id":2002,"parent_id":0,"class":"Button","text":"Corriger la sélection","x":151,"y":490,"w":135,"h":35},
+{"id":2003,"parent_id":0,"class":"Button","text":"Tout corriger","x":297,"y":490,"w":113,"h":35},
+{"id":1,"parent_id":0,"class":"Button","text":"Fermer","x":513,"y":490,"w":113,"h":35}]}

@@ -102,6 +102,30 @@ inline void InitLanguage(HINSTANCE hInstance, const std::wstring& plugcfgDir) {
     detail::g_languageLoaded = true;
 }
 
+/// The folder with Flakes' Noto Sans fonts, for ApplyImGuiDpiScale: `fonts/`
+/// beside the .dlx first, then at the install root next to `lang/` (the
+/// glyph baking reads the catalogs from `../lang` to know which glyphs to
+/// bake). Without it the chrome has only Roboto, and Chinese, Japanese and
+/// Korean labels draw as '?'. Empty when the folder is missing.
+inline std::string FontsDir() {
+    HMODULE self = nullptr;
+    if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                  GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              reinterpret_cast<LPCWSTR>(&FontsDir), &self))
+        return {};
+    std::error_code ec;
+    wchar_t buf[MAX_PATH] = {};
+    if (::GetModuleFileNameW(self, buf, MAX_PATH) > 0) {
+        const std::filesystem::path besideDlx = std::filesystem::path(buf).parent_path() / "fonts";
+        if (std::filesystem::is_directory(besideDlx, ec))
+            return whiteout::flakes::io::PathToUtf8(besideDlx);
+    }
+    const std::filesystem::path root = wdx::InstallRootFromModule(self);
+    if (!root.empty() && std::filesystem::is_directory(root / "fonts", ec))
+        return whiteout::flakes::io::PathToUtf8(root / "fonts");
+    return {};
+}
+
 /// InitLanguage, unless something already ran it this session.
 ///
 /// For the strings a MaxScript primitive returns, which can be asked for while

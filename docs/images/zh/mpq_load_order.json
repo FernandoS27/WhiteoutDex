@@ -1,0 +1,13 @@
+{"title":"MPQ 加载顺序","controls":[{"id":3,"parent_id":0,"class":"Static","text":"存档按从上到下的顺序搜索——第一个包含该文件的存档生效。","x":26,"y":57,"w":765,"h":24},
+{"id":4,"parent_id":0,"class":"ListBox","text":"","x":26,"y":87,"w":555,"h":263},
+{"id":6,"parent_id":0,"class":"CustButton","text":"上移","x":599,"y":111,"w":189,"h":36},
+{"id":7,"parent_id":0,"class":"CustButton","text":"下移","x":599,"y":153,"w":189,"h":36},
+{"id":8,"parent_id":0,"class":"CustButton","text":"移除","x":599,"y":201,"w":189,"h":36},
+{"id":9,"parent_id":0,"class":"CustButton","text":"添加存档...","x":599,"y":255,"w":189,"h":36},
+{"id":10,"parent_id":0,"class":"CustButton","text":"添加文件夹...","x":599,"y":297,"w":189,"h":36},
+{"id":11,"parent_id":0,"class":"CustButton","text":"扫描游戏文件夹","x":599,"y":351,"w":189,"h":36},
+{"id":12,"parent_id":0,"class":"CustButton","text":"默认","x":599,"y":393,"w":189,"h":36},
+{"id":13,"parent_id":0,"class":"Static","text":"相对于： C:\\Program Files (x86)\\Warcraft III","x":26,"y":363,"w":555,"h":24},
+{"id":14,"parent_id":0,"class":"Static","text":"列表为空表示使用默认顺序。","x":26,"y":393,"w":555,"h":24},
+{"id":15,"parent_id":0,"class":"CustButton","text":"确定","x":470,"y":456,"w":150,"h":39},
+{"id":16,"parent_id":0,"class":"CustButton","text":"取消","x":632,"y":456,"w":150,"h":39}]}

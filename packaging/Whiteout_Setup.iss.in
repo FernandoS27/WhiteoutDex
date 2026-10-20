@@ -256,6 +256,13 @@ Source: "@WDX_REPO_ROOT@\whiteoutdex_icons\*"; DestDir: "{app}\whiteoutdex_icons
 Source: "@WDX_STAGE_DIR@\lang\*"; DestDir: "{app}\lang"; \
     Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 
+; === Fonts of the renderer's chrome ===
+; Noto Sans SC/KR from WhiteoutFlakes (OFL.txt beside them): without them the
+; renderer has only Roboto and CJK/Hangul labels draw as '?'. Next to lang\,
+; which the glyph baking reads (see wdx_ui_language.h).
+Source: "@WDX_STAGE_DIR@\fonts\*"; DestDir: "{app}\fonts"; \
+    Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+
 ; === BLS shader pack ===
 ; Max-SDK-independent, so one copy at the root serves every year's renderer
 ; .dlx — it looks beside itself first and here second (wdx_install_layout.h).
@@ -328,6 +335,7 @@ Type: filesandordirs; Name: "{app}\native plugins"
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\whiteoutdex_icons"
 Type: filesandordirs; Name: "{app}\lang"
+Type: filesandordirs; Name: "{app}\fonts"
 Type: filesandordirs; Name: "{app}\shaders"
 Type: filesandordirs; Name: "{app}\native plugins"
 Type: filesandordirs; Name: "{app}\scripts"
@@ -759,6 +767,7 @@ begin
     DelTree(AppDir + '\shaders', True, True, True);
     DelTree(AppDir + '\whiteoutdex_icons', True, True, True);
     DelTree(AppDir + '\lang', True, True, True);
+    DelTree(AppDir + '\fonts', True, True, True);
 
     DeleteFile(AppDir + '\PackageContents.xml');
     DeleteFile(AppDir + '\LICENSE.md');
@@ -950,6 +959,7 @@ begin
   DelTree(Dir + '\shaders', True, True, True);
   DelTree(Dir + '\whiteoutdex_icons', True, True, True);
   DelTree(Dir + '\lang', True, True, True);
+  DelTree(Dir + '\fonts', True, True, True);
 
   // PackageContents.xml is the file that makes Max load the bundle at all;
   // once it is gone the leftover folder is inert even if something remains.

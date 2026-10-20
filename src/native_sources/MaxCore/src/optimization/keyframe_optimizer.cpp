@@ -65,6 +65,21 @@ template <typename T>
 void KeyframeOptimizer::removeRedundant(ir::Track<T>& track, float threshold,
                                          float (*distFunc)(const T&, const T&)) {
     if (track.keys.size() <= 2) return;
+    if (linearOnly_ && track.interpolation != ir::InterpolationType::Linear) return;
+
+    // First and last key inside each sequence window (setSequenceWindows).
+    std::vector<bool> pinned(track.keys.size(), false);
+    if (track.globalSequenceIndex < 0) {
+        for (const auto& [start, end] : windows_) {
+            size_t first = track.keys.size(), last = 0;
+            for (size_t k = 0; k < track.keys.size(); ++k) {
+                if (track.keys[k].time < start || track.keys[k].time > end) continue;
+                if (first == track.keys.size()) first = k;
+                last = k;
+            }
+            if (first < track.keys.size()) pinned[first] = pinned[last] = true;
+        }
+    }
 
     // Greedy from the last KEPT key: a key is dropped only if the segment
     // replacing it still reproduces every key dropped since that anchor.
@@ -77,7 +92,7 @@ void KeyframeOptimizer::removeRedundant(ir::Track<T>& track, float threshold,
         const auto& from = track.keys[anchor];
         const auto& to = track.keys[i + 1];
         const float dt = static_cast<float>(to.time - from.time);
-        bool canSkip = dt > 0.0f && spanAllowed(from.value, to.value);
+        bool canSkip = !pinned[i] && dt > 0.0f && spanAllowed(from.value, to.value);
         for (size_t j = anchor + 1; canSkip && j <= i; ++j) {
             const float t = static_cast<float>(track.keys[j].time - from.time) / dt;
             canSkip = distFunc(track.keys[j].value,

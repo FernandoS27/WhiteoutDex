@@ -70,6 +70,7 @@ Layer MdxMaterialMapper::mapLayer(const ir::MaterialLayer& irLayer,
     // every version, and older clients never test these bits.
     if (irLayer.backFacesForShadows) flags = flags | Layer::ShadingFlag::BackFacesForShadows;
     if (irLayer.ambientOcclusion)    flags = flags | Layer::ShadingFlag::AmbientOcclusion;
+    if (irLayer.unlit)               flags = flags | Layer::ShadingFlag::Unlit;
     layer.shadingFlags = flags;
 
     layer.alpha = irLayer.alpha;

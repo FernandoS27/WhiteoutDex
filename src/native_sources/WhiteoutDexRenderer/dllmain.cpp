@@ -22,6 +22,8 @@
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/model/model_instance.h" // Actor
 #include "renderer/model/model_loader.h"
+#include "renderer/particle/particle_service.h"
+#include "renderer/ribbon/ribbon_service.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "settings_ini.h"
@@ -31,9 +33,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <climits>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 // clang-format off
@@ -115,9 +122,96 @@ static bool g_sceneStale = false;
 
 // Convert Max time (TimeValue ticks) to milliseconds. Returns 0 if Max
 // reports a missing tick rate (rare; tested WhiteoutFlakesStart paths).
+// Rounded: truncating put two of every three 30 fps frames a millisecond
+// early (frame 2, 66.7 ms, became 66 ms), and MaxSceneAdapter::Evaluate turns
+// the milliseconds back into ticks before the frame's own.
 static i32 MaxTimeToMs(TimeValue t) {
     i32 tpf = GetTicksPerFrame(), fps = GetFrameRate();
-    return (tpf > 0 && fps > 0) ? (i32)((f32)t / (f32)tpf * 1000.0f / (f32)fps) : 0;
+    return (tpf > 0 && fps > 0) ? (i32)std::lround((f64)t / (f64)tpf * 1000.0 / (f64)fps) : 0;
+}
+
+// ---- Effect re-simulation ----
+// Particles and ribbons only integrate forward, by the time the render loop
+// sees pass between its frames, capped at 100 ms. Scrubbing Max's timeline back
+// froze them where they were and a jump ahead advanced them 100 ms at most.
+// While the timeline moves that stays exactly as it was; once it has been still
+// for a moment after such a jump the particles and ribbons are thrown away and
+// the frames from the animation range start (at most kResimWindowMs back) up to
+// the current time are played again, so they look as if Max had played there.
+// Playback, steps of up to kResimJumpMs and models without particles or ribbons
+// never get here.
+static constexpr i32 kResimJumpMs = 100;      // the render loop's own per-frame cap
+static constexpr i32 kResimWindowMs = 8000;   // longer than any particle lives
+static constexpr DWORD kResimSettleMs = 120;  // timeline still for this long
+static i32 g_lastEvalMs = INT_MIN;
+static bool g_resimPending = false;
+static bool g_wasPlaying = false;
+
+static void NoteTimeJump(i32 timeMs) {
+    const i32 prev = g_lastEvalMs;
+    g_lastEvalMs = timeMs;
+    if (prev == INT_MIN || !g_renderWindow || !g_renderer)
+        return;
+    if (GetCOREInterface()->IsAnimPlaying()) {
+        // Playback, its loop back to the start included, runs as it always did.
+        g_wasPlaying = true;
+        if (g_resimPending) {
+            g_resimPending = false;
+            g_renderWindow->HoldEffects(false);
+        }
+        return;
+    }
+    // Real-time playback runs between frames; stopping it snaps the time back
+    // to the frame (825 -> 800 ms at 30 fps). That is no jump.
+    if (std::exchange(g_wasPlaying, false) && std::abs(timeMs - prev) * GetFrameRate() <= 1000)
+        return;
+    const bool back = timeMs < prev;
+    if (!g_resimPending) {
+        if (!back && timeMs - prev <= kResimJumpMs)
+            return;
+        if (g_renderer->Particles().EmitterCount() + g_renderer->Ribbons().EmitterCount() == 0)
+            return;
+        g_resimPending = true;
+    }
+    // Held going back, as the render loop always did (it never runs time
+    // backwards), running going ahead, until the replay takes over.
+    g_renderWindow->HoldEffects(back);
+}
+
+// The scene at timeMs, as MaxSceneAdapter evaluates it for the actor (it reads
+// only the primary clip's time).
+static FrameState EvaluateSceneAt(i32 timeMs, const renderer::animation::ActorEvalContext& ctx) {
+    const ClipRef clip{.sequence = g_actor->animation.ActiveSequenceIndex(), .timeMs = timeMs};
+    PoseRequest req = PoseRequest::OneClip(clip);
+    req.world = g_actor->ScaledWorldTransform();
+    req.cameraPos = ctx.camPos;
+    req.view = ctx.view;
+    return g_adapter->Evaluate(req);
+}
+
+static void RunResimulation() {
+    g_resimPending = false;
+    if (g_sceneStale || !g_actor || !g_adapter || !g_renderer || !g_renderWindow ||
+        !g_renderWindow->IsOpen()) {
+        if (g_renderWindow)
+            g_renderWindow->HoldEffects(false);
+        return;
+    }
+    const i32 target = g_lastEvalMs;
+    const i32 fps = GetFrameRate();
+    const f64 stepMs = 1000.0 / (fps > 0 ? fps : 30);
+    const i32 rangeStart = MaxTimeToMs(GetCOREInterface()->GetAnimRange().Start());
+    const i32 from = std::max(std::min(rangeStart, target), target - kResimWindowMs);
+    const auto ctx = g_renderer->MakeActorEvalContext();
+    std::vector<RenderWindow::ResimFrame> frames;
+    for (i32 k = 0;; ++k) {
+        const i32 t = from + (i32)std::lround(k * stepMs);
+        if (t >= target)
+            break;
+        frames.push_back({t, EvaluateSceneAt(t, ctx)});
+    }
+    frames.push_back({target, EvaluateSceneAt(target, ctx)});
+    g_renderWindow->QueueResimulation(g_actor, std::move(frames), (f32)(stepMs / 1000.0));
 }
 
 // Push Max's externally-driven time onto the actor + scene clock, then run
@@ -128,6 +222,7 @@ static i32 MaxTimeToMs(TimeValue t) {
 static void EvalFromMax(i32 timeMs) {
     if (g_sceneStale || !g_actor || !g_renderer || !g_scene)
         return;
+    NoteTimeJump(timeMs);
     g_actor->animation.SetTimeMs(timeMs);
     g_scene->SetAnimationTime(timeMs);
     g_actor->EvaluateAndApply(g_renderer->MakeActorEvalContext());
@@ -708,6 +803,10 @@ static void CALLBACK ViewportSyncTimer(HWND, UINT, UINT_PTR, DWORD) {
         return;
     }
 
+    // A timeline jump's effect replay, once the timeline has settled.
+    if (g_resimPending && GetTickCount() - g_lastTimeChangedTick > kResimSettleMs)
+        RunResimulation();
+
     // Animation combo -> Max's timeline, then Max's timeline -> the combo.
     // SetAnimRange and GetAnimRange are both Max-UI-thread work, which is why
     // the render thread can only leave a request behind.
@@ -715,6 +814,21 @@ static void CALLBACK ViewportSyncTimer(HWND, UINT, UINT_PTR, DWORD) {
     if (i32 req = -1; g_renderWindow->ConsumeSequenceRequest(req))
         ApplySequenceRequest(ip, req);
     PublishActiveSequence(ip);
+
+    // A billboard faces the preview's camera, which moves while Max's time
+    // stands still (playback evaluates every frame anyway): evaluate again
+    // once the camera has moved.
+    if (g_adapter && g_adapter->HasBillboards() && g_actor && g_renderer && !ip->IsAnimPlaying()) {
+        const auto ctx = g_renderer->MakeActorEvalContext();
+        static Vector3f lastCamPos{};
+        static Matrix44f lastView{};
+        if (std::memcmp(&ctx.camPos, &lastCamPos, sizeof lastCamPos) != 0 ||
+            std::memcmp(&ctx.view, &lastView, sizeof lastView) != 0) {
+            lastCamPos = ctx.camPos;
+            lastView = ctx.view;
+            EvalFromMax(MaxTimeToMs(ip->GetTime()));
+        }
+    }
 
     if (!g_renderWindow->SyncCamera())
         return;
@@ -747,6 +861,9 @@ static void WhiteoutFlakesCleanup() {
         g_timeCallback = nullptr;
     }
     g_running = false;
+    g_resimPending = false;
+    g_wasPlaying = false;
+    g_lastEvalMs = INT_MIN;
     if (g_renderer) {
         g_renderer->Loader().RequestClearAll();
     }

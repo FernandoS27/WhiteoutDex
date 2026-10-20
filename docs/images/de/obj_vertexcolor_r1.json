@@ -1,0 +1,7 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":12,"y":30,"w":243,"h":162},
+{"id":3,"parent_id":0,"class":"Static","text":"Overlay-Farbe ..............","x":47,"y":41,"w":175,"h":20},
+{"id":4,"parent_id":0,"class":"ColorSwatch","text":"","x":30,"y":68,"w":207,"h":48},
+{"id":6,"parent_id":0,"class":"Static","text":"Schlagschatten .............","x":30,"y":125,"w":186,"h":20},
+{"id":7,"parent_id":0,"class":"Button","text":"","x":218,"y":125,"w":36,"h":23},
+{"id":8,"parent_id":0,"class":"Static","text":"Farbe verwenden ..................","x":30,"y":161,"w":186,"h":20},
+{"id":9,"parent_id":0,"class":"Button","text":"","x":218,"y":161,"w":36,"h":23}]}

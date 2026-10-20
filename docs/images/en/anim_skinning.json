@@ -1,0 +1,3 @@
+{"title":"Skinning","controls":[{"id":3,"parent_id":0,"class":"Button","text":"AT Skinning","x":23,"y":78,"w":639,"h":72},
+{"id":4,"parent_id":0,"class":"CustButton","text":"Save and Unlink","x":35,"y":102,"w":297,"h":33},
+{"id":5,"parent_id":0,"class":"CustButton","text":"Restore Parents","x":344,"y":102,"w":297,"h":33}]}

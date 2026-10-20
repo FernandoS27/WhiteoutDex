@@ -1,6 +1,8 @@
 // MDLXImporter — Map mdx::Track<T> → ir::Track<T>
 #pragma once
 
+#include <type_traits>
+
 #include <core/intermediate_types.h>
 #include <whiteout/models/mdx/structures.h>
 #include "mdx_coord_transform.h"
@@ -34,7 +36,10 @@ template <typename T, typename Ms>
 void collapseSnappedKeys(std::vector<ir::Keyframe<T>>& keys, const std::vector<Ms>& ms)
 {
     auto offFrame = [](Ms t, TimeValue tick) {
-        return std::abs(static_cast<double>(t) * 4.8 - static_cast<double>(tick));
+        // MDX times are signed (see msToTicks), WhiteoutLib stores them as u32
+        const double ms = std::is_unsigned_v<Ms> && sizeof(Ms) == 4
+            ? static_cast<double>(static_cast<int32_t>(t)) : static_cast<double>(t);
+        return std::abs(ms * 4.8 - static_cast<double>(tick));
     };
     size_t out = 0;
     std::vector<Ms> outMs;
@@ -53,6 +58,53 @@ void collapseSnappedKeys(std::vector<ir::Keyframe<T>>& keys, const std::vector<M
     keys.resize(out);
 }
 
+// ── Global sequence tracks ──────────────────────────────────
+// The game plays a global-sequence track at (time mod duration): keys past
+// the duration are never reached, and a duration of 0 shows the value at
+// time 0 for good. The exporter reads a global sequence's duration from its
+// controller's last key, so every such track ends with a key exactly at the
+// duration; a 0 duration becomes a constant one-frame global sequence (two
+// equal keys), which plays the same - without it a lone key or the keys the
+// file carried past 0 turned a still track into a loop (DNC Felwood terrain,
+// Dalaran sky, Illidan imprisoned).
+// The disassembler sets the model's durations (ms) before mapping tracks.
+inline const std::vector<uint32_t>*& currentGlobalSequences()
+{
+    static const std::vector<uint32_t>* durations = nullptr;
+    return durations;
+}
+
+template <typename T>
+void fitToGlobalSequence(ir::Track<T>& track)
+{
+    const auto* durations = currentGlobalSequences();
+    if (!durations || track.globalSequenceIndex < 0 || track.keys.empty()) return;
+    if (static_cast<size_t>(track.globalSequenceIndex) >= durations->size()) return;
+    auto& keys = track.keys;
+    const TimeValue d = mdx_coord::msToTicks((*durations)[track.globalSequenceIndex]);
+    if (d <= 0) {
+        size_t pick = 0;
+        for (size_t i = 0; i < keys.size(); ++i)
+            if (keys[i].time <= 0) pick = i;
+        ir::Keyframe<T> k = keys[pick];
+        k.time = 0;
+        k.hasTangents = false;
+        keys.assign(1, k);
+        k.time = GetTicksPerFrame();
+        keys.push_back(k);
+        return;
+    }
+    if (keys.back().time == d) return;
+    size_t keep = 0;   // keys at or before the duration
+    while (keep < keys.size() && keys[keep].time <= d) ++keep;
+    ir::Keyframe<T> end = keys[keep > 0 ? keep - 1 : 0];
+    keys.resize(keep > 0 ? keep : 0);
+    if (!keys.empty() && keys.back().time == d) return;
+    end.time = d;
+    end.hasTangents = false;
+    keys.push_back(end);
+}
+
 // ── Generic track mapper ────────────────────────────────────
 // Track storage is SoA: timestamps[] holds frame numbers; keys() / tangentKeys()
 // expose value-only spans. We zip them index-wise to rebuild AoS Keyframes.
@@ -65,12 +117,15 @@ ir::Track<DstT> mapTrack(const whiteout::mdx::Track<SrcT>& src, Convert convert)
     dst.globalSequenceIndex = (src.globalSequenceId == whiteout::mdx::Track<SrcT>::kNoGlobalSequence)
         ? -1 : static_cast<int32_t>(src.globalSequenceId);
 
+    auto toTicks = [&](uint32_t ms) {
+        return dst.globalSequenceIndex >= 0 ? mdx_coord::msToTicks(ms) : mdx_coord::seqMsToTicks(ms);
+    };
     if (whiteout::mdx::isSmoothInterpolation(src.interpolationType)) {
         auto keys = src.tangentKeys();
         dst.keys.reserve(keys.size());
         for (size_t i = 0; i < keys.size(); ++i) {
             ir::Keyframe<DstT> kf;
-            kf.time = mdx_coord::msToTicks(src.timestamps[i]);
+            kf.time = toTicks(src.timestamps[i]);
             kf.value = convert(keys[i].value);
             kf.inTangent = convert(keys[i].inTan);
             kf.outTangent = convert(keys[i].outTan);
@@ -82,12 +137,13 @@ ir::Track<DstT> mapTrack(const whiteout::mdx::Track<SrcT>& src, Convert convert)
         dst.keys.reserve(keys.size());
         for (size_t i = 0; i < keys.size(); ++i) {
             ir::Keyframe<DstT> kf;
-            kf.time = mdx_coord::msToTicks(src.timestamps[i]);
+            kf.time = toTicks(src.timestamps[i]);
             kf.value = convert(keys[i]);
             dst.keys.push_back(kf);
         }
     }
     collapseSnappedKeys(dst.keys, src.timestamps);
+    fitToGlobalSequence(dst);
     return dst;
 }
 
@@ -123,15 +179,19 @@ inline ir::IntTrack mapIntTrack(const whiteout::mdx::Track<uint32_t>& src)
     dst.interpolation = mapInterpolation(src.interpolationType);
     dst.globalSequenceIndex = (src.globalSequenceId == whiteout::mdx::Track<uint32_t>::kNoGlobalSequence)
         ? -1 : static_cast<int32_t>(src.globalSequenceId);
+    auto toTicks = [&](uint32_t ms) {
+        return dst.globalSequenceIndex >= 0 ? mdx_coord::msToTicks(ms) : mdx_coord::seqMsToTicks(ms);
+    };
     auto keys = src.keys();
     dst.keys.reserve(keys.size());
     for (size_t i = 0; i < keys.size(); ++i) {
         ir::Keyframe<int32_t> kf;
-        kf.time = mdx_coord::msToTicks(src.timestamps[i]);
+        kf.time = toTicks(src.timestamps[i]);
         kf.value = static_cast<int32_t>(keys[i]);
         dst.keys.push_back(kf);
     }
     collapseSnappedKeys(dst.keys, src.timestamps);
+    fitToGlobalSequence(dst);
     return dst;
 }
 

@@ -1,0 +1,4 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":2,"y":30,"w":514,"h":84},
+{"id":3,"parent_id":0,"class":"Edit","text":"","x":40,"y":41,"w":444,"h":30},
+{"id":5,"parent_id":0,"class":"CustButton","text":"▼  경로 선택","x":22,"y":78,"w":219,"h":27},
+{"id":6,"parent_id":0,"class":"CustButton","text":"+  경로 편집","x":277,"y":78,"w":219,"h":27}]}

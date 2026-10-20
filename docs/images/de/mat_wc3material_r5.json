@@ -1,0 +1,4 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":2,"y":30,"w":514,"h":93},
+{"id":3,"parent_id":0,"class":"Static","text":"Wc3 Material","x":214,"y":41,"w":90,"h":20},
+{"id":4,"parent_id":0,"class":"Static","text":"Build 2.3.0","x":220,"y":68,"w":78,"h":20},
+{"id":5,"parent_id":0,"class":"Static","text":"Material-Plug-in für 3ds Max","x":159,"y":95,"w":199,"h":20}]}

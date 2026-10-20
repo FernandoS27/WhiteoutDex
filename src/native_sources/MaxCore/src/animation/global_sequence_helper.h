@@ -152,9 +152,9 @@ inline std::vector<TimeValue> collectKeyTimes(Control* ctrl) {
             } else if (cidA == TCBINTERP_FLOAT_CLASS_ID) {
                 ITCBFloatKey k; ikc->GetKey(i, &k); t = k.time;
             } else {
-                // All float key struct layouts begin with TimeValue;
-                // IBezFloatKey is safe to read just for the time field.
-                IBezFloatKey k; ikc->GetKey(i, &k); t = k.time;
+                // Not a float key: GetKey would write a key of another
+                // size, so read the time through the Animatable API.
+                t = ctrl->GetKeyTime(i);
             }
             times.push_back(t);
         }
@@ -238,16 +238,39 @@ inline void readFloatKeys(Control* ctrl,
             outTans.push_back(outTan);
         }
     } else if (cidA == TCBINTERP_FLOAT_CLASS_ID) {
-        // TCB keys get zero tangents — proper TCB→Hermite conversion
-        // requires the tens/cont/bias coefficients. Zero tangents give
-        // smooth interpolation in viewers, which is acceptable.
+        // MDX Hermite tangents are the slopes over the span (0..1) at its
+        // ends: out = 3 * (c1 - p0), in = 3 * (p1 - c2) for the span's cubic
+        // control points c1, c2. Those are solved from samples at 1/3 and
+        // 2/3, like the Bezier branch, so the game follows Max's TCB curve
+        // (zero tangents made it stop at every key).
         hasTangents = true;
+        std::vector<TimeValue> kt(n);
+        std::vector<float> kv(n);
         for (int i = 0; i < n; i++) {
             ITCBFloatKey k; ikc->GetKey(i, &k);
-            times.push_back(k.time);
-            values.push_back(k.val);
-            inTans.push_back(0.0f);
-            outTans.push_back(0.0f);
+            kt[i] = k.time;
+            kv[i] = evalFloat(ctrl, k.time);
+        }
+        for (int i = 0; i < n; i++) {
+            float inTan = 0.0f, outTan = 0.0f;
+            if (i > 0) {
+                const float a = kv[i-1], d = kv[i];
+                const float pe = evalFloat(ctrl, kt[i-1] + static_cast<TimeValue>((kt[i] - kt[i-1]) / 3.0));
+                const float pd = evalFloat(ctrl, kt[i-1] + static_cast<TimeValue>(2.0 * (kt[i] - kt[i-1]) / 3.0));
+                const float c2 = 3.0f*pd + (2.0f*a - 9.0f*pe - 5.0f*d) / 6.0f;
+                inTan = 3.0f * (d - c2);
+            }
+            if (i < n - 1) {
+                const float a = kv[i], d = kv[i+1];
+                const float pe = evalFloat(ctrl, kt[i] + static_cast<TimeValue>((kt[i+1] - kt[i]) / 3.0));
+                const float pd = evalFloat(ctrl, kt[i] + static_cast<TimeValue>(2.0 * (kt[i+1] - kt[i]) / 3.0));
+                const float c1 = 3.0f*pe + (2.0f*d - 5.0f*a - 9.0f*pd) / 6.0f;
+                outTan = 3.0f * (c1 - a);
+            }
+            times.push_back(kt[i]);
+            values.push_back(kv[i]);
+            inTans.push_back(inTan);
+            outTans.push_back(outTan);
         }
     } else if (cidA == LININTERP_FLOAT_CLASS_ID) {
         for (int i = 0; i < n; i++) {
@@ -289,16 +312,16 @@ inline TimeValue getGlobalSequenceDuration(Control* ctrl) {
     int afterORT = ctrl->GetORT(ORT_AFTER);
     if (afterORT != ORT_CYCLE && afterORT != ORT_LOOP) return 0;
 
-    // Primary path: IKeyControl (typed-key controllers).
+    // Primary path: IKeyControl (typed-key controllers). GetKey fills the
+    // whole key of the controller's own type, so the buffer must be that
+    // type: an ITCBFloatKey (32 bytes) read into an IBezFloatKey (28) runs
+    // over the stack. Other key types go through the Animatable API.
     IKeyControl* ikc = GetKeyControlInterface(ctrl);
-    if (ikc) {
-        int n = ikc->GetNumKeys();
-        if (n == 0) return 0;
-        // All float key struct layouts start with TimeValue, so reading
-        // as IBezFloatKey is safe just for the time field.
-        IBezFloatKey key;
-        ikc->GetKey(n - 1, &key);
-        return key.time;
+    const ULONG cidA = ctrl->ClassID().PartA();
+    if (ikc && (cidA == LININTERP_FLOAT_CLASS_ID || cidA == HYBRIDINTERP_FLOAT_CLASS_ID ||
+                cidA == TCBINTERP_FLOAT_CLASS_ID)) {
+        const std::vector<TimeValue> times = collectKeyTimes(ctrl);
+        return times.empty() ? 0 : times.back();
     }
 
     // Fallback: Animatable keying API (on_off_float, boolean, etc.).

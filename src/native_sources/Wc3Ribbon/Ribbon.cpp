@@ -186,7 +186,10 @@ static ParamBlockDesc2 ribbon_param_blk(
                         IDC_EDIT_TEXSLOT, IDC_SPIN_TEXSLOT, SPIN_AUTOSCALE,
     p_end,
 
-    pb_material, _M("Material"), TYPE_MTL, P_SUBANIM, IDS_MATERIAL,
+    // Named RibbonMaterial for MAXScript: "Material" was hidden behind the
+    // node's own .material ($.material = m set the node's material and left
+    // the ribbon's empty).
+    pb_material, _M("RibbonMaterial"), TYPE_MTL, P_SUBANIM, IDS_MATERIAL,
         p_ui,           MAP_MATERIAL, TYPE_MTLBUTTON, IDC_MTLBUTTON,
     p_end,
 
@@ -254,11 +257,11 @@ static void SetupCtrlCombo(HWND hWnd, int comboID, IParamBlock2* pb, ParamID pid
 static void SwitchControllerType(IParamBlock2* pb, ParamID pid, int type)
 {
     int tabIndex = pb->GetDesc()->IDtoIndex(pid);
+    Control* oldCtrl = pb->GetControllerByIndex(tabIndex);
     Control* newCtrl = nullptr;
     switch (type) {
     case 0:
-        pb->SetControllerByIndex(tabIndex, 0, nullptr);
-        return;
+        break;
     case 1:
         newCtrl = static_cast<Control*>(
             CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(LININTERP_FLOAT_CLASS_ID, 0)));
@@ -271,8 +274,83 @@ static void SwitchControllerType(IParamBlock2* pb, ParamID pid, int type)
             CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(TCBINTERP_FLOAT_CLASS_ID, 0)));
         break;
     }
-    if (newCtrl)
-        pb->SetControllerByIndex(tabIndex, 0, newCtrl);
+    // Undoable, and the keys carried over: Track View's Assign Controller
+    // hands the old controller to the new one (Control::Copy), which takes
+    // over what it can of its keys; replacing it bare dropped every key, with
+    // no way back. "None" removes the animation, as it says.
+    theHold.Begin();
+    if (type == 0) {
+        pb->SetControllerByIndex(tabIndex, 0, nullptr);
+    } else if (newCtrl) {
+        if (oldCtrl) newCtrl->Copy(oldCtrl);
+        pb->SetControllerByIndex(tabIndex, 0, newCtrl, FALSE);
+    }
+    theHold.Accept(_M("Controller Type"));
+}
+
+// The colour's combo. There is no linear Point3 controller (the position
+// classes it used to create are no Point3 controllers, so nothing changed):
+// "Linear" is a Bezier colour whose keys all have LINEAR tangents, which
+// the exporter writes as MDX Linear, and "Hermite" the TCB Point3.
+static bool ColorKeysAllLinear(Control* ctrl)
+{
+    IKeyControl* ikc = ctrl ? GetKeyControlInterface(ctrl) : nullptr;
+    if (!ikc || ikc->GetNumKeys() <= 0) return false;
+    for (int i = 0; i < ikc->GetNumKeys(); ++i) {
+        IBezPoint3Key k;
+        ikc->GetKey(i, &k);
+        if (GetInTanType(k.flags) != BEZKEY_LINEAR || GetOutTanType(k.flags) != BEZKEY_LINEAR)
+            return false;
+    }
+    return true;
+}
+
+static int DetectColorControllerType(IParamBlock2* pb)
+{
+    Control* ctrl = pb->GetControllerByIndex(pb->GetDesc()->IDtoIndex(pb_color));
+    if (!ctrl) return 0;
+    const ULONG cidA = ctrl->ClassID().PartA();
+    if (cidA == TCBINTERP_POINT3_CLASS_ID) return 3;
+    if ((cidA == HYBRIDINTERP_COLOR_CLASS_ID || cidA == HYBRIDINTERP_POINT3_CLASS_ID) &&
+        ColorKeysAllLinear(ctrl))
+        return 1;
+    return 2;
+}
+
+static void SwitchColorControllerType(IParamBlock2* pb, int type)
+{
+    const int tabIndex = pb->GetDesc()->IDtoIndex(pb_color);
+    Control* oldCtrl = pb->GetControllerByIndex(tabIndex);
+    Control* newCtrl = nullptr;
+    if (type == 1 || type == 2)
+        newCtrl = NewDefaultColorController();
+    else if (type == 3)
+        newCtrl = static_cast<Control*>(
+            CreateInstance(CTRL_POINT3_CLASS_ID, Class_ID(TCBINTERP_POINT3_CLASS_ID, 0)));
+
+    // Undoable, and the keys carried over: Track View's Assign Controller
+    // hands the old controller to the new one (Control::Copy), which takes
+    // over what it can of its keys; replacing it bare dropped every key, with
+    // no way back. "None" removes the animation, as it says.
+    theHold.Begin();
+    if (type == 0) {
+        pb->SetControllerByIndex(tabIndex, 0, nullptr);
+    } else if (newCtrl) {
+        if (oldCtrl) newCtrl->Copy(oldCtrl);
+        if (type == 1) {
+            if (IKeyControl* ikc = GetKeyControlInterface(newCtrl)) {
+                for (int i = 0; i < ikc->GetNumKeys(); ++i) {
+                    IBezPoint3Key k;
+                    ikc->GetKey(i, &k);
+                    SetInTanType(k.flags, BEZKEY_LINEAR);
+                    SetOutTanType(k.flags, BEZKEY_LINEAR);
+                    ikc->SetKey(i, &k);
+                }
+            }
+        }
+        pb->SetControllerByIndex(tabIndex, 0, newCtrl, FALSE);
+    }
+    theHold.Accept(_M("Controller Type"));
 }
 
 struct CtrlComboMapping { int comboID; ParamID paramID; };
@@ -356,10 +434,7 @@ INT_PTR RibbonPropsDlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
                 for (int i = 0; i < s_ctrlTypeCount; i++)
                     SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)CtrlTypeName(i));
 
-                int tabIndex = pb->GetDesc()->IDtoIndex(pb_color);
-                Control* ctrl = pb->GetControllerByIndex(tabIndex);
-                int sel = ctrl ? 2 : 0;
-                SendMessage(hCombo, CB_SETCURSEL, sel, 0);
+                SendMessage(hCombo, CB_SETCURSEL, DetectColorControllerType(pb), 0);
             }
         }
         return TRUE;
@@ -381,27 +456,8 @@ INT_PTR RibbonPropsDlgProc::DlgProc(TimeValue t, IParamMap2* map, HWND hWnd,
             }
             if (loWord == IDC_CTRL_COLOR) {
                 auto sel = SendMessage((HWND)lParam, CB_GETCURSEL, 0, 0);
-                if (sel != CB_ERR) {
-                    IParamBlock2* pb = map->GetParamBlock();
-                    int tabIndex = pb->GetDesc()->IDtoIndex(pb_color);
-                    Control* newCtrl = nullptr;
-                    switch (sel) {
-                    case 0: pb->SetControllerByIndex(tabIndex, 0, nullptr); break;
-                    case 1: newCtrl = static_cast<Control*>(
-                                CreateInstance(CTRL_POINT3_CLASS_ID,
-                                              Class_ID(LININTERP_POSITION_CLASS_ID, 0)));
-                            if (newCtrl) pb->SetControllerByIndex(tabIndex, 0, newCtrl);
-                            break;
-                    case 2: newCtrl = NewDefaultPoint3Controller();
-                            if (newCtrl) pb->SetControllerByIndex(tabIndex, 0, newCtrl);
-                            break;
-                    case 3: newCtrl = static_cast<Control*>(
-                                CreateInstance(CTRL_POINT3_CLASS_ID,
-                                              Class_ID(TCBINTERP_POSITION_CLASS_ID, 0)));
-                            if (newCtrl) pb->SetControllerByIndex(tabIndex, 0, newCtrl);
-                            break;
-                    }
-                }
+                if (sel != CB_ERR)
+                    SwitchColorControllerType(map->GetParamBlock(), (int)sel);
                 return TRUE;
             }
         }

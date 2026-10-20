@@ -1,7 +1,9 @@
 // MDLXImporter — Wc3MaterialBuilder implementation
 #include "wc3_material_builder.h"
+#include <wdx_text.h>
 #include "texture_resolver.h"
 #include "../mdlx_class_ids.h"
+#include <wdx_replaceable_ids.h>
 
 #include <scene/paramblock_reader.h>
 #include <iparamb2.h>
@@ -76,13 +78,9 @@ void pbSetTexmap(ReferenceTarget* t, const wchar_t* n, Texmap* v) {
     auto p = findParam(t, n); if (p) p.pb->SetValue(p.id, 0, v);
 }
 
+// MDX bytes to text: UTF-8 or the Windows code page (wdx_text.h).
 std::wstring toWstr(const std::string& u8) {
-    if (u8.empty()) return {};
-    int len = MultiByteToWideChar(CP_UTF8, 0, u8.c_str(), -1, nullptr, 0);
-    if (len <= 0) return {};
-    std::wstring r(static_cast<size_t>(len - 1), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, u8.c_str(), -1, r.data(), len);
-    return r;
+    return wdx::text::mdxToWide(u8);
 }
 
 // Narrow a wide string for the debug log, ASCII only.
@@ -132,19 +130,7 @@ namespace {
 /// path so the importer can hand the renderer (or CASC/MPQ extractor) a real
 /// file to load. Returns empty string for unknown IDs.
 static std::wstring replaceableIdToPath(int32_t id) {
-    switch (id) {
-    case 1:  return L"ReplaceableTextures\\TeamColor\\TeamColor00.blp";
-    case 2:  return L"ReplaceableTextures\\TeamGlow\\TeamGlow00.blp";
-    case 11: return L"ReplaceableTextures\\Cliff\\Cliff0.blp";
-    case 21: return L"ReplaceableTextures\\LordaeronTree\\LordaeronSummerTree.blp";
-    case 22: return L"ReplaceableTextures\\AshenvaleTree\\AshenTree.blp";
-    case 23: return L"ReplaceableTextures\\BarrensTree\\BarrensTree.blp";
-    case 24: return L"ReplaceableTextures\\NorthrendTree\\NorthTree.blp";
-    case 25: return L"ReplaceableTextures\\Mushroom\\MushroomTree.blp";
-    case 31: return L"ReplaceableTextures\\RuinsTree\\RuinsTree.blp";
-    case 32: return L"ReplaceableTextures\\OutlandMushroomTree\\MushroomTree.blp";
-    default: return {};
-    }
+    return wdx::replaceable::PathFromId(id);  // "" for unknown IDs
 }
 
 /// Local logging helper (the file-scope `wlog` lives in a different anonymous
@@ -258,7 +244,7 @@ Texmap* createNativeBitmap(const ir::Texture& irTex, const std::wstring& modelDi
         if (wc3Ref) {
             pbSetBool(wc3Ref, L"wrapU", irTex.wrapU ? TRUE : FALSE);
             pbSetBool(wc3Ref, L"wrapV", irTex.wrapV ? TRUE : FALSE);
-            pbSetInt(wc3Ref, L"replaceableId", irTex.replaceableId + 1);
+            pbSetInt(wc3Ref, L"replaceableId", wdx::replaceable::DropdownFromId(irTex.replaceableId));
         }
     }
 
@@ -558,6 +544,7 @@ static Mtl* buildSingleLayerWc3Material(
     pbSetBool(ref, L"noDepthSet", layer.noDepthWrite ? TRUE : FALSE);
     pbSetBool(ref, L"ambientOcclusion", layer.ambientOcclusion ? TRUE : FALSE);
     pbSetBool(ref, L"backFacesForShadows", layer.backFacesForShadows ? TRUE : FALSE);
+    pbSetBool(ref, L"unlit", layer.unlit ? TRUE : FALSE);
 
     // Priority plane
     pbSetInt(ref, L"priorityPlane", irMat.priorityPlane);
@@ -629,7 +616,7 @@ static Mtl* buildSingleLayerWc3Material(
             int32_t rid = irModel.textures[texRef.textureIndex].replaceableId;
             if (rid > diffuseReplaceableId) diffuseReplaceableId = rid;
         }
-        pbSetInt(ref, L"replaceableId", diffuseReplaceableId + 1);
+        pbSetInt(ref, L"replaceableId", wdx::replaceable::DropdownFromId(diffuseReplaceableId));
     }
 
     // Texture maps — use pre-created Wc3Bitmaps (1 per MDX TEXS entry)
@@ -963,7 +950,7 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
         if (mtl) {
             if (!irMat.name.empty()) {
                 MSTR name;
-                name.printf(_T("%hs"), irMat.name.c_str());
+                name = wdx::text::mdxToWide(irMat.name).c_str();
                 mtl->SetName(name);
             }
             return mtl;
@@ -986,7 +973,7 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
             resolver, gi);
         if (mtl && !irMat.name.empty()) {
             MSTR name;
-            name.printf(_T("%hs"), irMat.name.c_str());
+            name = wdx::text::mdxToWide(irMat.name).c_str();
             mtl->SetName(name);
         }
         return mtl;
@@ -994,7 +981,7 @@ Mtl* Wc3MaterialBuilder::buildWc3Material(
 
     if (!irMat.name.empty()) {
         MSTR name;
-        name.printf(_T("%hs"), irMat.name.c_str());
+        name = wdx::text::mdxToWide(irMat.name).c_str();
         compMtl->SetName(name);
     }
 
@@ -1186,7 +1173,7 @@ Mtl* Wc3MaterialBuilder::buildStdFallback(
     auto* stdMtl = NewDefaultStdMat();
     if (!irMat.name.empty()) {
         MSTR name;
-        name.printf(_T("%hs"), irMat.name.c_str());
+        name = wdx::text::mdxToWide(irMat.name).c_str();
         stdMtl->SetName(name);
     }
 

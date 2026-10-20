@@ -1,0 +1,4 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":2,"y":30,"w":514,"h":93},
+{"id":3,"parent_id":0,"class":"Static","text":"Wc3 Bitmap","x":217,"y":41,"w":84,"h":20},
+{"id":4,"parent_id":0,"class":"Static","text":"Build 2.2.0","x":220,"y":68,"w":78,"h":20},
+{"id":5,"parent_id":0,"class":"Static","text":"textureMap Plugin for 3ds Max","x":151,"y":95,"w":216,"h":20}]}

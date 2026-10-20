@@ -46,7 +46,8 @@ public:
                     const std::wstring& cascDir,
                     const std::wstring& mpqDir,
                     const std::vector<std::wstring>& mpqArchives,
-                    wdx::scene::ArtTier artTier);
+                    wdx::scene::ArtTier artTier,
+                    bool mpqFirst = false);
     ~TextureResolver();
 
     TextureResolver(const TextureResolver&) = delete;
@@ -70,8 +71,12 @@ private:
 /// Exposed as a free function so callers that don't have a TextureResolver
 /// handy (the legacy buildStdFallback path, the IFL writer's filename
 /// reuse) can still benefit from the alias logic.
+/// Which extensions a disk probe tries: the MDX-stated one, the aliases, or
+/// both (MDX-stated first at each folder level).
+enum class ExtProbe { Exact, Aliases, Both };
 std::wstring resolveTexturePath(const std::wstring& modelDir,
-                                const std::wstring& relPath);
+                                const std::wstring& relPath,
+                                ExtProbe probe = ExtProbe::Both);
 
 /// Where an archive path with a mod chain ("_hd.w3mod:textures\x.blp") is
 /// placed on disk: the overlay becomes a folder ("_hd.w3mod\textures\x.blp"),

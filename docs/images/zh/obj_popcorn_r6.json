@@ -1,0 +1,7 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":12,"y":30,"w":243,"h":108},
+{"id":3,"parent_id":0,"class":"Static","text":"无阴影 ........................","x":30,"y":42,"w":186,"h":24},
+{"id":4,"parent_id":0,"class":"Button","text":"","x":218,"y":42,"w":36,"h":24},
+{"id":5,"parent_id":0,"class":"Static","text":"无雾化 .........................","x":30,"y":74,"w":186,"h":24},
+{"id":6,"parent_id":0,"class":"Button","text":"","x":218,"y":74,"w":36,"h":24},
+{"id":7,"parent_id":0,"class":"Static","text":"缩放 ............................","x":30,"y":105,"w":186,"h":24},
+{"id":8,"parent_id":0,"class":"Button","text":"","x":218,"y":105,"w":36,"h":24}]}

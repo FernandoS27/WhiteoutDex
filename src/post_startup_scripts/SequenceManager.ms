@@ -910,7 +910,8 @@
                             local extStr = rootNode.seqExtents[i]
                             if extStr != undefined and extStr != "" then
                             (
-                                local parts = filterString extStr " "
+                                -- decimal commas: scenes imported while Max ran with a ',' locale
+                                local parts = for p in (filterString extStr " ") collect (substituteString p "," ".")
                                 if parts.count == 7 then
                                 (
                                     ext = WdxWc3Extent \
@@ -954,7 +955,9 @@
         -- Fallback: Read from NoteTracks (legacy scenes)
         format "** WDX LoadSeq: Trying NoteTracks fallback (hasNT: %)\n" (HasNoteTracks Rootnode)
         this.cleanEmptyKeysFromSequences()
-        ::WdxUtils.ArrayMap (GetSequenceData ()) (fn tmp a = readSequenceData a[1] a[2])
+        -- a plain loop: Max 2016 throws "Unknown system exception" when a fn
+        -- literal defined here calls readSequenceData through ArrayMap
+        for a in (this.GetSequenceData()) collect (this.readSequenceData a[1] a[2])
     ),
     
     fn playSequence i =
@@ -1092,6 +1095,9 @@
     fn sceneChangeCallback =
     (
         print "SequenceManager updated"
+        -- The new scene's ignore list, too: the old one stayed in memory and
+        -- closing the dialog wrote it into the scene just opened or reset.
+        ::WdxSequenceManager.loadIgnoredSequences()
         ::WdxSequenceManager.sequences = ::WdxSequenceManager.LoadSequences()
 		::WdxSequenceManager.scanGlobalSequences()
         ::WdxSequenceManager.saveSequences()
@@ -1796,7 +1802,13 @@
 					
 					local seq = self.sequences[seqId]
 					local newName = self.getNewSequenceName seq.name
-					local newStartTime = self.sequences[self.sequences.count].endtime + 10f
+					-- After the sequence that ends last, not the last one in the
+					-- list: New appends, so a sequence made in a gap stood last in
+					-- the list and the duplicate was placed onto the next
+					-- sequence, overwriting its keys.
+					local lastEnd = self.sequences[1].endtime
+					for q in self.sequences where q.endtime > lastEnd do lastEnd = q.endtime
+					local newStartTime = lastEnd + 10f
 					local newEndTime = newStartTime + (seq.endtime - seq.starttime)
 					
 					self.addSequence newName newStartTime newEndTime seq.loop seq.rarity seq.movespeed
@@ -2253,7 +2265,10 @@
                     counter += 1
                     local currentName = newName + (if selectionCount > 1 then counter as string else "")
                     
-                    local sequenceNames = for seq in self.sequences collect seq.name
+                    -- The sequence's own name does not count as taken: Enter on
+                    -- an unchanged name renamed "Stand" to "Stand_1".
+                    local ownSeq = seqFromListId id
+                    local sequenceNames = for seq in self.sequences where seq != ownSeq collect seq.name
                     local uniqueCounter = 0
                     while findItem sequenceNames currentName != 0 do
                     (
@@ -2562,8 +2577,10 @@
                         local rarity, movespeed
                         local sequenceName = loadedSequences[i][1]
                         if stricmp loadedSequences[i][2] "true" == 0 then noLoop = true
-                        if stricmp loadedSequences[i][3] "" != 0 then rarity = (substring loadedSequences[i][3] 1 1) as integer
-                        if stricmp loadedSequences[i][4] "" != 0 then movespeed = (substring loadedSequences[i][4] 1 1) as integer
+                        -- The whole number: only its first digit was read (MoveSpeed 270
+                        -- came back as 2, Rarity 12 as 1).
+                        if stricmp loadedSequences[i][3] "" != 0 then rarity = loadedSequences[i][3] as integer
+                        if stricmp loadedSequences[i][4] "" != 0 then movespeed = loadedSequences[i][4] as integer
                         local newStartTime = loadedSequences[i][5] as time
                         local newEndTime = loadedSequences[i][6] as time
                         local SequenceData = WdxWc3Sequence sequenceName newStartTime newEndTime noLoop rarity movespeed undefined
@@ -2680,19 +2697,26 @@
             
             callbacks.removeScripts id:#WhiteoutDex
             
-            callbacks.addScript #filePostOpen sceneChangeCallback id:#WhiteoutDex
-            callbacks.addScript #systemPostReset sceneChangeCallback id:#WhiteoutDex
-            callbacks.addScript #systemPostNew sceneChangeCallback id:#WhiteoutDex
-			
-			callbacks.addScript #sceneUndo listUpdateAfterUndoRedo id:#WhiteoutDex
-			callbacks.addScript #sceneRedo listUpdateAfterUndoRedo id:#WhiteoutDex
+            -- Script strings, not function values: callbacks.addScript takes a
+            -- function only in 3ds Max 2021 and higher (MAXScript Help,
+            -- "General Event Callback Mechanism"); 2016-2020 threw here and
+            -- the rest of this handler never ran.
+            local scScript = "try (::WdxSequenceManager.sceneChangeCallback()) catch ()"
+            local undoScript = "try (::WdxSequenceManager.listUpdateAfterUndoRedo()) catch ()"
+            local importScript = "try (::WdxSequenceManager.importChangeCallback()) catch ()"
+            callbacks.addScript #filePostOpen scScript id:#WhiteoutDex
+            callbacks.addScript #systemPostReset scScript id:#WhiteoutDex
+            callbacks.addScript #systemPostNew scScript id:#WhiteoutDex
+
+			callbacks.addScript #sceneUndo undoScript id:#WhiteoutDex
+			callbacks.addScript #sceneRedo undoScript id:#WhiteoutDex
 
 			-- An import or merge replaces the scene's sequence data without going
 			-- through this dialog. Pick the new data up right away so the list is
 			-- correct and the close handler has nothing stale to write back.
 			-- try/catch because not every Max version broadcasts every event.
-			try ( callbacks.addScript #postImport importChangeCallback id:#WhiteoutDex ) catch ()
-			try ( callbacks.addScript #filePostMerge importChangeCallback id:#WhiteoutDex ) catch ()
+			try ( callbacks.addScript #postImport importScript id:#WhiteoutDex ) catch ()
+			try ( callbacks.addScript #filePostMerge importScript id:#WhiteoutDex ) catch ()
 
 			-- Localization
 			if ::WdxL != undefined then
@@ -2797,7 +2821,7 @@
     
     fn showUI =
     (
-        if not this.mainRollout.isDisplayed then CreateDialog this.mainRollout
+        if not this.mainRollout.isDisplayed then CreateDialog this.mainRollout style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)
     ),
     
     fn hideUI =

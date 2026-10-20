@@ -1,9 +1,11 @@
 // MDLXExporter — Wc3Material extractor implementation
 #include "wc3_material_extractor.h"
+#include <wdx_text.h>
 #include "../mdx_class_ids.h"
 #include "../material_fix_settings.h"
 
 #include <wdx_foreign_material.h>
+#include <wdx_replaceable_ids.h>
 
 #include <scene/paramblock_reader.h>
 #include <animation/global_sequence_helper.h>
@@ -102,7 +104,7 @@ std::string extractBitmapFileName(Texmap* tex) {
     // Standard Bitmaptexture
     if (tex->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
         auto* bmt = static_cast<BitmapTex*>(tex);
-        return stripPath(wstrToUtf8(bmt->GetMapName()));
+        return stripPath(wdx::text::wideToMdx(bmt->GetMapName()));
     }
     // Wc3Bitmap — find BitmapTex delegate in references
     if (tex->ClassID() == mdx_ids::WC3_BITMAP) {
@@ -110,7 +112,7 @@ std::string extractBitmapFileName(Texmap* tex) {
             ReferenceTarget* ref = tex->GetReference(i);
             if (ref && ref->ClassID() == Class_ID(BMTEX_CLASS_ID, 0)) {
                 auto* bmt = static_cast<BitmapTex*>(ref);
-                return stripPath(wstrToUtf8(bmt->GetMapName()));
+                return stripPath(wdx::text::wideToMdx(bmt->GetMapName()));
             }
         }
     }
@@ -124,7 +126,7 @@ std::string readMaterialPrefix(ReferenceTarget* mtlRef, const wchar_t* paramName
     using PBR = core::ParamBlockReader;
     std::wstring prefix;
     if (PBR::readStringByName(mtlRef, paramName, 0, prefix) && !prefix.empty())
-        return wstrToUtf8(prefix.c_str());
+        return wdx::text::wideToMdx(prefix.c_str());
     return {};
 }
 
@@ -390,11 +392,16 @@ BitmapProperties extractBitmapProperties(Texmap* tex) {
         using PBR = core::ParamBlockReader;
         TimeValue t = 0;
 
-        int replId = 1; // 1-based: 1 = Not Used
-        PBR::readIntByName(ref, L"replaceableId", t, replId);
-        // NeoDex fallback: param is called "retexture"
-        if (replId == 0) PBR::readIntByName(ref, L"retexture", t, replId);
-        props.replaceableId = std::max(0, replId - 1);
+        // Wc3Bitmap's dropdown holds a list position (wdx_replaceable_ids.h);
+        // NeoDex's "retexture" list is 0 / 1 / 2 itself, so position - 1.
+        int replId = 1; // 1 = Not Used
+        if (PBR::readIntByName(ref, L"replaceableId", t, replId) && replId > 0) {
+            props.replaceableId = wdx::replaceable::IdFromDropdown(replId);
+        } else {
+            replId = 0;
+            PBR::readIntByName(ref, L"retexture", t, replId);
+            props.replaceableId = std::max(0, replId - 1);
+        }
 
         BOOL flag = FALSE;
         const bool hasWrapU = PBR::readBoolByName(ref, L"wrapU", t, flag);
@@ -407,7 +414,7 @@ BitmapProperties extractBitmapProperties(Texmap* tex) {
 
         std::wstring prefix;
         if (PBR::readStringByName(ref, L"prefixPath", t, prefix) && !prefix.empty())
-            props.prefixPath = wstrToUtf8(prefix.c_str());
+            props.prefixPath = wdx::text::wideToMdx(prefix.c_str());
 
         // The delegate's tiling is only a fallback for a Wc3Bitmap without
         // the wrap params. When they exist they are the truth: Wc3Material's
@@ -496,6 +503,31 @@ static Control* getParamController(ReferenceTarget* ref, const wchar_t* name) {
     Animatable* anim = pb->SubAnim(animIdx);
     if (!anim) return nullptr;
     return GetControlInterface(anim);
+}
+
+static BitmapTex* unwrapBitmapTex(Texmap* tex);
+
+// The texture's fixed Coordinates (offset, tiling, W angle) onto the layer,
+// to be baked into the geoset UVs. Only explicit map-channel mapping without
+// U/V angles (a 2D transform). Ripped models carry them - the eyes' pupils
+// sit at a U/V offset of 0.5 - and the export used to drop them.
+static void readStaticUVTransform(Texmap* tex, ir::MaterialLayer& layer) {
+    BitmapTex* bmt = unwrapBitmapTex(tex);
+    StdUVGen* uv = bmt ? bmt->GetUVGen() : nullptr;
+    // A texture slot reading a mesh map channel (GetCoordMapping reports 4 for
+    // that in Max 2027, not UVMAP_EXPLICIT - the source and slot are reliable)
+    if (!uv || uv->GetSlotType() != MAPSLOT_TEXTURE || uv->GetUVWSource() != UVWSRC_EXPLICIT) return;
+    const TimeValue t = 0;
+    if (std::fabs(uv->GetUAng(t)) > 1e-6f || std::fabs(uv->GetVAng(t)) > 1e-6f) return;
+    const float uo = uv->GetUOffs(t), vo = uv->GetVOffs(t);
+    const float us = uv->GetUScl(t), vs = uv->GetVScl(t), wa = uv->GetWAng(t);
+    if (std::fabs(uo) < 1e-6f && std::fabs(vo) < 1e-6f && std::fabs(us - 1.0f) < 1e-6f &&
+        std::fabs(vs - 1.0f) < 1e-6f && std::fabs(wa) < 1e-6f)
+        return;
+    layer.hasStaticUV = true;
+    layer.uvOffsetU = uo; layer.uvOffsetV = vo;
+    layer.uvTilingU = us; layer.uvTilingV = vs;
+    layer.uvAngleW = wa;
 }
 
 // Unwrap a Texmap to its native BitmapTex: the texmap itself when it is one,
@@ -801,6 +833,48 @@ static void readFloatKeys(Control* ctrl,
     }
 }
 
+// Tangents of one channel at the merged key times of a vector track. Each
+// merged span is sampled at 1/3 and 2/3 and its cubic solved (NeoDex
+// ProcessBezier, as readFloatKeys does per controller), so a channel without
+// a key at a merged time still follows its own curve; taking the channel's own
+// key tangents left 0 there, a control point the value dipped towards (a
+// U-only tiling animation pulled V tiling down to 0.25 mid-span). Bezier keeps
+// the control points, Hermite wants the slopes 3 * (c1 - p0), 3 * (p1 - c2).
+static void channelTangentsOnTimes(Control* ctrl, float dflt, float sign,
+                                   const std::vector<TimeValue>& times, bool hermite,
+                                   std::vector<float>& inT, std::vector<float>& outT)
+{
+    const size_t n = times.size();
+    std::vector<float> v(n);
+    for (size_t i = 0; i < n; i++) v[i] = evalFloat(ctrl, times[i], dflt) * sign;
+    inT.assign(n, 0.0f);
+    outT.assign(n, 0.0f);
+    for (size_t i = 0; i < n; i++) {
+        float in = v[i], out = v[i];
+        if (i > 0) {
+            const TimeValue t0 = times[i-1], span = times[i] - t0;
+            const float pe = evalFloat(ctrl, t0 + static_cast<TimeValue>(span / 3.0), dflt) * sign;
+            const float pd = evalFloat(ctrl, t0 + static_cast<TimeValue>(2.0 * span / 3.0), dflt) * sign;
+            in = 3.0f*pd + (2.0f*v[i-1] - 9.0f*pe - 5.0f*v[i]) / 6.0f;
+        }
+        if (i + 1 < n) {
+            const TimeValue t0 = times[i], span = times[i+1] - t0;
+            const float pe = evalFloat(ctrl, t0 + static_cast<TimeValue>(span / 3.0), dflt) * sign;
+            const float pd = evalFloat(ctrl, t0 + static_cast<TimeValue>(2.0 * span / 3.0), dflt) * sign;
+            out = 3.0f*pe + (2.0f*v[i+1] - 5.0f*v[i] - 9.0f*pd) / 6.0f;
+        }
+        if (fabsf(in - v[i]) < 0.01f)  in = v[i];
+        if (fabsf(out - v[i]) < 0.01f) out = v[i];
+        if (hermite) {
+            inT[i]  = 3.0f * (v[i] - in);
+            outT[i] = 3.0f * (out - v[i]);
+        } else {
+            inT[i]  = in;
+            outT[i] = out;
+        }
+    }
+}
+
 // Extract a Vec3 track from two float controllers (U, V). The third
 // component gets `defaultW`. negateFactor is applied to the U component
 // (use -1.0f to match importer convention where MDX X = -U_Offset).
@@ -830,11 +904,6 @@ static int32_t extractVec3FromTwoCtrls(Control* ctrlU, Control* ctrlV,
     std::sort(times.begin(), times.end());
     times.erase(std::unique(times.begin(), times.end()), times.end());
 
-    // Tangent lookup by time
-    std::unordered_map<TimeValue, size_t> tanIdxU, tanIdxV;
-    for (size_t i = 0; i < kTimesU.size(); i++) tanIdxU[kTimesU[i]] = i;
-    for (size_t i = 0; i < kTimesV.size(); i++) tanIdxV[kTimesV[i]] = i;
-
     bool useTans = (tanU || tanV) &&
                    (interp == ir::InterpolationType::Hermite ||
                     interp == ir::InterpolationType::Bezier);
@@ -842,7 +911,17 @@ static int32_t extractVec3FromTwoCtrls(Control* ctrlU, Control* ctrlV,
     ir::Track<Point3> track;
     track.interpolation = interp;
 
-    for (TimeValue t : times) {
+    const bool hermite = interp == ir::InterpolationType::Hermite;
+    std::vector<float> uIn, uOut, vIn, vOut;
+    if (useTans) {
+        channelTangentsOnTimes(ctrlU, defaultU, negateFactor, times, hermite, uIn, uOut);
+        channelTangentsOnTimes(ctrlV, defaultV, 1.0f, times, hermite, vIn, vOut);
+    }
+    // W has no controller: a constant, flat on both sides.
+    const float wTan = hermite ? 0.0f : defaultW;
+
+    for (size_t ti = 0; ti < times.size(); ++ti) {
+        const TimeValue t = times[ti];
         float u = evalFloat(ctrlU, t, defaultU);
         float v = evalFloat(ctrlV, t, defaultV);
 
@@ -852,19 +931,8 @@ static int32_t extractVec3FromTwoCtrls(Control* ctrlU, Control* ctrlV,
         key.value = Point3(u * negateFactor, v, defaultW);
 
         if (useTans) {
-            float uiIn = 0.0f, uiOut = 0.0f, viIn = 0.0f, viOut = 0.0f;
-            auto itU = tanIdxU.find(t);
-            if (itU != tanIdxU.end() && tanU) {
-                uiIn  = kTiU[itU->second] * negateFactor;
-                uiOut = kToU[itU->second] * negateFactor;
-            }
-            auto itV = tanIdxV.find(t);
-            if (itV != tanIdxV.end() && tanV) {
-                viIn  = kTiV[itV->second];
-                viOut = kToV[itV->second];
-            }
-            key.inTangent  = Point3(uiIn,  viIn,  0.0f);
-            key.outTangent = Point3(uiOut, viOut, 0.0f);
+            key.inTangent  = Point3(uIn[ti],  vIn[ti],  wTan);
+            key.outTangent = Point3(uOut[ti], vOut[ti], wTan);
             key.hasTangents = true;
         }
     }
@@ -1086,17 +1154,13 @@ static TimeValue getGlobalSequenceDuration(Control* ctrl) {
     int afterORT = ctrl->GetORT(ORT_AFTER);
     if (afterORT != ORT_CYCLE && afterORT != ORT_LOOP) return 0;
 
-    // Duration = time of last key
+    // Duration = time of last key. Read through the typed key of the
+    // controller's own class: GetKey writes a whole key, and a TCB key is
+    // larger than an IBezFloatKey.
     IKeyControl* ikc = GetKeyControlInterface(ctrl);
     if (!ikc) return 0;
-    int n = ikc->GetNumKeys();
-    if (n == 0) return 0;
-
-    // All float key struct layouts start with TimeValue, so reading
-    // as IBezFloatKey is safe just for the time field.
-    IBezFloatKey key;
-    ikc->GetKey(n - 1, &key);
-    return key.time;
+    const std::vector<TimeValue> times = core::anim::collectKeyTimes(ctrl);
+    return times.empty() ? 0 : times.back();
 }
 
 // Register a duration with the IRModel, returning its 0-based index.
@@ -1167,12 +1231,6 @@ static int32_t extractVec3FromThreeCtrls(Control* ctrlA, Control* ctrlB,
     std::sort(times.begin(), times.end());
     times.erase(std::unique(times.begin(), times.end()), times.end());
 
-    // Tangent lookup by time
-    std::unordered_map<TimeValue, size_t> tanIdxA, tanIdxB, tanIdxC;
-    for (size_t i = 0; i < kTimesA.size(); i++) tanIdxA[kTimesA[i]] = i;
-    for (size_t i = 0; i < kTimesB.size(); i++) tanIdxB[kTimesB[i]] = i;
-    for (size_t i = 0; i < kTimesC.size(); i++) tanIdxC[kTimesC[i]] = i;
-
     bool useTans = (tanA || tanB || tanC) &&
                    (interp == ir::InterpolationType::Hermite ||
                     interp == ir::InterpolationType::Bezier);
@@ -1180,7 +1238,16 @@ static int32_t extractVec3FromThreeCtrls(Control* ctrlA, Control* ctrlB,
     ir::Track<Point3> track;
     track.interpolation = interp;
 
-    for (TimeValue t : times) {
+    const bool hermite = interp == ir::InterpolationType::Hermite;
+    std::vector<float> aIn, aOut, bIn, bOut, cIn, cOut;
+    if (useTans) {
+        channelTangentsOnTimes(ctrlA, defaultA, signA, times, hermite, aIn, aOut);
+        channelTangentsOnTimes(ctrlB, defaultB, 1.0f, times, hermite, bIn, bOut);
+        channelTangentsOnTimes(ctrlC, defaultC, 1.0f, times, hermite, cIn, cOut);
+    }
+
+    for (size_t ti = 0; ti < times.size(); ++ti) {
+        const TimeValue t = times[ti];
         float a = evalFloat(ctrlA, t, defaultA) * signA;
         float b = evalFloat(ctrlB, t, defaultB);
         float c = evalFloat(ctrlC, t, defaultC);
@@ -1191,26 +1258,8 @@ static int32_t extractVec3FromThreeCtrls(Control* ctrlA, Control* ctrlB,
         key.value = Point3(a, b, c);
 
         if (useTans) {
-            float aiIn = 0.0f, aiOut = 0.0f;
-            float biIn = 0.0f, biOut = 0.0f;
-            float ciIn = 0.0f, ciOut = 0.0f;
-            auto itA = tanIdxA.find(t);
-            if (itA != tanIdxA.end() && tanA) {
-                aiIn  = kTiA[itA->second] * signA;
-                aiOut = kToA[itA->second] * signA;
-            }
-            auto itB = tanIdxB.find(t);
-            if (itB != tanIdxB.end() && tanB) {
-                biIn  = kTiB[itB->second];
-                biOut = kToB[itB->second];
-            }
-            auto itC = tanIdxC.find(t);
-            if (itC != tanIdxC.end() && tanC) {
-                ciIn  = kTiC[itC->second];
-                ciOut = kToC[itC->second];
-            }
-            key.inTangent  = Point3(aiIn,  biIn,  ciIn);
-            key.outTangent = Point3(aiOut, biOut, ciOut);
+            key.inTangent  = Point3(aIn[ti],  bIn[ti],  cIn[ti]);
+            key.outTangent = Point3(aOut[ti], bOut[ti], cOut[ti]);
             key.hasTangents = true;
         }
     }
@@ -1564,7 +1613,7 @@ static int32_t extractExactFlipbook(ReferenceTarget* mtlRef, ir::IRModel& model,
     std::vector<int32_t> texIndex(static_cast<size_t>(count), -1);
     for (int i = 0; i < count; ++i) {
         const MCHAR* raw = pb->GetStr(pid, 0, i);
-        const std::string entry = raw ? wstrToUtf8(raw) : std::string();
+        const std::string entry = raw ? wdx::text::wideToMdx(raw) : std::string();
         const size_t a = entry.find('|');
         const size_t b = (a == std::string::npos) ? std::string::npos : entry.find('|', a + 1);
         if (b == std::string::npos) continue;
@@ -1682,6 +1731,9 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     flagVal = FALSE;
     if (PBR::readBoolByName(mtlRef, L"backFacesForShadows", t, flagVal) && flagVal)
         layer.backFacesForShadows = true;
+    flagVal = FALSE;
+    if (PBR::readBoolByName(mtlRef, L"unlit", t, flagVal) && flagVal)
+        layer.unlit = true;
 
     // Shader dropdown (1 SD, 2 HD, 3 SD on HD, 4 Crystal) → MDX ShaderType.
     // Only Wc3Material has it: a NeoDex material would answer with its
@@ -1742,11 +1794,9 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         matProps.shaderName = wstrToUtf8(shaderPath.c_str());
 
     // Material-level replaceableId (new NeoDex scheme — field moved from
-    // Wc3Bitmap to Wc3Material). Dropdown stores 1-based indices:
-    //   1 = Not Used, 2 = Team Color, 3 = Team Glow, 4 = Cliff,
-    //   5 = Lord Cliffington.
-    // MDX TEXS expects 0-based: 0 = Normal, 1 = Team Color, 2 = Team Glow,
-    // 3 = Cliff, 4 = Lord Cliffington. So subtract 1.
+    // Wc3Bitmap to Wc3Material). The dropdown holds a list position that
+    // wdx::replaceable::IdFromDropdown turns into the MDX id (0 none,
+    // 1 team colour, 2 team glow, 11 cliff, 31-37 trees).
     //
     // We fall back to reading from the bitmap (extractBitmapProperties) if
     // the material doesn't explicitly set replaceableId — that preserves
@@ -1756,9 +1806,13 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     bool matReplaceableIdFound = false;
     {
         int dropdownVal = 0;
-        if (readIntFB(mtlRef, L"replaceableId", L"retexture", t, dropdownVal)) {
+        // Wc3Material's dropdown holds a list position (wdx_replaceable_ids.h);
+        // NeoDex's "retexture" list is 0 / 1 / 2 itself, so position - 1.
+        if (core::ParamBlockReader::readIntByName(mtlRef, L"replaceableId", t, dropdownVal)) {
             matReplaceableIdFound = true;
-            // Dropdown is 1-based; convert to MDX 0-based. Clamp negatives.
+            matReplaceableId = wdx::replaceable::IdFromDropdown(dropdownVal);
+        } else if (core::ParamBlockReader::readIntByName(mtlRef, L"retexture", t, dropdownVal)) {
+            matReplaceableIdFound = true;
             matReplaceableId = std::max(0, dropdownVal - 1);
         }
         if (textureLayerOnly) matReplaceableId = 0;
@@ -1812,11 +1866,14 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
                 bmpProps.sphereEnvMap = true;
         }
 
-        // For Team Color / Team Glow / Cliff the MDX convention is an empty
-        // texture path — the game substitutes the texture at runtime based
-        // on the replaceableId. Force the path empty if this is a special
-        // replaceable type, regardless of what diffuseMap points to.
-        if (matReplaceableId >= 1 && matReplaceableId <= 4) {
+        // For every replaceable texture (team colour / glow, cliff, trees -
+        // wdx_replaceable_ids.h) the MDX convention is an empty texture
+        // path: the game substitutes the texture at runtime based on the
+        // replaceableId. Force the path empty, regardless of what diffuseMap
+        // points to (the importer loads the canonical texture there so the
+        // viewport shows something).
+        const bool replaceable = bmpProps.replaceableId > 0;
+        if (replaceable) {
             fileName.clear();
         }
 
@@ -1826,7 +1883,7 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         std::string matPrefix = readMaterialPrefix(mtlRef, L"diffusePrefix");
         if (matPrefix.empty() && neoDex) matPrefix = readMaterialPrefix(mtlRef, L"path");
         std::string prefix = !matPrefix.empty() ? matPrefix : bmpProps.prefixPath;
-        std::string texPath = (matReplaceableId >= 1 && matReplaceableId <= 4)
+        std::string texPath = replaceable
                                   ? std::string()  // empty path for replaceables
                                   : buildTexturePath(prefix, fileName);
 
@@ -1914,9 +1971,9 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
             texRef.slot = ir::TextureSlot::Diffuse;
             layer.textureRefs.push_back(texRef);
         }
-    } else if (matReplaceableId >= 1 && matReplaceableId <= 4) {
-        // Material has no diffuseMap but is a Team Color / Team Glow / Cliff
-        // replaceable. MDX convention is to emit a TEXS entry with the
+    } else if (matReplaceableId > 0) {
+        // Material has no diffuseMap but is a replaceable (team colour /
+        // glow, cliff, tree). MDX convention is to emit a TEXS entry with the
         // replaceableId set and an empty path — the engine substitutes the
         // texture at runtime. Without this fallback, replaceable materials
         // that don't carry a bitmap lose their replaceableId on export.
@@ -1969,6 +2026,11 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         int32_t taIdx = extractTextureAnimationFromMaterial(mtlRef, model);
         if (taIdx >= 0)
             layer.textureAnimationIndex = taIdx;
+        else {
+            Texmap* diffuseTex = nullptr;
+            readTexmapFB(mtlRef, L"diffuseMap", L"texture", diffuseTex);
+            readStaticUVTransform(diffuseTex, layer);
+        }
     }
 
     // --- Reforged PBR maps ---
@@ -2010,6 +2072,10 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
             wrap = FALSE;
             if (PBR::readBoolByName(mtlRef, L"Wrap_Height", t, wrap)) bp.wrapV = wrap != 0;
         }
+        // A replaceable (tree, team colour, cliff) keeps an empty path in
+        // every slot, like the diffuse: Blizzard's HD trees carry id 31-37
+        // with no path in diffuse, normal and ORM alike.
+        if (bp.replaceableId > 0) path.clear();
         ir::TextureRef ref;
         ref.textureIndex = findOrAddTexture(model, path, bp.replaceableId,
                                             bp.wrapU, bp.wrapV,
@@ -2197,6 +2263,25 @@ void extractCompositeMaterial(Mtl* mtl, ir::IRModel& model,
 // Material Fix's texHasAlpha: alpha below 250 somewhere on a 5 x 5 grid. An
 // alpha channel that is opaque everywhere (common in BLP and TGA) does not
 // count. False when the bitmap is not loaded, as in the tool.
+// 0 = no alpha, 1 = hard edges only (cut-out), 2 = soft alpha - sampled on
+// the same 5 x 5 grid as MaterialFix.ms texAlphaKind.
+static int bitmapAlphaKind(Texmap* tex) {
+    BitmapTex* bmt = unwrapBitmapTex(tex);
+    Bitmap* bm = bmt ? bmt->GetBitmap(0) : nullptr;
+    if (!bm || bm->Width() <= 0 || bm->Height() <= 0) return 0;
+    const int w = bm->Width(), h = bm->Height();
+    int kind = 0;
+    for (int iy = 0; iy <= 4; ++iy)
+        for (int ix = 0; ix <= 4; ++ix) {
+            BMM_Color_64 px;
+            if (bm->GetPixels(ix * (w - 1) / 4, iy * (h - 1) / 4, 1, &px) && px.a < 250 * 257) {
+                if (px.a > 5 * 257) return 2;
+                kind = 1;
+            }
+        }
+    return kind;
+}
+
 static bool bitmapShowsAlpha(Texmap* tex) {
     BitmapTex* bmt = unwrapBitmapTex(tex);
     Bitmap* bm = bmt ? bmt->GetBitmap(0) : nullptr;
@@ -2234,6 +2319,48 @@ void extractForeignMaterial(Mtl* mtl, ir::IRModel& model) {
     layer.unfogged = fix.unfogged;
     layer.twoSided = fix.twoSided;
     layer.noDepthTest = fix.noDepthTest;
+
+    // "From the source material" (MaterialFix.ms sourceFlags / copyOpacityKeys):
+    // two-sided, fully self-illuminated (unshaded), see-through or additive
+    // carry over, and so do opacity keys. Standard's transparency type is
+    // TRANSP_SUBTRACTIVE 0 / TRANSP_ADDITIVE 1 / TRANSP_FILTER 2 (stdmat.h).
+    if (fix.fromSource && mtl) {
+        BOOL thin = FALSE;
+        if (core::ParamBlockReader::readBoolByName(mtl, L"thin_walled", 0, thin) && thin)
+            layer.twoSided = true;
+        int srcFm = 0;
+        if (mtl->ClassID() == Class_ID(DMTL_CLASS_ID, 0)) {
+            StdMat2* sm = static_cast<StdMat2*>(mtl);
+            if (sm->GetTwoSided()) layer.twoSided = true;
+            if (sm->GetSelfIllumColorOn()) {
+                const Color c = sm->GetSelfIllumColor(0);
+                if (c.r > 0.98f && c.g > 0.98f && c.b > 0.98f) layer.unshaded = true;
+            } else if (sm->GetSelfIllum(0) >= 0.999f) {
+                layer.unshaded = true;
+            }
+            if (sm->GetTransparencyType() == TRANSP_ADDITIVE) srcFm = 4;
+        }
+        if (srcFm == 0) {
+            if (wdx::material::OpacityTexmap(mtl) || layer.alpha < 0.999f) srcFm = 3;
+            else {
+                const int k = bitmapAlphaKind(colorTex);
+                srcFm = (k == 2) ? 3 : (k == 1) ? 2 : 0;
+            }
+        }
+        if (srcFm > 0) {
+            filterMode = srcFm;
+            layer.blendMode = blendModeFromFilterDropdown(filterMode);
+        }
+        if (Control* oc = getParamController(mtl, L"opacity")) {
+            ir::InterpolationType interp = detectInterpFromController(oc);
+            if (interp == ir::InterpolationType::None) interp = ir::InterpolationType::Linear;
+            const int32_t trackIdx = extractOpacityTrack(mtl, interp, model);
+            if (trackIdx >= 0) {
+                layer.alphaTrackIndex = trackIdx;
+                layer.alpha = 1.0f;
+            }
+        }
+    }
     layer.noDepthWrite = fix.noDepthSet && filterMode >= 3;
     if (fix.constantColor) mat.flags |= 0x01;
 
@@ -2250,6 +2377,7 @@ void extractForeignMaterial(Mtl* mtl, ir::IRModel& model) {
             ref.slot = ir::TextureSlot::Diffuse;
             layer.textureRefs.push_back(ref);
         }
+        readStaticUVTransform(colorTex, layer);
     }
 
     mat.layers.push_back(std::move(layer));

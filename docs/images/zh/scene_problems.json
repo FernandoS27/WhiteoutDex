@@ -1,0 +1,8 @@
+{"title":"场景问题","controls":[{"id":2005,"parent_id":0,"class":"Static","text":"问题（双击一行以选中该节点）：","x":27,"y":58,"w":599,"h":20},
+{"id":2000,"parent_id":0,"class":"SysListView32","text":"","x":27,"y":85,"w":599,"h":363},
+{"id":0,"parent_id":2000,"class":"SysHeader32","text":"","x":29,"y":87,"w":595,"h":25},
+{"id":2001,"parent_id":0,"class":"Static","text":"共 3 个：名称 2，网格 0，控制器 0，材质 1","x":27,"y":458,"w":599,"h":20},
+{"id":2004,"parent_id":0,"class":"Button","text":"重新扫描","x":27,"y":490,"w":113,"h":35},
+{"id":2002,"parent_id":0,"class":"Button","text":"修复选中项","x":151,"y":490,"w":135,"h":35},
+{"id":2003,"parent_id":0,"class":"Button","text":"全部修复","x":297,"y":490,"w":113,"h":35},
+{"id":1,"parent_id":0,"class":"Button","text":"关闭","x":513,"y":490,"w":113,"h":35}]}

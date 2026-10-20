@@ -1,0 +1,8 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":10,"y":30,"w":248,"h":105},
+{"id":6061,"parent_id":0,"class":"Static","text":"Priority Plane:","x":30,"y":45,"w":106,"h":20},
+{"id":3059,"parent_id":0,"class":"CustEdit","text":"","x":147,"y":43,"w":68,"h":25},
+{"id":0,"parent_id":3059,"class":"EDITDUMMY","text":"","x":149,"y":45,"w":64,"h":21},
+{"id":0,"parent_id":0,"class":"Edit","text":"","x":151,"y":44,"w":64,"h":27},
+{"id":3060,"parent_id":0,"class":"SpinnerControl","text":"","x":215,"y":43,"w":18,"h":25},
+{"id":4116,"parent_id":0,"class":"Button","text":"Particles in Model Space","x":39,"y":75,"w":212,"h":25},
+{"id":4117,"parent_id":0,"class":"Button","text":"XY Quads","x":39,"y":100,"w":108,"h":25}]}

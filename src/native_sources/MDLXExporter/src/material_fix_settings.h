@@ -30,6 +30,7 @@ struct MaterialFixSettings {
     int          wrapMode      = 1;      // 1 keep the bitmap's, 2 U and V, 3 U, 4 V, 5 clamp
     bool         uTile         = false;  // wrapMode as flags, for the built-in Fix all
     bool         vTile         = false;
+    bool         fromSource    = true;   // two-sided, unshaded, filter mode, opacity keys from the source (FromSource)
 };
 
 inline std::wstring plugcfgFile(const wchar_t* name) {
@@ -73,6 +74,7 @@ inline MaterialFixSettings loadMaterialFixSettings() {
         s.filterMode = s.autoFilter ? 1 : fm;
         const int wm = _wtoi(getStr(tool, sec, L"WrapMode", L"1").c_str());
         s.wrapMode = (wm >= 1 && wm <= 5) ? wm : 1;
+        s.fromSource = isTrue(getStr(tool, sec, L"FromSource", L"1"));
     } else {
         const std::wstring legacy = plugcfgFile(L"MDLXExporter.ini");
         auto flag = [&](const wchar_t* key) { return isTrue(getStr(legacy, L"MaterialFix", key)); };

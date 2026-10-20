@@ -199,6 +199,19 @@ renderer plug-in at build time as the ImGui host theme's UI font.
 
 ---
 
+## Noto Sans SC / Noto Sans KR
+
+NotoSansSC-Medium.ttf and NotoSansKR-Medium.ttf come from WhiteoutFlakes
+(`resources/fonts/`) and are installed to `fonts/` for the renderer's Chinese,
+Japanese and Korean UI text.
+
+- **Source:** <https://fonts.google.com/noto>
+- **Copyright:** 2014-2021 Adobe, with Reserved Font Name 'Source'
+- **License:** SIL Open Font License 1.1, whose full text ships beside the
+  fonts as `fonts/OFL.txt`
+
+---
+
 ## WhiteoutLib — CascLib
 
 CascLib is an optional dependency of WhiteoutLib for reading Blizzard CASC

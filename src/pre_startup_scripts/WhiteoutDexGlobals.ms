@@ -891,20 +891,20 @@ struct WhiteoutDexSequenceStorageStruct
         
         -- Step 1: Group keys by value (2 keys with same value = 1 sequence)
         local grouped = #()
-        local lookup = Dictionary #string
+        local lookup = ::_wdxNewFastDict()
         for k in keys do
         (
             local kVal = k.value
             if kVal == "" then continue
-            if hasDictValue lookup kVal then
+            if ::_wdxDictHas lookup kVal then
             (
-                local idx = lookup[kVal]
+                local idx = ::_wdxDictGet lookup kVal
                 append grouped[idx] k
             )
             else
             (
                 append grouped #(k)
-                lookup[kVal] = grouped.count
+                ::_wdxDictSet lookup kVal grouped.count
             )
         )
         

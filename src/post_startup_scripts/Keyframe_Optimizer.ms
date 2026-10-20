@@ -1182,11 +1182,21 @@ rollout wdxPanelMethods "Optimization Methods"
         local sortedSeqs = deepCopy seqs
         qsort sortedSeqs CompareSequenceStart
 
+        -- Only frames no sequence covers. Sequences that touch (60 / 61), share
+        -- a frame or overlap leave no gap between them, and `interval a b` with
+        -- b < a swaps its ends: the "gap" between touching sequences selected
+        -- their own end and start keys, which were then deleted.
         local gapIntervals = #()
-        append gapIntervals (interval 1 (sortedSeqs[1][2] - 1))
-        for j = 1 to (sortedSeqs.count - 1) do
-            append gapIntervals (interval (sortedSeqs[j][3] + 1) (sortedSeqs[j+1][2] - 1))
-        append gapIntervals (interval (sortedSeqs[sortedSeqs.count][3] + 1) 99999)
+        if sortedSeqs[1][2] > 1 do
+            append gapIntervals (interval 1 (sortedSeqs[1][2] - 1))
+        local coveredTo = sortedSeqs[1][3]
+        for j = 2 to sortedSeqs.count do
+        (
+            if sortedSeqs[j][2] - 1 >= coveredTo + 1 do
+                append gapIntervals (interval (coveredTo + 1) (sortedSeqs[j][2] - 1))
+            if sortedSeqs[j][3] > coveredTo do coveredTo = sortedSeqs[j][3]
+        )
+        append gapIntervals (interval (coveredTo + 1) 99999)
 
         ResetProgress total
         local keysBefore = CountKeys objKeys

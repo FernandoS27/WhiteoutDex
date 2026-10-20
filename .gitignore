@@ -1,2 +1,7 @@
 build*/
 output/
+# Manual build output and capture scratch
+docs/out/
+docs/tools/capture/capture_job.txt
+
+__pycache__/
