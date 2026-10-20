@@ -44,6 +44,7 @@
 #include "assembly/mdx_model_builder.h"
 #include "assembly/mdx_sequence_boundary_keys.h"
 #include "assembly/mdx_bone_stretch.h"
+#include "assembly/mdx_non_finite.h"
 
 #include "texture/texture_export.h"
 
@@ -744,6 +745,11 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         dialog.step(ExportStep::Textures);
         mdx_export::convertExportTextures(irModel, wcharToUtf8(name), opts, reporter);
     }
+
+    // NaN / infinity from the scene (protected models carry them) must not
+    // reach the MDX; see mdx_non_finite.h.
+    if (const size_t nonFinite = mdx_assembly::replaceNonFinite(irModel, reporter))
+        ELOG << "Replaced " << nonFinite << " non-finite value(s)\n";
 
     // Build
     ELOG << "\n==== Model Build ====\n"; EFLUSH;
