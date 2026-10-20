@@ -52,6 +52,32 @@ inline BOOL execMaxScript(const MCHAR* script) {
     return ExecuteMAXScriptScript(const_cast<MCHAR*>(script));
 #endif
 }
+
+// Max runs an exporter with undo suspended: inside DoExport
+// theHold.IsSuspended() is 1 and Holding() 0. The fixes started from the
+// export dialog then changed the scene with no undo record at all, and a node
+// the Multi/Sub split deleted was freed while an older undo entry still
+// pointed at it: Undo after closing the dialog crashed 3ds Max ("broly
+// test.max", 2027). Each fix resumes holding for its run, so it is an undo
+// step like anywhere else, and suspends it again afterwards (hold.h:
+// Suspend / Resume / IsSuspended). Outside an export it does nothing.
+class UndoableFix {
+public:
+    UndoableFix() {
+        while (theHold.IsSuspended() && resumed_ < 16) {
+            theHold.Resume();
+            ++resumed_;
+        }
+    }
+    ~UndoableFix() {
+        while (resumed_-- > 0) theHold.Suspend();
+    }
+    UndoableFix(const UndoableFix&) = delete;
+    UndoableFix& operator=(const UndoableFix&) = delete;
+
+private:
+    int resumed_ = 0;
+};
 } // namespace
 
 namespace scene_monitor {
@@ -63,6 +89,7 @@ namespace scene_monitor {
 // ============================================================================
 
 int fixDuplicateNames(const ScanResult& result) {
+    UndoableFix undoable;
     Interface* gi = GetCOREInterface();
     if (!gi) return 0;
 
@@ -214,6 +241,7 @@ bool addEditMeshModifier(INode* node) {
 } // anonymous
 
 int fixMeshProblems(const ScanResult& result) {
+    UndoableFix undoable;
     Interface* gi = GetCOREInterface();
     if (!gi) return 0;
 
@@ -258,6 +286,7 @@ int fixMeshProblems(const ScanResult& result) {
 // ============================================================================
 
 int fixBoneControllers(const ScanResult& result) {
+    UndoableFix undoable;
     Interface* gi = GetCOREInterface();
     if (!gi) return 0;
 
@@ -814,6 +843,7 @@ static int fixMaterialsViaScript(const ScanResult& result) {
 }
 
 int fixUnsupportedMaterials(const ScanResult& result) {
+    UndoableFix undoable;
     Interface* gi = GetCOREInterface();
     if (!gi) {
         ELOG << "[matFix] fixUnsupportedMaterials: gi is null\n"; EFLUSH;
@@ -1046,6 +1076,7 @@ const wchar_t* kSplitMultiScript =
 } // anonymous
 
 int fixMultiMaterialMeshes(const ScanResult& result) {
+    UndoableFix undoable;
     std::wstring handles;
     std::unordered_set<INode*> seen;
     for (auto& p : result.problems) {
@@ -1110,11 +1141,13 @@ int mergeDuplicateMaterials() {
 } // namespace
 
 int fixDuplicateMaterials(const ScanResult& result) {
+    UndoableFix undoable;
     if (result.countByType(ProblemType::DuplicateMaterial) == 0) return 0;
     return mergeDuplicateMaterials();
 }
 
 int fixAll(const ScanResult& result) {
+    UndoableFix undoable;
     int n = 0;
     n += fixDuplicateNames(result);
     // The split replaces nodes and hands the pieces sub-materials the first
