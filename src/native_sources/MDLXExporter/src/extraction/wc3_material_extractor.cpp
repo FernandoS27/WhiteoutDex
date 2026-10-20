@@ -17,7 +17,6 @@
 #include <istdplug.h>
 #include <control.h>
 #include <iparamb2.h>
-#include <IFileResolutionManager.h>
 #include <modstack.h>
 #include <tchar.h>
 #include <windows.h>
@@ -217,6 +216,9 @@ struct SceneTextureIndex {
     std::unordered_map<std::wstring, std::vector<fs::path>> byStem;
 };
 SceneTextureIndex g_sceneTextures;
+// resolveTextureSource's answers per (disk path, MDX path, scene), misses
+// included; extractMaterials() clears it with the index.
+std::unordered_map<std::string, std::string> g_resolvedSources;
 
 void buildSceneTextureIndex(const fs::path& root) {
     g_sceneTextures = {};
@@ -247,13 +249,23 @@ void buildSceneTextureIndex(const fs::path& root) {
 
 // The file a missing texture source most likely is, or `diskPath` unchanged.
 // Looks, in order, beside the missing file, in the scene folder under the MDX
-// sub path and directly, then asks Max's own asset resolution (project
-// folder, scene folder, user map paths — IFileResolutionManager), and last
-// searches the scene folder tree. Each place is tried with the original
-// extension first, then every other format conversion can read.
+// sub path and directly, then in Max's map paths, and last searches the scene
+// folder tree. Each place is tried with the original extension first, then
+// every other format conversion can read.
+std::string resolveTextureSourceUncached(const std::string& diskPath,
+                                         const std::string& mdxPath);
 std::string resolveTextureSource(const std::string& diskPath,
                                  const std::string& mdxPath) {
     if (diskPath.empty()) return diskPath;
+    std::string key = diskPath + '\n' + mdxPath;
+    if (Interface* ip = GetCOREInterface())
+        key += '\n' + wstrToUtf8(ip->GetCurFilePath().data());
+    if (auto it = g_resolvedSources.find(key); it != g_resolvedSources.end())
+        return it->second;
+    return g_resolvedSources[key] = resolveTextureSourceUncached(diskPath, mdxPath);
+}
+std::string resolveTextureSourceUncached(const std::string& diskPath,
+                                         const std::string& mdxPath) {
     const fs::path given(utf8ToWide(diskPath));
     std::error_code ec;
     if (fs::exists(given, ec)) return diskPath;
@@ -287,12 +299,19 @@ std::string resolveTextureSource(const std::string& diskPath,
             if (fs::is_regular_file(p, ec)) return wstrToUtf8(p.wstring().c_str());
         }
 
-    if (IFileResolutionManager* frm = IFileResolutionManager::GetInstance())
-        for (const std::wstring& ext : exts) {
-            const MSTR found = frm->GetFullFilePath((stem + ext).c_str(),
-                                   MaxSDK::AssetManagement::kBitmapAsset);
-            if (found.Length() > 0 && fs::is_regular_file(fs::path(found.data()), ec))
-                return wstrToUtf8(found.data());
+    // Max's map paths (Configure User Paths > External Files), each folder
+    // itself. Not through IFileResolutionManager: its lookup walks the whole
+    // scene folder tree, without a depth limit, for every name it is asked -
+    // 1.max saved in a Downloads folder of 60,000+ entries took 137 s to
+    // export. The scene tree is searched below, bounded.
+    if (TheManager)
+        for (int i = 0; i < TheManager->GetMapDirCount(); ++i) {
+            const MSTR mapDir(TheManager->GetMapDir(i));
+            if (mapDir.Length() == 0) continue;
+            for (const std::wstring& ext : exts) {
+                const fs::path p = fs::path(mapDir.data()) / (stem + ext);
+                if (fs::is_regular_file(p, ec)) return wstrToUtf8(p.wstring().c_str());
+            }
         }
 
     if (!sceneDir.empty()) {
@@ -2396,6 +2415,7 @@ MaterialMap extractMaterials(const std::vector<core::SceneNode>& nodes,
     g_texAnimCache.clear();
     // Files may have been added since the last export.
     g_sceneTextures = {};
+    g_resolvedSources.clear();
 
     // Banner the replaceable-debug log (trunc so each export starts fresh)
     {

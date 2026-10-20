@@ -30,7 +30,6 @@
 #include <Windows.h>
 #include <maxscript/foundation/numbers.h>
 #include <maxscript/maxscript.h>
-#include <IFileResolutionManager.h>
 // clang-format on
 
 using namespace whiteout::flakes;
@@ -1043,6 +1042,9 @@ struct SceneTextureIndex {
     std::unordered_map<std::wstring, std::vector<std::filesystem::path>> byStem;
 };
 static SceneTextureIndex g_sceneTextures;
+// What ResolveMissingTexture answered per (path, relDir, scene folder), misses
+// included; CollectScene clears it, so a file added since is found on resync.
+static std::unordered_map<std::wstring, std::wstring> g_resolvedTextures;
 
 static const wchar_t* const kTextureExts[] = {L".blp", L".dds", L".tga", L".png",
                                               L".bmp", L".jpg", L".jpeg"};
@@ -1052,11 +1054,20 @@ static const wchar_t* const kTextureExts[] = {L".blp", L".dds", L".tga", L".png"
 // `given` unchanged - the lookup the exporter's resolveTextureSource does,
 // so the renderer shows what an export would pick up: beside the missing
 // file, in the scene folder under `relDir` (a particle's prefix, else the
-// missing file's own folder name) and directly, Max's asset resolution
-// (IFileResolutionManager: project folder, user map paths), and last the
-// scene folder tree, four levels deep. The original extension is tried
+// missing file's own folder name) and directly, Max's map paths, and last
+// the scene folder tree, four levels deep. The original extension is tried
 // first, then every other format.
-static std::wstring ResolveMissingTexture(const std::wstring& given, std::wstring relDir) {
+static std::wstring ResolveMissingTextureUncached(const std::wstring& given, std::wstring relDir);
+static std::wstring ResolveMissingTexture(const std::wstring& given, const std::wstring& relDir) {
+    std::wstring sceneFile;
+    if (Interface* ip = GetCOREInterface())
+        sceneFile = ip->GetCurFilePath().data();
+    const std::wstring key = given + L'\n' + relDir + L'\n' + sceneFile;
+    if (auto it = g_resolvedTextures.find(key); it != g_resolvedTextures.end())
+        return it->second;
+    return g_resolvedTextures[key] = ResolveMissingTextureUncached(given, relDir);
+}
+static std::wstring ResolveMissingTextureUncached(const std::wstring& given, std::wstring relDir) {
     namespace fs = std::filesystem;
     std::error_code ec;
     const fs::path gp(given);
@@ -1098,12 +1109,21 @@ static std::wstring ResolveMissingTexture(const std::wstring& given, std::wstrin
                 return p.wstring();
         }
 
-    if (IFileResolutionManager* frm = IFileResolutionManager::GetInstance())
-        for (const std::wstring& ext : exts) {
-            const MSTR found = frm->GetFullFilePath((stem + ext).c_str(),
-                                                    MaxSDK::AssetManagement::kBitmapAsset);
-            if (found.Length() > 0 && fs::is_regular_file(fs::path(found.data()), ec))
-                return found.data();
+    // Max's map paths (Configure User Paths > External Files), each folder
+    // itself. Not through IFileResolutionManager: its lookup walks the whole
+    // scene folder tree, without a depth limit, for every name it is asked -
+    // 1.max opened from a Downloads folder of 60,000+ entries kept the preview
+    // from starting for two minutes. The scene tree is searched below, bounded.
+    if (TheManager)
+        for (int i = 0; i < TheManager->GetMapDirCount(); ++i) {
+            const MSTR mapDir(TheManager->GetMapDir(i));
+            if (mapDir.Length() == 0)
+                continue;
+            for (const std::wstring& ext : exts) {
+                const fs::path p = fs::path(mapDir.data()) / (stem + ext);
+                if (fs::is_regular_file(p, ec))
+                    return p.wstring();
+            }
         }
 
     if (sceneDir.empty())
@@ -1300,6 +1320,7 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
 void MaxSceneAdapter::CollectScene() {
     nextTexId_ = 0;
     nextMatId_ = 0;
+    g_resolvedTextures.clear();
     texPathToId_.clear();
     missingTextures_.clear();
     g_wdxMissingTextureCount.store(0);

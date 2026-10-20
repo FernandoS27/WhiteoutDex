@@ -100,8 +100,6 @@ target_link_libraries(WhiteoutDexRenderer PRIVATE
     bmm.lib
     paramblk2.lib
     maxscrpt.lib
-    # IFileResolutionManager: textures saved with another PC's path, found again
-    assetmanagement.lib
     comdlg32
 )
 
