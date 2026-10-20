@@ -112,17 +112,27 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
         wchar_t tmp[MAX_PATH] = {};
         GetTempPathW(MAX_PATH, tmp);
         std::wstring stderrPath = std::wstring(tmp) + L"WhiteoutDex_render.log";
-        FILE* dummy = nullptr;
-        _wfreopen_s(&dummy, stderrPath.c_str(), L"a", stderr);
-        std::fprintf(stderr, "\r\n==== render-thread session ====\r\n");
-        std::fflush(stderr);
+        // A failed freopen leaves stderr closed, and the next fprintf(stderr)
+        // anywhere is an invalid parameter that ends 3ds Max on the spot - it
+        // fails whenever the log is open somewhere without write sharing (the
+        // diag writer below used to do that; another 3ds Max's preview, a
+        // virus scanner). stderr then goes to NUL instead.
+        FILE* redirected = nullptr;
+        if (_wfreopen_s(&redirected, stderrPath.c_str(), L"a", stderr) != 0 || !redirected)
+            _wfreopen_s(&redirected, L"NUL", L"w", stderr);
+        if (redirected) {
+            std::fprintf(stderr, "\r\n==== render-thread session ====\r\n");
+            std::fflush(stderr);
+        }
     }
 
     auto diag = [](const char* msg) {
         wchar_t tmp[MAX_PATH] = {};
         GetTempPathW(MAX_PATH, tmp);
         std::wstring logPath = std::wstring(tmp) + L"WhiteoutDex_render.log";
-        HANDLE h = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+        // Write sharing: stderr above and other 3ds Max sessions have the same
+        // log open; read-only sharing failed here and blocked their freopen.
+        HANDLE h = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h == INVALID_HANDLE_VALUE) return;
         DWORD written = 0;
