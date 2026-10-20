@@ -195,11 +195,20 @@ void resolveSkinIndices(INode* meshNode, ir::Mesh& mesh,
 // and converted models come that way (Beerus: every face of body and heads
 // wound inward, the explicit normals outward). Max draws back faces and
 // shades by the normals, so the scene looks right; Warcraft III culls by
-// the winding and showed the inside. Only a mesh where at least 90% of the
-// triangles disagree is turned: a normal mesh has ~3% (creases, thin parts),
-// and an intentionally inverted shell (cell-shade outline) flips winding and
-// normals together, so it agrees with itself and is left as it is.
-bool fixInsideOutWinding(ir::Mesh& mesh) {
+// the winding and showed the inside.
+// - A node drawn with Backface Cull shows its winding in Max already, so it
+//   is never turned: the outline hulls of the DB Legends imports ("Line_..."
+//   meshes) wind against their normals on purpose, only their back side may
+//   show. Turned, they covered face and loincloth (Broly, 90% against).
+// - Otherwise a mesh is turned when at least two thirds of its triangles
+//   disagree. A normal mesh has ~3% (creases, thin parts); none of the 836
+//   geosets of the 134 regression models is above 50%. Broly's fur loincloth
+//   is 86.7% (spikes crossing the smoothed normals) and was left inside out
+//   by the earlier 90% limit: see-through from behind in the game.
+// An inverted shell made by flipping winding and normals together agrees
+// with itself and is left as it is either way.
+bool fixInsideOutWinding(ir::Mesh& mesh, INode* node) {
+    if (node && node->GetBackCull()) return false;
     const size_t tris = mesh.indices.size() / 3;
     if (tris == 0) return false;
     size_t against = 0;
@@ -210,7 +219,7 @@ bool fixInsideOutWinding(ir::Mesh& mesh) {
         const Point3 faceN = CrossProd(b.position - a.position, c.position - a.position);
         if (DotProd(faceN, a.normal + b.normal + c.normal) < 0.0f) ++against;
     }
-    if (against * 10 < tris * 9) return false;
+    if (against * 3 < tris * 2) return false;
     for (size_t f = 0; f < tris; ++f) std::swap(mesh.indices[3 * f + 1], mesh.indices[3 * f + 2]);
     ELOG << "  mesh '" << mesh.name << "' wound against its normals (" << against << "/" << tris
          << " triangles) -> winding reversed\n";
@@ -342,7 +351,7 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
             continue;
         }
         // Fixed here, so the log has it and the report stays quiet.
-        if (fixInsideOutWinding(mesh))
+        if (fixInsideOutWinding(mesh, sn.maxNode))
             reporter.info(L"Triangles wound against their normals (inside out in the game); "
                           L"the winding was reversed in the export, the scene is unchanged.",
                           sn.maxNode->GetName());
