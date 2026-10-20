@@ -34,6 +34,7 @@
 #include <string>
 
 #include <windows.h>
+#include <systemutilities.h> // MaxSDK::Util::GetLanguageID
 
 namespace wdx::ui {
 
@@ -45,7 +46,7 @@ inline bool g_languageLoaded = false;
 
 /// Read `[Localization] Language` out of WhiteoutDex_Settings.ini in
 /// @p plugcfgDir. Empty when the file or the key is absent, which means
-/// "never chosen" and resolves to English.
+/// "never chosen" (see MaxUiLanguage).
 inline std::string ReadConfiguredLanguage(const std::wstring& plugcfgDir) {
     if (plugcfgDir.empty())
         return {};
@@ -67,6 +68,27 @@ inline std::string ReadConfiguredLanguage(const std::wstring& plugcfgDir) {
     for (const wchar_t* p = buf; *p; ++p)
         out.push_back(static_cast<char>(*p));
     return out;
+}
+
+/// The language WhiteoutDex's scripts show when none was chosen: they take
+/// .NET's UI culture (WhiteoutDexLocalization.ms, detectMaxLanguage), which
+/// 3ds Max sets to its own language - so 3ds Max's UI language, as one of the
+/// catalogs WhiteoutDex ships, else English. A Chinese 3ds Max showed the
+/// scripts in Chinese and the preview in English: its settings folder had no
+/// choice saved, and the preview fell back to English on its own.
+inline std::string MaxUiLanguage() {
+    switch (PRIMARYLANGID(MaxSDK::Util::GetLanguageID())) {
+    case LANG_CHINESE: return "zh";
+    case LANG_GERMAN: return "de";
+    case LANG_RUSSIAN: return "ru";
+    case LANG_JAPANESE: return "ja";
+    case LANG_KOREAN: return "ko";
+    case LANG_FRENCH: return "fr";
+    case LANG_SPANISH: return "es";
+    case LANG_ITALIAN: return "it";
+    case LANG_PORTUGUESE: return "pt-br";
+    default: return "en";
+    }
 }
 
 /// Load the Flakes UI catalogs and activate WhiteoutDex's configured language.
@@ -96,7 +118,10 @@ inline void InitLanguage(HINSTANCE hInstance, const std::wstring& plugcfgDir) {
             langDir = root / "lang";
     }
 
-    const auto lang = i18n::languageFromCode(ReadConfiguredLanguage(plugcfgDir));
+    std::string code = ReadConfiguredLanguage(plugcfgDir);
+    if (code.empty())
+        code = MaxUiLanguage();
+    const auto lang = i18n::languageFromCode(code);
     i18n::Localizer::instance().load(
         langDir.empty() ? std::string{} : whiteout::flakes::io::PathToUtf8(langDir), lang);
     detail::g_languageLoaded = true;
