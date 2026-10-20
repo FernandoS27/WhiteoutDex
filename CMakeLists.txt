@@ -750,6 +750,26 @@ foreach(_src IN LISTS _flakes_lang_files)
     list(APPEND _lang_outputs "${_out}")
 endforeach()
 
+# The chrome's fonts. Roboto, embedded in the renderer, has no CJK or Hangul:
+# Chinese, Japanese and Korean labels drew as '?'. Flakes ships Noto Sans SC
+# and KR for that; they go to fonts/ beside lang/, because the glyph baking
+# reads ../lang to bake just the glyphs the catalogs use (wdx_ui_language.h).
+set(WDX_FONTS_STAGE_DIR "${WDX_STAGE_DIR}/fonts")
+file(GLOB _flakes_font_files "${CMAKE_CURRENT_SOURCE_DIR}/external/WhiteoutFlakes/resources/fonts/*")
+foreach(_src IN LISTS _flakes_font_files)
+    get_filename_component(_name "${_src}" NAME)
+    set(_out "${WDX_FONTS_STAGE_DIR}/${_name}")
+    add_custom_command(
+        OUTPUT "${_out}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${WDX_FONTS_STAGE_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_src}" "${_out}"
+        DEPENDS "${_src}"
+        COMMENT "Staging font ${_name}"
+        VERBATIM
+    )
+    list(APPEND _lang_outputs "${_out}")
+endforeach()
+
 if(_lang_outputs)
     add_custom_target(lang_catalogs ALL DEPENDS ${_lang_outputs})
 else()
@@ -946,7 +966,7 @@ add_custom_target(deploy_output
 # %APPDATA%/Autodesk/ApplicationPlugins/WhiteoutDex/
 #   PackageContents.xml
 #   scripts/{macroscripts,pre_startup_scripts,post_startup_scripts,scripted_plugins}/
-#   shaders/ lang/
+#   shaders/ lang/ fonts/
 #   native plugins/Max<year>/*.{dle,dlo,dlx,bmi,dll}
 #
 # Override with -DWDX_DEPLOY_DIR=<path> to deploy elsewhere, e.g. the per-machine
@@ -964,6 +984,7 @@ set(_appdata_cmds
     # going two levels up (native plugins/Max<year>/ -> root). See
     # wdx_install_layout.h.
     COMMAND "${CMAKE_COMMAND}" -E copy_directory "${WDX_LANG_STAGE_DIR}" "${_appdata_root}/lang"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${WDX_FONTS_STAGE_DIR}" "${_appdata_root}/fonts"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory "${WDX_STAGE_DIR}/shaders" "${_appdata_root}/shaders"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${WDX_PACKAGE_CONTENTS_XML}" "${_appdata_root}/PackageContents.xml"

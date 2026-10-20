@@ -29,6 +29,7 @@ extern std::atomic<int> g_wdxMissingTextureCount;
 #include "imgui_theme.h"
 #include "max_plugin_ui.h"
 #include "render_window.h"
+#include "wdx_ui_language.h" // FontsDir
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/debug_renderer.h"
@@ -391,7 +392,7 @@ void RenderWindow::InitImGui() {
         u32 ? reinterpret_cast<GetDpiFn>(GetProcAddress(u32, "GetDpiForWindow")) : nullptr;
     if (getDpi)
         dpi = getDpi(hwnd_);
-    ApplyImGuiDpiScale(static_cast<float>(dpi) / 96.0f);
+    ApplyImGuiDpiScale(static_cast<float>(dpi) / 96.0f, wdx::ui::FontsDir());
 
     ImGui_ImplWin32_Init(hwnd_);
     ui_ = std::make_unique<MaxPluginUI>(*this);

@@ -251,7 +251,7 @@ AssetPickResult RunAssetPicker(io::BrowseType types, const std::string& cascRoot
             u32 ? reinterpret_cast<GetDpiFn>(GetProcAddress(u32, "GetDpiForWindow")) : nullptr;
         if (getDpi)
             dpi = getDpi(hwnd);
-        ApplyImGuiDpiScale(static_cast<float>(dpi) / 96.0f);
+        ApplyImGuiDpiScale(static_cast<float>(dpi) / 96.0f, wdx::ui::FontsDir());
     }
     ImGui_ImplWin32_Init(hwnd);
     st.imguiReady = true;
