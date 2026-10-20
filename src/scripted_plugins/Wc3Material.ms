@@ -95,7 +95,65 @@ extends:Standard replaceUI:true version:14
 		delegate.opacityMap = nb; nb
 	)
 	
-	fn applyFilterMode = ( adjustFilterMode this.filterMode )
+	-- Viewport only (the delegate): what the game draws for a replaceable
+	-- texture. SD Team Color is a flat team-colour swatch whatever the diffuse
+	-- texture is (the preview does the same); Team Glow is the game's red glow,
+	-- drawn as a radial gradient while no glow texture is loaded. Red is
+	-- player 1. Exporter and preview read this material's own parameters,
+	-- never the delegate.
+	fn isTeamDisplay =
+	(
+		local dm = delegate.diffuseMap
+		(not delegate.diffuseMapEnable) or (dm != undefined and dm.name == "WdxTeamGlow")
+	)
+
+	fn hasLoadedBitmap tex =
+	(
+		local nb = getNativeBitmap tex
+		if nb == undefined do return false
+		try ( nb.bitmap != undefined ) catch ( false )
+	)
+
+	fn applyReplaceableViewport =
+	(
+		local teamRed = color 255 3 3
+		local sd = (this.shaderType == 1 or this.shaderType == 3)
+		if this.replaceableId == 2 and sd then
+		(
+			delegate.diffuseMapEnable = false
+			delegate.opacityMapEnable = false
+			delegate.Diffuse = teamRed
+			delegate.Ambient = teamRed
+		)
+		else if this.replaceableId == 3 and not (hasLoadedBitmap this.diffuseMap) then
+		(
+			local dm = delegate.diffuseMap
+			if dm == undefined or dm.name != "WdxTeamGlow" do
+			(
+				-- Gradient radial: color3 in the middle, color1 at the edge.
+				delegate.diffuseMap = Gradient name:"WdxTeamGlow" gradientType:1 color1:(color 0 0 0) color2:(color 128 2 2) color3:teamRed
+				delegate.opacityMap = Gradient name:"WdxTeamGlow" gradientType:1 color1:(color 0 0 0) color2:(color 128 128 128) color3:(color 255 255 255)
+			)
+			delegate.diffuseMapEnable = true
+			delegate.opacityMapEnable = (this.filterMode >= 2 and this.filterMode <= 5)
+			delegate.opacityType = 0
+			-- On the delegate: 3ds Max 2016 shows the map only when it is
+			-- activated there.
+			try ( showTextureMap delegate delegate.diffuseMap true ) catch()
+		)
+		else if isTeamDisplay() then
+		(
+			-- Back from a team display: the material's own texture again.
+			-- (Assigning the map can switch its enable off, so map first.)
+			delegate.diffuseMap = getNativeTex this.diffuseMap
+			delegate.diffuseMapEnable = true
+			delegate.opacityMap = undefined
+			generateOpacity this.diffuseMap
+			adjustFilterMode this.filterMode
+		)
+	)
+
+	fn applyFilterMode = ( adjustFilterMode this.filterMode; applyReplaceableViewport() )
 	
 	fn updateShaderState =
 	(
@@ -268,6 +326,10 @@ extends:Standard replaceUI:true version:14
 		replaceableId	type:#integer	animatable:false	default:1	ui:ddReplaceable
 		
 		on twoSided set val do ( try ( delegate.twoSided = val ) catch() )
+		-- The game draws an unshaded layer without lighting; in the viewport
+		-- the delegate's lighting turned effect layers facing away from the
+		-- light black (Kirito's flame). Self-illumination is the unlit look.
+		on unshaded set val do ( try ( delegate.selfIllumAmount = if val then 100 else 0 ) catch() )
 		on noDepthTest set val do
 		(
 			if val then try ( this.basicRollout.ddSortOrder.enabled = true ) catch()
@@ -280,7 +342,8 @@ extends:Standard replaceUI:true version:14
 			else try ( this.basicRollout.chkNoDSet.enabled = true ) catch()
 			applyFilterMode()
 		)
-		on shaderType set val do ( updateShaderState() )
+		on shaderType set val do ( updateShaderState(); applyReplaceableViewport() )
+		on replaceableId set val do ( applyReplaceableViewport() )
 		on unselectable set val do
 		(
 			try (
@@ -322,12 +385,15 @@ extends:Standard replaceUI:true version:14
 	---------------------------------------------------------------------------
 	parameters texMaps rollout:texMapRollout
 	(
-		diffuseMap		type:#texturemap	animatable:false	ui:mbDiffuse
-		normalMap		type:#texturemap	animatable:false	ui:mbNormal
-		ormMap			type:#texturemap	animatable:false	ui:mbORM
-		emissiveMap		type:#texturemap	animatable:false	ui:mbEmissive
-		teamColorMap	type:#texturemap	animatable:false	ui:mbTeamColor
-		environmentMap	type:#texturemap	animatable:false	ui:mbEnv
+		-- subAnim: the maps are sub-tracks of the material, so the trackbar and
+		-- Track View reach the keys under them - an imported TXAN (keys on the
+		-- Wc3Bitmap) showed no keyframes on the trackbar without it.
+		diffuseMap		type:#texturemap	animatable:false	subAnim:true	ui:mbDiffuse
+		normalMap		type:#texturemap	animatable:false	subAnim:true	ui:mbNormal
+		ormMap			type:#texturemap	animatable:false	subAnim:true	ui:mbORM
+		emissiveMap		type:#texturemap	animatable:false	subAnim:true	ui:mbEmissive
+		teamColorMap	type:#texturemap	animatable:false	subAnim:true	ui:mbTeamColor
+		environmentMap	type:#texturemap	animatable:false	subAnim:true	ui:mbEnv
 
 		-- Texture path prefixes (MDX folder path, stripped of filename).
 		-- Populated by the importer from the original MDX texture path, e.g.
