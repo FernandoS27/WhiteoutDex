@@ -1,0 +1,10 @@
+{"title":"蒙皮数据转换为WC3","controls":[{"id":3,"parent_id":0,"class":"CustButton","text":"蒙皮数据转换为WC3","x":32,"y":53,"w":618,"h":45},
+{"id":6,"parent_id":0,"class":"Static","text":"Remove below:","x":233,"y":134,"w":111,"h":20},
+{"id":7,"parent_id":0,"class":"CustEdit","text":"","x":347,"y":134,"w":86,"h":24},
+{"id":0,"parent_id":7,"class":"EDITDUMMY","text":"","x":349,"y":136,"w":82,"h":20},
+{"id":0,"parent_id":0,"class":"Edit","text":"","x":351,"y":135,"w":82,"h":26},
+{"id":5,"parent_id":0,"class":"SpinnerControl","text":"","x":433,"y":134,"w":18,"h":24},
+{"id":8,"parent_id":0,"class":"CustButton","text":"移除零权重","x":32,"y":165,"w":618,"h":45},
+{"id":9,"parent_id":0,"class":"Button","text":"Remove Zero Weights","x":17,"y":105,"w":648,"h":114},
+{"id":11,"parent_id":0,"class":"CustButton","text":"合并网格 + 蒙皮","x":32,"y":255,"w":618,"h":45},
+{"id":12,"parent_id":0,"class":"Button","text":"Combine Mesh + Skin","x":17,"y":227,"w":648,"h":83}]}

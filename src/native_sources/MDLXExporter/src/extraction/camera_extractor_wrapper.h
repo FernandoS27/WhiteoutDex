@@ -13,6 +13,7 @@
 
 namespace mdx_extract {
 
+// Needs model.sequences: the camera and target tracks are sampled per sequence.
 void extractCameras(const std::vector<core::SceneNode>& nodes,
                     ir::IRModel& model,
                     core::ExportErrorReporter& reporter);

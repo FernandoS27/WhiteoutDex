@@ -24,6 +24,7 @@
 #include <istdplug.h>
 
 #include <cmath>
+#include <utility>
 #include <vector>
 
 namespace mdx_extract {
@@ -34,8 +35,9 @@ inline ir::InterpolationType floatControllerInterp(Control* ctrl) {
     ULONG cidA = ctrl->ClassID().PartA();
     if (cidA == HYBRIDINTERP_FLOAT_CLASS_ID) {
         IKeyControl* ikc = GetKeyControlInterface(ctrl);
-        return (ikc && detail::bezierKeysAllStep(ikc)) ? ir::InterpolationType::None
-                                                       : ir::InterpolationType::Bezier;
+        if (ikc && detail::bezierKeysAllStep(ikc)) return ir::InterpolationType::None;
+        if (ikc && detail::bezierKeysAllLinear(ikc)) return ir::InterpolationType::Linear;
+        return ir::InterpolationType::Bezier;
     }
     if (cidA == TCBINTERP_FLOAT_CLASS_ID) return ir::InterpolationType::Hermite;
     return ir::InterpolationType::Linear;
@@ -113,6 +115,37 @@ inline int32_t extractIntControllerTrack(Control* ctrl, ir::IRModel& model)
         track.keys.push_back(key);
     }
     if (track.keys.empty()) return -1;
+
+    // Warcraft III holds an integer from its key to the next whatever the
+    // track's interpolation (EvaluateTrackU32, WhiteoutFlakes), while Max
+    // steps an interpolated int parameter through every value between (a
+    // Texture Slot keyed 0 -> 3 shows 1 and 2 on the way). Key each frame the
+    // value changes on, and write the track DontInterp.
+    if (track.interpolation != ir::InterpolationType::None && track.keys.size() > 1) {
+        const TimeValue tpf = GetTicksPerFrame();
+        std::vector<ir::Keyframe<int32_t>> stepped;
+        size_t next = 0;
+        for (TimeValue t = track.keys.front().time; t <= track.keys.back().time; t += tpf) {
+            // The controller's own keys stay, between frames or not.
+            while (next < track.keys.size() && track.keys[next].time <= t) {
+                if (stepped.empty() || stepped.back().time != track.keys[next].time)
+                    stepped.push_back(track.keys[next]);
+                ++next;
+            }
+            const int32_t v = static_cast<int32_t>(std::lround(core::anim::evalFloat(ctrl, t)));
+            if (!stepped.empty() && stepped.back().value != v && stepped.back().time != t) {
+                ir::Keyframe<int32_t> key;
+                key.time = t;
+                key.value = v;
+                stepped.push_back(key);
+            }
+        }
+        for (; next < track.keys.size(); ++next)
+            if (stepped.empty() || stepped.back().time != track.keys[next].time)
+                stepped.push_back(track.keys[next]);
+        track.keys = std::move(stepped);
+        track.interpolation = ir::InterpolationType::None;
+    }
 
     track.globalSequenceIndex = core::anim::detectAndRegisterGlobalSeq(ctrl, model);
     int32_t idx = static_cast<int32_t>(model.intTracks.size());
@@ -205,6 +238,17 @@ inline int32_t extractColorControllerTrack(Control* ctrl, ir::IRModel& model)
     int32_t idx = static_cast<int32_t>(model.colorTracks.size());
     model.colorTracks.push_back(std::move(track));
     return idx;
+}
+
+// Warcraft III stores every keyed colour (KGAC, KLAC, KLBC, KRCO, KPPC) blue
+// first and its static colour red first (WhiteoutLib `SwapRedBlue`): exchange
+// red and blue in the values and the tangents of a keyed colour.
+inline void swapRedBlue(ir::ColorTrack& track) {
+    for (auto& k : track.keys) {
+        std::swap(k.value.r, k.value.b);
+        std::swap(k.inTangent.r, k.inTangent.b);
+        std::swap(k.outTangent.r, k.outTangent.b);
+    }
 }
 
 } // namespace mdx_extract

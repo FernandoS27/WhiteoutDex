@@ -32,6 +32,8 @@ enum class ProblemType {
     InvalidController,   // Non-baseline P/R/S controller on a bone/helper
     UnsupportedMaterial, // Physical / Standard / OpenPBR / PBR
     MultiMaterialMesh,   // Mesh carrying a Multi/Sub-Object material
+    DuplicateMaterial,   // Node material identical to another one (values,
+                         // maps, animation) - WhiteoutDexMaterialMerge.ms
 };
 
 // One detected problem entry.
@@ -63,7 +65,9 @@ struct ScanResult {
 
 // Walk the entire scene and produce a fresh ScanResult.
 // Safe to call from the UI thread; does NOT modify the scene.
-ScanResult scanScene();
+// duplicateMaterials=false skips the identical-material search, by far the
+// slowest check (every key of every animated material property).
+ScanResult scanScene(bool duplicateMaterials = true);
 
 // ── Fixing ────────────────────────────────────────────────────────────
 
@@ -78,6 +82,9 @@ int fixUnsupportedMaterials(const ScanResult& result);
 // Splits every flagged mesh into one object per sub-material of its
 // Multi/Sub-Object material. Skinned meshes are left alone (see the .cpp).
 int fixMultiMaterialMeshes(const ScanResult& result);
+// Gives every node using a duplicate material the first of its identical
+// group (WdxMergeDuplicateMaterials, WhiteoutDexMaterialMerge.ms).
+int fixDuplicateMaterials(const ScanResult& result);
 
 // Convenience: run all fixers, returns total count fixed. The Multi/Sub split
 // runs first and the scene is re-scanned after it, so the new objects' mesh

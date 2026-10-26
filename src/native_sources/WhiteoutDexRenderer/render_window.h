@@ -132,6 +132,24 @@ public:
         ResumeRendering();
     }
 
+    // ---- Effect re-simulation (Max thread → render thread) ----
+    //
+    // Particles and ribbons only integrate forward: scrubbing Max's timeline
+    // back froze them, and a jump ahead advanced them by at most 100 ms. Once
+    // the timeline is still after such a jump the Max thread evaluates the
+    // scene once per frame up to the current time (only it may read Max) and
+    // queues those frames; the render thread throws the particles and ribbons
+    // away and replays the frames through the ticker before it draws. Until
+    // then HoldEffects keeps them still while the timeline goes back.
+    struct ResimFrame {
+        i32 timeMs = 0;
+        FrameState state;
+    };
+    void HoldEffects(bool hold) {
+        holdEffects_.store(hold, std::memory_order_release);
+    }
+    void QueueResimulation(Actor* actor, std::vector<ResimFrame> frames, f32 stepSec);
+
     // ---- Active-viewport camera sync (Max thread → render thread) ----
     //
     // While enabled, the Max UI thread samples whichever viewport Max has
@@ -287,6 +305,19 @@ private:
     std::atomic<i32> pendingArtTierReq_{kNoArtTierRequest};
 
     std::atomic<ActorId> focusActor_{0};
+
+    // See QueueResimulation. The job is guarded by hostMutex_; resimQueued_
+    // lets the render loop skip the lock on every frame without one.
+    struct ResimJob {
+        Actor* actor = nullptr;
+        std::vector<ResimFrame> frames;
+        f32 stepSec = 0.0f;
+        bool pending = false;
+    };
+    ResimJob resimJob_;
+    std::atomic<bool> resimQueued_{false};
+    std::atomic<bool> holdEffects_{false};
+    void RunPendingResimulation(i32& lastParentTimeMs);
 
     std::thread renderThread_;
     std::atomic<bool> running_{false};

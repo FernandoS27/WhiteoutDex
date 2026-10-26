@@ -1,0 +1,3 @@
+{"title":"蒙皮","controls":[{"id":3,"parent_id":0,"class":"Button","text":"AT蒙皮","x":23,"y":78,"w":639,"h":72},
+{"id":4,"parent_id":0,"class":"CustButton","text":"保存并取消链接","x":35,"y":102,"w":297,"h":33},
+{"id":5,"parent_id":0,"class":"CustButton","text":"恢复父级","x":344,"y":102,"w":297,"h":33}]}

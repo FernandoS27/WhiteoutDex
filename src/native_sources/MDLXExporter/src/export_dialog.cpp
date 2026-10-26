@@ -674,9 +674,9 @@ void installHover(HWND hDlg, int id) {
 // Control groups
 // ============================================================================
 
+// Without the extents-precision trio: it stays hidden (see the WM_INITDIALOG note).
 constexpr int kGeometryControls[] = {
     IDC_CHK_MERGE_SIMILAR, IDC_CHK_FIX_SHARED_NORMALS, IDC_CHK_KEEP_UNUSED_BH, IDC_CHK_QUANTIZE_SKIN,
-    IDC_LBL_EXTENTS_PREC,  IDC_EDT_EXTENTS_PREC,       IDC_SPIN_EXTENTS_PREC,
 };
 
 constexpr int kTextureSubControls[] = {
@@ -1152,7 +1152,8 @@ void updateSceneStatus(HWND hDlg, DialogState* ds) {
                     + result.countByType(ProblemType::EditMeshAboveSkin)
                     + result.countByType(ProblemType::MultiMaterialMesh);
     ds->controllers = result.countByType(ProblemType::InvalidController);
-    ds->materials   = result.countByType(ProblemType::UnsupportedMaterial);
+    ds->materials   = result.countByType(ProblemType::UnsupportedMaterial)
+                    + result.countByType(ProblemType::DuplicateMaterial);
 
     const bool problems = ds->total > 0;
     HWND focus = GetFocus();
@@ -1595,9 +1596,25 @@ BOOL onInitDialog(HWND hDlg, DialogState* ds) {
     // The persisted value is per-user, not per-scene, so leaving it in
     // place stamped the previously exported model's name onto every later
     // export. The user can still type over it for this one export.
-    // An unsaved scene keeps the INI value (there is nothing better).
-    if (std::wstring sceneName = currentSceneModelName(); !sceneName.empty())
-        SetDlgItemTextW(hDlg, IDC_EDT_MODEL_NAME, sceneName.c_str());
+    // An unsaved scene (a fresh import, say) takes the name of the file it
+    // is exported to; the INI value is the last model's and would leak, and
+    // without an INI the field was empty. Only with neither does it stay.
+    std::wstring modelName = currentSceneModelName();
+    if (modelName.empty() && !ds->targetPath.empty()) {
+        modelName = fileNameOf(ds->targetPath);
+        if (const size_t dot = modelName.find_last_of(L'.'); dot != std::wstring::npos && dot > 0)
+            modelName.resize(dot);
+    }
+    if (!modelName.empty())
+        SetDlgItemTextW(hDlg, IDC_EDT_MODEL_NAME, modelName.c_str());
+
+    // Extents precision steered the extents sampling of the old MaxScript
+    // exporter. The native one bounds every frame of a sequence (see
+    // MdxSequenceManager::sampleExtents) and reads no precision, so the
+    // field had no effect: it stays hidden. The INI key is still read and
+    // written so older settings files round-trip unchanged.
+    for (int id : {IDC_LBL_EXTENTS_PREC, IDC_EDT_EXTENTS_PREC, IDC_SPIN_EXTENTS_PREC})
+        ShowWindow(GetDlgItem(hDlg, id), SW_HIDE);
 
     // Dithering only applies to paletted BLP (same rule as before).
     if (comboSel(hDlg, IDC_CMB_BLP_COMPRESSION) == 1)

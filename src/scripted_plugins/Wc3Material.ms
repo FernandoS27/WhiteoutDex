@@ -18,7 +18,7 @@
 plugin material Wdx_Wc3Material
 name:"Wc3Material"
 classID:#(0x4b8e20a3, 0x1f6c3d57)
-extends:Standard replaceUI:true version:13
+extends:Standard replaceUI:true version:14
 (
 	local isLoading = false
 	
@@ -95,7 +95,65 @@ extends:Standard replaceUI:true version:13
 		delegate.opacityMap = nb; nb
 	)
 	
-	fn applyFilterMode = ( adjustFilterMode this.filterMode )
+	-- Viewport only (the delegate): what the game draws for a replaceable
+	-- texture. SD Team Color is a flat team-colour swatch whatever the diffuse
+	-- texture is (the preview does the same); Team Glow is the game's red glow,
+	-- drawn as a radial gradient while no glow texture is loaded. Red is
+	-- player 1. Exporter and preview read this material's own parameters,
+	-- never the delegate.
+	fn isTeamDisplay =
+	(
+		local dm = delegate.diffuseMap
+		(not delegate.diffuseMapEnable) or (dm != undefined and dm.name == "WdxTeamGlow")
+	)
+
+	fn hasLoadedBitmap tex =
+	(
+		local nb = getNativeBitmap tex
+		if nb == undefined do return false
+		try ( nb.bitmap != undefined ) catch ( false )
+	)
+
+	fn applyReplaceableViewport =
+	(
+		local teamRed = color 255 3 3
+		local sd = (this.shaderType == 1 or this.shaderType == 3)
+		if this.replaceableId == 2 and sd then
+		(
+			delegate.diffuseMapEnable = false
+			delegate.opacityMapEnable = false
+			delegate.Diffuse = teamRed
+			delegate.Ambient = teamRed
+		)
+		else if this.replaceableId == 3 and not (hasLoadedBitmap this.diffuseMap) then
+		(
+			local dm = delegate.diffuseMap
+			if dm == undefined or dm.name != "WdxTeamGlow" do
+			(
+				-- Gradient radial: color3 in the middle, color1 at the edge.
+				delegate.diffuseMap = Gradient name:"WdxTeamGlow" gradientType:1 color1:(color 0 0 0) color2:(color 128 2 2) color3:teamRed
+				delegate.opacityMap = Gradient name:"WdxTeamGlow" gradientType:1 color1:(color 0 0 0) color2:(color 128 128 128) color3:(color 255 255 255)
+			)
+			delegate.diffuseMapEnable = true
+			delegate.opacityMapEnable = (this.filterMode >= 2 and this.filterMode <= 5)
+			delegate.opacityType = 0
+			-- On the delegate: 3ds Max 2016 shows the map only when it is
+			-- activated there.
+			try ( showTextureMap delegate delegate.diffuseMap true ) catch()
+		)
+		else if isTeamDisplay() then
+		(
+			-- Back from a team display: the material's own texture again.
+			-- (Assigning the map can switch its enable off, so map first.)
+			delegate.diffuseMap = getNativeTex this.diffuseMap
+			delegate.diffuseMapEnable = true
+			delegate.opacityMap = undefined
+			generateOpacity this.diffuseMap
+			adjustFilterMode this.filterMode
+		)
+	)
+
+	fn applyFilterMode = ( adjustFilterMode this.filterMode; applyReplaceableViewport() )
 	
 	fn updateShaderState =
 	(
@@ -109,6 +167,7 @@ extends:Standard replaceUI:true version:13
 		) catch()
 		-- Occlusion is read out of the ORM map, which the SD shader has none of.
 		try ( this.basicRollout.chkAmbOcc.enabled = not isSD ) catch()
+		try ( this.basicRollout.chkUnlit.enabled = not isSD ) catch()
 		try (
 			this.reforgedRollout.spnEmGain.enabled		= not isSD
 			this.reforgedRollout.spnFrR.enabled			= not isSD
@@ -258,12 +317,19 @@ extends:Standard replaceUI:true version:13
 		-- cull in the shadow pass so the layer casts from its back faces.
 		ambientOcclusion	type:#boolean	animatable:false	default:false	ui:chkAmbOcc
 		backFacesForShadows	type:#boolean	animatable:false	default:false	ui:chkBackShadow
+		-- Layer ShadingFlag 0x100 (Reforged "Unlit"): the layer skips the
+		-- lighting pipeline. Kept so HD models export with the flag they had.
+		unlit			type:#boolean	animatable:false	default:false	ui:chkUnlit
 		sortOrder		type:#integer	animatable:false	default:1	ui:ddSortOrder
 		priorityPlane	type:#integer	animatable:false	default:0	ui:spnPriority
 		-- replaceableId: moved here from Wc3Bitmap (1 = Not Used, 2+ = replaceable type)
 		replaceableId	type:#integer	animatable:false	default:1	ui:ddReplaceable
 		
 		on twoSided set val do ( try ( delegate.twoSided = val ) catch() )
+		-- The game draws an unshaded layer without lighting; in the viewport
+		-- the delegate's lighting turned effect layers facing away from the
+		-- light black (Kirito's flame). Self-illumination is the unlit look.
+		on unshaded set val do ( try ( delegate.selfIllumAmount = if val then 100 else 0 ) catch() )
 		on noDepthTest set val do
 		(
 			if val then try ( this.basicRollout.ddSortOrder.enabled = true ) catch()
@@ -276,7 +342,8 @@ extends:Standard replaceUI:true version:13
 			else try ( this.basicRollout.chkNoDSet.enabled = true ) catch()
 			applyFilterMode()
 		)
-		on shaderType set val do ( updateShaderState() )
+		on shaderType set val do ( updateShaderState(); applyReplaceableViewport() )
+		on replaceableId set val do ( applyReplaceableViewport() )
 		on unselectable set val do
 		(
 			try (
@@ -318,12 +385,15 @@ extends:Standard replaceUI:true version:13
 	---------------------------------------------------------------------------
 	parameters texMaps rollout:texMapRollout
 	(
-		diffuseMap		type:#texturemap	animatable:false	ui:mbDiffuse
-		normalMap		type:#texturemap	animatable:false	ui:mbNormal
-		ormMap			type:#texturemap	animatable:false	ui:mbORM
-		emissiveMap		type:#texturemap	animatable:false	ui:mbEmissive
-		teamColorMap	type:#texturemap	animatable:false	ui:mbTeamColor
-		environmentMap	type:#texturemap	animatable:false	ui:mbEnv
+		-- subAnim: the maps are sub-tracks of the material, so the trackbar and
+		-- Track View reach the keys under them - an imported TXAN (keys on the
+		-- Wc3Bitmap) showed no keyframes on the trackbar without it.
+		diffuseMap		type:#texturemap	animatable:false	subAnim:true	ui:mbDiffuse
+		normalMap		type:#texturemap	animatable:false	subAnim:true	ui:mbNormal
+		ormMap			type:#texturemap	animatable:false	subAnim:true	ui:mbORM
+		emissiveMap		type:#texturemap	animatable:false	subAnim:true	ui:mbEmissive
+		teamColorMap	type:#texturemap	animatable:false	subAnim:true	ui:mbTeamColor
+		environmentMap	type:#texturemap	animatable:false	subAnim:true	ui:mbEnv
 
 		-- Texture path prefixes (MDX folder path, stripped of filename).
 		-- Populated by the importer from the original MDX texture path, e.g.
@@ -388,12 +458,13 @@ extends:Standard replaceUI:true version:13
 		checkbox	chkNoDSet		"No Depth Set"	align:#left across:3 enabled:false
 		checkbox	chkUnsel		"Unselectable"	align:#left
 		checkbox	chkAmbOcc		"Ambient Occlusion"	align:#left
-		checkbox	chkBackShadow	"Back Faces for Shadows"	align:#left
+		checkbox	chkBackShadow	"Back Faces for Shadows"	align:#left across:2
+		checkbox	chkUnlit		"Unlit"	align:#left
 		label		lblSep2		"" height:2
 		dropdownlist	ddSortOrder	"Sort Order ..................................................." items:#("Not Used", "Near to far", "Far to near") width:300 align:#center enabled:false
 		spinner		spnPriority		"Priority Plane ................." range:[-20,20,0] type:#integer fieldwidth:55 align:#right
 		label		lblSep2b	"" height:2
-		dropdownlist	ddReplaceable	"Replaceable Texture ................................" items:#("Not Used", "Team Color", "Team Glow", "Cliff", "Lord Cliffington") width:300 align:#center
+		dropdownlist	ddReplaceable	"Replaceable Texture ................................" items:#("Not Used", "Team Color", "Team Glow", "Cliff", "Lordaeron Tree", "Ashenvale Tree", "Barrens Tree", "Northrend Tree", "Mushroom Tree", "Ruins Tree", "Outland Mushroom Tree") width:300 align:#center
 		
 		on basicRollout open do
 		(
@@ -430,6 +501,7 @@ extends:Standard replaceUI:true version:13
 				chkUnsel.text			= ::WdxL.t "mat_unselectable_chk_2"
 				chkAmbOcc.text			= ::WdxL.t "mat_ambient_occlusion_chk"
 				chkBackShadow.text		= ::WdxL.t "mat_back_faces_shadows_chk"
+				chkUnlit.text			= ::WdxL.t "mat_unlit_chk"
 
 				ddFilterMode.items	= ::WdxL.tList "mat_filter_mode_items"
 				ddSortOrder.items	= ::WdxL.tList "mat_sort_order_items"

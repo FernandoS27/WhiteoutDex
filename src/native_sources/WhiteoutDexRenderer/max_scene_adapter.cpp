@@ -11,6 +11,9 @@
 #include "whiteout/flakes/util/team_glow_data.h"
 #include "whiteout/flakes/util/texture_image_usage.h"
 #include "wdx_foreign_material.h"
+#include "wdx_replaceable_ids.h"
+#include "wdx_p2_intervals.h"
+#include "io/mdx_animation.h"
 
 #include <algorithm>
 #include <cctype>
@@ -20,6 +23,7 @@
 #include <cwchar>
 #include <fstream>
 #include <numbers>
+#include <optional>
 #include <sstream>
 
 // clang-format off
@@ -250,6 +254,23 @@ inline std::wstring IflUtf8ToWide(const std::string& s) {
         return {};
     std::wstring out(static_cast<size_t>(len), L'\0');
     ::MultiByteToWideChar(CP_UTF8, 0, s.data(), n, out.data(), len);
+    return out;
+}
+
+// A path handed to Flakes' content provider, which reads it as UTF-8. Copying
+// each wchar_t into a char instead kept only the low byte, so the attachment
+// model "by_动漫终焉之战.mdx" reached Flakes as "by_" + six stray bytes: on a
+// Chinese Windows those bytes are invalid in code page 936, std::filesystem
+// threw from an IO worker thread and 3ds Max was terminated.
+inline std::string PathToFlakesUtf8(const std::wstring& w) {
+    if (w.empty())
+        return {};
+    const int n = static_cast<int>(w.size());
+    const int len = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), n, nullptr, 0, nullptr, nullptr);
+    if (len <= 0)
+        return {};
+    std::string out(static_cast<size_t>(len), '\0');
+    ::WideCharToMultiByte(CP_UTF8, 0, w.data(), n, out.data(), len, nullptr, nullptr);
     return out;
 }
 
@@ -812,7 +833,7 @@ MaxSceneAdapter::MaterialSnapshot MaxSceneAdapter::SnapshotMaterial(Mtl* mtl) {
     MaterialSnapshot snap;
     snap.filterMode = MapFilterMode(PB2IntOr(mtl, L"filterMode", 0, 1) - 1);
     snap.flags = ReadWc3MaterialFlags(mtl);
-    snap.replaceableTexture = std::max(0, PB2IntOr(mtl, L"replaceableId", 0, 1) - 1);
+    snap.replaceableTexture = wdx::replaceable::IdFromDropdown(PB2IntOr(mtl, L"replaceableId", 0, 1));
     // Shader dropdown is 1-based (1=SD, 2=HD, 3=SDOnHD, 4=Crystal → renderer 24).
     i32 shaderType = PB2IntOr(mtl, L"shaderType", 0, 1);
     snap.shaderId = (shaderType == 4) ? 24 : std::max(0, shaderType - 1);
@@ -1022,6 +1043,140 @@ static std::string EnsurePopcornExtension(const std::string& path) {
     return path.substr(0, lastDot) + ".pkb";
 }
 
+static std::wstring LowerWide(std::wstring s) {
+    std::transform(s.begin(), s.end(), s.begin(), ::towlower);
+    return s;
+}
+
+static bool IsAbsoluteTexturePath(const std::wstring& p) {
+    return (p.size() >= 2 && p[1] == L':') || (p.size() >= 2 && p[0] == L'\\' && p[1] == L'\\');
+}
+
+// Texture files under the scene folder by lower-case name without extension,
+// built on the first miss and kept until the scene folder changes.
+struct SceneTextureIndex {
+    std::filesystem::path root;
+    std::unordered_map<std::wstring, std::vector<std::filesystem::path>> byStem;
+};
+static SceneTextureIndex g_sceneTextures;
+// What ResolveMissingTexture answered per (path, relDir, scene folder), misses
+// included; CollectScene clears it, so a file added since is found on resync.
+static std::unordered_map<std::wstring, std::wstring> g_resolvedTextures;
+
+static const wchar_t* const kTextureExts[] = {L".blp", L".dds", L".tga", L".png",
+                                              L".bmp", L".jpg", L".jpeg"};
+
+// The file a texture saved with an absolute path that is not on this PC
+// (the author's "d:\Users\...\war3mapimported\x.blp") most likely is, or
+// `given` unchanged - the lookup the exporter's resolveTextureSource does,
+// so the renderer shows what an export would pick up: beside the missing
+// file, in the scene folder under `relDir` (a particle's prefix, else the
+// missing file's own folder name) and directly, Max's map paths, and last
+// the scene folder tree, four levels deep. The original extension is tried
+// first, then every other format.
+static std::wstring ResolveMissingTextureUncached(const std::wstring& given, std::wstring relDir);
+static std::wstring ResolveMissingTexture(const std::wstring& given, const std::wstring& relDir) {
+    std::wstring sceneFile;
+    if (Interface* ip = GetCOREInterface())
+        sceneFile = ip->GetCurFilePath().data();
+    const std::wstring key = given + L'\n' + relDir + L'\n' + sceneFile;
+    if (auto it = g_resolvedTextures.find(key); it != g_resolvedTextures.end())
+        return it->second;
+    return g_resolvedTextures[key] = ResolveMissingTextureUncached(given, relDir);
+}
+static std::wstring ResolveMissingTextureUncached(const std::wstring& given, std::wstring relDir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path gp(given);
+    const std::wstring stem = gp.stem().wstring();
+    if (stem.empty())
+        return given;
+    std::vector<std::wstring> exts;
+    const std::wstring givenExt = LowerWide(gp.extension().wstring());
+    for (const wchar_t* e : kTextureExts)
+        if (givenExt == e)
+            exts.push_back(givenExt);
+    for (const wchar_t* e : kTextureExts)
+        if (givenExt != e)
+            exts.push_back(e);
+
+    fs::path sceneDir;
+    if (Interface* ip = GetCOREInterface()) {
+        const MSTR scene = ip->GetCurFilePath();
+        if (scene.Length() > 0)
+            sceneDir = fs::path(scene.data()).parent_path();
+    }
+    if (relDir.empty() && gp.has_parent_path())
+        relDir = gp.parent_path().filename().wstring();
+    std::replace(relDir.begin(), relDir.end(), L'/', L'\\');
+    while (!relDir.empty() && relDir.back() == L'\\')
+        relDir.pop_back();
+    std::vector<fs::path> dirs;
+    if (gp.has_parent_path())
+        dirs.push_back(gp.parent_path());
+    if (!sceneDir.empty()) {
+        if (!relDir.empty() && !IsAbsoluteTexturePath(relDir))
+            dirs.push_back(sceneDir / relDir);
+        dirs.push_back(sceneDir);
+    }
+    for (const fs::path& dir : dirs)
+        for (const std::wstring& ext : exts) {
+            const fs::path p = dir / (stem + ext);
+            if (fs::is_regular_file(p, ec))
+                return p.wstring();
+        }
+
+    // Max's map paths (Configure User Paths > External Files), each folder
+    // itself. Not through IFileResolutionManager: its lookup walks the whole
+    // scene folder tree, without a depth limit, for every name it is asked -
+    // 1.max opened from a Downloads folder of 60,000+ entries kept the preview
+    // from starting for two minutes. The scene tree is searched below, bounded.
+    if (TheManager)
+        for (int i = 0; i < TheManager->GetMapDirCount(); ++i) {
+            const MSTR mapDir(TheManager->GetMapDir(i));
+            if (mapDir.Length() == 0)
+                continue;
+            for (const std::wstring& ext : exts) {
+                const fs::path p = fs::path(mapDir.data()) / (stem + ext);
+                if (fs::is_regular_file(p, ec))
+                    return p.wstring();
+            }
+        }
+
+    if (sceneDir.empty())
+        return given;
+    if (g_sceneTextures.root != sceneDir) {
+        g_sceneTextures = SceneTextureIndex{sceneDir, {}};
+        constexpr int kMaxDepth = 4;
+        constexpr usize kMaxEntries = 50000;
+        fs::recursive_directory_iterator it(sceneDir, fs::directory_options::skip_permission_denied,
+                                            ec);
+        usize visited = 0;
+        for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (++visited > kMaxEntries)
+                break;
+            std::error_code fec;
+            if (it->is_directory(fec)) {
+                if (it.depth() + 1 >= kMaxDepth)
+                    it.disable_recursion_pending();
+                continue;
+            }
+            const std::wstring ext = LowerWide(it->path().extension().wstring());
+            if (std::find_if(std::begin(kTextureExts), std::end(kTextureExts),
+                             [&](const wchar_t* e) { return ext == e; }) == std::end(kTextureExts))
+                continue;
+            g_sceneTextures.byStem[LowerWide(it->path().stem().wstring())].push_back(it->path());
+        }
+    }
+    auto hit = g_sceneTextures.byStem.find(LowerWide(stem));
+    if (hit != g_sceneTextures.byStem.end())
+        for (const std::wstring& ext : exts)
+            for (const fs::path& p : hit->second)
+                if (LowerWide(p.extension().wstring()) == ext)
+                    return p.wstring();
+    return given;
+}
+
 i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId,
                                  u32 wrapFlags, bool skipMaxBitmapManager) {
     if (replaceableId != 0) {
@@ -1045,6 +1200,21 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
     auto it = texPathToId_.find(filePath);
     if (it != texPathToId_.end())
         return it->second;
+
+    // An absolute path from another PC: the same file under this scene.
+    if (IsAbsoluteTexturePath(filePath)) {
+        std::error_code ec;
+        if (!std::filesystem::exists(std::filesystem::path(filePath), ec)) {
+            const std::wstring found = ResolveMissingTexture(filePath, L"");
+            if (found != filePath) {
+                mprintf(_M("  Texture: [found under the scene] '%s' -> '%s'\n"), filePath.c_str(),
+                        found.c_str());
+                const i32 id = LoadTexture(found, replaceableId, wrapFlags, skipMaxBitmapManager);
+                texPathToId_[filePath] = id;
+                return id;
+            }
+        }
+    }
 
     // Cross-model dedup: if the renderer's shared cache already has this
     // path, reserve a borrow slot WITHOUT decoding. UploadStagedTextures
@@ -1167,6 +1337,7 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
 void MaxSceneAdapter::CollectScene() {
     nextTexId_ = 0;
     nextMatId_ = 0;
+    g_resolvedTextures.clear();
     texPathToId_.clear();
     missingTextures_.clear();
     g_wdxMissingTextureCount.store(0);
@@ -1193,6 +1364,26 @@ void MaxSceneAdapter::CollectScene() {
     CollectRibbonEmitters();
     CollectCollisionShapes();
     CollectLights();
+
+    // The MDX billboard bits of every node, read as the exporter reads them
+    // (core::collectNodeFlags): Evaluate turns these nodes toward the camera.
+    billboardFlags_.clear();
+    ForEachSceneNode([&](INode* node) {
+        static const struct {
+            const TCHAR* name;
+            u32 bit;
+        } kBillboardProps[] = {{_T("Billboarded"), 0x8},       {_T("BillboardedLockX"), 0x10},
+                               {_T("BillboardedLockY"), 0x20}, {_T("BillboardedLockZ"), 0x40},
+                               {_T("CameraAnchored"), 0x80}};
+        u32 bits = 0;
+        for (const auto& prop : kBillboardProps) {
+            i32 val = 0;
+            if (node->GetUserPropInt(prop.name, val) && val != 0)
+                bits |= prop.bit;
+        }
+        if (bits)
+            billboardFlags_[node] = bits;
+    });
 
     // Capture the initial material-state snapshot so RefreshMaterials can
     // detect per-property changes on subsequent frames.
@@ -1229,20 +1420,31 @@ void MaxSceneAdapter::CollectGeometry() {
         // PE2 / ribbon helpers are geometry at the SDK level but handled
         // separately by the emitter collectors.
         if (baseObj->ClassID() == WC3PARTICLES2_CLASS_ID ||
-            baseObj->ClassID() == WC3RIBBON_CLASS_ID)
+            baseObj->ClassID() == WC3RIBBON_CLASS_ID ||
+            baseObj->ClassID() == WC3PARTICLES1_CLASS_ID ||
+            baseObj->ClassID() == NEODEX_PARTICLES1_CLASS_ID)
             return;
         if (!baseObj->CanConvertToType(triObjectClassID))
             return;
 
-        // Match on ClassID, not the class name: before Max 2022 GetClassName
-        // returns the LOCALIZED name ("Bearbeitbares Netz" in a German Max),
-        // so a name compare silently dropped every geoset on non-English
-        // 2016-2021 installs. Editable Mesh is EDITTRIOBJ_CLASS_ID, a
-        // subclass with its own id; triObjectClassID (0x0009) is the plain
-        // TriObject base and does NOT match it.
+        // Every mesh the exporter writes, which is any geometry that converts
+        // to a TriObject and is no bone (MaxCore node_classifier): a Box or
+        // Plane primitive with modifiers, an Editable Patch, an extruded
+        // spline. Only Editable Mesh and Poly came through here before, so
+        // those were in the MDX but missing from the preview. The mesh itself
+        // is read off EvalWorldState below, modifiers included. Bones match
+        // on ClassID (localized class names before Max 2022), as there.
         const Class_ID cid = baseObj->ClassID();
-        if (cid != Class_ID(EDITTRIOBJ_CLASS_ID, 0) && cid != EPOLYOBJ_CLASS_ID)
+        if (cid == BONE_OBJ_CLASSID || cid == Class_ID(0x9125, 0) /* SKELOBJ_CLASS_ID */ ||
+            cid == Class_ID(0x56AE72E5, 0x389B6659) /* CAT parent */ ||
+            cid == Class_ID(0x2E6A0C09, 0x43D5C9C0) /* CAT bone */ ||
+            cid == Class_ID(0x73DC4833, 0x65C93CAA) /* CAT hub */)
             return;
+        if (Control* tm = node->GetTMController()) {
+            const Class_ID tcid = tm->ClassID();
+            if (tcid == Class_ID(0x9156, 0) /* BIPBODY */ || tcid == Class_ID(0x9154, 0) /* BIPDRIVEN */)
+                return;
+        }
 
         // Skip geometry whose only material slot is a high-index replaceable
         // with no actual bitmap bound — these are placeholder meshes.
@@ -1252,7 +1454,7 @@ void MaxSceneAdapter::CollectGeometry() {
             PB2Texmap(mtl, L"diffuseMap", diffTex);
             i32 retex = 0;
             if (diffTex && diffTex->ClassID() == WC3_BITMAP_CLASS_ID) {
-                retex = std::max(0, PB2IntOr(diffTex, L"replaceableId", 0, 1) - 1);
+                retex = wdx::replaceable::IdFromDropdown(PB2IntOr(diffTex, L"replaceableId", 0, 1));
             }
             if (retex >= 4 && !diffTex) {
                 mprintf(_M("  [Skipped replaceable %d geoset '%s']\n"), retex, node->GetName());
@@ -1284,7 +1486,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textur
     layer.filterMode = MapFilterMode(filterMode - 1);
     layer.alpha = std::min(PB2FloatOr(mtl, L"opacity", 0, 100.0f) / 100.0f, 1.0f);
     layer.replaceableTexture =
-        textureLayerOnly ? 0 : std::max(0, PB2IntOr(mtl, L"replaceableId", 0, 1) - 1);
+        textureLayerOnly ? 0 : wdx::replaceable::IdFromDropdown(PB2IntOr(mtl, L"replaceableId", 0, 1));
     // NeoDex keeps the wrap flags on the material; its bitmap tiling is
     // crossed (U_Tile holds Wrap_Height), so the material is the truth.
     auto wrapFlagsFor = [&](Texmap* tex) -> u32 {
@@ -1354,7 +1556,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textur
         const bool hasTexmap = PB2Texmap(mtl, L"teamColorMap", tcTex) && tcTex;
         const bool isWc3Bitmap = hasTexmap && tcTex->ClassID() == WC3_BITMAP_CLASS_ID;
         const i32 tcReplId =
-            isWc3Bitmap ? std::max(0, PB2IntOr(tcTex, L"replaceableId", 0, 1) - 1) : 0;
+            isWc3Bitmap ? wdx::replaceable::IdFromDropdown(PB2IntOr(tcTex, L"replaceableId", 0, 1)) : 0;
 
         // The MDLXImporter writes plain BitmapTex (not Wc3Bitmap) for every
         // texture entry, so a Reforged HD model arrives here with the canonical
@@ -1726,6 +1928,18 @@ void MaxSceneAdapter::CollectBones() {
         boneNodeToIdx_[gs.node] = bi.index;
         bones_.push_back(bi);
     }
+
+    // Skin applies a bone's stretch, which its node TM leaves out (objectTM =
+    // objectOffsetTM * stretchTM * nodeTM, INode::GetStretchTM). Evaluate adds
+    // it relative to frame 0, the pose the vertices are read in, the way the
+    // exporter writes it (mdx_bone_stretch.h).
+    for (auto& b : bones_) {
+        Matrix3 base = b.node->GetStretchTM(0);
+        base.NoTrans();
+        if (std::fabs(DotProd(base.GetRow(0), CrossProd(base.GetRow(1), base.GetRow(2)))) < 1e-12f)
+            base.IdentityMatrix();
+        b.stretchBaseInverse = Inverse(base);
+    }
 }
 
 // ============================================================================
@@ -1738,7 +1952,22 @@ void MaxSceneAdapter::CollectAttachments() {
 
     ForEachSceneNode([&](INode* node) {
         Object* baseObj = GetBaseObject(node);
-        if (!baseObj || baseObj->ClassID() != WC3ATTACHPOINT_CLASS_ID)
+        if (!baseObj)
+            return;
+        // NeoDex's attach point and WhiteoutDex's own (Wc3AttachPoint.ms,
+        // classID #(0x7A1B2C01, 0x3D4E5F01)), as the exporter registers both
+        // (mdx_node_registration.h). Only the NeoDex id was taken, so a
+        // WhiteoutDex attach point's external model never showed. The class
+        // name backs the id up, as for the popcorn below.
+        bool isAttach = baseObj->ClassID() == WC3ATTACHPOINT_CLASS_ID ||
+                        baseObj->ClassID() == Class_ID(0x7A1B2C01, 0x3D4E5F01);
+        if (!isAttach) {
+            MSTR cn;
+            baseObj->GetClassName(cn);
+            isAttach = cn.data() && (wcscmp(cn.data(), L"Wc3 AttachPoint") == 0 ||
+                                     wcscmp(cn.data(), L"Wdx_Wc3AttachPoint") == 0);
+        }
+        if (!isAttach)
             return;
 
         AttachmentInfo ai;
@@ -1756,7 +1985,7 @@ void MaxSceneAdapter::CollectAttachments() {
                              pblock->GetValue(pid, 0, sv, iv);
                              if (sv && sv[0]) {
                                  std::wstring wp(sv);
-                                 ai.modelPath = std::string(wp.begin(), wp.end());
+                                 ai.modelPath = PathToFlakesUtf8(wp);
                              }
                          });
         }
@@ -1835,10 +2064,20 @@ void MaxSceneAdapter::CollectParticleEmitters() {
                         texPath.c_str(), texFile.c_str());
 
                 // Try disk paths in order: basePath+prefix+file, basePath\Textures\file, bare
-                // filename.
-                std::wstring fp = basePath + texPath + texFile;
-                mprintf(_M("    Try1: '%s' %s\n"), fp.c_str(),
-                        existsOnDisk(fp) ? _M("FOUND") : _M("not found"));
+                // filename. An absolute file (saved on the author's PC) is not
+                // joined to the prefix: it is that file, or the same name under
+                // this scene; the lookups after it use its name alone.
+                std::wstring fp;
+                if (IsAbsoluteTexturePath(texFile)) {
+                    fp = existsOnDisk(texFile) ? texFile : ResolveMissingTexture(texFile, texPath);
+                    mprintf(_M("    Try1 (absolute): '%s' %s\n"), fp.c_str(),
+                            existsOnDisk(fp) ? _M("FOUND") : _M("not found"));
+                    texFile = std::filesystem::path(texFile).filename().wstring();
+                } else {
+                    fp = basePath + texPath + texFile;
+                    mprintf(_M("    Try1: '%s' %s\n"), fp.c_str(),
+                            existsOnDisk(fp) ? _M("FOUND") : _M("not found"));
+                }
                 if (!existsOnDisk(fp)) {
                     fp = basePath + L"Textures\\" + texFile;
                     mprintf(_M("    Try2: '%s' %s\n"), fp.c_str(),
@@ -1908,11 +2147,11 @@ void MaxSceneAdapter::CollectParticleEmitters() {
                                       _wcsicmp(wp.c_str() + wp.size() - 4, L".mdx") == 0))
                     wp.resize(wp.size() - 4);
                 if (!wp.empty())
-                    pi.modelPath = std::string(wp.begin(), wp.end()) + ".MDL";
+                    pi.modelPath = PathToFlakesUtf8(wp) + ".MDL";
             } else if (auto* p = static_cast<const MSTR*>(baseObj->GetInterface(WC3P1_MODEL_PATH_IID));
                        p && p->Length() > 0) {
                 std::wstring wp = p->data();
-                pi.modelPath = std::string(wp.begin(), wp.end());
+                pi.modelPath = PathToFlakesUtf8(wp);
             }
             mprintf(_M("  [PE1 '%s'] model='%S'\n"), node->GetName(), pi.modelPath.c_str());
             if (!pi.modelPath.empty())
@@ -1985,7 +2224,7 @@ void MaxSceneAdapter::CollectParticleEmitters() {
                 if (!std::filesystem::is_regular_file(std::filesystem::path(pathW), existsEc))
                     pathW = prefixW + pathW.substr(pathW.find_last_of(L"\\/") + 1);
             }
-            pi.pkbPath = EnsurePopcornExtension(std::string(pathW.begin(), pathW.end()));
+            pi.pkbPath = EnsurePopcornExtension(PathToFlakesUtf8(pathW));
             readStr(L"rawFlags", pi.animVisibilityGuide);
             // NeoDex rebuilds an empty rawFlags from its flag checkboxes, as
             // the exporter does (NeoDexSceneParser LoadCornEmitter).
@@ -2589,23 +2828,26 @@ std::vector<ParticleEmitterConfig> MaxSceneAdapter::GetParticleConfigs() {
         cfg.lineEmitter = neoDex ? PB2IntOr(obj, L"LineEmitter", 0, 1) == 2
                                  : PB2BoolOr(obj, L"LineEmitter", 0, cfg.lineEmitter);
 
-        // Head/tail UV animation frames. Match the MDX upload
-        // (MdxModelAdapter: interval[0]=start, [1]=end, [2]=repeat): the
-        // importer stores interval[1] in the *Repeat param and interval[2] in
-        // the *End param (and the exporter reads them back the same way), so
-        // those two params are swapped relative to what the renderer expects.
+        // Head/tail UV animation frames, MDX {start, end, repeat}
+        // (MdxModelAdapter). The params hold them where the panel shows them;
+        // an emitter imported before that fix has end/repeat the other way
+        // round (wdx_p2_intervals.h).
+        const bool legacy = wdx::p2::legacyIntervalOrder(pi.node);
+        const wchar_t* E = legacy ? L"Repeat" : L"End";
+        const wchar_t* R = legacy ? L"End" : L"Repeat";
+        auto name = [](const wchar_t* a, const wchar_t* b) { return std::wstring(a) + b; };
         cfg.headLifeStart = PB2IntOr(obj, L"HeadLifeStart", 0, cfg.headLifeStart);
-        cfg.headLifeEnd = PB2IntOr(obj, L"HeadLifeRepeat", 0, cfg.headLifeEnd);
-        cfg.headLifeRepeat = PB2IntOr(obj, L"HeadLifeEnd", 0, cfg.headLifeRepeat);
+        cfg.headLifeEnd = PB2IntOr(obj, name(L"HeadLife", E).c_str(), 0, cfg.headLifeEnd);
+        cfg.headLifeRepeat = PB2IntOr(obj, name(L"HeadLife", R).c_str(), 0, cfg.headLifeRepeat);
         cfg.headDecayStart = PB2IntOr(obj, L"HeadDecayStart", 0, cfg.headDecayStart);
-        cfg.headDecayEnd = PB2IntOr(obj, L"HeadDecayRepeat", 0, cfg.headDecayEnd);
-        cfg.headDecayRepeat = PB2IntOr(obj, L"HeadDecayEnd", 0, cfg.headDecayRepeat);
+        cfg.headDecayEnd = PB2IntOr(obj, name(L"HeadDecay", E).c_str(), 0, cfg.headDecayEnd);
+        cfg.headDecayRepeat = PB2IntOr(obj, name(L"HeadDecay", R).c_str(), 0, cfg.headDecayRepeat);
         cfg.tailLifeStart = PB2IntOr(obj, L"TailLifeStart", 0, cfg.tailLifeStart);
-        cfg.tailLifeEnd = PB2IntOr(obj, L"TailLifeRepeat", 0, cfg.tailLifeEnd);
-        cfg.tailLifeRepeat = PB2IntOr(obj, L"TailLifeEnd", 0, cfg.tailLifeRepeat);
+        cfg.tailLifeEnd = PB2IntOr(obj, name(L"TailLife", E).c_str(), 0, cfg.tailLifeEnd);
+        cfg.tailLifeRepeat = PB2IntOr(obj, name(L"TailLife", R).c_str(), 0, cfg.tailLifeRepeat);
         cfg.tailDecayStart = PB2IntOr(obj, L"TailDecayStart", 0, cfg.tailDecayStart);
-        cfg.tailDecayEnd = PB2IntOr(obj, L"TailDecayRepeat", 0, cfg.tailDecayEnd);
-        cfg.tailDecayRepeat = PB2IntOr(obj, L"TailDecayEnd", 0, cfg.tailDecayRepeat);
+        cfg.tailDecayEnd = PB2IntOr(obj, name(L"TailDecay", E).c_str(), 0, cfg.tailDecayEnd);
+        cfg.tailDecayRepeat = PB2IntOr(obj, name(L"TailDecay", R).c_str(), 0, cfg.tailDecayRepeat);
         if (neoDex) {
             // NeoDex names them start / end / repeat in MDX order.
             cfg.headLifeStart = PB2IntOr(obj, L"startLifespanHead", 0, cfg.headLifeStart);
@@ -2651,7 +2893,16 @@ std::vector<RibbonEmitterConfig> MaxSceneAdapter::GetRibbonConfigs() {
         // Wc3Ribbon has no filterMode param of its own; derive from the node
         // material when it's a Wc3Material, otherwise fall back to Additive.
         const bool neoDex = obj->ClassID() == NEODEX_RIBBON_CLASS_ID;
-        Mtl* mtl = neoDex ? RibbonMaterial(obj) : nullptr;
+        // The material the texture comes from (collection above): the
+        // ribbon's own Material parameter (ParamID 7), as the exporter reads
+        // it, before the node's. Reading the node's alone left every
+        // WhiteoutDex ribbon Additive.
+        Mtl* mtl = RibbonMaterial(obj);
+        for (i32 pb = 0; !neoDex && !mtl && pb < obj->NumParamBlocks(); pb++) {
+            IParamBlock2* pblock = static_cast<Animatable*>(obj)->GetParamBlock(pb);
+            if (pblock)
+                mtl = pblock->GetMtl(7, 0);
+        }
         if (!mtl)
             mtl = ri.node->GetMtl();
         if (mtl && IsWc3MaterialClass(mtl->ClassID())) {
@@ -2742,7 +2993,7 @@ std::vector<PE1EmitterConfig> MaxSceneAdapter::GetPE1Configs() {
         PE1EmitterConfig cfg;
         cfg.modelPath = pi.modelPath;
         cfg.lifespan = PB2FloatOr(obj, L"Life", 0, cfg.lifespan);
-        cfg.scale = PB2FloatOr(obj, L"Scale", 0, cfg.scale);
+        cfg.scale = PB2FloatOr(obj, L"ModelScale", 0, PB2FloatOr(obj, L"Scale", 0, cfg.scale));
         result.push_back(cfg);
     }
     return result;
@@ -2796,6 +3047,149 @@ std::vector<CornEmitterInit> MaxSceneAdapter::GetCornEmitterInits() {
     return result;
 }
 
+namespace {
+
+// Row-for-row copies between Max's Matrix3 and Matrix44f, axes unchanged.
+Matrix44f RawMatrix44(const Matrix3& tm) {
+    Matrix44f m = Matrix44f::identity();
+    for (i32 r = 0; r < 4; r++) {
+        const Point3 row = tm.GetRow(r);
+        m.data[r][0] = row.x;
+        m.data[r][1] = row.y;
+        m.data[r][2] = row.z;
+    }
+    return m;
+}
+// Matrix3(BOOL) is deprecated in the newer SDKs, and the older SDKs' default
+// constructor leaves the rows unset.
+Matrix3 IdentityTM() {
+    Matrix3 tm;
+    tm.IdentityMatrix();
+    return tm;
+}
+Matrix3 RawMatrix3(const Matrix44f& m) {
+    auto row = [&](i32 r) { return Point3(m.data[r][0], m.data[r][1], m.data[r][2]); };
+    return Matrix3(row(0), row(1), row(2), row(3));
+}
+// Between Max's axes and the renderer's, which are the MDX file's: the
+// exporter writes Max (x, y, z) as (-y, x, z) (mdx_coord_transform.h), the
+// same turn as CoordSpace Max -> Blizzard.
+Matrix44f ToRenderer(const Matrix3& tm) {
+    return CoordinateSystem::ConvertTransform(CoordSpace::Max, CoordinateSystem::Default(),
+                                              RawMatrix44(tm));
+}
+Matrix3 FromRenderer(const Matrix44f& m) {
+    return RawMatrix3(
+        CoordinateSystem::ConvertTransform(CoordinateSystem::Default(), CoordSpace::Max, m));
+}
+
+
+// Node world TMs at one time with Warcraft III's billboards applied. The game
+// turns a billboarded node toward the camera inside its hierarchy walk
+// (MdxHierarchy::Evaluate, MdxBillboardNodeMatrix) and every node below it
+// follows; Max's node TMs know nothing of that. The turn is worked out on the
+// node's MDX frame - its Max TM with its frame-0 rotation, the skin's bind
+// (GetSkeleton), taken out - in the renderer's axes, which are the MDX file's:
+// the game faces MDX +X to the camera, which is Max's -Y. Nodes neither
+// billboarded nor below one keep GetNodeTM.
+class BillboardWalk {
+public:
+    BillboardWalk(const std::unordered_map<INode*, u32>& flags, const MdxBillboardCamera& camera,
+                  TimeValue t)
+        : flags_(flags), camera_(camera), t_(t) {}
+
+    Matrix3 World(INode* node) {
+        if (!Affected(node))
+            return node->GetNodeTM(t_);
+        if (auto it = world_.find(node); it != world_.end())
+            return it->second;
+        const Matrix3 own = node->GetNodeTM(t_);
+        INode* parent = node->GetParentNode();
+        const bool hasParent = parent && !parent->IsRootNode();
+        const Matrix3 parentOwn = hasParent ? parent->GetNodeTM(t_) : IdentityTM();
+        const Matrix3 parentTurned = hasParent ? World(parent) : IdentityTM();
+        // Below a turned node the pose relative to it stays as Max has it.
+        Matrix3 result = hasParent && Affected(parent) ? own * Inverse(parentOwn) * parentTurned : own;
+        if (auto f = flags_.find(node); f != flags_.end()) {
+            Matrix3 bind = node->GetNodeTM(0);
+            bind.NoTrans();
+            Matrix3 parentBind = IdentityTM();
+            if (hasParent) {
+                parentBind = parent->GetNodeTM(0);
+                parentBind.NoTrans();
+            }
+            const Point3 pp = hasParent ? parentTurned.GetTrans() : Point3(0, 0, 0);
+            const Vector3f parentPivot = CoordinateSystem::ConvertPoint(
+                CoordSpace::Max, CoordinateSystem::Default(), Vector3f{pp.x, pp.y, pp.z});
+            Matrix44f out = MdxBillboardNodeMatrix(ToRenderer(Inverse(bind) * result), f->second,
+                                                   camera_, parentPivot);
+            // A free billboard then turns by the node's own rotation in its
+            // frame (BillboardStack's `localR`): the rotation of its MDX frame
+            // against its parent's, before either was turned.
+            if (f->second & 0x8) {
+                const Matrix3 local = Inverse(bind) * own * Inverse(Inverse(parentBind) * parentOwn);
+                TurnByLocal(out, ToRenderer(local));
+            }
+            result = bind * FromRenderer(out);
+        }
+        world_[node] = result;
+        return result;
+    }
+
+private:
+    bool Affected(INode* node) {
+        if (!node || node->IsRootNode())
+            return false;
+        if (auto it = affected_.find(node); it != affected_.end())
+            return it->second;
+        const bool affected = flags_.count(node) != 0 || Affected(node->GetParentNode());
+        affected_[node] = affected;
+        return affected;
+    }
+
+    // Rows i of `out` are the billboard basis row i times the row's length;
+    // the basis becomes R * basis, R the local rotation in row form (the
+    // rows of `local` with their scale divided out).
+    static void TurnByLocal(Matrix44f& out, const Matrix44f& local) {
+        Point3 rot[3];
+        bool identity = true;
+        for (i32 r = 0; r < 3; r++) {
+            rot[r] = Point3(local.data[r][0], local.data[r][1], local.data[r][2]);
+            const f32 len = Length(rot[r]);
+            if (len < 1e-6f)
+                return;
+            rot[r] /= len;
+            for (i32 c = 0; c < 3; c++)
+                identity = identity && std::fabs(rot[r][c] - (r == c ? 1.0f : 0.0f)) < 1e-5f;
+        }
+        if (identity)
+            return;
+        Point3 basis[3];
+        f32 len[3];
+        for (i32 r = 0; r < 3; r++) {
+            basis[r] = Point3(out.data[r][0], out.data[r][1], out.data[r][2]);
+            len[r] = Length(basis[r]);
+            if (len[r] < 1e-6f)
+                return;
+            basis[r] /= len[r];
+        }
+        for (i32 r = 0; r < 3; r++) {
+            const Point3 row = (basis[0] * rot[r].x + basis[1] * rot[r].y + basis[2] * rot[r].z) * len[r];
+            out.data[r][0] = row.x;
+            out.data[r][1] = row.y;
+            out.data[r][2] = row.z;
+        }
+    }
+
+    const std::unordered_map<INode*, u32>& flags_;
+    const MdxBillboardCamera& camera_;
+    TimeValue t_;
+    std::unordered_map<INode*, bool> affected_;
+    std::unordered_map<INode*, Matrix3> world_;
+};
+
+} // namespace
+
 // ============================================================================
 // IAnimationSource::Evaluate() — compute per-frame state from Max scene.
 // Max controls the timeline, so everything in the PoseRequest but the primary
@@ -2807,18 +3201,57 @@ std::vector<CornEmitterInit> MaxSceneAdapter::GetCornEmitterInits() {
 FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
     const i32 timeMs = req.PrimaryClip().timeMs;
 
-    // Convert ms → Max ticks (0 if the tick rate is unavailable).
+    // Convert ms → Max ticks (0 if the tick rate is unavailable). A whole
+    // millisecond cannot hold a 30 fps frame (frame 1 is 33.33 ms), so a time
+    // within half a millisecond of a frame is that frame: truncated, frame 1
+    // came back as 158 ticks instead of 160, and a STEP, on/off or flipbook
+    // key on it showed one frame late in the preview.
     const i32 tpf = GetTicksPerFrame(), fps = GetFrameRate();
-    const TimeValue t =
-        (tpf > 0 && fps > 0) ? (TimeValue)((f32)timeMs * (f32)fps / 1000.0f * (f32)tpf) : 0;
+    TimeValue t = 0;
+    if (tpf > 0 && fps > 0) {
+        const f64 ticks = (f64)timeMs * (f64)fps / 1000.0 * (f64)tpf;
+        const f64 frame = std::round(ticks / (f64)tpf) * (f64)tpf;
+        t = (TimeValue)std::lround(std::fabs(ticks - frame) <= 2.4 ? frame : ticks);
+    }
     constexpr f32 kDegToRad = std::numbers::pi_v<f32> / 180.0f;
 
     FrameState state;
 
-    // Bone world matrices
+    // The billboards' camera in the model's renderer (= MDX) axes, read off
+    // the request as MdxModelAdapter does.
+    std::optional<BillboardWalk> billboards;
+    MdxBillboardCamera camera;
+    if (!billboardFlags_.empty()) {
+        const Matrix44f inv = Matrix44f::inverse(req.world);
+        Vector3f forward{-req.view.data[0][2], -req.view.data[1][2], -req.view.data[2][2]};
+        const Matrix44f identity = Matrix44f::identity();
+        bool noCamera = true;
+        for (i32 r = 0; r < 4; ++r)
+            for (i32 c = 0; c < 4; ++c)
+                noCamera = noCamera && req.view.data[r][c] == identity.data[r][c];
+        if (noCamera)
+            forward = Vector3f{req.world.data[3][0], req.world.data[3][1], req.world.data[3][2]} -
+                      req.cameraPos;
+        camera.eye = whiteout::transform_point(req.cameraPos, inv);
+        forward = whiteout::transform_normal(forward, inv);
+        camera.forward = forward.length() > 1e-6f ? forward.normalized() : Vector3f{-1, 0, 0};
+        const Vector3f up = whiteout::transform_normal(Vector3f{0, 0, 1}, inv);
+        camera.up = up.length() > 1e-6f ? up.normalized() : Vector3f{0, 0, 1};
+        billboards.emplace(billboardFlags_, camera, t);
+    }
+    auto nodeTM = [&](INode* node) {
+        return billboards ? billboards->World(node) : node->GetNodeTM(t);
+    };
+
+    // Bone world matrices, with each bone's stretch since frame 0 (see
+    // CollectBones).
     state.boneWorldMatrices.resize(bones_.size());
-    for (usize i = 0; i < bones_.size(); i++)
-        state.boneWorldMatrices[i] = PackMatrix(bones_[i].node->GetNodeTM(t));
+    for (usize i = 0; i < bones_.size(); i++) {
+        Matrix3 stretch = bones_[i].node->GetStretchTM(t);
+        stretch.NoTrans();
+        state.boneWorldMatrices[i] =
+            PackMatrix(bones_[i].stretchBaseInverse * stretch * nodeTM(bones_[i].node));
+    }
 
     // Geoset transforms + visibility + per-vertex-mod color
     const i32 gc = (i32)geosets_.size();
@@ -2829,7 +3262,7 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
         INode* node = geosets_[i].node;
         if (!node)
             continue;
-        state.geosetTransforms[i] = PackMatrix(node->GetNodeTM(t));
+        state.geosetTransforms[i] = PackMatrix(nodeTM(node));
         // Geoset alpha carries visibility only; per-layer opacity ships
         // separately via layerAlphas so each layer can fade independently.
         state.geosetAlphas[i] = std::clamp(node->GetVisibility(t), 0.0f, 1.0f);
@@ -2907,7 +3340,7 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             continue;
         FrameState::ParticleFrameState ps;
         ps.emitterId = pi.emitterId;
-        ps.transform = PackMatrix(pi.node->GetNodeTM(t));
+        ps.transform = PackMatrix(nodeTM(pi.node));
         ps.emissionRate = PB2FloatOr(obj, L"EmissionRate", t);
         ps.speed = PB2FloatOr(obj, L"Speed", t);
         ps.variation = PB2FloatOr(obj, L"Variation", t);
@@ -2930,7 +3363,19 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             continue;
         FrameState::RibbonFrameState rs;
         rs.emitterId = ri.emitterId;
-        rs.transform = PackMatrix(ri.node->GetNodeTM(t));
+        // The ribbon spans the object's +Y - the gizmo's line, which follows
+        // the object offset - from the node's pivot, as the exporter writes it
+        // (ribbonAxisRotation). Flakes spans a ribbon along the transform's
+        // +Y in its own axes, which is +X in Max's, so a quarter turn first
+        // puts the object's +Y there. An imported ribbon's object offset is
+        // the opposite turn: it draws on its node, as the file has it.
+        static const Matrix3 kObjectYOnX(Point3(0, 1, 0), Point3(-1, 0, 0), Point3(0, 0, 1),
+                                         Point3(0, 0, 0));
+        const Matrix3 ribbonNodeTM = nodeTM(ri.node);
+        Matrix3 ribbonTM = kObjectYOnX * ri.node->GetObjectTM(t) * Inverse(ri.node->GetNodeTM(t)) *
+                           ribbonNodeTM;
+        ribbonTM.SetTrans(ribbonNodeTM.GetTrans());
+        rs.transform = PackMatrix(ribbonTM);
         rs.above = PB2FloatOr(obj, L"Height Above", t, 20.0f);
         rs.below = PB2FloatOr(obj, L"Height Below", t, 20.0f);
         rs.alpha = PB2FloatOr(obj, L"Alpha", t, 1.0f);
@@ -2967,7 +3412,7 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             continue;
 
         FrameState::LightState ls;
-        const Matrix44f world = PackMatrix(node->GetNodeTM(t));
+        const Matrix44f world = PackMatrix(nodeTM(node));
         const bool visible = !node->IsNodeHidden() && node->GetVisibility(t) > 0.0f;
 
         Vector3f color{1.0f, 1.0f, 1.0f};
@@ -3078,7 +3523,7 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
 
     // Collision transforms
     for (auto& ci : collisions_)
-        state.collisionTransforms.push_back(PackMatrix(ci.node->GetNodeTM(t)));
+        state.collisionTransforms.push_back(PackMatrix(nodeTM(ci.node)));
 
     // Attachment transforms
     for (usize i = 0; i < attachments_.size(); i++) {
@@ -3090,7 +3535,7 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             if (Object* obj = GetBaseObject(ai.node))
                 PB2Float(obj, L"A_Visibility", t, visibility);
         state.attachmentStates.push_back(
-            {(i32)i, PackMatrix(ai.node->GetNodeTM(t)), visibility});
+            {(i32)i, PackMatrix(nodeTM(ai.node)), visibility});
     }
 
     // PE1 emitter states
@@ -3100,7 +3545,7 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             continue;
         FrameState::PE1FrameState ps;
         ps.emitterId = pi.emitterId;
-        ps.transform = PackMatrix(pi.node->GetNodeTM(t));
+        ps.transform = PackMatrix(nodeTM(pi.node));
         ps.speed = PB2FloatOr(obj, L"Speed", t);
         ps.emissionRate = PB2FloatOr(obj, L"EmissionRate", t);
         // NeoDex keeps the MDX values themselves, no degrees (its importer
@@ -3141,7 +3586,7 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
             FrameState::CornFrameState cs;
             cs.emitterId = pi.emitterId;
 
-            Matrix44f baseM = PackMatrix(pi.node->GetNodeTM(t));
+            Matrix44f baseM = PackMatrix(nodeTM(pi.node));
             auto rowMag = [&](i32 r) {
                 const f32 x = baseM.data[r][0];
                 const f32 y = baseM.data[r][1];
@@ -3509,7 +3954,7 @@ bool whiteout::flakes::ReadActiveViewportCamera(ViewportCameraPose& out) {
         right = right.normalized();
         const Vector3f upBase = cross(right, fwd).normalized();
         const Vector3f up = MaxDirToDefault(upMax);
-        out.roll = std::atan2(up.dot(right), up.dot(upBase));
+        out.roll = std::atan2(-up.dot(right), up.dot(upBase));  // up = cos·upBase − sin·right
     }
     return true;
 }

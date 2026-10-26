@@ -1,0 +1,8 @@
+{"title":"Problemas da cena","controls":[{"id":2005,"parent_id":0,"class":"Static","text":"Problemas (clique duas vezes em uma linha para selecionar o nó):","x":27,"y":58,"w":599,"h":20},
+{"id":2000,"parent_id":0,"class":"SysListView32","text":"","x":27,"y":85,"w":599,"h":363},
+{"id":0,"parent_id":2000,"class":"SysHeader32","text":"","x":29,"y":87,"w":595,"h":25},
+{"id":2001,"parent_id":0,"class":"Static","text":"3 no total: 2 nomes, 0 malhas, 0 controladores, 1 materiais","x":27,"y":458,"w":599,"h":20},
+{"id":2004,"parent_id":0,"class":"Button","text":"Analisar novamente","x":27,"y":490,"w":113,"h":35},
+{"id":2002,"parent_id":0,"class":"Button","text":"Corrigir a seleção","x":151,"y":490,"w":135,"h":35},
+{"id":2003,"parent_id":0,"class":"Button","text":"Corrigir tudo","x":297,"y":490,"w":113,"h":35},
+{"id":1,"parent_id":0,"class":"Button","text":"Fechar","x":513,"y":490,"w":113,"h":35}]}

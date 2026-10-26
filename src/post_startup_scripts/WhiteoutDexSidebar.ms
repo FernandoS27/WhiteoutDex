@@ -13,7 +13,7 @@
 try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
 try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
 
-rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
+rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:620
 (
     local iconPath = (::WhiteoutDexInstallRoot) + "\\whiteoutdex_icons\\"
     local btnSize = 28
@@ -60,13 +60,14 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
     dotNetControl btn_kfoptimizer "System.Windows.Forms.Button" pos:[xOfs, yStart + 12*step+4] width:btnW height:btnSize
     dotNetControl btn_cellshade   "System.Windows.Forms.Button" pos:[xOfs, yStart + 13*step+4] width:btnW height:btnSize
     dotNetControl btn_matfix      "System.Windows.Forms.Button" pos:[xOfs, yStart + 14*step+4] width:btnW height:btnSize
-    dotNetControl btn_objsettings "System.Windows.Forms.Button" pos:[xOfs, yStart + 15*step+4] width:btnW height:btnSize
-    dotNetControl btn_renderer    "System.Windows.Forms.Button" pos:[xOfs, yStart + 16*step+4] width:btnW height:btnSize
+    dotNetControl btn_texanim     "System.Windows.Forms.Button" pos:[xOfs, yStart + 15*step+4] width:btnW height:btnSize
+    dotNetControl btn_objsettings "System.Windows.Forms.Button" pos:[xOfs, yStart + 16*step+4] width:btnW height:btnSize
+    dotNetControl btn_renderer    "System.Windows.Forms.Button" pos:[xOfs, yStart + 17*step+4] width:btnW height:btnSize
 
-    dotNetControl lbl_sep2 "System.Windows.Forms.Panel" pos:[5, yStart + 17*step+4] width:28 height:1
+    dotNetControl lbl_sep2 "System.Windows.Forms.Panel" pos:[5, yStart + 18*step+4] width:28 height:1
 
-    dotNetControl btn_settings    "System.Windows.Forms.Button" pos:[xOfs, yStart + 17*step+8] width:btnW height:btnSize
-    dotNetControl btn_about       "System.Windows.Forms.Button" pos:[xOfs, yStart + 18*step+8] width:btnW height:btnSize
+    dotNetControl btn_settings    "System.Windows.Forms.Button" pos:[xOfs, yStart + 18*step+8] width:btnW height:btnSize
+    dotNetControl btn_about       "System.Windows.Forms.Button" pos:[xOfs, yStart + 19*step+8] width:btnW height:btnSize
     
     -- ── Setup button appearance ──
     fn setupButton btn iconFileName fallbackText tooltipText =
@@ -116,6 +117,7 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
     on btn_kfoptimizer Click do macros.run "WhiteoutDex Toolkit" "WhiteoutDex_KeyframeOptimizer"
     on btn_cellshade Click do   macros.run "WhiteoutDex Toolkit" "WhiteoutDex_CellShadeCreator"
     on btn_matfix Click do      macros.run "WhiteoutDex Toolkit" "WhiteoutDex_MaterialFix"
+    on btn_texanim Click do     macros.run "WhiteoutDex Toolkit" "WhiteoutDex_TextureAnimCreator"
     on btn_objsettings Click do macros.run "WhiteoutDex Toolkit" "WhiteoutDex_ObjectSettings"
     on btn_renderer Click do    macros.run "WhiteoutDex Toolkit" "WhiteoutDex_Renderer"
     on btn_settings Click do    macros.run "WhiteoutDex Toolkit" "WhiteoutDex_Settings"
@@ -147,6 +149,7 @@ rollout WhiteoutDexSidebarRollout "WhiteoutDex" width:38 height:590
         setupButton btn_kfoptimizer "wdx_sb_kfoptimizer.png" "KFO" (::WdxL.t "menu_keyframe_optimizer")
         setupButton btn_cellshade   "wdx_sb_cellshade.png" "CSH" (::WdxL.t "menu_cell_shade")
         setupButton btn_matfix      "wdx_sb_materialfix.png" "MAT" (::WdxL.t "menu_material_fix")
+        setupButton btn_texanim     "wdx_sb_texanim.png" "TXA" (::WdxL.t "menu_texture_anim_creator")
         setupButton btn_objsettings "wdx_sb_objsettings.png" "SET" (::WdxL.t "menu_object_settings")
         setupButton btn_renderer    "wdx_sb_renderer.png" "RND" (::WdxL.t "menu_renderer")
         setupButton btn_settings    "wdx_sb_settings.png" "CFG" (::WdxL.t "set_settings_title")
@@ -194,7 +197,7 @@ struct WhiteoutDexSidebarStruct
         -- global instance so it works on every Max version.
         try (cui.UnRegisterDialogBar ::WhiteoutDexSidebarRollout) catch()
         try (destroyDialog ::WhiteoutDexSidebarRollout) catch()
-        createDialog ::WhiteoutDexSidebarRollout width:38 height:620 \
+        createDialog ::WhiteoutDexSidebarRollout width:38 height:650 \
             style:#(#style_titlebar, #style_border, #style_sysmenu)
         ::WhiteoutDexSidebar.isOpen = true
     ),

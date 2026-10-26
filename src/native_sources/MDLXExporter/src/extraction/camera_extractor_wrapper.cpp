@@ -23,6 +23,7 @@
 #include <istdplug.h>
 #include <modstack.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdarg>
 
@@ -60,48 +61,81 @@ bool isCameraNode(INode* node) {
     return os.obj->SuperClassID() == CAMERA_CLASS_ID;
 }
 
-// Sample a camera track: collect keyframes from the PRS controller.
-// Returns -1 if no animation, else index into model.vec3Tracks.
-int32_t extractPositionTrack(INode* node, ir::IRModel& model) {
-    if (!node) return -1;
-    Control* prs = node->GetTMController();
-    if (!prs) return -1;
-    Control* posCtrl = prs->GetPositionController();
-    if (!posCtrl) return -1;
+// How far the exported straight line may miss the Max curve: the bone
+// translation tolerance (anim_dispatcher kCurveTolTranslation).
+constexpr float kCurveTolPosition = 0.01f;
 
-    IKeyControl* ikc = GetKeyControlInterface(posCtrl);
-    if (!ikc) return -1;
-    int n = ikc->GetNumKeys();
-    if (n < 2) return -1;  // static position → no track
+// Camera / target position track (KCTR / KTTR), in the world like the static
+// position CameraExtractor reads. The game plays it Linear from key to key.
+// Taking only the controller's key values drew a straight line between them:
+// the cameras of arthasillidanfight.mdx fly Hermite/Bezier arcs, and the
+// export missed them by up to 27 units (01 Standoff has two keys 12 s apart).
+// Every sequence is probed per frame plus at the controller's own key times
+// (imported keys sit between frames); a probe is kept where the straight line
+// from the last kept one would miss the curve by more than the tolerance
+// (the greedy reduction of anim_dispatcher densifyCurveTimes). Sampling the
+// node TM also covers Position XYZ, constraints and linked cameras.
+// Returns -1 if the node does not move, else index into model.vec3Tracks.
+int32_t extractPositionTrack(INode* node, const std::vector<ir::Sequence>& sequences,
+                             ir::IRModel& model) {
+    if (!node) return -1;
+    const Point3 rest = node->GetNodeTM(0).GetTrans();
+    const TimeValue kFrame = std::max<TimeValue>(GetTicksPerFrame(), 1);
+
+    std::vector<TimeValue> keyTimes;
+    if (Control* tm = node->GetTMController())
+        if (Control* pos = tm->GetPositionController())
+            for (int i = 0, n = pos->NumKeys(); i < n; ++i)
+                keyTimes.push_back(pos->GetKeyTime(i));
 
     ir::Track<Point3> track;
     track.interpolation = ir::InterpolationType::Linear;
+    bool moves = false;
+    std::vector<TimeValue> st;
+    std::vector<Point3> sv;
+    for (const auto& seq : sequences) {
+        if (seq.endTime < seq.startTime) continue;
+        st.clear();
+        for (TimeValue t = seq.startTime; t < seq.endTime; t += kFrame) st.push_back(t);
+        st.push_back(seq.endTime);
+        for (TimeValue t : keyTimes)
+            if (t > seq.startTime && t < seq.endTime) st.push_back(t);
+        std::sort(st.begin(), st.end());
+        st.erase(std::unique(st.begin(), st.end()), st.end());
+        sv.clear();
+        for (TimeValue t : st) {
+            sv.push_back(node->GetNodeTM(t).GetTrans());
+            if (Length(sv.back() - rest) > 0.0001f) moves = true;
+        }
 
-    for (int i = 0; i < n; i++) {
-        IBezPoint3Key key;
-        ikc->GetKey(i, &key);
-
-        Point3 val(0, 0, 0);
-        Interval iv = FOREVER;
-        posCtrl->GetValue(key.time, &val, iv);
-
-        track.keys.push_back({});
-        auto& k = track.keys.back();
-        k.time = key.time;
-        k.value = val;
-        k.inTangent = Point3(0, 0, 0);
-        k.outTangent = Point3(0, 0, 0);
-        k.hasTangents = false;
+        auto keep = [&](size_t i) {
+            ir::Keyframe<Point3> k;
+            k.time = st[i];
+            k.value = sv[i];
+            track.keys.push_back(k);
+        };
+        keep(0);
+        size_t anchor = 0;
+        for (size_t j = 1; j + 1 < st.size(); ++j) {
+            const size_t to = j + 1;
+            const float dt = static_cast<float>(st[to] - st[anchor]);
+            bool straight = true;
+            for (size_t k = anchor + 1; straight && k <= j; ++k) {
+                const float u = static_cast<float>(st[k] - st[anchor]) / dt;
+                straight = Length(sv[k] - (sv[anchor] + (sv[to] - sv[anchor]) * u)) <= kCurveTolPosition;
+            }
+            if (!straight) {
+                keep(j);
+                anchor = j;
+            }
+        }
+        if (st.size() > 1) keep(st.size() - 1);
     }
+    if (!moves || track.keys.empty()) return -1;
 
     int32_t idx = static_cast<int32_t>(model.vec3Tracks.size());
     model.vec3Tracks.push_back(std::move(track));
     return idx;
-}
-
-// Extract target position animation (for target cameras).
-int32_t extractTargetTrack(INode* target, ir::IRModel& model) {
-    return extractPositionTrack(target, model);
 }
 
 // A float track holding one key at frame 0.
@@ -203,12 +237,12 @@ void extractCameras(const std::vector<core::SceneNode>& nodes,
         ir::Camera cam = coreExtractor.extract(sn.maxNode, 0, reporter);
 
         // Extract animation tracks
-        cam.positionTrackIndex = extractPositionTrack(sn.maxNode, model);
+        cam.positionTrackIndex = extractPositionTrack(sn.maxNode, model.sequences, model);
         cam_log("    positionTrackIdx=%d\n", cam.positionTrackIndex);
 
         INode* target = sn.maxNode->GetTarget();
         if (target) {
-            cam.targetPositionTrackIndex = extractTargetTrack(target, model);
+            cam.targetPositionTrackIndex = extractPositionTrack(target, model.sequences, model);
             cam_log("    targetPositionTrackIdx=%d\n", cam.targetPositionTrackIndex);
         }
 

@@ -264,7 +264,11 @@ static std::vector<TimeValue> generateFrameTimes(TimeValue seqStart,
 }
 
 // Filter pre-collected IK key times to a sequence range + boundaries.
-static std::vector<TimeValue> filterIKKeyTimes(
+// No longer used for IK nodes: a chain root moved by keys outside the IK
+// chain helpers (the pelvis of "03 Ik-joe (Spline IK).max") got only its
+// sequence start and end, and the whole leg drifted. IK nodes are sampled
+// every frame now; the reducer trims the keys again.
+[[maybe_unused]] static std::vector<TimeValue> filterIKKeyTimes(
         const std::vector<TimeValue>& allIKKeys,
         TimeValue seqStart, TimeValue seqEnd) {
     std::vector<TimeValue> times;
@@ -389,12 +393,77 @@ static std::vector<TimeValue> densifyCurveTimes(
     return out;
 }
 
+// The same for rotations. Key-time sampling plays a rotation as a straight
+// slerp from key to key; TCB, Smooth (Bezier) and Euler curves ease and
+// overshoot between their keys. Footman's bones switched to TCB rotation came
+// out up to 6 units off in the game - the export kept only the TCB keys.
+// Probed per frame like densifyCurveTimes, measured as the angle between the
+// curve and the slerp; linear_rotation is a slerp already and gains nothing.
+static Quat slerpShort(const Quat& a, Quat b, float t) {
+    float d = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+    if (d < 0.0f) { b = Quat(-b.x, -b.y, -b.z, -b.w); d = -d; }
+    float s0 = 1.0f - t, s1 = t;
+    if (d < 0.9995f) {
+        const float om = acosf(std::min(1.0f, d));
+        const float so = sinf(om);
+        s0 = sinf((1.0f - t) * om) / so;
+        s1 = sinf(t * om) / so;
+    }
+    Quat q(s0 * a.x + s1 * b.x, s0 * a.y + s1 * b.y, s0 * a.z + s1 * b.z, s0 * a.w + s1 * b.w);
+    q.Normalize();
+    return q;
+}
+
+static std::vector<TimeValue> densifyRotationCurveTimes(
+        const std::vector<TimeValue>& times,
+        const std::function<Quat(TimeValue)>& rotAt,
+        float tolerance) {
+    if (times.size() < 2) return times;
+    const TimeValue kFrame = std::max<TimeValue>(GetTicksPerFrame(), 1);
+    std::vector<TimeValue> out;
+    std::vector<TimeValue> st;
+    std::vector<Quat> sv;
+    for (size_t i = 0; i + 1 < times.size(); ++i) {
+        const TimeValue t0 = times[i], t1 = times[i + 1];
+        out.push_back(t0);
+        if (t1 - t0 <= kFrame) continue;
+        st.clear();
+        sv.clear();
+        for (TimeValue t = t0; t < t1; t += kFrame) {
+            st.push_back(t);
+            sv.push_back(rotAt(t));
+        }
+        st.push_back(t1);
+        sv.push_back(rotAt(t1));
+        size_t anchor = 0;
+        for (size_t j = 1; j + 1 < st.size(); ++j) {
+            const size_t to = j + 1;
+            const float dt = static_cast<float>(st[to] - st[anchor]);
+            bool straight = true;
+            for (size_t k = anchor + 1; straight && k <= j; ++k) {
+                const float u = static_cast<float>(st[k] - st[anchor]) / dt;
+                straight = quatAngle(slerpShort(sv[anchor], sv[to], u), sv[k]) <= tolerance;
+            }
+            if (!straight) {
+                out.push_back(st[j]);
+                anchor = j;
+            }
+        }
+    }
+    out.push_back(times.back());
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
 // How far the exported straight line may miss a Bezier/TCB curve between
 // keys before densifyCurveTimes follows it: 0.01 units of translation (the
 // models are ~100-300 units tall) and 0.5% of scale, the scale reducer's own
 // tolerance.
 constexpr float kCurveTolTranslation = 0.01f;
 constexpr float kCurveTolScale = 0.005f;
+// 0.1 degree: a 100-unit arm moves 0.17 units at its tip.
+constexpr float kCurveTolRotation = 0.00175f;
 
 // ─── Global-sequence transform channels ──────────────────────────────
 //
@@ -495,6 +564,7 @@ static bool isOrientationAbsoluteNode(INode* maxNode) {
         if (id == k) return true;
     return false;
 }
+
 
 void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                               const std::vector<ir::Sequence>& sequences,
@@ -613,6 +683,18 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
         }
         bool isCATNode = ControllerReader::isCAT(maxNode);
         bool needsSafeBindPose = isBipedNode || isLinkNode || isCATNode;
+        // A Link Constraint's evaluation goes stale while the other nodes
+        // are sampled: elf_woman's sword, linked to the hand and at frame
+        // 3000 to World, came out 45 units off in Death, and Max itself
+        // showed the wrong place until the file was reloaded (hold/fetch
+        // restores it; the controller's keys and targets never change).
+        // Evaluating the node once more at a time of its own kept it right,
+        // so its cached TMs are dropped before it is sampled - and again
+        // once every node is done, to leave the scene as it was.
+        if (isLinkNode) {
+            maxNode->InvalidateTreeTM();
+            tmCtrl->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
+        }
         if (needsSafeBindPose) {
             // Safe path: decompose GetNodeTM (same as IK path in subsample_engine)
             Matrix3 nodeTM = maxNode->GetNodeTM(0);
@@ -687,6 +769,22 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
         const bool parentIsAbsolute =
             (parentNode && !parentNode->IsRootNode()) &&
             isOrientationAbsoluteNode(parentNode);
+
+        // An absolute node's KGSC multiplies its parent's in-game frame. A
+        // bone exports its scale relative to bind, so that frame has scale 1
+        // at bind - not the bone's Max world scale. Under a rig scaled 0.01
+        // (chernyak_archer14: root 0.01) the local scale is 100x its world
+        // scale, and the attachments came out 148, the events 100. Scaled
+        // back by the parent's bind world scale, KGSC is the node's world
+        // scale again, as for a node at the root.
+        Point3 parentBindScale(1.0f, 1.0f, 1.0f);
+        if (useAbsoluteRotScale && !parentIsAbsolute && parentNode && !parentNode->IsRootNode()) {
+            const Matrix3 pb = parentNode->GetNodeTM(0);
+            for (int i = 0; i < 3; ++i) {
+                const float len = Length(pb.GetRow(i));
+                if (len > 0.0001f) parentBindScale[i] = len;
+            }
+        }
 
         ALOG << "  node[" << nodeIdx << "] '" << irNode.name << "'"
              << " bindPos=(" << bindPos.x << "," << bindPos.y << "," << bindPos.z << ")"
@@ -892,7 +990,7 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 int transLogCount = 0;
                 const bool transAtKeys = !isIKNode && !needsPerFrame && isFKPosNode;
                 auto transTimes = isIKNode
-                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    ? generateFrameTimes(seq.startTime, seq.endTime, frameInterval)
                     : transAtKeys
                         ? collectKeyTimes(posCtrlFK, seq.startTime, seq.endTime)
                         : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
@@ -1006,7 +1104,7 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 const int frameInterval = GetTicksPerFrame(); // one frame of the scene
                 const bool keyTimeRot = isIKNode || (!needsPerFrame && isFKRotNode);
                 auto rotTimes = isIKNode
-                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    ? generateFrameTimes(seq.startTime, seq.endTime, frameInterval)
                     : keyTimeRot
                         ? (rotTypeFK == ControllerType::Euler_XYZ
                             ? collectEulerKeyTimes(rotCtrlFK, seq.startTime, seq.endTime)
@@ -1015,6 +1113,8 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 const size_t keyTimeCount = rotTimes.size();
                 if (keyTimeRot)
                     rotTimes = densifyRotationTimes(rotTimes, localRotAt);
+                if (keyTimeRot && !isIKNode && rotTypeFK != ControllerType::Linear_Rotation)
+                    rotTimes = densifyRotationCurveTimes(rotTimes, localRotAt, kCurveTolRotation);
 
                 if (logCount == 0) {
                     ALOG << "    ROT seq[" << seq.startTime << "-" << seq.endTime
@@ -1096,6 +1196,36 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                     bindSz = 1.0f;
                 }
 
+                // The row lengths are scales along the node's own axes, but
+                // KGSC scales along the axes of the MDX node frame - the
+                // world axes at bind, the rotation being a delta from there.
+                // A bone whose X points along world Y at bind (Marigold2's
+                // Bone005, stretched 2.5x along its chain) had its stretch
+                // exported across the chain. Each local axis goes to the
+                // world axis it runs along at bind; absolute nodes rotate
+                // their own frame and keep the local order.
+                int toWorldAxis[3] = {0, 1, 2};
+                if (!useAbsoluteRotScale) {
+                    const Matrix3 bindWorld = maxNode->GetNodeTM(0);
+                    bool used[3] = {false, false, false};
+                    bool ok = true;
+                    for (int i = 0; i < 3 && ok; ++i) {
+                        const Point3 axis = bindWorld.GetRow(i);
+                        int best = 0;
+                        for (int j = 1; j < 3; ++j)
+                            if (fabsf(axis[j]) > fabsf(axis[best])) best = j;
+                        if (used[best]) ok = false;
+                        used[best] = true;
+                        toWorldAxis[i] = best;
+                    }
+                    if (!ok) { toWorldAxis[0] = 0; toWorldAxis[1] = 1; toWorldAxis[2] = 2; }
+                }
+                auto toWorldAxes = [&](const Point3& s) {
+                    Point3 w;
+                    for (int i = 0; i < 3; ++i) w[toWorldAxis[i]] = s[i];
+                    return w;
+                };
+
                 // KGSC value at t: local scale relative to the bind scale.
                 auto scaleAt = [&](TimeValue t) {
                     Matrix3 nodeTM = maxNode->GetNodeTM(t);
@@ -1106,14 +1236,14 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                     Matrix3 localTM = nodeTM * Inverse(parTM);
                     // A temporary mirror is a negative scale (see negated).
                     const float sign = isMirrored(localTM) != bindMirrored ? -1.0f : 1.0f;
-                    return Point3(sign * Length(localTM.GetRow(0)) / bindSx,
-                                  sign * Length(localTM.GetRow(1)) / bindSy,
-                                  sign * Length(localTM.GetRow(2)) / bindSz);
+                    return toWorldAxes(Point3(sign * Length(localTM.GetRow(0)) / bindSx * parentBindScale.x,
+                                              sign * Length(localTM.GetRow(1)) / bindSy * parentBindScale.y,
+                                              sign * Length(localTM.GetRow(2)) / bindSz * parentBindScale.z));
                 };
 
                 const bool sclAtKeys = !isIKNode && !needsPerFrame;
                 auto sclTimes = isIKNode
-                    ? filterIKKeyTimes(ikMergedKeyTimes, seq.startTime, seq.endTime)
+                    ? generateFrameTimes(seq.startTime, seq.endTime, frameInterval)
                     : sclAtKeys
                         ? collectKeyTimes(sclCtrlFK, seq.startTime, seq.endTime)
                         : generateFrameTimes(seq.startTime, seq.endTime, frameInterval);
@@ -1274,7 +1404,10 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                 key.time = 0;
                 // Absolute nodes rest at their bind scale (see the scale
                 // sampling block above); bones rest at 1.
-                key.value = useAbsoluteRotScale ? bindScl : Point3(1, 1, 1);
+                key.value = useAbsoluteRotScale
+                    ? Point3(bindScl.x * parentBindScale.x, bindScl.y * parentBindScale.y,
+                             bindScl.z * parentBindScale.z)
+                    : Point3(1, 1, 1);
                 restAnim.scale.keys.push_back(key);
                 restAnim.scale.interpolation = ir::InterpolationType::Linear;
             }
@@ -1295,6 +1428,15 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
              << " SC=" << hasAnyRealScale
              << " restKey=" << needsRestKey << "\n";
         AFLUSH;
+    }
+
+    for (auto& n : irModel.nodes) {
+        if (!n.maxNode) continue;
+        Control* c = n.maxNode->GetTMController();
+        if (c && ControllerReader::isLinkConstraint(c)) {
+            n.maxNode->InvalidateTreeTM();
+            c->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
+        }
     }
 
     ALOG << "=== AnimDispatcher complete: " << irModel.nodeAnimations.size() << " nodeAnimations ===\n";

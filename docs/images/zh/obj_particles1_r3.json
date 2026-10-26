@@ -1,0 +1,13 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":10,"y":30,"w":248,"h":125},
+{"id":6009,"parent_id":0,"class":"Static","text":"生命周期：","x":26,"y":45,"w":108,"h":20},
+{"id":5010,"parent_id":0,"class":"CustEdit","text":"","x":145,"y":43,"w":79,"h":25},
+{"id":0,"parent_id":5010,"class":"EDITDUMMY","text":"","x":147,"y":45,"w":75,"h":21},
+{"id":0,"parent_id":0,"class":"Edit","text":"","x":149,"y":44,"w":75,"h":27},
+{"id":5011,"parent_id":0,"class":"SpinnerControl","text":"","x":224,"y":43,"w":18,"h":25},
+{"id":6010,"parent_id":0,"class":"Static","text":"发射速率:","x":26,"y":83,"w":117,"h":20},
+{"id":5012,"parent_id":0,"class":"CustEdit","text":"","x":145,"y":80,"w":79,"h":25},
+{"id":0,"parent_id":5012,"class":"EDITDUMMY","text":"","x":147,"y":82,"w":75,"h":21},
+{"id":0,"parent_id":0,"class":"Edit","text":"","x":149,"y":81,"w":75,"h":27},
+{"id":5013,"parent_id":0,"class":"SpinnerControl","text":"","x":224,"y":80,"w":18,"h":25},
+{"id":6011,"parent_id":0,"class":"Static","text":"控制器:","x":26,"y":115,"w":63,"h":20},
+{"id":2034,"parent_id":0,"class":"ComboBox","text":"","x":145,"y":113,"w":95,"h":27}]}

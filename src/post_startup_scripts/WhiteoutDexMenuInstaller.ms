@@ -101,6 +101,7 @@ fn InstallWhiteoutDexMenu =
 		addAction whiteoutDexMain "WhiteoutDex_KeyframeOptimizer" locKey:"menu_keyframe_optimizer"
 		addAction whiteoutDexMain "WhiteoutDex_CellShadeCreator"  locKey:"menu_cell_shade"
 		addAction whiteoutDexMain "WhiteoutDex_MaterialFix"       locKey:"menu_material_fix"
+		addAction whiteoutDexMain "WhiteoutDex_TextureAnimCreator" locKey:"menu_texture_anim_creator"
 		addSep whiteoutDexMain
 		addAction whiteoutDexMain "WhiteoutDex_Renderer"          locKey:"menu_renderer"
 		addAction whiteoutDexMain "WhiteoutDex_Settings"          locKey:"menu_settings"

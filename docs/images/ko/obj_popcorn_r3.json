@@ -1,0 +1,9 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":12,"y":30,"w":243,"h":399},
+{"id":3,"parent_id":0,"class":"Static","text":"기본 표시:","x":30,"y":42,"w":186,"h":20},
+{"id":4,"parent_id":0,"class":"Button","text":"Always On","x":177,"y":42,"w":113,"h":23},
+{"id":5,"parent_id":0,"class":"Static","text":"예외:","x":30,"y":78,"w":180,"h":20},
+{"id":6,"parent_id":0,"class":"ListBox","text":"","x":30,"y":102,"w":285,"h":146},
+{"id":8,"parent_id":0,"class":"CustButton","text":"Remove selected","x":30,"y":270,"w":285,"h":33},
+{"id":9,"parent_id":0,"class":"Static","text":"장면 애니메이션 추가:","x":30,"y":321,"w":300,"h":20},
+{"id":10,"parent_id":0,"class":"ComboBox","text":"","x":30,"y":345,"w":285,"h":27},
+{"id":12,"parent_id":0,"class":"CustButton","text":"Add as exception","x":30,"y":387,"w":285,"h":33}]}

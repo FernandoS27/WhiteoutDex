@@ -1,0 +1,7 @@
+{"title":"","controls":[{"id":0,"parent_id":0,"class":"#32770","text":"","x":12,"y":30,"w":243,"h":236},
+{"id":3,"parent_id":0,"class":"Static","text":"- FaceFX 目标名称 -","x":63,"y":41,"w":139,"h":20},
+{"id":4,"parent_id":0,"class":"Edit","text":"","x":30,"y":68,"w":207,"h":30},
+{"id":6,"parent_id":0,"class":"Static","text":"- FaceFX 文件路径 -","x":54,"y":108,"w":139,"h":20},
+{"id":7,"parent_id":0,"class":"Edit","text":"","x":30,"y":135,"w":207,"h":30},
+{"id":9,"parent_id":0,"class":"CustButton","text":"浏览FaceFX文件","x":30,"y":177,"w":207,"h":36},
+{"id":10,"parent_id":0,"class":"CustButton","text":"FaceFX 说明","x":30,"y":221,"w":207,"h":36}]}

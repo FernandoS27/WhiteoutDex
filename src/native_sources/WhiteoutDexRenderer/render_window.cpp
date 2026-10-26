@@ -29,10 +29,15 @@ extern std::atomic<int> g_wdxMissingTextureCount;
 #include "imgui_theme.h"
 #include "max_plugin_ui.h"
 #include "render_window.h"
+#include "wdx_ui_language.h" // FontsDir
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/debug_renderer.h"
+#include "renderer/effects/splat_service.h"
+#include "renderer/effects/spn_spawner.h"
 #include "renderer/frame_ticker.h"
+#include "renderer/particle/particle_service.h"
+#include "renderer/ribbon/ribbon_service.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
@@ -107,17 +112,27 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
         wchar_t tmp[MAX_PATH] = {};
         GetTempPathW(MAX_PATH, tmp);
         std::wstring stderrPath = std::wstring(tmp) + L"WhiteoutDex_render.log";
-        FILE* dummy = nullptr;
-        _wfreopen_s(&dummy, stderrPath.c_str(), L"a", stderr);
-        std::fprintf(stderr, "\r\n==== render-thread session ====\r\n");
-        std::fflush(stderr);
+        // A failed freopen leaves stderr closed, and the next fprintf(stderr)
+        // anywhere is an invalid parameter that ends 3ds Max on the spot - it
+        // fails whenever the log is open somewhere without write sharing (the
+        // diag writer below used to do that; another 3ds Max's preview, a
+        // virus scanner). stderr then goes to NUL instead.
+        FILE* redirected = nullptr;
+        if (_wfreopen_s(&redirected, stderrPath.c_str(), L"a", stderr) != 0 || !redirected)
+            _wfreopen_s(&redirected, L"NUL", L"w", stderr);
+        if (redirected) {
+            std::fprintf(stderr, "\r\n==== render-thread session ====\r\n");
+            std::fflush(stderr);
+        }
     }
 
     auto diag = [](const char* msg) {
         wchar_t tmp[MAX_PATH] = {};
         GetTempPathW(MAX_PATH, tmp);
         std::wstring logPath = std::wstring(tmp) + L"WhiteoutDex_render.log";
-        HANDLE h = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+        // Write sharing: stderr above and other 3ds Max sessions have the same
+        // log open; read-only sharing failed here and blocked their freopen.
+        HANDLE h = CreateFileW(logPath.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h == INVALID_HANDLE_VALUE) return;
         DWORD written = 0;
@@ -209,9 +224,12 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
         QueryPerformanceCounter(&now);
         lastTime = now;
 
+        // A jump on Max's timeline is replayed here (see QueueResimulation);
+        // until its frames arrive the effects hold still.
+        RunPendingResimulation(lastParentTimeMs);
         i32 curParentMs = service_.Scene().GetAnimationTime();
         i32 parentDtMs = curParentMs - lastParentTimeMs;
-        if (parentDtMs < 0)
+        if (parentDtMs < 0 || holdEffects_.load(std::memory_order_acquire))
             parentDtMs = 0;
         if (parentDtMs > 100)
             parentDtMs = 100;
@@ -384,7 +402,7 @@ void RenderWindow::InitImGui() {
         u32 ? reinterpret_cast<GetDpiFn>(GetProcAddress(u32, "GetDpiForWindow")) : nullptr;
     if (getDpi)
         dpi = getDpi(hwnd_);
-    ApplyImGuiDpiScale(static_cast<float>(dpi) / 96.0f);
+    ApplyImGuiDpiScale(static_cast<float>(dpi) / 96.0f, wdx::ui::FontsDir());
 
     ImGui_ImplWin32_Init(hwnd_);
     ui_ = std::make_unique<MaxPluginUI>(*this);
@@ -400,6 +418,55 @@ void RenderWindow::ShutdownImGui() {
     ImGui::DestroyContext(imguiCtx_);
     imguiCtx_ = nullptr;
     imguiInitialised_ = false;
+}
+
+void RenderWindow::QueueResimulation(Actor* actor, std::vector<ResimFrame> frames, f32 stepSec) {
+    std::lock_guard<std::mutex> lk(hostMutex_);
+    resimJob_.actor = actor;
+    resimJob_.frames = std::move(frames);
+    resimJob_.stepSec = stepSec;
+    resimJob_.pending = true;
+    resimQueued_.store(true, std::memory_order_release);
+}
+
+void RenderWindow::RunPendingResimulation(i32& lastParentTimeMs) {
+    if (!resimQueued_.load(std::memory_order_acquire))
+        return;
+    ResimJob job;
+    {
+        std::lock_guard<std::mutex> lk(hostMutex_);
+        resimQueued_.store(false, std::memory_order_relaxed);
+        if (!resimJob_.pending)
+            return;
+        job = std::move(resimJob_);
+        resimJob_ = ResimJob{};
+    }
+    // A Resync may have replaced the actor since the job was queued.
+    bool alive = false;
+    for (auto& [h, mi] : service_.Scene().Actors().All())
+        alive = alive || mi.get() == job.actor;
+    if (alive) {
+        // What the replay rebuilds is thrown away, as RewindScene does it -
+        // except the Popcorn effects, which simulate in the pipeline, not the
+        // ticker, and so carry on as they did before there was a replay.
+        service_.Particles().ResetEmitters();
+        service_.Ribbons().ResetTrails();
+        service_.Splats().Clear();
+        service_.Spn().Clear();
+        auto& scene = service_.Scene();
+        // Silent: every sound event in the replayed frames would go off at once.
+        auto ctx = service_.MakeActorEvalContext();
+        ctx.sound = nullptr;
+        for (const auto& f : job.frames) {
+            job.actor->animation.SetTimeMs(f.timeMs);
+            scene.SetAnimationTime(f.timeMs);
+            ctx.sceneAnimationTimeMs = f.timeMs;
+            job.actor->ApplyFrameState(f.state, f.timeMs, ctx);
+            service_.Ticker().Tick(job.stepSec);
+        }
+    }
+    lastParentTimeMs = service_.Scene().GetAnimationTime();
+    holdEffects_.store(false, std::memory_order_release);
 }
 
 // Park the render thread outside its ImGui section and outside RenderFrame.
@@ -505,11 +572,9 @@ void RenderWindow::SetSyncCamera(bool on) {
     // parameters in step with every pose it pushed, so switching modes leaves
     // the view where it is and the first drag continues from there.
     //
-    // Roll is the one thing dropped: the two modes build `up` from opposite
-    // signs of it (ComputeUpFromLookDirection adds roll·right, orbital's
-    // ComputeUpFromAngles subtracts it), and carrying a roll the user has no
-    // control to clear into free orbiting is worse than levelling the horizon
-    // on release.
+    // Roll is the one thing dropped: carrying a roll the user has no control
+    // to clear into free orbiting is worse than levelling the horizon on
+    // release.
     auto& cam = service_.Scene().Camera();
     cam.SetOrbitalMode();
     cam.SetRoll(0.0f);
@@ -735,7 +800,7 @@ void RenderWindow::ActivateCameraPreset(i32 idx) {
             seqEnd = 1 << 30;
         const i32 sampleMs =
             focus ? focus->animation.TimeMs() : service_.Scene().GetAnimationTime();
-        preset.animator(pos, tgt, roll, sampleMs, seqStart, seqEnd);
+        preset.animator(pos, tgt, roll, whiteout::flakes::CameraPresetClock{sampleMs, seqStart, seqEnd});
     }
 
     cam.SetDirectPose(pos, tgt, roll);
@@ -770,7 +835,7 @@ void RenderWindow::UpdateCameraPresetAnimator() {
     Vector3f tgt = preset.target;
     f32 roll = preset.staticRoll;
     const i32 sampleMs = focus ? focus->animation.TimeMs() : service_.Scene().GetAnimationTime();
-    preset.animator(pos, tgt, roll, sampleMs, seqStart, seqEnd);
+    preset.animator(pos, tgt, roll, whiteout::flakes::CameraPresetClock{sampleMs, seqStart, seqEnd});
     service_.Scene().Camera().SetDirectPose(pos, tgt, roll);
 }
 

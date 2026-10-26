@@ -139,10 +139,16 @@ struct WdxCellShadeOps
             isValidNode i and (classof i == Editable_Poly or classof i == Editable_mesh or classof i == PolyMeshObject)
         ) collect i
     ),
+    -- The outlines to edit: the selected ones, else the ones just made, and
+    -- only outlines (createOutlines names them *_cellshade and gives them the
+    -- CellShade_Outline material). With the source model still selected -
+    -- pick a colour, then Create - the colour went into the model's own Wc3
+    -- Vertex Color, an imported model's geoset colour, with no undo.
+    fn isOutline o = ( matchPattern o.name pattern:"*_cellshade" or (o.material != undefined and o.material.name == "CellShade_Outline") ),
     fn getWorkingSet =
     (
-        if selection.count != 0 then getValidMeshObjects (selection as array)
-        else getValidMeshObjects outlineObjects
+        local sel = for o in (getValidMeshObjects (selection as array)) where isOutline o collect o
+        if sel.count != 0 then sel else getValidMeshObjects outlineObjects
     ),
     fn getFilterModeValue idx =
     (
@@ -198,18 +204,22 @@ struct WdxCellShadeOps
     ),
     fn createMaterial filterState =
     (
-        local mat = Warcraft3()
+        -- WhiteoutDex's own material. This used NeoDex's Warcraft3 class, so
+        -- the tool failed without NeoDex installed and made a NeoDex material
+        -- with it. The Wc3Material dropdown uses the same filter values
+        -- (1 None, 3 Blend, 4 Additive, 5 AddAlpha).
+        local mat = Wdx_Wc3Material()
         mat.name = "CellShade_Outline"
-        mat.path = "Textures\\"
-        mat.Unshaded = on
-        mat.Unfogged = on
-        mat.filtermode = getFilterModeValue filterState
+        mat.diffusePrefix = "Textures\\"
+        mat.unshaded = on
+        mat.unfogged = on
         local texPath = resolveTexture "Textures\\white.blp"
         if texPath == undefined do texPath = resolveTexture "Textures\\white.tga"
-        if texPath != undefined then mat.texture = Bitmaptexture fileName:texPath
-        else mat.texture = Bitmaptexture fileName:"white.blp"
-        try ( mat.generateOpacity mat.texture ) catch()
-        try ( mat.adjustDelegate mat.retexture mat.filtermode ) catch()
+        local bmp = Wc3Bitmap()
+        bmp.delegate.filename = if texPath != undefined then texPath else "white.blp"
+        mat.diffuseMap = bmp
+        -- after the map: its setter rebuilds the opacity and reapplies the filter
+        mat.filterMode = getFilterModeValue filterState
         showTexturemap mat true
         placeInMaterialEditor mat
         mat
@@ -237,7 +247,7 @@ struct WdxCellShadeOps
                 local pm = Push() ; pm.Push_Value = pushValue ; addModifier o pm
                 local nm = Normalmodifier() ; nm.flip = normalFlip ; addModifier o nm
                 o.material = material
-                try ( local vm = Wc3VertexMod() ; vm.VertexColor = outlineColor ; addModifier o vm ) catch()
+                try ( local vm = Wdx_Wc3VertexMod() ; vm.VertexColor = outlineColor ; addModifier o vm ) catch()
                 o.backfacecull = on
                 if hasSkinModifier o do skinCount += 1
                 append outlineObjects o
@@ -250,15 +260,14 @@ struct WdxCellShadeOps
         if outlineObjects.count > 0 do select outlineObjects
         #(outlineObjects.count, skinCount)
     ),
-    fn updateColor c     = ( for o in (getWorkingSet()) do try(o.modifiers[#Wc3_Vertex_Color].VertexColor=c)catch() ),
-    fn updateThickness v = ( for o in (getWorkingSet()) do try(o.modifiers[#Push].Push_Value=v)catch() ),
-    fn updateNormals f   = ( for o in (getWorkingSet()) do try(o.modifiers[#Normal].flip=f)catch() ),
+    fn updateColor c     = ( undo "CellShade Colour" on (for o in (getWorkingSet()) do try(o.modifiers[#Wc3_Vertex_Color].VertexColor=c)catch()) ),
+    fn updateThickness v = ( undo "CellShade Thickness" on (for o in (getWorkingSet()) do try(o.modifiers[#Push].Push_Value=v)catch()) ),
+    fn updateNormals f   = ( undo "CellShade Normals" on (for o in (getWorkingSet()) do try(o.modifiers[#Normal].flip=f)catch()) ),
     fn updateFilterMode i =
     (
         if material != undefined do
         (
-            material.filtermode = getFilterModeValue i
-            try(material.adjustDelegate material.retexture material.filtermode)catch()
+            material.filterMode = getFilterModeValue i
         )
     )
 )

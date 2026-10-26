@@ -1,0 +1,13 @@
+{"title":"Ordine di caricamento MPQ","controls":[{"id":3,"parent_id":0,"class":"Static","text":"Gli archivi vengono consultati dall'alto in basso: vince il primo che contiene il file.","x":26,"y":57,"w":765,"h":24},
+{"id":4,"parent_id":0,"class":"ListBox","text":"","x":26,"y":87,"w":555,"h":263},
+{"id":6,"parent_id":0,"class":"CustButton","text":"Sposta su","x":599,"y":111,"w":189,"h":36},
+{"id":7,"parent_id":0,"class":"CustButton","text":"Sposta giù","x":599,"y":153,"w":189,"h":36},
+{"id":8,"parent_id":0,"class":"CustButton","text":"Rimuovi","x":599,"y":201,"w":189,"h":36},
+{"id":9,"parent_id":0,"class":"CustButton","text":"Aggiungi archivio...","x":599,"y":255,"w":189,"h":36},
+{"id":10,"parent_id":0,"class":"CustButton","text":"Aggiungi cartella...","x":599,"y":297,"w":189,"h":36},
+{"id":11,"parent_id":0,"class":"CustButton","text":"Analizza la cartella del gioco","x":599,"y":351,"w":189,"h":36},
+{"id":12,"parent_id":0,"class":"CustButton","text":"Predefiniti","x":599,"y":393,"w":189,"h":36},
+{"id":13,"parent_id":0,"class":"Static","text":"Relativo a: C:\\Program Files (x86)\\Warcraft III","x":26,"y":363,"w":555,"h":24},
+{"id":14,"parent_id":0,"class":"Static","text":"Un elenco vuoto significa l'ordine predefinito.","x":26,"y":393,"w":555,"h":24},
+{"id":15,"parent_id":0,"class":"CustButton","text":"OK","x":470,"y":456,"w":150,"h":39},
+{"id":16,"parent_id":0,"class":"CustButton","text":"Annulla","x":632,"y":456,"w":150,"h":39}]}

@@ -1,6 +1,7 @@
 // MDLXExporter — MdxExporterPlugin implementation
 // DEBUG: Logs to %TEMP%\mdlx_export_debug.log
 #include "mdx_exporter_plugin.h"
+#include <wdx_text.h>
 #include "mdx_export_options.h"
 #include "mdx_class_ids.h"
 #include "mdx_node_registration.h"
@@ -41,6 +42,9 @@
 
 #include "assembly/mdx_sequence_manager.h"
 #include "assembly/mdx_model_builder.h"
+#include "assembly/mdx_sequence_boundary_keys.h"
+#include "assembly/mdx_bone_stretch.h"
+#include "assembly/mdx_non_finite.h"
 
 #include "texture/texture_export.h"
 
@@ -187,12 +191,56 @@ void resolveSkinIndices(INode* meshNode, ir::Mesh& mesh,
         for (auto& inf : v.skinInfluences) { int r=inf.boneIndex; if(r>=0&&r<numBones) inf.boneIndex=skinToNodeIndex[r]; else inf.boneIndex=-1; }
 }
 
+// Turns a mesh whose triangles wind against their own normals. Some ripped
+// and converted models come that way (Beerus: every face of body and heads
+// wound inward, the explicit normals outward). Max draws back faces and
+// shades by the normals, so the scene looks right; Warcraft III culls by
+// the winding and showed the inside.
+// - A node drawn with Backface Cull shows its winding in Max already, so it
+//   is never turned: the outline hulls of the DB Legends imports ("Line_..."
+//   meshes) wind against their normals on purpose, only their back side may
+//   show. Turned, they covered face and loincloth (Broly, 90% against).
+// - Otherwise a mesh is turned when at least two thirds of its triangles
+//   disagree. A normal mesh has ~3% (creases, thin parts); none of the 836
+//   geosets of the 134 regression models is above 50%. Broly's fur loincloth
+//   is 86.7% (spikes crossing the smoothed normals) and was left inside out
+//   by the earlier 90% limit: see-through from behind in the game.
+// An inverted shell made by flipping winding and normals together agrees
+// with itself and is left as it is either way.
+bool fixInsideOutWinding(ir::Mesh& mesh, INode* node) {
+    if (node && node->GetBackCull()) return false;
+    const size_t tris = mesh.indices.size() / 3;
+    if (tris == 0) return false;
+    size_t against = 0;
+    for (size_t f = 0; f < tris; ++f) {
+        const auto& a = mesh.vertices[mesh.indices[3 * f]];
+        const auto& b = mesh.vertices[mesh.indices[3 * f + 1]];
+        const auto& c = mesh.vertices[mesh.indices[3 * f + 2]];
+        const Point3 faceN = CrossProd(b.position - a.position, c.position - a.position);
+        if (DotProd(faceN, a.normal + b.normal + c.normal) < 0.0f) ++against;
+    }
+    if (against * 3 < tris * 2) return false;
+    for (size_t f = 0; f < tris; ++f) std::swap(mesh.indices[3 * f + 1], mesh.indices[3 * f + 2]);
+    ELOG << "  mesh '" << mesh.name << "' wound against its normals (" << against << "/" << tris
+         << " triangles) -> winding reversed\n";
+    return true;
+}
+
 } // namespace
+
 
 int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi, BOOL suppressPrompts, DWORD)
 {
     core::ExportErrorReporter reporter;
     MdxExportOptions opts;
+
+    // Names and paths go out in the code page the importer found in the
+    // model (root user property Wc3CodePage, wdx_text.h); a scene made in
+    // Max has none and gets the Windows code page, GBK or UTF-8.
+    int sceneCodePage = 0;
+    if (gi && gi->GetRootNode())
+        gi->GetRootNode()->GetUserPropInt(_T("Wc3CodePage"), sceneCodePage);
+    wdx::text::CodePageScope codePageScope(static_cast<UINT>(sceneCodePage));
 
     ELOG << "==== MDLXExporter::DoExport ====\n";
     ELOG << "File: " << wcharToUtf8(name) << "\n"; EFLUSH;
@@ -302,6 +350,11 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
                  << "' has no faces -> helper, no geoset\n";
             continue;
         }
+        // Fixed here, so the log has it and the report stays quiet.
+        if (fixInsideOutWinding(mesh, sn.maxNode))
+            reporter.info(L"Triangles wound against their normals (inside out in the game); "
+                          L"the winding was reversed in the export, the scene is unchanged.",
+                          sn.maxNode->GetName());
         ISkin* skin=core::ModifierReader::findSkin(sn.maxNode);
         if(skin) {
             resolveSkinIndices(sn.maxNode,mesh,boneResult.nodeToIndex,irModel.bones);
@@ -431,7 +484,6 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     mdx_extract::extractRibbons(sceneResult.nodes,irModel,mtlMap,reporter);
     mdx_extract::extractEvents(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractCollisions(sceneResult.nodes,irModel,reporter);
-    mdx_extract::extractCameras(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractVertexColors(sceneResult.nodes,irModel,reporter);
     mdx_extract::extractGeosetAnims(sceneResult.nodes,irModel,reporter);
     if(opts.version>=1200){mdx_extract::extractPopcorn(sceneResult.nodes,irModel,reporter);mdx_extract::extractFaceFX(sceneResult.nodes,irModel,reporter);}
@@ -439,7 +491,6 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
          << " Lights=" << irModel.lights.size() << " Attach=" << irModel.attachments.size()
          << " PE=" << irModel.particleEmitters.size() << " Ribbons=" << irModel.ribbonEmitters.size()
          << " Events=" << irModel.eventObjects.size() << " Collisions=" << irModel.collisionShapes.size()
-         << " Cameras=" << irModel.cameras.size()
          << " GeosetAnims=" << irModel.geosetAnims.size() << "\n";
     EFLUSH;
 
@@ -473,6 +524,11 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
              << "-" << irModel.sequences[0].endTime << ", looping) ***\n";
     }
     EFLUSH;
+    seqMgr.sampleExtents(irModel.sequences, irModel);
+
+    // Cameras sample their tracks per sequence
+    mdx_extract::extractCameras(sceneResult.nodes,irModel,reporter);
+    ELOG << "Cameras=" << irModel.cameras.size() << "\n"; EFLUSH;
 
     // Bake
     ELOG << "\n==== Animation Bake ====\n";
@@ -483,6 +539,16 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         cfg.onNode = [&dialog](size_t done, size_t total) { dialog.items(done, total); };
         dispatcher.bakeAll(irModel,irModel.sequences,cfg,reporter);
         ELOG << "Baked: " << irModel.nodeAnimations.size() << " node animations\n";
+        // MDX has no bone stretch; two extra nodes carry it to the skin.
+        for (const auto& sb : mdx_assembly::addBoneStretchNodes(irModel, cfg.tickInterval)) {
+            ELOG << "Bone stretch '" << sb.name << "' (largest " << sb.largest << ") -> '"
+                 << sb.name << " StretchAxis' + '" << sb.name << " Stretch'\n";
+            reporter.info(L"The bone stretches (largest factor " + std::to_wstring(sb.largest) +
+                              L"), which MDX cannot store: its skin moves to the extra bone \"" +
+                              std::wstring(sb.node->GetName()) + L" Stretch\" under a helper \"" +
+                              std::wstring(sb.node->GetName()) + L" StretchAxis\" that carries the stretch.",
+                          sb.node->GetName());
+        }
     } else {
         ELOG << "SKIPPED (anim=" << opts.exportAnimations << " seq=" << irModel.sequences.size() << ")\n";
     }
@@ -526,6 +592,10 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     if(aR>0||aT>0) ELOG << "*** ABSOLUTE TRACKS → model builder will apply delta correction ***\n";
     EFLUSH;
 
+    // The game reads a track through the keys inside the playing sequence
+    // only; a key on each boundary holds what Max shows there.
+    ELOG << "Sequence boundary keys added: " << mdx_assembly::addSequenceBoundaryKeys(irModel) << "\n";
+
     // Optimize
     dialog.step(ExportStep::Optimizing);
     if(opts.optimizeVertices){core::VertexOptimizer vo; for(auto& m:irModel.meshes) vo.optimize(m,opts.vertexMergeThreshold);}
@@ -560,198 +630,35 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         // track whose seq-start/end stub keys get reduced away spends
         // the rest of the sequence lerping back to the first key —
         // Mr.War3's spell rays all re-swept at once. Keep every key.
-        std::unordered_set<int32_t> texAnimVec3TrackIndices;
+        std::unordered_set<int32_t> keepVec3TrackIndices;
         for (const auto& ta : irModel.textureAnimations) {
-            if (ta.translationTrackIndex >= 0) texAnimVec3TrackIndices.insert(ta.translationTrackIndex);
-            if (ta.scaleTrackIndex >= 0)       texAnimVec3TrackIndices.insert(ta.scaleTrackIndex);
+            if (ta.translationTrackIndex >= 0) keepVec3TrackIndices.insert(ta.translationTrackIndex);
+            if (ta.scaleTrackIndex >= 0)       keepVec3TrackIndices.insert(ta.scaleTrackIndex);
+        }
+        // Camera KCTR/KTTR, for the same reason: one track spans every
+        // sequence, so a camera holding still at a sequence end lost its end
+        // key (equal to the next sequence's start) and swung back towards its
+        // first key - arthasillidanfight's "Arthas Run 2" camera, last ~4 s.
+        // The extractor has already reduced them per sequence.
+        for (const auto& cam : irModel.cameras) {
+            if (cam.positionTrackIndex >= 0)       keepVec3TrackIndices.insert(cam.positionTrackIndex);
+            if (cam.targetPositionTrackIndex >= 0) keepVec3TrackIndices.insert(cam.targetPositionTrackIndex);
         }
 
-        // ── PE2 Rotation Fix (NeoDex-compatible) ─────────────────
-        // The AnimDispatcher bakes rotations as parent-relative deltas,
-        // so a statically-rotated PE2 produces all-identity KGRT keys.
-        // But MDX needs the WORLD rotation in the KGRT track with
-        // identity at frame 0 (bind pose) — otherwise the emitter
-        // direction is wrong during playback.
-        //
-        // Solution: read the world rotation directly from the INode
-        // (same as NeoDex: `at time 0f obj.rotation`), then:
-        //   - If world rotation is identity → nothing to do
-        //   - If world rotation is non-identity → replace baked keys
-        //     with: identity at t=0, world rotation at seq starts/ends
-        //
-        // Matches NeoDex: createParticle2RotationFix / fixAnimatedParticle2Rotation
-        // (Wc3Animation.ms lines 3048-3160)
-        {
-            int pe2Fixed = 0;
-            const Quat identityQ(0.0f, 0.0f, 0.0f, 1.0f);
-
-            auto isQuatIdentity = [](const Quat& q) -> bool {
-                return fabsf(q.x) < 0.01f && fabsf(q.y) < 0.01f &&
-                       fabsf(q.z) < 0.01f &&
-                       (fabsf(q.w - 1.0f) < 0.01f || fabsf(q.w + 1.0f) < 0.01f);
-            };
-
-            for (auto& pe : irModel.particleEmitters) {
-                if (pe.variant != 2) continue;
-
-                // Get the INode for this PE2
-                if (pe.nodeIndex < 0 ||
-                    pe.nodeIndex >= static_cast<int32_t>(irModel.nodes.size()))
-                    continue;
-                INode* maxNode = irModel.nodes[pe.nodeIndex].maxNode;
-                if (!maxNode) continue;
-
-                // Read world rotation at frame 0 from INode
-                // (equivalent to NeoDex: `at time 0f obj.rotation`)
-                Matrix3 nodeTM = maxNode->GetNodeTM(0);
-                AffineParts ap;
-                decomp_affine(nodeTM, &ap);
-                Quat worldRot = ap.q;
-
-                ELOG << "  PE2 node[" << pe.nodeIndex << "] '"
-                     << irModel.nodes[pe.nodeIndex].name
-                     << "' worldRot=(" << worldRot.x << "," << worldRot.y
-                     << "," << worldRot.z << "," << worldRot.w << ")";
-
-                // The rewrite below keys the sequence boundaries; a rotation
-                // on a global sequence runs on its own clock, and those keys
-                // would be spliced into its loop.
-                bool rotOnGlobalSeq = false;
-                for (const auto& na : irModel.nodeAnimations)
-                    if (na.nodeIndex == pe.nodeIndex &&
-                        na.rotation.globalSequenceIndex >= 0)
-                        rotOnGlobalSeq = true;
-                if (rotOnGlobalSeq) {
-                    ELOG << " → global-sequence rotation, skip\n";
-                    continue;
-                }
-
-                if (isQuatIdentity(worldRot)) {
-                    ELOG << " → identity, skip\n";
-                    continue;
-                }
-                ELOG << " → non-identity, fixing\n";
-
-                // Find the NodeAnimation for this PE2
-                ir::NodeAnimation* anim = nullptr;
-                for (auto& na : irModel.nodeAnimations) {
-                    if (na.nodeIndex == pe.nodeIndex) { anim = &na; break; }
-                }
-                if (!anim) continue;
-
-                // Check if the rotation is truly animated (non-constant)
-                // by comparing world rotation at multiple times.
-                // If constant → Case B (synthetic track).
-                // If varying → Case A (resample with zeroed frame 0).
-                bool isRotAnimated = false;
-                {
-                    Control* tmCtrl = maxNode->GetTMController();
-                    Control* rotCtrl = tmCtrl ? tmCtrl->GetRotationController() : nullptr;
-                    if (rotCtrl && rotCtrl->NumKeys() > 0) {
-                        // Check if any key has a different rotation
-                        for (int ki = 0; ki < rotCtrl->NumKeys(); ki++) {
-                            TimeValue t = rotCtrl->GetKeyTime(ki);
-                            if (t == 0) continue;
-                            Matrix3 tm2 = maxNode->GetNodeTM(t);
-                            AffineParts ap2;
-                            decomp_affine(tm2, &ap2);
-                            float dot = fabsf(ap.q.x*ap2.q.x + ap.q.y*ap2.q.y +
-                                              ap.q.z*ap2.q.z + ap.q.w*ap2.q.w);
-                            if (dot < 0.9999f) { isRotAnimated = true; break; }
-                        }
-                    }
-                }
-
-                auto& rotKeys = anim->rotation.keys;
-
-                if (isRotAnimated) {
-                    // Case A: rotation IS animated → resample from INode
-                    // with identity at frame 0
-                    ELOG << "    Case A: animated rotation, resampling\n";
-
-                    // Collect unique times from existing baked keys
-                    std::vector<TimeValue> times;
-                    for (auto& k : rotKeys)
-                        times.push_back(k.time);
-                    // Ensure sequence boundaries are included
-                    for (auto& seq : irModel.sequences) {
-                        bool hasStart = false, hasEnd = false;
-                        for (auto t : times) {
-                            if (t == seq.startTime) hasStart = true;
-                            if (t == seq.endTime) hasEnd = true;
-                        }
-                        if (!hasStart) times.push_back(seq.startTime);
-                        if (!hasEnd) times.push_back(seq.endTime);
-                    }
-                    std::sort(times.begin(), times.end());
-                    times.erase(std::unique(times.begin(), times.end()), times.end());
-
-                    rotKeys.clear();
-                    for (TimeValue t : times) {
-                        ir::Keyframe<Quat> k;
-                        k.time = t;
-                        if (t == 0) {
-                            k.value = identityQ;
-                        } else {
-                            Matrix3 tm = maxNode->GetNodeTM(t);
-                            AffineParts ap2;
-                            decomp_affine(tm, &ap2);
-                            k.value = ap2.q;
-                        }
-                        rotKeys.push_back(k);
-                    }
-                    anim->rotation.interpolation = ir::InterpolationType::Linear;
-                    ELOG << "    Resampled " << rotKeys.size() << " keys\n";
-                } else {
-                    // Case B: NOT animated → create synthetic track
-                    // Identity at t=0, worldRot at all sequence boundaries
-                    ELOG << "    Case B: static rotation, creating synthetic KGRT\n";
-
-                    rotKeys.clear();
-
-                    // t=0: identity
-                    ir::Keyframe<Quat> k0;
-                    k0.time = 0;
-                    k0.value = identityQ;
-                    rotKeys.push_back(k0);
-
-                    // Sequence starts/ends: world rotation
-                    for (auto& seq : irModel.sequences) {
-                        bool hasStart = false, hasEnd = false;
-                        for (auto& k : rotKeys) {
-                            if (k.time == seq.startTime) hasStart = true;
-                            if (k.time == seq.endTime) hasEnd = true;
-                        }
-                        if (!hasStart) {
-                            ir::Keyframe<Quat> ks;
-                            ks.time = seq.startTime;
-                            ks.value = worldRot;
-                            rotKeys.push_back(ks);
-                        }
-                        if (!hasEnd) {
-                            ir::Keyframe<Quat> ke;
-                            ke.time = seq.endTime;
-                            ke.value = worldRot;
-                            rotKeys.push_back(ke);
-                        }
-                    }
-
-                    std::sort(rotKeys.begin(), rotKeys.end(),
-                        [](const ir::Keyframe<Quat>& a, const ir::Keyframe<Quat>& b) {
-                            return a.time < b.time;
-                        });
-
-                    anim->rotation.interpolation = ir::InterpolationType::Linear;
-                    ELOG << "    Created " << rotKeys.size() << " keys\n";
-                }
-
-                pe2Fixed++;
-            }
-            if (pe2Fixed > 0)
-                ELOG << "  PE2 rotation fix: " << pe2Fixed << " node(s) corrected\n";
-        }
+        // No separate PE2 rotation pass: the AnimDispatcher keys every emitter
+        // with its absolute world orientation (isOrientationAbsoluteNode), less
+        // its parent's in-game rotation. The old pass wrote the world rotation
+        // into the first NodeAnimation as well, which doubled the rotation under
+        // an attachment point or a light and left two keys with different
+        // rotations on every sequence boundary.
 
         core::KeyframeOptimizer ko;
+        {
+            std::vector<std::pair<TimeValue, TimeValue>> windows;
+            for (const auto& seq : irModel.sequences)
+                windows.emplace_back(seq.startTime, seq.endTime);
+            ko.setSequenceWindows(std::move(windows));
+        }
 
         // Node animations: full optimization
         for (auto& na : irModel.nodeAnimations) {
@@ -759,6 +666,9 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
             ko.optimize(na.rotation);
             ko.optimize(na.scale);
         }
+
+        // Parameter tracks keep their keys unless they play Linear.
+        ko.setLinearOnly(true);
 
         // Float tracks: skip visibility tracks
         for (size_t i = 0; i < irModel.floatTracks.size(); ++i) {
@@ -770,10 +680,10 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
             ko.optimize(irModel.floatTracks[i]);
         }
 
-        // Vec3 tracks: skip texture-anim tracks (boundary stubs required)
+        // Vec3 tracks: skip texture-anim and camera tracks (boundary keys required)
         for (size_t i = 0; i < irModel.vec3Tracks.size(); ++i) {
-            if (texAnimVec3TrackIndices.count(static_cast<int32_t>(i))) {
-                ELOG << "  skip vec3Track[" << i << "] (texture-anim, "
+            if (keepVec3TrackIndices.count(static_cast<int32_t>(i))) {
+                ELOG << "  skip vec3Track[" << i << "] (texture-anim/camera, "
                      << irModel.vec3Tracks[i].keys.size() << " keys preserved)\n";
                 continue;
             }
@@ -845,6 +755,11 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         mdx_export::convertExportTextures(irModel, wcharToUtf8(name), opts, reporter);
     }
 
+    // NaN / infinity from the scene (protected models carry them) must not
+    // reach the MDX; see mdx_non_finite.h.
+    if (const size_t nonFinite = mdx_assembly::replaceNonFinite(irModel, reporter))
+        ELOG << "Replaced " << nonFinite << " non-finite value(s)\n";
+
     // Build
     ELOG << "\n==== Model Build ====\n"; EFLUSH;
     dialog.step(ExportStep::Building);
@@ -912,6 +827,12 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     // open behind it, and before the folder opens.
     dialog.close();
 
+    // The report shows 50 entries and points to the log for the rest.
+    ELOG << "\n==== Report (" << reporter.entries().size() << " entries) ====\n";
+    for (const auto& e : reporter.entries())
+        ELOG << (e.severity == core::Severity::Error ? "ERROR" : e.severity == core::Severity::Warning ? "WARNING" : "INFO")
+             << ": [" << wcharToUtf8(e.nodeName.c_str()) << "] " << wcharToUtf8(e.message.c_str()) << "\n";
+    EFLUSH;
     if (reporter.hasWarnings() || reporter.hasErrors())
         reporter.showSummaryDialog(gi->GetMAXHWnd());
 

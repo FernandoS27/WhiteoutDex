@@ -1,0 +1,37 @@
+{
+  "languages": ["en", "de", "es", "fr", "it", "ja", "ko", "pt-br", "ru", "zh"],
+  "chapters": [
+    {
+      "title_key": "ch_start",
+      "pages": ["welcome", "install", "first_start", "settings"]
+    },
+    {
+      "title_key": "ch_tutorials",
+      "pages": ["tut_import", "tut_preview", "tut_export", "tut_static_model", "tut_animation", "tut_particles", "tut_attachments_events"]
+    },
+    {
+      "title_key": "ch_import_export",
+      "pages": ["importer", "import_storages", "exporter", "scene_problems", "export_report"]
+    },
+    {
+      "title_key": "ch_animation",
+      "pages": ["sequence_manager", "global_sequences", "visibility_keyer", "anim_general", "anim_controllers", "anim_skinning", "model_scaler", "keyframe_optimizer", "texture_anim_creator"]
+    },
+    {
+      "title_key": "ch_tools",
+      "pages": ["renderer", "asset_browser", "node_manager", "object_settings", "object_tools", "grid_dummy", "skin_changer", "material_fix", "cell_shade"]
+    },
+    {
+      "title_key": "ch_objects",
+      "pages": ["obj_particles1", "obj_particles2", "obj_ribbon", "obj_popcorn", "obj_attachpoint", "obj_event", "obj_collision", "obj_light", "obj_facefx", "obj_vertexcolor"]
+    },
+    {
+      "title_key": "ch_materials",
+      "pages": ["mat_wc3material", "mat_wc3bitmap"]
+    },
+    {
+      "title_key": "ch_appendix",
+      "pages": ["app_animation_names", "app_files", "app_troubleshooting", "app_glossary"]
+    }
+  ]
+}
