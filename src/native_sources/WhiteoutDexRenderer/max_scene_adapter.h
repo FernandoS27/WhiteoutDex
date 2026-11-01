@@ -186,6 +186,9 @@ struct RibbonEmitterInfo {
     i32 emitterId = 0;
     INode* node = nullptr;
     i32 textureId = -1;
+    // Texture and filter mode of the material it draws with, at collection
+    // (MaxSceneAdapter::RibbonLookKey).
+    std::wstring lookKey;
 };
 
 struct CollisionShapeInfo {
@@ -219,10 +222,13 @@ public:
 
     // Re-read material properties and textures from the scene.
     // Returns true if anything changed and the renderer should be updated.
+    // `needsResync`: a ribbon's texture or filter mode changed, which the
+    // renderer takes from the spawn only - the caller rebuilds instead.
     struct MaterialRefreshResult {
         std::vector<renderer::model::MaterialData> materials;
         std::vector<renderer::model::TextureData> textures;
         bool changed = false;
+        bool needsResync = false;
     };
     MaterialRefreshResult RefreshMaterials();
 
@@ -286,6 +292,7 @@ private:
     void CollectAttachments();
     void CollectParticleEmitters();
     void CollectRibbonEmitters();
+    std::wstring RibbonLookKey(Object* obj, INode* node);
     void CollectCollisionShapes();
     void CollectLights();
 

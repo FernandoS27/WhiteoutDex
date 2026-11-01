@@ -362,8 +362,13 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
     if (g_sceneStale)
         return;
 
-    // Hot-reload check.
+    // Hot-reload check. A ribbon's texture or filter mode only reaches the
+    // renderer through a rebuild; the sync timer does it on its next tick.
     auto result = g_adapter->RefreshMaterials();
+    if (result.needsResync) {
+        g_sceneStale = true;
+        return;
+    }
     if (result.changed) {
         g_renderer->Loader().UpdateMaterials(g_actor->handle, result.materials, result.textures);
     }
@@ -1336,6 +1341,10 @@ Value* WhiteoutFlakesRefreshMaterials_cf(Value** /*arg_list*/, i32 count) {
         return &false_value;
 
     auto result = g_adapter->RefreshMaterials();
+    if (result.needsResync) {
+        g_sceneStale = true; // the sync timer rebuilds
+        return &true_value;
+    }
     if (result.changed) {
         g_renderer->Loader().UpdateMaterials(g_actor->handle, result.materials, result.textures);
         mprintf(_M("WhiteoutDex: Materials refreshed (%d materials, %d textures)\n"),

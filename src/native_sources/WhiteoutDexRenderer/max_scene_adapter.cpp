@@ -469,6 +469,38 @@ Mtl* RibbonMaterial(Animatable* ribbon) {
     return mtl;
 }
 
+// The Wc3Material a ribbon draws with: the material itself, or the first
+// Wc3 layer of a layered one. A ribbon has one material and the game takes
+// its layer 0, as Flakes' MDX path does (MdxModelAdapter::GetRibbonConfigs).
+// A two-layer ribbon material imports as a Composite; read as a whole it
+// gave no texture and the ribbon drew texture 0 - the first geoset's, the
+// body texture on the Kirito model, its trail opaque to the end. Null when
+// the material has no Wc3 layer.
+Mtl* RibbonLayerMaterial(Mtl* mtl) {
+    Mtl* layer = nullptr;
+    ForEachWc3SubMtl(mtl, [&](Mtl* sub, i32) {
+        if (!layer)
+            layer = sub;
+    });
+    return layer;
+}
+
+// The material a ribbon draws with: a NeoDex BlizRibbon's "rmaterial", the
+// Wc3Ribbon's own Material parameter (ParamID 7, as the exporter reads it),
+// else the node's.
+Mtl* RibbonDrawMaterial(Object* obj, INode* node) {
+    Mtl* mtl = RibbonMaterial(obj);
+    const bool neoDex = obj && obj->ClassID() == NEODEX_RIBBON_CLASS_ID;
+    for (i32 pb = 0; obj && !neoDex && !mtl && pb < obj->NumParamBlocks(); pb++) {
+        IParamBlock2* pblock = static_cast<Animatable*>(obj)->GetParamBlock(pb);
+        if (pblock)
+            mtl = pblock->GetMtl(7, 0);
+    }
+    if (!mtl && node)
+        mtl = node->GetMtl();
+    return mtl;
+}
+
 } // namespace
 
 // ============================================================================
@@ -2269,27 +2301,15 @@ void MaxSceneAdapter::CollectRibbonEmitters() {
         RibbonEmitterInfo ri;
         ri.emitterId = emitterId++;
         ri.node = node;
+        ri.lookKey = RibbonLookKey(baseObj, node);
 
-        // Wc3Ribbon stores its material in PB2 param "Material" (pb_material=7).
-        // Fall back to the node material if the emitter didn't wire one.
-        Mtl* mtl = RibbonMaterial(baseObj);
-        for (i32 pb = 0; !mtl && pb < baseObj->NumParamBlocks(); pb++) {
-            IParamBlock2* pblock = static_cast<Animatable*>(baseObj)->GetParamBlock(pb);
-            if (!pblock)
-                continue;
-            mtl = pblock->GetMtl(7, 0);
-            if (mtl)
-                break;
-        }
-        if (!mtl)
-            mtl = node->GetMtl();
-
+        Mtl* mtl = RibbonDrawMaterial(baseObj, node);
         if (mtl) {
             std::wstring path;
             Texmap* srcTex = nullptr;
-            if (IsWc3MaterialClass(mtl->ClassID())) {
-                PB2Texmap(mtl, L"diffuseMap", srcTex);
-                path = ResolveBitmapPath(mtl, L"diffuseMap");
+            if (Mtl* layer = RibbonLayerMaterial(mtl)) {
+                PB2Texmap(layer, L"diffuseMap", srcTex);
+                path = ResolveBitmapPath(layer, L"diffuseMap");
             } else {
                 srcTex = wdx::material::ColorTexmap(mtl);
                 if (BitmapTex* bmt = UnwrapBitmapTex(srcTex)) {
@@ -2303,6 +2323,24 @@ void MaxSceneAdapter::CollectRibbonEmitters() {
         }
         ribbons_.push_back(ri);
     });
+}
+
+// What the preview takes from a ribbon's material: the texture path and the
+// filter mode (CollectRibbonEmitters, GetRibbonConfigs). The renderer gets
+// both with the ribbon's config at the spawn only, so RefreshMaterials
+// compares this key and has the preview resync when it changes.
+std::wstring MaxSceneAdapter::RibbonLookKey(Object* obj, INode* node) {
+    Mtl* mtl = RibbonDrawMaterial(obj, node);
+    std::wstring path;
+    i32 filter = -1;
+    if (Mtl* layer = RibbonLayerMaterial(mtl)) {
+        path = ResolveBitmapPath(layer, L"diffuseMap");
+        filter = PB2IntOr(layer, L"filterMode", 0, 1);
+    } else if (BitmapTex* bmt = UnwrapBitmapTex(wdx::material::ColorTexmap(mtl))) {
+        if (const MCHAR* fname = bmt->GetMapName())
+            path = fname;
+    }
+    return path + L"|" + std::to_wstring(filter);
 }
 
 // ============================================================================
@@ -2897,16 +2935,9 @@ std::vector<RibbonEmitterConfig> MaxSceneAdapter::GetRibbonConfigs() {
         // ribbon's own Material parameter (ParamID 7), as the exporter reads
         // it, before the node's. Reading the node's alone left every
         // WhiteoutDex ribbon Additive.
-        Mtl* mtl = RibbonMaterial(obj);
-        for (i32 pb = 0; !neoDex && !mtl && pb < obj->NumParamBlocks(); pb++) {
-            IParamBlock2* pblock = static_cast<Animatable*>(obj)->GetParamBlock(pb);
-            if (pblock)
-                mtl = pblock->GetMtl(7, 0);
-        }
-        if (!mtl)
-            mtl = ri.node->GetMtl();
-        if (mtl && IsWc3MaterialClass(mtl->ClassID())) {
-            cfg.filterMode = MapFilterMode(PB2IntOr(mtl, L"filterMode", 0, 1) - 1);
+        Mtl* mtl = RibbonDrawMaterial(obj, ri.node);
+        if (Mtl* layer = RibbonLayerMaterial(mtl)) {
+            cfg.filterMode = MapFilterMode(PB2IntOr(layer, L"filterMode", 0, 1) - 1);
         } else if (neoDex) {
             // No material: the BlizRibbon's own 1-based filtermode.
             cfg.filterMode = MapFilterMode(PB2IntOr(obj, L"filtermode", 0, 4) - 1);
@@ -3773,6 +3804,17 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
                a.coordId == b.coordId;
     };
 
+    // A ribbon's texture and filter mode go to the renderer with its config
+    // at the spawn only (Flakes has no call that changes them on a live
+    // actor), so a change to them rebuilds the preview.
+    for (const auto& ri : ribbons_) {
+        Object* obj = GetBaseObject(ri.node);
+        if (obj && RibbonLookKey(obj, ri.node) != ri.lookKey) {
+            result.needsResync = true;
+            return result;
+        }
+    }
+
     bool anyChanged = false;
     for (auto& mi : materials_) {
         if (anyChanged)
@@ -3791,11 +3833,14 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
     if (!anyChanged)
         return result;
 
-    // Something changed — re-collect materials + textures from scratch.
-    loadedTextures_.clear();
-    texPathToId_.clear();
-    texEntries_.clear();
-    nextTexId_ = 0;
+    // Something changed — re-collect the materials. The texture ids stay as
+    // they are: particle emitters and ribbons took theirs at the spawn and
+    // are not collected again here, and the renderer keeps one texture per
+    // id. Numbering from 0 again handed their ids to other textures - a
+    // texture the edit added to a geoset replaced the particles' Flare.blp
+    // (Kirito, 2026). Known paths keep their id and new ones get the next;
+    // GetTextures hands out only those new ones, the others are on the
+    // renderer already.
     CollectMaterials();
     UpdateMaterialSnapshots();
 
