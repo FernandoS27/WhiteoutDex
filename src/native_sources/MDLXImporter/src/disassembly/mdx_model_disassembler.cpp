@@ -779,6 +779,18 @@ void MdxModelDisassembler::mapGeosets(const wdx::Model& mdx, ir::IRModel& ir) {
                     int32_t irBoneIdx = hierarchy_.irIndexForObjectId(boneObjectId);
                     if (irBoneIdx < 0) continue;
 
+                    // A bone listed twice counts twice: [A,A,B] is 2/3 A, 1/3 B.
+                    // Skin gets one entry per bone.
+                    bool repeated = false;
+                    for (auto& have : vert.skinInfluences) {
+                        if (have.boneIndex == irBoneIdx) {
+                            have.weight += equalWeight;
+                            repeated = true;
+                            break;
+                        }
+                    }
+                    if (repeated) continue;
+
                     ir::SkinInfluence inf;
                     inf.boneIndex = irBoneIdx;
                     inf.weight = equalWeight;

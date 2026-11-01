@@ -20,6 +20,7 @@
 #include "mdx_skin_quantizer.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -34,6 +35,48 @@
 #else
   #define MDX_LOG(...) ((void)0)
 #endif
+
+// ─────────────────────────────────────────────────────────────
+// Sampled over the sequences in proportion to their length, at most one sample
+// per frame. The bind pose is frame 0 (AnimDispatcher, MeshExtractor), so a
+// vertex follows a bone by v * Inverse(TM(0)) * TM(t).
+MdxBoneMotion::MdxBoneMotion(const ir::IRModel& ir) : ir_(ir) {
+    constexpr int kSamples = 160;
+
+    TimeValue total = 0;
+    for (const auto& seq : ir.sequences)
+        if (seq.endTime > seq.startTime) total += seq.endTime - seq.startTime;
+    if (total <= 0) return;
+
+    const TimeValue tpf = std::max(1, GetTicksPerFrame());
+    for (const auto& seq : ir.sequences) {
+        const TimeValue len = seq.endTime - seq.startTime;
+        if (len <= 0) continue;
+        int n = static_cast<int>(std::lround(double(kSamples) * len / total));
+        n = std::clamp(n, 2, std::max(2, len / tpf + 1));
+        for (int i = 0; i < n; ++i)
+            times_.push_back(seq.startTime + static_cast<TimeValue>(len * (i + 0.5) / n));
+    }
+}
+
+const std::vector<Matrix3>& MdxBoneMotion::movesOf(int32_t irNode) {
+    auto found = moves_.find(irNode);
+    if (found != moves_.end()) return found->second;
+
+    auto& out = moves_[irNode];
+    // A stretch helper has no scene node of its own; it rides on its parent.
+    INode* node = nullptr;
+    for (int32_t n = irNode; !node && n >= 0 && n < static_cast<int32_t>(ir_.nodes.size());
+         n = ir_.nodes[n].parentIndex)
+        node = ir_.nodes[n].maxNode;
+    if (node) {
+        const Matrix3 fromBind = Inverse(node->GetNodeTM(0));
+        out.reserve(times_.size());
+        for (TimeValue t : times_)
+            out.push_back(fromBind * node->GetNodeTM(t));
+    }
+    return out;
+}
 
 // ─────────────────────────────────────────────────────────────
 bool MdxSkinQuantizer::SlotAssignment::operator==(const SlotAssignment& o) const {
@@ -52,11 +95,11 @@ bool MdxSkinQuantizer::SlotAssignment::operator<(const SlotAssignment& o) const 
 }
 
 // ─────────────────────────────────────────────────────────────
-void MdxSkinQuantizer::mergeWeight(VertexWeights& w, uint32_t boneId, float weight) {
+void MdxSkinQuantizer::mergeWeight(VertexWeights& w, uint32_t boneId, float weight, int32_t irNode) {
     for (auto& bw : w) {
         if (bw.boneId == boneId) { bw.weight += weight; return; }
     }
-    w.push_back({boneId, weight});
+    w.push_back({boneId, weight, irNode});
 }
 
 void MdxSkinQuantizer::normalize(VertexWeights& w) {
@@ -96,7 +139,7 @@ MdxSkinQuantizer::extractWeights(const ir::Mesh& mesh,
                 unmappedCount++;
                 continue;
             }
-            mergeWeight(vw, objId, inf.weight);
+            mergeWeight(vw, objId, inf.weight, inf.boneIndex);
         }
 
         normalize(vw);
@@ -179,8 +222,121 @@ MdxSkinQuantizer::assignSlots(const VertexWeights& weights) const {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Gradient mode: the group of at most four entries over the vertex's four
+// strongest bones that lands closest to where Max's Skin puts the vertex.
+//
+// A group gives the vertex the weights w + dw. Because dw sums to zero, the
+// vertex's own position cancels and its distance from the true position at one
+// moment is |Σ dw_i · d_i|, d_i being how far bone i alone would have carried it
+// since the bind pose. The squared distance over all moments is dw' G dw with G
+// the matrix of the dot products of the d_i, so G is built once per vertex and
+// the candidates only cost a small sum each.
+//
+// Bones that move as one do not tell the candidates apart, and without
+// animation nothing does; the small pull towards the authored weights decides
+// those. Weights that already are a group's ratios (an import of such a model)
+// cost nothing and come back unchanged.
+MdxSkinQuantizer::SlotAssignment
+MdxSkinQuantizer::assignGradient(const VertexWeights& weights, const Point3& position,
+                                 MdxBoneMotion& motion) const {
+    if (weights.size() <= 1) return assignSlots(weights);
+
+    constexpr double kWeightPull = 0.01;   // model units², for a full weight of error
+    const size_t k = weights.size();
+
+    std::vector<const std::vector<Matrix3>*> moves(k);
+    for (size_t i = 0; i < k; ++i)
+        moves[i] = &motion.movesOf(weights[i].irNode);
+
+    std::vector<double> gram(k * k, 0.0);
+    std::vector<Point3> carried(k);
+    const size_t samples = motion.sampleCount();
+    for (size_t s = 0; s < samples; ++s) {
+        for (size_t i = 0; i < k; ++i) {
+            carried[i] = moves[i]->empty() ? Point3(0.f, 0.f, 0.f)
+                                           : position * (*moves[i])[s] - position;
+            // A bone scaled to nothing at frame 0 has no inverse.
+            if (!std::isfinite(carried[i].x) || !std::isfinite(carried[i].y) ||
+                !std::isfinite(carried[i].z))
+                carried[i] = Point3(0.f, 0.f, 0.f);
+        }
+        for (size_t i = 0; i < k; ++i)
+            for (size_t j = i; j < k; ++j) {
+                const double dot = double(carried[i].x) * carried[j].x +
+                                   double(carried[i].y) * carried[j].y +
+                                   double(carried[i].z) * carried[j].z;
+                gram[i * k + j] += dot;
+                if (i != j) gram[j * k + i] += dot;
+            }
+    }
+    if (samples > 1)
+        for (double& g : gram) g /= static_cast<double>(samples);
+
+    // Shortest first, so a tie keeps the smaller group: [A,B], not [A,A,B,B].
+    static const std::vector<std::array<int, 4>> kCandidates = [] {
+        std::vector<std::array<int, 4>> t;
+        for (int n = 1; n <= kGradientEntries; ++n)
+            for (int a = n; a >= 0; --a)
+                for (int b = n - a; b >= 0; --b)
+                    for (int c = n - a - b; c >= 0; --c)
+                        t.push_back({a, b, c, n - a - b - c});
+        return t;
+    }();
+
+    std::vector<double> dw(k);
+    const std::array<int, 4>* best = nullptr;
+    double bestCost = std::numeric_limits<double>::max();
+    for (const auto& cand : kCandidates) {
+        int n = 0;
+        bool usable = true;
+        for (size_t i = 0; i < cand.size(); ++i) {
+            n += cand[i];
+            if (cand[i] > 0 && i >= k) usable = false;
+        }
+        if (!usable) continue;
+
+        for (size_t i = 0; i < k; ++i)
+            dw[i] = (i < cand.size() ? double(cand[i]) / n : 0.0) - weights[i].weight;
+        double cost = 0.0;
+        for (size_t i = 0; i < k; ++i) {
+            cost += kWeightPull * dw[i] * dw[i];
+            for (size_t j = 0; j < k; ++j)
+                cost += dw[i] * dw[j] * gram[i * k + j];
+        }
+        if (cost < bestCost - 1e-12) {
+            bestCost = cost;
+            best = &cand;
+        }
+    }
+    if (!best) return assignSlots(weights);
+
+    SlotAssignment sa;
+    for (size_t i = 0; i < best->size(); ++i)
+        for (int c = 0; c < (*best)[i]; ++c)
+            sa.boneIds[sa.count++] = weights[i].boneId;
+    std::sort(sa.boneIds, sa.boneIds + sa.count);
+    return sa;
+}
+
+// Squared distance of the weights two groups stand for. Both lists are sorted.
+double MdxSkinQuantizer::ratioDistance(const SlotAssignment& a, const SlotAssignment& b) {
+    double dist = 0.0;
+    int i = 0, j = 0;
+    while (i < a.count || j < b.count) {
+        const uint32_t id = (j >= b.count || (i < a.count && a.boneIds[i] <= b.boneIds[j]))
+                                ? a.boneIds[i] : b.boneIds[j];
+        int ca = 0, cb = 0;
+        while (i < a.count && a.boneIds[i] == id) { ++ca; ++i; }
+        while (j < b.count && b.boneIds[j] == id) { ++cb; ++j; }
+        const double d = double(ca) / a.count - double(cb) / b.count;
+        dist += d * d;
+    }
+    return dist;
+}
+
+// ─────────────────────────────────────────────────────────────
 MdxSkinQuantizer::Result
-MdxSkinQuantizer::buildResult(const std::vector<SlotAssignment>& assignments) const {
+MdxSkinQuantizer::buildResult(const std::vector<SlotAssignment>& assignments, bool byRatio) const {
     // Unique groups, in first-use order, with a usage count each.
     std::map<SlotAssignment, uint32_t> groupMap;   // group -> slot in groupList
     std::vector<SlotAssignment> groupList;
@@ -214,7 +370,45 @@ MdxSkinQuantizer::buildResult(const std::vector<SlotAssignment>& assignments) co
     std::vector<bool> alive(groupList.size(), true);
     size_t aliveCount = groupList.size();
 
-    if (aliveCount > kMaxGroups) {
+    if (aliveCount > kMaxGroups && byRatio) {
+        // Repeated bones make many more groups, and two groups with the same
+        // bones can stand for quite different weights. So what goes first is
+        // the group whose vertices lose least (how many, times how far) moving
+        // to the group nearest in weights.
+        std::vector<int>    nearest(groupList.size(), -1);
+        std::vector<double> nearestDist(groupList.size(), 0.0);
+        auto findNearest = [&](size_t g) {
+            nearest[g] = -1;
+            nearestDist[g] = std::numeric_limits<double>::max();
+            for (size_t o = 0; o < groupList.size(); ++o) {
+                if (!alive[o] || o == g) continue;
+                const double d = ratioDistance(groupList[g], groupList[o]);
+                if (d < nearestDist[g]) { nearestDist[g] = d; nearest[g] = static_cast<int>(o); }
+            }
+        };
+        for (size_t g = 0; g < groupList.size(); ++g) findNearest(g);
+
+        while (aliveCount > kMaxGroups) {
+            int victim = -1;
+            double least = std::numeric_limits<double>::max();
+            for (size_t g = 0; g < groupList.size(); ++g) {
+                if (!alive[g] || nearest[g] < 0) continue;
+                const double loss = usage[g] * nearestDist[g];
+                if (loss < least) { least = loss; victim = static_cast<int>(g); }
+            }
+            if (victim < 0) break;
+
+            const int target = nearest[victim];
+            for (auto& r : resolved)
+                if (r == static_cast<uint32_t>(victim)) r = static_cast<uint32_t>(target);
+            usage[target] += usage[victim];
+            alive[victim] = false;
+            --aliveCount;
+            for (size_t g = 0; g < groupList.size(); ++g)
+                if (alive[g] && nearest[g] == victim) findNearest(g);
+        }
+        MDX_LOG(_T("  -> Merged down to %d groups by ratio\n"), (int)aliveCount);
+    } else if (aliveCount > kMaxGroups) {
         MDX_LOG(_T("  ⚠ Exceeds %d groups! Merging...\n"), kMaxGroups);
 
         while (aliveCount > kMaxGroups) {
@@ -297,16 +491,18 @@ MdxSkinQuantizer::buildResult(const std::vector<SlotAssignment>& assignments) co
 // ─────────────────────────────────────────────────────────────
 MdxSkinQuantizer::Result
 MdxSkinQuantizer::quantize(const ir::Mesh& mesh,
-                            const MdxHierarchyResolver& hierarchy) {
+                            const MdxHierarchyResolver& hierarchy,
+                            MdxBoneMotion* motion) {
     MDX_LOG(_T("── SkinQuantizer::quantize \"%S\" ──\n"), mesh.name.c_str());
 
     auto weights = extractWeights(mesh, hierarchy);
 
     std::vector<SlotAssignment> assignments(weights.size());
     for (size_t vi = 0; vi < weights.size(); ++vi)
-        assignments[vi] = assignSlots(weights[vi]);
+        assignments[vi] = motion ? assignGradient(weights[vi], mesh.vertices[vi].position, *motion)
+                                 : assignSlots(weights[vi]);
 
-    auto result = buildResult(assignments);
+    auto result = buildResult(assignments, motion != nullptr);
 
     MDX_LOG(_T("  Result: %d vertexGroups, %d matrixGroups, %d matrixIndices\n"),
             (int)result.vertexGroups.size(), (int)result.matrixGroups.size(),

@@ -10,6 +10,7 @@
 
 #include <cstring>
 #include <map>
+#include <optional>
 #include <set>
 #include <algorithm>
 #include <cmath>
@@ -535,6 +536,11 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
     }
 
     // 8. Geosets
+    // Only with the gradient option: sampling the rig costs export time.
+    std::optional<MdxBoneMotion> boneMotion;
+    if (opts.keepGradientWeights && opts.version < 1200 && !opts.disableSkinQuantize)
+        boneMotion.emplace(ir);
+
     for (auto& irMesh : ir.meshes) {
         Geoset geo;
         geo.materialId = (irMesh.materialIndex >= 0)
@@ -736,7 +742,8 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
                 }
             } else {
                 MdxSkinQuantizer quantizer;
-                auto skinResult = quantizer.quantize(irMesh, hierarchy);
+                auto skinResult = quantizer.quantize(irMesh, hierarchy,
+                                                     boneMotion ? &*boneMotion : nullptr);
                 geo.vertexGroups  = std::move(skinResult.vertexGroups);
                 geo.matrixGroups  = std::move(skinResult.matrixGroups);
                 geo.matrixIndices = std::move(skinResult.matrixIndices);

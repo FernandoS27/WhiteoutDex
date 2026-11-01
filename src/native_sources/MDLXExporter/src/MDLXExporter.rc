@@ -49,6 +49,8 @@ BEGIN
                     BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
     CONTROL         "Quantize skin weights", IDC_CHK_QUANTIZE_SKIN, "Button",
                     BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
+    CONTROL         "Keep gradient weights (max. 4 per group)", IDC_CHK_KEEP_GRADIENT, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
     LTEXT           "Extents precision", IDC_LBL_EXTENTS_PREC, 0, 0, 10, 8
     EDITTEXT        IDC_EDT_EXTENTS_PREC, 0, 0, 10, 12,
                     ES_AUTOHSCROLL | ES_RIGHT | ES_NUMBER | WS_GROUP

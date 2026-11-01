@@ -102,6 +102,7 @@ void loadOptionsFromINI(Interface* gi, MdxExportOptions& opts) {
     auto fsn=gs(L"FixSharedNormals"); if(!fsn.empty()) opts.fixSharedNormals=iniBool(fsn);
     auto kb=gs(L"KeepUnusedBonesHelpers"); if(!kb.empty()) opts.keepUnusedBonesHelpers=iniBool(kb);
     auto nq=gs(L"DisableSkinQuantize"); if(!nq.empty()) opts.disableSkinQuantize=iniBool(nq);
+    auto gw=gs(L"KeepGradientWeights"); if(!gw.empty()) opts.keepGradientWeights=iniBool(gw);
     auto ai=gs(L"AutoIncrementFilename"); if(!ai.empty()) opts.autoIncrementFilename=iniBool(ai);
     auto of=gs(L"OpenFolderAfterExport"); if(!of.empty()) opts.openFolderAfterExport=iniBool(of);
     // Texture conversion (shared)
@@ -248,7 +249,8 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
 
     loadOptionsFromINI(gi, opts);
     ELOG << "Options: version=" << opts.version << " merge=" << opts.mergeGeosets
-         << " anim=" << opts.exportAnimations << " skinQuant=" << !opts.disableSkinQuantize << "\n";
+         << " anim=" << opts.exportAnimations << " skinQuant=" << !opts.disableSkinQuantize
+         << " gradientWeights=" << opts.keepGradientWeights << "\n";
 
     // The options dialog stays open after Export and shows the progress of the
     // steps below. mdxExport() brings its own (setProgressDialog); without a

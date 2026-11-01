@@ -20,6 +20,7 @@ struct MdxExportOptions {
     bool exportSmoothgroups = true;       // always on; not user-toggleable
     bool keepUnusedBonesHelpers = false;
     bool disableSkinQuantize = false;
+    bool keepGradientWeights = false;     // repeated bones in a group; see MdxSkinQuantizer
 
     // Texture conversion (shared between BLP and DDS)
     bool texConvertEnabled = true;        // master toggle

@@ -20,6 +20,7 @@
 #define IDC_CHK_FIX_SHARED_NORMALS  1027
 #define IDC_CHK_KEEP_UNUSED_BH      1028
 #define IDC_CHK_QUANTIZE_SKIN       1032  // inverted "Disable Skin Quantize"
+#define IDC_CHK_KEEP_GRADIENT       1033
 #define IDC_LBL_EXTENTS_PREC        1043
 #define IDC_EDT_EXTENTS_PREC        1044
 #define IDC_SPIN_EXTENTS_PREC       1045

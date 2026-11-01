@@ -171,6 +171,7 @@ constexpr Px  chkMerge{11, 231, 340, 17};
 constexpr Px  chkNormals{11, 255, 340, 17};
 constexpr Px  chkKeep{11, 279, 340, 17};
 constexpr Px  chkQuantize{11, 303, 340, 17};
+constexpr Px  chkGradient{30, 327, 321, 17};  // sub-option of chkQuantize
 constexpr Px  lblPrecision{11, 331, 120, 16};
 constexpr Px  edtPrecision{138, 327, 44, 23};
 constexpr Px  spnPrecision{182, 327, 14, 23};
@@ -677,6 +678,7 @@ void installHover(HWND hDlg, int id) {
 // Without the extents-precision trio: it stays hidden (see the WM_INITDIALOG note).
 constexpr int kGeometryControls[] = {
     IDC_CHK_MERGE_SIMILAR, IDC_CHK_FIX_SHARED_NORMALS, IDC_CHK_KEEP_UNUSED_BH, IDC_CHK_QUANTIZE_SKIN,
+    IDC_CHK_KEEP_GRADIENT,
 };
 
 constexpr int kTextureSubControls[] = {
@@ -693,7 +695,7 @@ constexpr int kOwnerDrawn[] = {
 constexpr int kAllControls[] = {
     IDC_LBL_MODEL_NAME, IDC_EDT_MODEL_NAME, IDC_LBL_FORMAT, IDC_BTN_FORMAT_CLASSIC, IDC_BTN_FORMAT_REFORGED,
     IDC_BTN_TAB_GEOMETRY, IDC_BTN_TAB_TEXTURES, IDC_CHK_MERGE_SIMILAR, IDC_CHK_FIX_SHARED_NORMALS,
-    IDC_CHK_KEEP_UNUSED_BH, IDC_CHK_QUANTIZE_SKIN, IDC_LBL_EXTENTS_PREC, IDC_EDT_EXTENTS_PREC,
+    IDC_CHK_KEEP_UNUSED_BH, IDC_CHK_QUANTIZE_SKIN, IDC_CHK_KEEP_GRADIENT, IDC_LBL_EXTENTS_PREC, IDC_EDT_EXTENTS_PREC,
     IDC_SPIN_EXTENTS_PREC, IDC_CHK_TEX_CONVERT, IDC_LBL_BLP_COMPRESSION, IDC_CMB_BLP_COMPRESSION,
     IDC_LBL_BLP_JPEG_QUALITY, IDC_EDT_BLP_JPEG_QUALITY, IDC_SPIN_BLP_JPEG_QUALITY, IDC_CHK_BLP_DITHERING,
     IDC_LBL_DDS_FORMAT, IDC_CMB_DDS_FORMAT, IDC_CHK_TEX_MIPMAPS, IDC_CHK_TEX_OVERWRITE,
@@ -769,6 +771,7 @@ void saveDialogSettingsToINI(HWND hDlg, const DialogState* ds) {
     writeB(L"KeepUnusedBonesHelpers", getCheck(hDlg, IDC_CHK_KEEP_UNUSED_BH));
     // The checkbox is the positive "Quantize skin weights"; the key keeps its old meaning.
     writeB(L"DisableSkinQuantize", !getCheck(hDlg, IDC_CHK_QUANTIZE_SKIN));
+    writeB(L"KeepGradientWeights", getCheck(hDlg, IDC_CHK_KEEP_GRADIENT));
     writeB(L"AutoIncrementFilename", ds->autoIncrement);
     writeB(L"OpenFolderAfterExport", ds->openFolder);
 
@@ -814,6 +817,7 @@ void loadDialogSettingsFromINI(HWND hDlg, DialogState* ds) {
     loadCheck(L"KeepUnusedBonesHelpers", IDC_CHK_KEEP_UNUSED_BH);
     if (auto noSkQ = gs(L"DisableSkinQuantize"); !noSkQ.empty())
         setCheck(hDlg, IDC_CHK_QUANTIZE_SKIN, !iniBool(noSkQ));
+    loadCheck(L"KeepGradientWeights", IDC_CHK_KEEP_GRADIENT);
     if (auto autoI = gs(L"AutoIncrementFilename"); !autoI.empty())
         ds->autoIncrement = iniBool(autoI);
     if (auto openF = gs(L"OpenFolderAfterExport"); !openF.empty())
@@ -860,6 +864,7 @@ void dialogToOptions(HWND hDlg, const DialogState* ds, MdxExportOptions& opts) {
     opts.fixSharedNormals = getCheck(hDlg, IDC_CHK_FIX_SHARED_NORMALS);
     opts.keepUnusedBonesHelpers = getCheck(hDlg, IDC_CHK_KEEP_UNUSED_BH);
     opts.disableSkinQuantize = !getCheck(hDlg, IDC_CHK_QUANTIZE_SKIN);
+    opts.keepGradientWeights = getCheck(hDlg, IDC_CHK_KEEP_GRADIENT);
     opts.autoIncrementFilename = ds->autoIncrement;
     opts.openFolderAfterExport = ds->openFolder;
     // exportSmoothgroups is forced true via struct default; no UI binding
@@ -897,6 +902,7 @@ void optionsToDialog(HWND hDlg, DialogState* ds, const MdxExportOptions& opts) {
     setCheck(hDlg, IDC_CHK_FIX_SHARED_NORMALS, opts.fixSharedNormals);
     setCheck(hDlg, IDC_CHK_KEEP_UNUSED_BH, opts.keepUnusedBonesHelpers);
     setCheck(hDlg, IDC_CHK_QUANTIZE_SKIN, !opts.disableSkinQuantize);
+    setCheck(hDlg, IDC_CHK_KEEP_GRADIENT, opts.keepGradientWeights);
     ds->autoIncrement = opts.autoIncrementFilename;
     ds->openFolder = opts.openFolderAfterExport;
 
@@ -941,6 +947,7 @@ constexpr wdx::l10n::DialogString kExportStrings[] = {
     {IDC_CHK_FIX_SHARED_NORMALS, "exp_fix_shared_normals_chk"},
     {IDC_CHK_KEEP_UNUSED_BH, "exp_keep_unused_boneshelpers_chk"},
     {IDC_CHK_QUANTIZE_SKIN, "exp_quantize_skin_weights_chk"},
+    {IDC_CHK_KEEP_GRADIENT, "exp_keep_gradient_weights_chk"},
     {IDC_LBL_EXTENTS_PREC, "exp_extents_precision_lbl"},
 
     // Textures tab
@@ -1102,6 +1109,7 @@ void applyPageLayout(HWND hDlg, DialogState* ds) {
     // `opts.version < 1200`); for Reforged the option does nothing. The check
     // state stays, so switching back to Classic keeps the user's choice.
     enableCtrl(hDlg, IDC_CHK_QUANTIZE_SKIN, classic);
+    enableCtrl(hDlg, IDC_CHK_KEEP_GRADIENT, classic && getCheck(hDlg, IDC_CHK_QUANTIZE_SKIN));
 
     showCtrl(hDlg, IDC_CHK_TEX_CONVERT, tex);
     showCtrl(hDlg, IDC_LBL_BLP_COMPRESSION, tex && classic);
@@ -1198,6 +1206,7 @@ void layoutExportDialog(HWND hDlg, DialogState* ds) {
     place(hDlg, ds, IDC_CHK_FIX_SHARED_NORMALS, lay::chkNormals);
     place(hDlg, ds, IDC_CHK_KEEP_UNUSED_BH, lay::chkKeep);
     place(hDlg, ds, IDC_CHK_QUANTIZE_SKIN, lay::chkQuantize);
+    place(hDlg, ds, IDC_CHK_KEEP_GRADIENT, lay::chkGradient);
     // Label columns keep their design width but grow for long translations
     // (French "Précision des étendues" needs more than 120 px); the fields
     // move right with them.
@@ -1792,6 +1801,11 @@ INT_PTR CALLBACK ExportDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPa
         case IDC_CHK_TEX_CONVERT:
             if (code == BN_CLICKED)
                 applyTextureEnabledState(hDlg);
+            return TRUE;
+
+        case IDC_CHK_QUANTIZE_SKIN:
+            if (code == BN_CLICKED)
+                enableCtrl(hDlg, IDC_CHK_KEEP_GRADIENT, getCheck(hDlg, IDC_CHK_QUANTIZE_SKIN));
             return TRUE;
 
         case IDC_CMB_BLP_COMPRESSION:
