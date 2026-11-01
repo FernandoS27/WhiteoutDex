@@ -43,17 +43,18 @@ void MdxGeosetMerger::merge(std::vector<Geoset>& geosets,
     struct Key {
         uint32_t materialId;
         uint32_t selectionGroup;
+        uint32_t lod;   // merged, a model's LOD levels would all draw at once
         uint64_t animSig;
         bool operator==(const Key& o) const {
             return materialId == o.materialId && selectionGroup == o.selectionGroup &&
-                   animSig == o.animSig;
+                   lod == o.lod && animSig == o.animSig;
         }
     };
     struct KeyHash {
         size_t operator()(const Key& k) const {
             size_t h = std::hash<uint64_t>()((static_cast<uint64_t>(k.materialId) << 32) |
                                               k.selectionGroup);
-            return h ^ (std::hash<uint64_t>()(k.animSig) * 0x9E3779B97F4A7C15ull);
+            return h ^ (std::hash<uint64_t>()(k.animSig ^ k.lod) * 0x9E3779B97F4A7C15ull);
         }
     };
 
@@ -65,7 +66,7 @@ void MdxGeosetMerger::merge(std::vector<Geoset>& geosets,
     for (size_t gi = 0; gi < geosets.size(); gi++) {
         auto& geo = geosets[gi];
         uint64_t sig = (gi < animSignatures.size()) ? animSignatures[gi] : 0;
-        Key key{geo.materialId, geo.selectionGroup, sig};
+        Key key{geo.materialId, geo.selectionGroup, geo.lod, sig};
         auto it = groupMap.find(key);
 
         if (it == groupMap.end()) {
