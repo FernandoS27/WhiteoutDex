@@ -237,7 +237,7 @@ ir::IRModel MdxModelDisassembler::disassemble(
     // mappers no-op if the source vector is empty.
     if (!mdxModel.cornEmitters.empty())
         mapCornEmitters(mdxModel, ir);
-    if (version_ >= 1200)
+    if (version_ >= 1100)
         mapFaceEffects(mdxModel, ir);
 
     mapNodeAnimations(mdxModel, ir);
@@ -322,7 +322,7 @@ void MdxModelDisassembler::mapBones(const wdx::Model& mdx, ir::IRModel& ir) {
             ? -1 : static_cast<int32_t>(bone.geosetAnimationId);
 
         // Bind pose — stored in raw MDX coords, transformed later
-        if (version_ >= 1200 && bone.node.objectId < mdx.bindPoses.size()) {
+        if (version_ >= 1100 && bone.node.objectId < mdx.bindPoses.size()) {
             const auto& bp = mdx.bindPoses[bone.node.objectId];
             Matrix3 m;
             m.SetRow(0, Point3(bp[0], bp[1], bp[2]));
@@ -710,8 +710,12 @@ void MdxModelDisassembler::mapGeosets(const wdx::Model& mdx, ir::IRModel& ir) {
         for (auto idx : geo.faces)
             irMesh.indices.push_back(static_cast<uint32_t>(idx));
 
-        // Skinning: v1200 SKIN data vs v800 matrix groups
-        if (version_ >= 1200 && !geo.skinData.empty()) {
+        // Skinning: SKIN data vs v800 matrix groups. The test is 1100, not 1200:
+        // the parser upgrades v900 and v1000 to 1200 but leaves v1100 as it is,
+        // and Blizzard's v1100 models have SKIN and an empty GNDX. Read as groups
+        // they lose all skinning, and the bone optimizer then takes the bones
+        // nothing refers to any more (Reforged Blademaster, 155 bones down to 28).
+        if (version_ >= 1100 && !geo.skinData.empty()) {
             // SKIN: 4 bone indices + 4 weights per vertex (8 bytes per vertex).
             //
             // Each SKIN byte is an index into the flat matrix table (the raw

@@ -3254,7 +3254,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         } else {
             mdx_scene::PopcornDiagLog("[Popcorn-gate] skipped (gate false)");
         }
-        if (opts.importFaceFX && opts.detectedVersion >= 1200) {
+        if (opts.importFaceFX && opts.detectedVersion >= 1100) {
             mdx_scene::Wc3FaceFxBuilder ffxBuilder;
             ffxBuilder.buildFaceFX(irModel, nodeMap, gi, reporter);
         }
