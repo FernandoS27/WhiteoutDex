@@ -356,6 +356,65 @@ int32_t findOrAddTexture(ir::IRModel& model, const std::string& path,
     return static_cast<int32_t>(model.textures.size() - 1);
 }
 
+// The client reads an HD layer's sub-textures by position, and 1359 of 1359 HD
+// layers in a sample of 415 of the game's models hold all six. A layer that
+// stops early draws wrong: with the diffuse alone it came out nearly black in
+// the game (with six, correct). Empty slots get what Blizzard's models use for
+// them (Textures\orm has alpha 0, Textures\normal is flat).
+void completeHdLayers(ir::IRModel& model) {
+    static const struct {
+        ir::TextureSlot slot;
+        const char* path;
+        int32_t replaceableId;
+    } kSlots[] = {
+        {ir::TextureSlot::Diffuse, "Textures\\White32.blp", 0},
+        {ir::TextureSlot::Normal, "Textures\\normal.blp", 0},
+        {ir::TextureSlot::ORM, "Textures\\orm.blp", 0},
+        {ir::TextureSlot::Emissive, "Textures\\Black32.blp", 0},
+        {ir::TextureSlot::TeamColor, "", 1},
+        {ir::TextureSlot::Environment, "ReplaceableTextures\\EnvironmentMap.blp", 0},
+    };
+    constexpr int32_t kHd = 1, kCrystal = 24;
+
+    for (auto& mat : model.materials) {
+        for (auto& layer : mat.layers) {
+            // The same rule as MdxMaterialMapper: without a named shader, a
+            // PBR map is what makes a layer HD.
+            bool hd = layer.shaderType == kHd || layer.shaderType == kCrystal;
+            if (layer.shaderType < 0) {
+                for (const auto& ref : layer.textureRefs)
+                    if (ref.textureIndex >= 0 && ref.slot != ir::TextureSlot::Diffuse &&
+                        ref.slot != ir::TextureSlot::TeamColor)
+                        hd = true;
+            }
+            if (!hd) continue;
+
+            std::vector<ir::TextureRef> ordered;
+            std::vector<bool> taken(layer.textureRefs.size(), false);
+            for (const auto& want : kSlots) {
+                ir::TextureRef ref;
+                ref.slot = want.slot;
+                for (size_t i = 0; i < layer.textureRefs.size(); ++i) {
+                    if (!taken[i] && layer.textureRefs[i].slot == want.slot &&
+                        layer.textureRefs[i].textureIndex >= 0) {
+                        ref.textureIndex = layer.textureRefs[i].textureIndex;
+                        taken[i] = true;
+                        break;
+                    }
+                }
+                if (ref.textureIndex < 0)
+                    ref.textureIndex = findOrAddTexture(model, want.path, want.replaceableId,
+                                                        true, true);
+                ordered.push_back(ref);
+            }
+            for (size_t i = 0; i < layer.textureRefs.size(); ++i)
+                if (!taken[i] && layer.textureRefs[i].textureIndex >= 0)
+                    ordered.push_back(layer.textureRefs[i]);
+            layer.textureRefs = std::move(ordered);
+        }
+    }
+}
+
 namespace {  // reopen anon namespace for remaining internal helpers
 
 // Extract properties from a Wc3Bitmap texture plugin, with Standard-BitmapTex

@@ -26,4 +26,8 @@ int32_t findOrAddTexture(ir::IRModel& model, const std::string& path,
                          int32_t replaceableId, bool wrapU, bool wrapV,
                          const std::string& sourceDiskPath = "");
 
+// Every HD layer of the model holds its six sub-textures in the client's order,
+// the empty slots naming the game's own neutral textures. For v1100 and up.
+void completeHdLayers(ir::IRModel& model);
+
 } // namespace mdx_extract

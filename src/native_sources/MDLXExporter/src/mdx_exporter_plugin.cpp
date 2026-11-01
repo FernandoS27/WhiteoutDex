@@ -748,6 +748,9 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
         }
     }
 
+    if (opts.version >= 1100)
+        mdx_extract::completeHdLayers(irModel);
+
     // Texture conversion (BLP for v800, DDS for v1200) — runs on the IR
     // before the model build so converted file paths land in the MDX. Uses
     // WhiteoutLib parsers/writers; skips textures whose source bitmap was
