@@ -30,13 +30,20 @@ fn wdx_RoundDecimal num digits =
 )
 
 -----------------------------------------------------------------------
--- C# KeyReducer – compile from embedded source at startup
+-- C# KeyReducer - compiled from embedded source on first use
 -- Uses Ramer-Douglas-Peucker (RDP) algorithm for curve simplification.
 -- No external .cs file needed – compiled in-memory.
 -----------------------------------------------------------------------
 global _wdxKeyReducer = undefined
 global _wdxKeyReducerDebug = true
+-- Compiled when an optimization first needs it (wdx_EnsureKeyReducer), not
+-- while 3ds Max starts: Roslyn cost every session ~250 MB and a second
+-- (Max 2027) for a tool most sessions never open. One attempt per session.
+global _wdxKeyReducerTried = false
+fn wdx_EnsureKeyReducer =
 (
+    if _wdxKeyReducer != undefined or _wdxKeyReducerTried do return (_wdxKeyReducer != undefined)
+    _wdxKeyReducerTried = true
     local csSource = "
 using System;
 using System.Collections.Generic;
@@ -444,6 +451,7 @@ namespace KeyReducer
     (
         format "[KeyReducer] ERROR: Compiler not available: %\n" (getCurrentException())
     )
+    _wdxKeyReducer != undefined
 )
 
 -----------------------------------------------------------------------
@@ -877,7 +885,7 @@ rollout wdxPanelMethods "Optimization Methods"
     -------------------------------------------------------------------
     fn SmartOptimize obj rangeStart rangeEnd threshold step =
     (
-        if _wdxKeyReducer == undefined do
+        if not (wdx_EnsureKeyReducer()) do
         (
             if _wdxKeyReducerDebug do
                 format "    [DBG] % : C# not loaded, fallback to native ReduceKeys\n" obj.name
@@ -1056,7 +1064,7 @@ rollout wdxPanelMethods "Optimization Methods"
         local totalSteps   = total * numAnims
         local keysBefore   = CountKeys objKeys
 
-        local modeLabel = if _wdxKeyReducer != undefined then "Threshold (C#)" else "Threshold"
+        local modeLabel = if (wdx_EnsureKeyReducer()) then "Threshold (C#)" else "Threshold"
         format "\n>> Starting % optimization...\n" modeLabel
         if _wdxKeyReducerDebug do format ">> [DBG] _wdxKeyReducer loaded: %\n" (_wdxKeyReducer != undefined)
         if _wdxKeyReducerDebug do format ">> [DBG] Objects: %, Animations: %, Keys before: %\n" total numAnims keysBefore
@@ -1124,7 +1132,7 @@ rollout wdxPanelMethods "Optimization Methods"
             append allAnimNames   s[1]
         )
 
-        local modeLabel = if _wdxKeyReducer != undefined then "Threshold (C#)" else "Threshold"
+        local modeLabel = if (wdx_EnsureKeyReducer()) then "Threshold (C#)" else "Threshold"
         format "\n>> Starting % optimization on ALL animations...\n" modeLabel
 
         ResetProgress totalSteps

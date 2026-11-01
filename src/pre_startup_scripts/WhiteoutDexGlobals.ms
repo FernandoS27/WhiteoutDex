@@ -535,17 +535,23 @@ struct WhiteoutDexMaterialManagerStruct
 		::WhiteoutDexWc3MaterialTeamGlowTextures = this.teamGlowTextures
 	),
 
+	-- generateTeamGlows no longer runs at startup. Nothing reads the glow
+	-- textures any more (Wc3Material draws Team Glow with its own gradient),
+	-- and getting them opened every archive under the MPQ folder, maps and
+	-- mods included, or the whole Reforged CASC: ~3 GB of mapped files and a
+	-- slower start for each 3ds Max session (WC3 1.26 folder, Max 2027).
+	-- Whoever needs the archives opens them (Cell_Shade_Creator.ms
+	-- ensureArchivesReady).
 	fn registerCallbacks =
 	(
 		callbacks.removeScripts #postSystemStartup id:#WhiteoutDexMaterials
-		callbacks.addScript #postSystemStartup "::WdxMaterialManager.generateTeamGlows()" id:#WhiteoutDexMaterials
 	)
 )
 
 global WdxMaterialManager = WhiteoutDexMaterialManagerStruct()
 ::WdxMaterialManager.registerCallbacks()
 
--- Referenced by Wc3Material.ms for the TC glow texture array.
+-- Kept for scripts that read it; filled only when generateTeamGlows runs.
 global WhiteoutDexWc3MaterialTeamGlowTextures = ::WdxMaterialManager.teamGlowTextures
 
 
