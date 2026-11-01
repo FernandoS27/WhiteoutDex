@@ -9,6 +9,10 @@
 #define MDX_EXPORTER_CLASS_ID Class_ID(0x7A3B5C01, 0x4D2E6F00)
 
 class ExportDialog;
+struct MdxExportOptions;
+
+// The export settings as saved in MDLXExporter.ini.
+void loadExportSettings(Interface* gi, MdxExportOptions& opts);
 
 class MdxExporterPlugin : public SceneExport {
 public:

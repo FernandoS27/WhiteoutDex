@@ -24,4 +24,13 @@ void convertExportTextures(ir::IRModel& model,
                            const MdxExportOptions& opts,
                            core::ExportErrorReporter& reporter);
 
+// Save one texture file under another name, for the Material Editor. The target
+// extension picks the format: .blp .dds .png .tga .bmp .jpg. Same format means
+// a plain copy, so nothing is lost. BLP and DDS are encoded as the export
+// settings in `opts` say, with a full mip chain; normalMap selects BC5 for DDS.
+// Returns an empty string when saved, otherwise the reason (English, from the
+// library or a file error).
+std::wstring saveTextureAs(const std::wstring& source, const std::wstring& target,
+                           const MdxExportOptions& opts, bool normalMap);
+
 } // namespace mdx_export

@@ -284,3 +284,187 @@ struct WhiteoutDexModelBrowserStruct
 )
 
 global WhiteoutDexModelBrowser = WhiteoutDexModelBrowserStruct()
+
+/* ============================================================================
+   Save a texture to a file, for the Save As buttons of Wc3Material and Wc3Bitmap.
+
+   The extension of the file name is the format: PNG, TGA, BLP, DDS, BMP or JPG
+   (mdxSaveTextureAs in MDLXExporter.dle). The same format as the source is a
+   plain copy. The source is the file the map names, or, when that is not on this
+   disk, the same texture out of the game's archives, so a model opened from
+   an MPQ or CASC can give away its textures.
+
+   saveTo is the part without dialogs, ask the one the buttons call.
+   ============================================================================ */
+struct WhiteoutDexTextureSaveStruct
+(
+	-- What the dialog offers first and opens on: what was saved last.
+	private lastType = ".png",
+	private lastDir = "",
+
+	-- The file name a Bitmaptexture or a Wc3Bitmap holds, "" for anything else.
+	public fn fileNameOf tex =
+	(
+		local native = if classof tex == Bitmaptexture then tex else (try ( tex.delegate ) catch ( undefined ))
+		local f = if classof native == Bitmaptexture then (try ( native.filename ) catch ( "" )) else ""
+		if f == undefined then "" else f
+	),
+
+	private fn findOnDisk f =
+	(
+		if doesFileExist f then return f
+		-- Max's bitmap search paths (MAXScript Help, "3ds Max System Directories").
+		local full = try ( mapPaths.getFullFilePath f ) catch ( "" )
+		if full != undefined and full != "" and doesFileExist full then full else ""
+	),
+
+	-- The archive entries a scene's file name may stand for, best guess first.
+	private fn archiveNames f prefix =
+	(
+		local p = substituteString f "/" "\\"
+		local low = toLower p
+		local name = filenameFromPath p
+		local names = #()
+
+		local onDisk = (p.count > 2 and p[2] == ":") or (matchPattern p pattern:"\\\\*")
+		if not onDisk then append names p
+		else
+		(
+			-- A copy that is gone: the part of its path that mirrors the archive.
+			-- Extractions keep the entry's own path, overlay folder first.
+			local cut = findString low "\\whiteoutdexcasc\\"
+			local rel = ""
+			if cut != undefined then
+			(
+				rel = substring p (cut + 17) -1
+				local parts = filterString rel "\\"
+				if parts.count > 1 and matchPattern parts[1] pattern:"_*.w3mod" then
+					rel = substring rel (parts[1].count + 2) -1
+			)
+			else
+			(
+				local first = 0
+				for root in #("textures", "replaceabletextures", "units", "buildings", "doodads", "abilities", "environment", "ui", "terrainart", "sharedmodels", "objects") do
+				(
+					local hit = findString low ("\\" + root + "\\")
+					if hit != undefined and (first == 0 or hit < first) then first = hit
+				)
+				if first > 0 then rel = substring p (first + 1) -1
+			)
+			if rel != "" then append names rel
+		)
+		if prefix != undefined and prefix != "" then
+			append names ((trimRight (substituteString prefix "/" "\\") "\\") + "\\" + name)
+		append names ("Textures\\" + name)
+
+		-- The scene may name a decoded copy; the game has it as .blp or .dds.
+		local all = #()
+		for n in names do
+		(
+			appendIfUnique all n
+			local stem = substring n 1 (n.count - (getFilenameType n).count)
+			appendIfUnique all (stem + ".blp")
+			appendIfUnique all (stem + ".dds")
+		)
+		all
+	),
+
+	private fn fromArchive f prefix =
+	(
+		if not (wdxMBPrimitivesAvailable()) then return ""
+		local names = archiveNames f prefix
+		for root in (wdxMBAssetRoots()) do
+			for n in names do
+			(
+				local out = (getDir #temp) + "\\WhiteoutDexCASC\\SaveAs\\" + (filenameFromPath n)
+				local err = try ( WdxExtractAsset root[2] n out ) catch ( "failed" )
+				if err == "" and doesFileExist out then return out
+			)
+		""
+	),
+
+	-- Saves without asking anything. "" when saved, otherwise the reason.
+	public fn saveTo tex target prefix:"" normalMap:false =
+	(
+		local f = this.fileNameOf tex
+		if f == "" then return (::WdxL.t "tex_save_no_bitmap_msg")
+		local src = findOnDisk f
+		local extracted = (src == "")
+		if extracted then src = fromArchive f prefix
+		if src == "" then return ((::WdxL.t "tex_save_not_found_msg") + "\n" + f)
+		local err = try ( mdxSaveTextureAs src target normalMap ) catch ( getCurrentException() )
+		if extracted then deleteFile src
+		if err == "" then "" else ((::WdxL.t "tex_save_failed_msg") + "\n" + err)
+	),
+
+	-- The formats as the dialog lists them, the last one used first.
+	private fn typeOrder =
+	(
+		local types = #(#(".png", "PNG"), #(".tga", "Targa"), #(".blp", "BLP"), #(".dds", "DDS"), #(".bmp", "BMP"), #(".jpg", "JPEG"))
+		join (for t in types where t[1] == lastType collect t) (for t in types where t[1] != lastType collect t)
+	),
+
+	-- The .NET dialog, not getSaveFileName: that one appends the listed type's
+	-- suffix even to a name that has its own, so "x.blp" with PNG in the list
+	-- came back as "x.blp.png". AddExtension only adds one when the name has none
+	-- (Microsoft Learn, FileDialog.AddExtension), and OverwritePrompt then asks
+	-- about the file that will really be written.
+	private fn askTarget f =
+	(
+		local d = dotNetObject "System.Windows.Forms.SaveFileDialog"
+		local types = typeOrder()
+		local listed = for t in types collect (t[2] + " (*" + t[1] + ")|*" + t[1])
+		local filter = listed[1]
+		for i = 2 to listed.count do filter += "|" + listed[i]
+		d.Title = ::WdxL.t "tex_save_cap"
+		d.Filter = filter
+		d.FileName = getFilenameFile f
+		d.AddExtension = true
+		d.OverwritePrompt = true
+		if lastDir != "" then d.InitialDirectory = lastDir
+		local answer = d.ShowDialog()
+		local target = if answer.ToString() == "OK" then d.FileName else undefined
+		local picked = d.FilterIndex
+		d.Dispose()
+		if target == undefined then return undefined
+
+		-- The dialog puts the first type's suffix into the name field and can
+		-- leave it there when another type is picked, so "x.png" with Targa
+		-- picked means Targa. A suffix the user typed differs from the first
+		-- type's and stays. The dialog only asked about the old name, so an
+		-- existing file under the new one is asked about here.
+		local first = types[1][1]
+		if picked > 1 and picked <= types.count and (toLower (getFilenameType target)) == first then
+		(
+			target = (substring target 1 (target.count - first.count)) + types[picked][1]
+			if doesFileExist target and not (queryBox ((::WdxL.t "tex_save_overwrite_msg") + "\n" + target) title:"WhiteoutDex" beep:false) then
+				return undefined
+		)
+		target
+	),
+
+	public fn ask tex prefix:"" normalMap:false =
+	(
+		local f = this.fileNameOf tex
+		if f == "" then
+		(
+			messageBox (::WdxL.t "tex_save_no_bitmap_msg") title:"WhiteoutDex" beep:false
+			return false
+		)
+		local target = askTarget f
+		if target == undefined then return false
+
+		local err = this.saveTo tex target prefix:prefix normalMap:normalMap
+		if err != "" then
+		(
+			messageBox err title:"WhiteoutDex" beep:false
+			return false
+		)
+		lastType = toLower (getFilenameType target)
+		lastDir = trimRight (getFilenamePath target) "\\"
+		displayTempPrompt ((::WdxL.t "tex_saved_prompt") + " " + target) 5000
+		true
+	)
+)
+
+global WhiteoutDexTextureSave = WhiteoutDexTextureSaveStruct()

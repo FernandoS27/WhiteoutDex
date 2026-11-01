@@ -231,6 +231,8 @@ extends:Bitmaptexture replaceUI:true version:11
 			tooltip:"Select a bitmap file"
 		button			btnBrowseMPQ	"Open Texture Browser" width:300 height:22 align:#center \
 			tooltip:"Open MPQ/CASC Texture Browser"
+		button			btnSaveAs		"Save as..." width:300 height:22 align:#center \
+			tooltip:"Save this texture to a file"
 		label			lblSep0		"" height:2
 		dropdownlist	ddReplaceableId	"Replaceable Texture" \
 			items:#("Not Used", "Team Color", "Team Glow", "Cliff", "Lordaeron Tree", "Ashenvale Tree", "Barrens Tree", "Northrend Tree", "Mushroom Tree", "Ruins Tree", "Outland Mushroom Tree") \
@@ -265,6 +267,8 @@ extends:Bitmaptexture replaceUI:true version:11
 				btnPickBitmap.tooltip	= ::WdxL.t "bmp_pick_bitmap_tip"
 				btnBrowseMPQ.text		= ::WdxL.t "bmp_open_browser_btn"
 				btnBrowseMPQ.tooltip	= ::WdxL.t "bmp_open_browser_tip"
+				btnSaveAs.text			= ::WdxL.t "mat_save_texture_btn"
+				btnSaveAs.tooltip		= ::WdxL.t "mat_save_texture_tip"
 				ddReplaceableId.caption	= ::WdxL.t "bmp_replaceable_ddl"
 				chkWrapU.text			= ::WdxL.t "bmp_wrap_u_chk"
 				chkWrapV.text			= ::WdxL.t "bmp_wrap_v_chk"
@@ -303,6 +307,12 @@ extends:Bitmaptexture replaceUI:true version:11
 				)
 			)
 			catch (messageBox ((::WdxL.t "bmp_browser_unavailable_msg") + "\n" + (getCurrentException()) ) title:"Wc3Bitmap")
+		)
+
+		on btnSaveAs pressed do
+		(
+			try (::WhiteoutDexTextureSave.ask delegate prefix:this.prefixPath) catch
+				(messageBox ((::WdxL.t "tex_save_failed_msg") + "\n" + (getCurrentException())) title:"Wc3Bitmap" beep:false)
 		)
 
 		on btnPickBitmap pressed do

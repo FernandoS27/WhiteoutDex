@@ -585,32 +585,44 @@ extends:Standard replaceUI:true version:14
 				(messageBox ((::WdxL.t "mat_texbrowser_failed_msg") + "\n" + (getCurrentException())) title:"WhiteoutDex" beep:false)
 		)
 
-		label		lblDiff			"Diffuse ............................................................." align:#left height:16
+		fn saveTexture tex prefix normalMap:false =
+		(
+			try (::WhiteoutDexTextureSave.ask tex prefix:prefix normalMap:normalMap) catch
+				(messageBox ((::WdxL.t "tex_save_failed_msg") + "\n" + (getCurrentException())) title:"WhiteoutDex" beep:false)
+		)
+
+		label		lblDiff			"Diffuse ............................................................." align:#left width:185 height:16 across:2
+		button		btnSaveDiff	"Save as..." width:110 height:16 align:#right tooltip:"Save this texture to a file"
 		mapbutton	mbDiffuse		"(None)" width:270 height:20 align:#left across:2
 		button		btnBrwDiff		"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtDiffPrefix	"Path Prefix: " width:300 align:#center
 		label		lblSep3			"" height:2
-		label		lblNorm			"Normal ............................................................" align:#left height:16
+		label		lblNorm			"Normal ............................................................" align:#left width:185 height:16 across:2
+		button		btnSaveNorm	"Save as..." width:110 height:16 align:#right tooltip:"Save this texture to a file"
 		mapbutton	mbNormal		"(None)" width:270 height:20 align:#left across:2
 		button		btnBrwNorm		"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtNormPrefix	"Path Prefix: " width:300 align:#center
 		label		lblSep4			"" height:2
-		label		lblORM			"ORM ................................................................." align:#left height:16
+		label		lblORM			"ORM ................................................................." align:#left width:185 height:16 across:2
+		button		btnSaveORM	"Save as..." width:110 height:16 align:#right tooltip:"Save this texture to a file"
 		mapbutton	mbORM			"(None)" width:270 height:20 align:#left across:2
 		button		btnBrwORM		"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtORMPrefix	"Path Prefix: " width:300 align:#center
 		label		lblSep5			"" height:2
-		label		lblEmis			"Emissive ........................................................." align:#left height:16
+		label		lblEmis			"Emissive ........................................................." align:#left width:185 height:16 across:2
+		button		btnSaveEmis	"Save as..." width:110 height:16 align:#right tooltip:"Save this texture to a file"
 		mapbutton	mbEmissive		"(None)" width:270 height:20 align:#left across:2
 		button		btnBrwEmis		"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtEmisPrefix	"Path Prefix: " width:300 align:#center
 		label		lblSepTC		"" height:2
-		label		lblTeamCol		"Team Color (HD, optional) ............................" align:#left height:16
+		label		lblTeamCol		"Team Color (HD, optional) ............................" align:#left width:185 height:16 across:2
+		button		btnSaveTeamCol	"Save as..." width:110 height:16 align:#right tooltip:"Save this texture to a file"
 		mapbutton	mbTeamColor		"(None)" width:270 height:20 align:#left across:2
 		button		btnBrwTeamCol	"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtTeamColPrefix "Path Prefix: " width:300 align:#center
 		label		lblSep6			"" height:2
-		label		lblEnv			"Environment ................................................." align:#left height:16
+		label		lblEnv			"Environment ................................................." align:#left width:185 height:16 across:2
+		button		btnSaveEnv	"Save as..." width:110 height:16 align:#right tooltip:"Save this texture to a file"
 		mapbutton	mbEnv			"(None)" width:270 height:20 align:#left across:2
 		button		btnBrwEnv		"⚙" width:24 height:20 align:#right tooltip:"Browse via Texture Browser"
 		edittext	edtEnvPrefix	"Path Prefix: " width:300 align:#center
@@ -622,6 +634,14 @@ extends:Standard replaceUI:true version:14
 		on btnBrwEmis    pressed do openTexBrowser this "emissive"
 		on btnBrwTeamCol pressed do openTexBrowser this "team_color"
 		on btnBrwEnv     pressed do openTexBrowser this "environment"
+
+		-- Save As: a local file, or the game archives when the scene only names it
+		on btnSaveDiff    pressed do saveTexture this.diffuseMap this.diffusePrefix
+		on btnSaveNorm    pressed do saveTexture this.normalMap this.normalPrefix normalMap:true
+		on btnSaveORM     pressed do saveTexture this.ormMap this.ormPrefix
+		on btnSaveEmis    pressed do saveTexture this.emissiveMap this.emissivePrefix
+		on btnSaveTeamCol pressed do saveTexture this.teamColorMap this.teamColorPrefix
+		on btnSaveEnv     pressed do saveTexture this.environmentMap this.environmentPrefix
 
 		on texMapRollout open do
 		(
@@ -659,6 +679,13 @@ extends:Standard replaceUI:true version:14
 				btnBrwEmis.tooltip		= brw
 				btnBrwTeamCol.tooltip	= brw
 				btnBrwEnv.tooltip		= brw
+				local sav = ::WdxL.t "mat_save_texture_btn"
+				local savTip = ::WdxL.t "mat_save_texture_tip"
+				for b in #(btnSaveDiff, btnSaveNorm, btnSaveORM, btnSaveEmis, btnSaveTeamCol, btnSaveEnv) do
+				(
+					b.text = sav
+					b.tooltip = savTip
+				)
 			)
 		)
 	)

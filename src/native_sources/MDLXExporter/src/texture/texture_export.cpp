@@ -284,9 +284,73 @@ std::string swapExt(const std::string& path, const char* newExt) {
     return stripExt(path) + newExt;
 }
 
+std::string narrow(const std::wstring& ws) {
+    if (ws.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string s(static_cast<size_t>(n - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, s.data(), n, nullptr, nullptr);
+    return s;
+}
+
 } // namespace
 
 // ============================================================================
+
+std::wstring saveTextureAs(const std::wstring& source, const std::wstring& target,
+                           const MdxExportOptions& opts, bool normalMap)
+{
+    const std::string src = narrow(source);
+    const std::string dst = narrow(target);
+    const fs::path srcPath(source), dstPath(target);
+
+    std::error_code ec;
+    if (!fs::exists(srcPath, ec))
+        return L"The source file does not exist: " + source;
+    if (fs::equivalent(srcPath, dstPath, ec))
+        return {};
+
+    auto family = [](std::string ext) { return ext == ".jpeg" ? std::string(".jpg") : ext; };
+    const std::string srcExt = family(lowerExt(src)), dstExt = family(lowerExt(dst));
+
+    if (dstPath.has_parent_path())
+        fs::create_directories(dstPath.parent_path(), ec);
+
+    if (srcExt == dstExt) {
+        fs::copy_file(srcPath, dstPath, fs::copy_options::overwrite_existing, ec);
+        return ec ? L"The file could not be copied: " + target : std::wstring{};
+    }
+
+    auto loaded = loadSource(src);
+    if (!loaded)
+        return L"The texture could not be read: " + source;
+
+    bool ok = false;
+    if (dstExt == ".blp") {
+        resizeToPow2(*loaded);
+        ensureMipChain(*loaded);
+        ok = writeBlp(*loaded, dstPath, opts);
+    } else if (dstExt == ".dds") {
+        ensureMipChain(*loaded);
+        ok = writeDds(*loaded, dstPath, opts,
+                      normalMap ? ir::TextureSlot::Normal : ir::TextureSlot::Diffuse);
+    } else if (dstExt == ".png") {
+        png::Writer w;
+        ok = writeBytes(dstPath, w.write(*loaded));
+    } else if (dstExt == ".tga") {
+        tga::Writer w;
+        ok = writeBytes(dstPath, w.write(*loaded));
+    } else if (dstExt == ".bmp") {
+        bmp::Writer w;
+        ok = writeBytes(dstPath, w.write(*loaded));
+    } else if (dstExt == ".jpg") {
+        jpg::Writer w(90);
+        ok = writeBytes(dstPath, w.write(*loaded));
+    } else {
+        return L"This file type cannot be written: " + target;
+    }
+    return ok ? std::wstring{} : L"The file could not be written: " + target;
+}
 
 void convertExportTextures(ir::IRModel& model,
                            const std::string& mdxOutputPath,

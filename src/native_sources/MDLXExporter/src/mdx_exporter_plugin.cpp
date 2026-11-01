@@ -228,6 +228,7 @@ bool fixInsideOutWinding(ir::Mesh& mesh, INode* node) {
 
 } // namespace
 
+void loadExportSettings(Interface* gi, MdxExportOptions& opts) { loadOptionsFromINI(gi, opts); }
 
 int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi, BOOL suppressPrompts, DWORD)
 {

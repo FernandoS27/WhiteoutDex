@@ -22,6 +22,8 @@
 #include "mdx_export_options.h"
 #include "export_dialog.h"
 #include "scene_monitor.h"
+#include "texture/texture_export.h"
+#include <exception>
 #include <string>
 #include <set>
 #include <setkeymode.h>
@@ -161,6 +163,32 @@ Value* wdxSetKeyBuffers_cf(Value** arg_list, int count)
     std::set<Animatable*> seen;
     collectSetKeyBuffers(ip->GetRootNode(), L"root", 0, seen, text);
     return new String(text.c_str());
+}
+
+// mdxSaveTextureAs <source> <target> <normalMap> - save one texture file in the
+// format the target's extension names; see mdx_export::saveTextureAs. No dialog.
+// Returns "" when saved, otherwise the reason.
+def_visible_primitive(mdxSaveTextureAs, "mdxSaveTextureAs");
+
+Value* mdxSaveTextureAs_cf(Value** arg_list, int count)
+{
+    check_arg_count(mdxSaveTextureAs, 3, count);
+    const std::wstring source = arg_list[0]->to_string();
+    const std::wstring target = arg_list[1]->to_string();
+    const bool normalMap = arg_list[2]->to_bool() != 0;
+
+    MdxExportOptions opts;
+    loadExportSettings(GetCOREInterface(), opts);
+
+    std::wstring error;
+    try {
+        error = mdx_export::saveTextureAs(source, target, opts, normalMap);
+    } catch (const std::exception& e) {
+        // Library text, ASCII in practice.
+        const std::string what = e.what();
+        error = L"The texture could not be saved: " + std::wstring(what.begin(), what.end());
+    }
+    return new String(error.c_str());
 }
 
 def_visible_primitive(wdxSceneFixAll, "wdxSceneFixAll");
