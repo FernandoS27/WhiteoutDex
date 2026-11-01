@@ -1210,7 +1210,8 @@ static std::wstring ResolveMissingTextureUncached(const std::wstring& given, std
 }
 
 i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId,
-                                 u32 wrapFlags, bool skipMaxBitmapManager) {
+                                 u32 wrapFlags, bool skipMaxBitmapManager,
+                                 const std::wstring& archiveDir) {
     if (replaceableId != 0) {
         // Replaceable slot: adapter only declares the id. The renderer-
         // side ReplaceableTextureManager::RegisterModelSlot path bakes
@@ -1237,11 +1238,12 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
     if (IsAbsoluteTexturePath(filePath)) {
         std::error_code ec;
         if (!std::filesystem::exists(std::filesystem::path(filePath), ec)) {
-            const std::wstring found = ResolveMissingTexture(filePath, L"");
+            const std::wstring found = ResolveMissingTexture(filePath, archiveDir);
             if (found != filePath) {
                 mprintf(_M("  Texture: [found under the scene] '%s' -> '%s'\n"), filePath.c_str(),
                         found.c_str());
-                const i32 id = LoadTexture(found, replaceableId, wrapFlags, skipMaxBitmapManager);
+                const i32 id = LoadTexture(found, replaceableId, wrapFlags, skipMaxBitmapManager,
+                                           archiveDir);
                 texPathToId_[filePath] = id;
                 return id;
             }
@@ -1329,7 +1331,27 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
         }
     }
 
-    // Fallback 3: CASC/MPQ by filename.
+    // Fallback 3: CASC/MPQ under the material's path prefix. An imported model's
+    // maps name files that only the game has, and the bare name below cannot find
+    // them in a folder ("Units\Undead\Detheroc\").
+    if (!archiveDir.empty() && !onDisk) {
+        std::wstring dir = archiveDir;
+        std::replace(dir.begin(), dir.end(), L'/', L'\\');
+        if (dir.back() != L'\\')
+            dir += L'\\';
+        const std::wstring rel = dir + std::filesystem::path(filePath).filename().wstring();
+        if (PathIsNarrowSafe(rel)) {
+            const std::string archivePath(rel.begin(), rel.end());
+            mprintf(_M("  Texture: [ContentProvider prefix] '%S'\n"), archivePath.c_str());
+            const i32 id = LoadTextureFromContentProvider(archivePath, replaceableId, wrapFlags);
+            if (id >= 0) {
+                texPathToId_[filePath] = id;
+                return id;
+            }
+        }
+    }
+
+    // Fallback 4: CASC/MPQ by filename.
     {
         std::string narrowName = std::filesystem::path(filePath).filename().string();
         mprintf(_M("  Texture: [ContentProvider fallback] '%S'\n"), narrowName.c_str());
@@ -1347,6 +1369,7 @@ i32 MaxSceneAdapter::LoadTexture(const std::wstring& filePath, i32 replaceableId
     i32 id = RegisterTexture(filePath, 0, std::move(rgba), 4, 4, L"", {}, wrapFlags);
     mprintf(_M("  Texture %d: [missing] %s\n"), id, filePath.c_str());
     missingTextures_.push_back(filePath);
+    placeholderTexIds_.insert(id);
     g_wdxMissingTextureCount.store(static_cast<i32>(missingTextures_.size()));
     return id;
 }
@@ -1372,6 +1395,7 @@ void MaxSceneAdapter::CollectScene() {
     g_resolvedTextures.clear();
     texPathToId_.clear();
     missingTextures_.clear();
+    placeholderTexIds_.clear();
     g_wdxMissingTextureCount.store(0);
     mtlToId_.clear();
     loadedTextures_.clear();
@@ -1554,7 +1578,14 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textur
     // HD subtexture slots. Missing paths stay at -1; the renderer treats
     // negative ids as "slot absent". Wrap flags are lifted from the source
     // texmap (Wc3Bitmap's wrapU/wrapV or plain BitmapTex's StdUVGen).
-    auto loadSlot = [&](const wchar_t* paramName, bool skipMaxBitmap = false) -> i32 {
+    //
+    // A map found nowhere stays absent too, so the slot draws its neutral default.
+    // The magenta placeholder means something else here: its alpha of 255 in an
+    // ORM is a full team colour mask, its blue a tilted normal, in an emissive
+    // slot a glow. The model turned solid team colour with pink lights, whatever
+    // layer was on top. It is still reported as missing.
+    auto loadSlot = [&](const wchar_t* paramName, const wchar_t* prefixName,
+                        bool skipMaxBitmap = false) -> i32 {
         Texmap* slotTex = nullptr;
         if (!PB2Texmap(mtl, paramName, slotTex) || !slotTex)
             return -1;
@@ -1562,14 +1593,16 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textur
         const MCHAR* fn = bmt ? bmt->GetMapName() : nullptr;
         if (!fn || !fn[0])
             return -1;
-        return LoadTexture(std::wstring(fn), 0, wrapFlagsFor(slotTex), skipMaxBitmap);
+        const i32 id = LoadTexture(std::wstring(fn), 0, wrapFlagsFor(slotTex), skipMaxBitmap,
+                                   PB2String(mtl, prefixName));
+        return placeholderTexIds_.count(id) ? -1 : id;
     };
     // Normal maps go straight to direct-decode: Max's bitmap manager
     // collapses BC5 / DXT5n normals into a flat-grey RGBA8 and the HD
     // shader ends up sampling a constant normal across the surface.
-    layer.normalMapId = loadSlot(L"normalMap", /*skipMaxBitmap=*/true);
-    layer.ormMapId = loadSlot(L"ormMap");
-    layer.emissiveMapId = loadSlot(L"emissiveMap");
+    layer.normalMapId = loadSlot(L"normalMap", L"normalPrefix", /*skipMaxBitmap=*/true);
+    layer.ormMapId = loadSlot(L"ormMap", L"ormPrefix");
+    layer.emissiveMapId = loadSlot(L"emissiveMap", L"emissivePrefix");
 
     // teamColorMap is special — the slot accepts both:
     //   (a) a Wc3 replaceable=1 placeholder (Wc3Bitmap with replaceableId=1,
@@ -1618,7 +1651,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textur
             layer.teamColorMapId = kHdTeamColorActive;
         } else {
             // Try to load whatever path the user assigned; -1 if none.
-            layer.teamColorMapId = loadSlot(L"teamColorMap");
+            layer.teamColorMapId = loadSlot(L"teamColorMap", L"teamColorPrefix");
             // Fallback: HD layer with a Texmap at this slot but no path
             // (e.g. an empty BitmapTex). Treat as the swatch placeholder
             // so the slot still drives team-colour blending at draw time.
@@ -1667,7 +1700,8 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textur
         }
     } else if (!baseTexPath.empty()) {
         mprintf(_M("    \x2192 diffuse path: '%s'\n"), baseTexPath.c_str());
-        baseTexId = LoadTexture(baseTexPath, 0, wrapFlagsFor(diffuseTexmap));
+        baseTexId = LoadTexture(baseTexPath, 0, wrapFlagsFor(diffuseTexmap), false,
+                                PB2String(mtl, L"diffusePrefix"));
     } else {
         // Diagnostic: distinguish "no texmap" from "texmap but not a BitmapTex".
         if (diffuseTexmap)

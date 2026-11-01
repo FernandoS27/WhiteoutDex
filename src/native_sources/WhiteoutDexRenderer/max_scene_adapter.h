@@ -23,6 +23,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "io/file_content_provider.h"
@@ -282,8 +283,10 @@ private:
     // maps because Max's bitmap manager produces flat-grey rather than
     // raw RGB for DXT5n / BC5-style normal maps, which the HD shader
     // then samples as a wrong normal and the lighting goes haywire.
+    // `archiveDir` is the material's path prefix: where the game's archives keep
+    // this file when it is not on disk.
     i32 LoadTexture(const std::wstring& filePath, i32 replaceableId, u32 wrapFlags = 0x3,
-                    bool skipMaxBitmapManager = false);
+                    bool skipMaxBitmapManager = false, const std::wstring& archiveDir = {});
     i32 LoadTextureFromContentProvider(const std::string& archivePath, i32 replaceableId,
                                        u32 wrapFlags = 0x3);
     // SD TEAMCOLOR / TEAMGLOW slots are reserved through LoadTexture(L"", 1|2)
@@ -381,6 +384,8 @@ private:
     std::unordered_map<std::wstring, i32> texPathToId_;
     // Texture paths found nowhere (disk, CASC, MPQ) since the last CollectScene.
     std::vector<std::wstring> missingTextures_;
+    // The ids of their magenta placeholders.
+    std::unordered_set<i32> placeholderTexIds_;
     std::unordered_map<Mtl*, i32> mtlToId_;
     i32 nextTexId_ = 0;
     i32 nextMatId_ = 0;
