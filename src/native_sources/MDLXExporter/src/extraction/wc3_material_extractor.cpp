@@ -2133,8 +2133,12 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
         BitmapProperties bp = extractBitmapProperties(map);
         std::string path;
         if (found) {
-            path = buildTexturePath(readMaterialPrefix(mtlRef, prefixName),
-                                    extractBitmapFileName(map));
+            // The material's own prefix field first, else the Wc3Bitmap's,
+            // the same fallback the diffuse has: a prefix set on the bitmaps
+            // alone gave the normal and ORM paths without their folder.
+            std::string prefix = readMaterialPrefix(mtlRef, prefixName);
+            if (prefix.empty()) prefix = bp.prefixPath;
+            path = buildTexturePath(prefix, extractBitmapFileName(map));
         } else {
             // orig<Kind>Path is an MDX path after an import, but a disk path
             // after a drag & drop onto the slot; only the former is usable.

@@ -1584,6 +1584,13 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textur
     // ORM is a full team colour mask, its blue a tilted normal, in an emissive
     // slot a glow. The model turned solid team colour with pink lights, whatever
     // layer was on top. It is still reported as missing.
+    // The material's prefix field, else the Wc3Bitmap's own (as the exporter).
+    auto prefixFor = [&](const wchar_t* prefixName, Texmap* tex) {
+        std::wstring p = PB2String(mtl, prefixName);
+        if (p.empty() && tex && tex->ClassID() == WC3_BITMAP_CLASS_ID)
+            p = PB2String(tex, L"prefixPath");
+        return p;
+    };
     auto loadSlot = [&](const wchar_t* paramName, const wchar_t* prefixName,
                         bool skipMaxBitmap = false) -> i32 {
         Texmap* slotTex = nullptr;
@@ -1594,7 +1601,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textur
         if (!fn || !fn[0])
             return -1;
         const i32 id = LoadTexture(std::wstring(fn), 0, wrapFlagsFor(slotTex), skipMaxBitmap,
-                                   PB2String(mtl, prefixName));
+                                   prefixFor(prefixName, slotTex));
         return placeholderTexIds_.count(id) ? -1 : id;
     };
     // Normal maps go straight to direct-decode: Max's bitmap manager
@@ -1701,7 +1708,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl, bool textur
     } else if (!baseTexPath.empty()) {
         mprintf(_M("    \x2192 diffuse path: '%s'\n"), baseTexPath.c_str());
         baseTexId = LoadTexture(baseTexPath, 0, wrapFlagsFor(diffuseTexmap), false,
-                                PB2String(mtl, L"diffusePrefix"));
+                                prefixFor(L"diffusePrefix", diffuseTexmap));
     } else {
         // Diagnostic: distinguish "no texmap" from "texmap but not a BitmapTex".
         if (diffuseTexmap)

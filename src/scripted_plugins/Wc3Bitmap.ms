@@ -251,6 +251,12 @@ extends:Bitmaptexture replaceUI:true version:11
 			edtBitmapFile.text = if f != "" then (filenameFromPath f) else none
 		)
 
+		-- Max keeps this rollout open when another Wc3Bitmap is selected and only
+		-- loads the new instance into it: `reload` runs then, `open` does not
+		-- (MAXScript Help, "Scripted Plug-in Clauses"). The file name label is
+		-- not bound to a parameter, so it kept showing the previous map's file.
+		on texParamsRollout reload do ( updateBitmapDisplay() )
+
 		on texParamsRollout open do
 		(
 			-- Localize before updateBitmapDisplay so the empty-slot placeholder
@@ -303,6 +309,10 @@ extends:Bitmaptexture replaceUI:true version:11
 				if got != undefined do
 				(
 					delegate.filename = got[1]
+					-- The archive folder is where the game finds the file: it
+					-- goes into the prefix, as the material's browse buttons do.
+					local rel = substituteString got[2] "/" "\\"
+					if (findString rel ":") == undefined then this.prefixPath = getFilenamePath rel
 					updateBitmapDisplay()
 				)
 			)
@@ -342,6 +352,13 @@ extends:Bitmaptexture replaceUI:true version:11
 		spinner		spnWAngle	"W Angle ................." range:[-9999,9999,0.0] type:#float scale:0.1 fieldwidth:55 align:#right
 		spinner		spnUTiling	"U Tiling ..................." range:[-9999,9999,1.0] type:#float scale:0.01 fieldwidth:55 align:#right
 		spinner		spnVTiling	"V Tiling ..................." range:[-9999,9999,1.0] type:#float scale:0.01 fieldwidth:55 align:#right
+
+		on uvAnimRollout reload do
+		(
+			pullUVControllersFromCoords()
+			local detected = detectUVInterp()
+			if detected > 0 and detected != this.uvCtrlType do this.uvCtrlType = detected
+		)
 
 		on uvAnimRollout open do
 		(
