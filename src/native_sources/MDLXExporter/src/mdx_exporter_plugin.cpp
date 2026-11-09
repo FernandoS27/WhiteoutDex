@@ -529,6 +529,47 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     EFLUSH;
     seqMgr.sampleExtents(irModel.sequences, irModel);
 
+    // A texture animation that does not run on a global sequence plays only
+    // the keys inside the playing sequence (the game reads no other key), but
+    // Max plays them all: a UV scroll keyed at frames 0-30 with "Stand" at
+    // 10-60 runs in Max and stops or jumps in the game. Say so, per material.
+    {
+        auto outside = [&](const auto& track, size_t& out, size_t& total) {
+            if (track.globalSequenceIndex >= 0) return;
+            for (const auto& k : track.keys) {
+                ++total;
+                bool in = false;
+                for (const auto& s : irModel.sequences)
+                    if (k.time >= s.startTime && k.time <= s.endTime) { in = true; break; }
+                if (!in) ++out;
+            }
+        };
+        for (size_t mi = 0; mi < irModel.materials.size(); ++mi) {
+            const auto& mat = irModel.materials[mi];
+            std::unordered_set<int32_t> seen;
+            for (const auto& lay : mat.layers) {
+                const int32_t ti = lay.textureAnimationIndex;
+                if (ti < 0 || ti >= (int32_t)irModel.textureAnimations.size() || !seen.insert(ti).second)
+                    continue;
+                const auto& ta = irModel.textureAnimations[ti];
+                size_t out = 0, total = 0;
+                if (ta.translationTrackIndex >= 0 && ta.translationTrackIndex < (int32_t)irModel.vec3Tracks.size())
+                    outside(irModel.vec3Tracks[ta.translationTrackIndex], out, total);
+                if (ta.rotationTrackIndex >= 0 && ta.rotationTrackIndex < (int32_t)irModel.quatTracks.size())
+                    outside(irModel.quatTracks[ta.rotationTrackIndex], out, total);
+                if (ta.scaleTrackIndex >= 0 && ta.scaleTrackIndex < (int32_t)irModel.vec3Tracks.size())
+                    outside(irModel.vec3Tracks[ta.scaleTrackIndex], out, total);
+                if (out > 0)
+                    reporter.warning(L"Texture animation of material " + std::to_wstring(mi) + L": " +
+                                     std::to_wstring(out) + L" of " +
+                                     std::to_wstring(total) +
+                                     L" keys lie outside every sequence, and the game plays only "
+                                     L"the keys inside the playing sequence. Loop it as a global "
+                                     L"sequence or move the keys into a sequence.");
+            }
+        }
+    }
+
     // Cameras sample their tracks per sequence
     mdx_extract::extractCameras(sceneResult.nodes,irModel,reporter);
     ELOG << "Cameras=" << irModel.cameras.size() << "\n"; EFLUSH;
