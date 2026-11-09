@@ -1434,13 +1434,10 @@ static ir::InterpolationType uvTrackInterp(std::initializer_list<Control*> ctrls
 // Returns the TextureAnimation index, or -1 if no UV animation controllers
 // are present. Uses g_texAnimCache (keyed by the diffuse texmap pointer) to
 // deduplicate across composite-material layers that share the same bitmap.
-static int32_t extractTextureAnimationFromMaterial(ReferenceTarget* mtlRef,
-                                                   ir::IRModel& model)
+static int32_t extractTextureAnimation(ReferenceTarget* mtlRef, Texmap* diffuseTexForAnim,
+                                       ir::IRModel& model)
 {
     if (!mtlRef) return -1;
-
-    Texmap* diffuseTexForAnim = nullptr;
-    readTexmapFB(mtlRef, L"diffuseMap", L"texture", diffuseTexForAnim);
 
     UVAnimControllers uv = resolveUVAnimControllers(mtlRef, diffuseTexForAnim);
     if (!uv.any()) return -1;
@@ -2147,14 +2144,13 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     // TXAN — UV animation (translation/rotation/scale) with dedup for
     // composite materials that share controllers across layers.
     {
-        int32_t taIdx = extractTextureAnimationFromMaterial(mtlRef, model);
+        Texmap* diffuseTex = nullptr;
+        readTexmapFB(mtlRef, L"diffuseMap", L"texture", diffuseTex);
+        int32_t taIdx = extractTextureAnimation(mtlRef, diffuseTex, model);
         if (taIdx >= 0)
             layer.textureAnimationIndex = taIdx;
-        else {
-            Texmap* diffuseTex = nullptr;
-            readTexmapFB(mtlRef, L"diffuseMap", L"texture", diffuseTex);
+        else
             readStaticUVTransform(diffuseTex, layer);
-        }
     }
 
     // --- Reforged PBR maps ---
@@ -2505,7 +2501,14 @@ void extractForeignMaterial(Mtl* mtl, ir::IRModel& model) {
             ref.slot = ir::TextureSlot::Diffuse;
             layer.textureRefs.push_back(ref);
         }
-        readStaticUVTransform(colorTex, layer);
+        // Keyed coordinates become a TXAN, as on a Wc3Material: Fix all
+        // copies the bitmap with its controllers into one (MaterialFix.ms
+        // toBitmap), and the export must not differ with or without it.
+        const int32_t taIdx = extractTextureAnimation(mtl, colorTex, model);
+        if (taIdx >= 0)
+            layer.textureAnimationIndex = taIdx;
+        else
+            readStaticUVTransform(colorTex, layer);
     }
 
     mat.layers.push_back(std::move(layer));
