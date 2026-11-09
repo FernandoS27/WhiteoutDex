@@ -1,6 +1,6 @@
 #include "max_plugin_ui.h"
 
-#include "imgui_viewcube.h"
+#include "max_viewcube.h"
 #include "render_window.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
@@ -167,9 +167,14 @@ void MaxPluginUI::BuildFrame() {
 }
 
 void MaxPluginUI::BuildViewCubeWidget() {
-    // Pure host-side ImGui widget — the renderer has no notion of it.
-    // See tools/common/imgui_viewcube.h.
-    tools::DrawViewCube(win_.Service().Scene().Camera());
+    // Pure host-side ImGui widget that behaves like 3ds Max's ViewCube;
+    // the renderer has no notion of it. See max_viewcube.h.
+    // The 3D view is the work area less the toolbar strip (BuildToolbar).
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const f32 toolbarH = ImGui::GetFrameHeight() + 8.0f;
+    wdxui::DrawMaxViewCube(win_.Service().Scene().Camera(),
+                           ImVec2(vp->WorkPos.x, vp->WorkPos.y + toolbarH),
+                           ImVec2(vp->WorkPos.x + vp->WorkSize.x, vp->WorkPos.y + vp->WorkSize.y));
 }
 
 void MaxPluginUI::BuildMenuBar() {
