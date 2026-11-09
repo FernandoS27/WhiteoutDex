@@ -707,6 +707,33 @@ rollout wdxPanelMethods "Optimization Methods"
     )
 
     -------------------------------------------------------------------
+    -- A rotation controller whose keys are not all unit quaternions (an
+    -- imported model can carry such keys) is left alone. Max keeps rotation
+    -- keys relative to each other, so their value is not the rotation it
+    -- plays, and deleting one key moved the bone on the frames around it,
+    -- in other sequences too (Kakuzu's hand turned 56 degrees off). Checked
+    -- once per controller and run (reset by the buttons).
+    -------------------------------------------------------------------
+    local _unitChecked = #()
+    local _unitBad = #()
+    fn RotationKeysNonUnit ctrl =
+    (
+        local h = getHandleByAnim ctrl
+        local i = findItem _unitChecked h
+        if i > 0 do return _unitBad[i]
+        local bad = false
+        local allKeys = ctrl.keys
+        for k = 1 to allKeys.count while not bad do
+        (
+            local v = allKeys[k].value
+            if classOf v == Quat and abs (v.x*v.x + v.y*v.y + v.z*v.z + v.w*v.w - 1.0) > 0.002 do bad = true
+        )
+        append _unitChecked h
+        append _unitBad bad
+        bad
+    )
+
+    -------------------------------------------------------------------
     -- Serialize key data with integrated range filtering.
     -- Scans keys once, filters by range AND serializes in one pass.
     -- Returns #(packedString, iFirst, iLast, keyCount) or undefined if <2 keys in range.
@@ -717,82 +744,76 @@ rollout wdxPanelMethods "Optimization Methods"
         local n = allKeys.count
         if n == 0 do return undefined
 
-        -- Find range bounds and test value readability in one scan
-        local iFirst = 0
-        local iLast  = 0
-        for k = 1 to n do
+        -- Range bounds by binary search: Max keeps a controller's keys sorted
+        -- by time, and the whole-frame time below never decreases with the
+        -- index. A linear scan read every key of the controller once per
+        -- sequence, the slowest part of an "Optimize all" on long timelines.
+        local lo = 1
+        local hi = n + 1
+        while lo < hi do
         (
-            local kt = allKeys[k].time as integer / TicksPerFrame
-            if kt >= rangeStart and kt <= rangeEnd do
-            (
-                if iFirst == 0 do iFirst = k
-                iLast = k
-            )
+            local m = (lo + hi) / 2
+            if ((getKeyTime ctrl m) as integer / TicksPerFrame) < rangeStart then lo = m + 1 else hi = m
         )
-        if iFirst == 0 or iLast == 0 or (iLast - iFirst) < 2 do return undefined
+        local iFirst = lo
+        hi = n + 1
+        while lo < hi do
+        (
+            local m = (lo + hi) / 2
+            if ((getKeyTime ctrl m) as integer / TicksPerFrame) <= rangeEnd then lo = m + 1 else hi = m
+        )
+        local iLast = lo - 1
+        if iFirst > n or iLast < iFirst or (iLast - iFirst) < 2 do return undefined
 
         -- Test value readability
         local firstVal = undefined
         try ( firstVal = allKeys[iFirst].value ) catch ( return undefined )
         local valClass = classOf firstVal
+        local nch = 3
+        local tag = "POINT3"
+        if valClass == Quat then ( nch = 4; tag = "QUAT" )
+        else if valClass == Float or valClass == Integer then ( nch = 1; tag = "FLOAT" )
+        -- Keys that hold until the next one (step tangents, DontInterp) do
+        -- not lie on a line between their neighbours: the line test removed
+        -- them and the value froze for frames (Kakuzu's arm scale). Such a
+        -- range is reduced by ReduceHolds instead.
+        local allStep = (try (allKeys[iFirst].outTangentType == #step) catch (false))
+        for k = iFirst + 1 to iLast while allStep do
+            allStep = (try (allKeys[k].outTangentType == #step) catch (false))
+        if allStep do return #("STEP", iFirst, iLast, iLast - iFirst + 1)
+        if nch == 4 and (RotationKeysNonUnit ctrl) do
+        (
+            if _wdxKeyReducerDebug do format "    [DBG]   rotation keys are not unit quaternions, controller left as it is\n"
+            return undefined
+        )
 
-        -- Serialize directly (no intermediate arrays)
+        -- One read per key (each key used to be read once per channel); the
+        -- text written is the same, so the reducer keeps the same keys.
+        local ssT = stringStream ""
+        local ssC = #()
+        for ch = 1 to nch do append ssC (stringStream "")
+        for k = iFirst to iLast do
+        (
+            local key = allKeys[k]
+            if k > iFirst do
+            (
+                format "," to:ssT
+                for ch = 1 to nch do format "," to:ssC[ch]
+            )
+            format "%" ((key.time as integer / TicksPerFrame) as float) to:ssT
+            local v = key.value
+            if nch == 1 then format "%" (v as float) to:ssC[1]
+            else
+            (
+                format "%" v.x to:ssC[1]
+                format "%" v.y to:ssC[2]
+                format "%" v.z to:ssC[3]
+                if nch == 4 do format "%" v.w to:ssC[4]
+            )
+        )
         local ss = stringStream ""
-        if valClass == Quat then
-        (
-            format "QUAT|%|" threshold to:ss
-            for k = iFirst to iLast do
-            (
-                if k > iFirst do format "," to:ss
-                format "%" ((allKeys[k].time as integer / TicksPerFrame) as float) to:ss
-            )
-            for ch = 1 to 4 do
-            (
-                format "|" to:ss
-                for k = iFirst to iLast do
-                (
-                    if k > iFirst do format "," to:ss
-                    local v = allKeys[k].value
-                    local c = case ch of ( 1: v.x ; 2: v.y ; 3: v.z ; 4: v.w )
-                    format "%" c to:ss
-                )
-            )
-        )
-        else if valClass == Float or valClass == Integer then
-        (
-            format "FLOAT|%|" threshold to:ss
-            for k = iFirst to iLast do
-            (
-                if k > iFirst do format "," to:ss
-                format "%" ((allKeys[k].time as integer / TicksPerFrame) as float) to:ss
-            )
-            format "|" to:ss
-            for k = iFirst to iLast do
-            (
-                if k > iFirst do format "," to:ss
-                format "%" (allKeys[k].value as float) to:ss
-            )
-        )
-        else
-        (
-            format "POINT3|%|" threshold to:ss
-            for k = iFirst to iLast do
-            (
-                if k > iFirst do format "," to:ss
-                format "%" ((allKeys[k].time as integer / TicksPerFrame) as float) to:ss
-            )
-            for ch = 1 to 3 do
-            (
-                format "|" to:ss
-                for k = iFirst to iLast do
-                (
-                    if k > iFirst do format "," to:ss
-                    local v = allKeys[k].value
-                    local c = case ch of ( 1: v.x ; 2: v.y ; 3: v.z )
-                    format "%" c to:ss
-                )
-            )
-        )
+        format "%|%|%" tag threshold (ssT as string) to:ss
+        for ch = 1 to nch do format "|%" (ssC[ch] as string) to:ss
         #(ss as string, iFirst, iLast, iLast - iFirst + 1)
     )
 
@@ -832,6 +853,42 @@ rollout wdxPanelMethods "Optimization Methods"
             )
             deleteKeys ctrl #selection
         )
+    )
+
+    -------------------------------------------------------------------
+    -- Step keys (each holds its value until the next key): a key may go
+    -- when its value is within the threshold of the last key kept, which
+    -- then holds through it - the played value moves by at most the
+    -- threshold, and only keys that change it are kept.
+    -------------------------------------------------------------------
+    fn ReduceHolds ctrl iFirst iLast threshold =
+    (
+        local allKeys = ctrl.keys
+        local keep = #(0)
+        local ref = allKeys[iFirst].value
+        for k = iFirst + 1 to iLast - 1 do
+        (
+            local v = allKeys[k].value
+            local d = 0.0
+            case classOf v of
+            (
+                Quat:
+                (
+                    local l = sqrt ((v.x*v.x + v.y*v.y + v.z*v.z + v.w*v.w) * (ref.x*ref.x + ref.y*ref.y + ref.z*ref.z + ref.w*ref.w))
+                    local c = if l > 0 then abs (v.x*ref.x + v.y*ref.y + v.z*ref.z + v.w*ref.w) / l else 1.0
+                    if c > 1 do c = 1
+                    d = 2 * acos c
+                )
+                Point3: d = distance v ref
+                default: d = abs ((v as float) - (ref as float))
+            )
+            if d > threshold do ( append keep (k - iFirst); ref = v )
+        )
+        append keep (iLast - iFirst)
+        local ss = stringStream ""
+        for i = 1 to keep.count do ( if i > 1 do format "," to:ss; format "%" keep[i] to:ss )
+        if _wdxKeyReducerDebug do format "    [DBG]   step keys: % -> %\n" (iLast - iFirst + 1) keep.count
+        ApplyReduceResult ctrl iFirst iLast (ss as string)
     )
 
     -------------------------------------------------------------------
@@ -905,6 +962,11 @@ rollout wdxPanelMethods "Optimization Methods"
         for ctrl in allCtrls do
         (
             local data = SerializeControllerInRange ctrl rangeStart rangeEnd threshold
+            if data != undefined and data[1] == "STEP" then
+            (
+                ReduceHolds ctrl data[2] data[3] threshold
+                data = undefined
+            )
             if data != undefined do
             (
                 append serialized data
@@ -1073,6 +1135,8 @@ rollout wdxPanelMethods "Optimization Methods"
 
         ResetProgress totalSteps
         local t0 = timestamp()
+        _unitChecked = #()
+        _unitBad = #()
 
         wdx_BeginPerformanceMode()
         try ( undo "Optimize Selected Animation(s)" on
@@ -1144,6 +1208,8 @@ rollout wdxPanelMethods "Optimization Methods"
 
         local t0 = timestamp()
 
+        _unitChecked = #()
+        _unitBad = #()
         wdx_BeginPerformanceMode()
         try ( undo "Optimize All Animations" on
         (
