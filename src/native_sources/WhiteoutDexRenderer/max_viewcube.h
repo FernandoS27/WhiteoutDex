@@ -160,6 +160,12 @@ void FaceLabel(ImDrawList* dl, const char* text, const Vector3f& faceC, const Ve
 struct State {
     bool animating = false;
     f32 fromYaw = 0, fromPitch = 0, toYaw = 0, toPitch = 0, fromRoll = 0, toRoll = 0;
+    // Home also moves the camera: distance and orbit target go along, and the
+    // default Home ends in Camera::Reset() for everything a reset sets.
+    bool moveCamera = false, resetAtEnd = false;
+    f32 fromDistance = 0, toDistance = 0;
+    Vector3f fromTarget{0, 0, 0}, toTarget{0, 0, 0};
+    f64 duration = 0.28;
     bool hasHome = false;          // "Set Current View as Home"
     f32 homeYaw = 0, homePitch = 0, homeRoll = 0, homeDistance = 0;
     Vector3f homeTarget{0, 0, 0};
@@ -240,20 +246,33 @@ inline void DrawMaxViewCube(renderer::Camera& camera, const ImVec2& areaMin, con
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    // ---- Animation: turn towards the clicked view ----
+    // ---- Animation: turn (and for Home, move) towards the chosen view ----
     if (st.animating) {
-        constexpr f64 kDuration = 0.28;
-        const f32 t = static_cast<f32>(std::min(1.0, (ImGui::GetTime() - st.startTime) / kDuration));
+        const f32 t = static_cast<f32>(std::min(1.0, (ImGui::GetTime() - st.startTime) / st.duration));
         const f32 e = t * t * (3.0f - 2.0f * t);
         camera.SetYaw(st.fromYaw + vc::WrapAngle(st.toYaw - st.fromYaw) * e);
         camera.SetPitch(st.fromPitch + (st.toPitch - st.fromPitch) * e);
         camera.SetRoll(st.fromRoll + vc::WrapAngle(st.toRoll - st.fromRoll) * e);
-        if (t >= 1.0f)
+        if (st.moveCamera) {
+            // Zoom at a steady rate (geometric), as a dolly reads to the eye.
+            const f32 d = (st.fromDistance > 0.0f && st.toDistance > 0.0f)
+                              ? st.fromDistance * std::pow(st.toDistance / st.fromDistance, e)
+                              : st.fromDistance + (st.toDistance - st.fromDistance) * e;
+            camera.SetDistance(d);
+            camera.SetTarget(st.fromTarget + (st.toTarget - st.fromTarget) * e);
+        }
+        if (t >= 1.0f) {
             st.animating = false;
+            if (st.resetAtEnd)
+                camera.Reset();
+            st.moveCamera = st.resetAtEnd = false;
+        }
     }
     // A preset view is upright: turning to one also takes the roll back to 0.
     auto turnTo = [&](f32 yaw, f32 pitch, f32 roll = 0.0f) {
         st.animating = true;
+        st.moveCamera = st.resetAtEnd = false;
+        st.duration = 0.28;
         st.fromYaw = camera.GetYaw();
         st.fromPitch = camera.GetPitch();
         st.fromRoll = camera.GetRoll();
@@ -262,15 +281,25 @@ inline void DrawMaxViewCube(renderer::Camera& camera, const ImVec2& areaMin, con
         st.toRoll = roll;
         st.startTime = ImGui::GetTime();
     };
+    // Home flies there, as in 3ds Max: angles, distance and target together.
+    // Without a Home of the user's the end is the camera's reset view.
     auto goHome = [&] {
-        if (!st.hasHome) {
+        if (camera.GetMode() != renderer::Camera::Mode::Orbital) {
             st.animating = false;
-            camera.Reset();
+            if (!st.hasHome) camera.Reset();
             return;
         }
-        camera.SetDistance(st.homeDistance);
-        camera.SetTarget(st.homeTarget);
-        turnTo(st.homeYaw, st.homePitch, st.homeRoll);
+        const f32 yaw = st.hasHome ? st.homeYaw : renderer::Camera::kDefaultYaw;
+        const f32 pitch = st.hasHome ? st.homePitch : renderer::Camera::kDefaultPitch;
+        const f32 roll = st.hasHome ? st.homeRoll : 0.0f;
+        turnTo(yaw, pitch, roll);
+        st.moveCamera = true;
+        st.resetAtEnd = !st.hasHome;
+        st.duration = 0.5;
+        st.fromDistance = camera.GetDistance();
+        st.toDistance = st.hasHome ? st.homeDistance : renderer::Camera::kDefaultDistance;
+        st.fromTarget = camera.GetTarget();
+        st.toTarget = st.hasHome ? st.homeTarget : Vector3f{0.0f, 0.0f, 50.0f};  // Camera::Reset's target
     };
     f32 frontYaw = 0, frontPitch = 0;
     vc::ViewAngles(kFaceN[0], 0.0f, frontYaw, frontPitch);
