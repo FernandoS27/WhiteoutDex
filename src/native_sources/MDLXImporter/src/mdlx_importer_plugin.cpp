@@ -2181,6 +2181,83 @@ void remapVisibilityTrack(ir::FloatTrack& track,
     track.keys = std::move(cleanKeys);
 }
 
+// ── What the game plays outside a sequence's first..last key ─────────
+// Warcraft III reads a track only by the keys inside the playing sequence.
+// Before the first of them and past the last it plays the WRAP span from the
+// last key round to the first, measured from the last key after it and from
+// the first key before it (a negative parameter: extrapolated backwards, then
+// a jump to the first key) - for looping and non-looping sequences alike
+// (WhiteoutLib FindBracket, and detach.cpp, which writes the same edge keys).
+namespace wrap_edge {
+inline float curve(ir::InterpolationType ip, float a, float oa, float ib, float b, float t) {
+    if (ip == ir::InterpolationType::Hermite) {
+        const float t2 = t * t, t3 = t2 * t;
+        return (2 * t3 - 3 * t2 + 1) * a + (-2 * t3 + 3 * t2) * b + (t3 - 2 * t2 + t) * oa + (t3 - t2) * ib;
+    }
+    if (ip == ir::InterpolationType::Bezier) {
+        const float it = 1.0f - t;
+        return it * it * it * a + 3 * it * it * t * oa + 3 * it * t * t * ib + t * t * t * b;
+    }
+    return a + (b - a) * t;
+}
+inline float value(ir::InterpolationType ip, float a, float oa, float ib, float b, float t) {
+    return curve(ip, a, oa, ib, b, t);
+}
+inline Point3 value(ir::InterpolationType ip, const Point3& a, const Point3& oa, const Point3& ib,
+                    const Point3& b, float t) {
+    return Point3(curve(ip, a.x, oa.x, ib.x, b.x, t), curve(ip, a.y, oa.y, ib.y, b.y, t),
+                  curve(ip, a.z, oa.z, ib.z, b.z, t));
+}
+inline Color value(ir::InterpolationType ip, const Color& a, const Color& oa, const Color& ib,
+                   const Color& b, float t) {
+    return Color(curve(ip, a.r, oa.r, ib.r, b.r, t), curve(ip, a.g, oa.g, ib.g, b.g, t),
+                 curve(ip, a.b, oa.b, ib.b, b.b, t));
+}
+inline Point4 value(ir::InterpolationType ip, const Point4& a, const Point4& oa, const Point4& ib,
+                    const Point4& b, float t) {
+    return Point4(curve(ip, a.x, oa.x, ib.x, b.x, t), curve(ip, a.y, oa.y, ib.y, b.y, t),
+                  curve(ip, a.z, oa.z, ib.z, b.z, t), curve(ip, a.w, oa.w, ib.w, b.w, t));
+}
+inline int32_t value(ir::InterpolationType, int32_t a, int32_t, int32_t, int32_t, float) {
+    return a;                                     // integers hold
+}
+// The engine's slerp (WhiteoutLib Wc3Slerp): a normalised lerp from a raw dot
+// of 0.9, the short arc below; any real parameter.
+inline Quat slerp(const Quat& a, const Quat& b, float t) {
+    float d = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+    if (d >= 0.9f) {
+        Quat q(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y), a.z + t * (b.z - a.z), a.w + t * (b.w - a.w));
+        const float l = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+        if (l > 0.0f) { q.x /= l; q.y /= l; q.z /= l; q.w /= l; }
+        return q;
+    }
+    d = std::max(-1.0f, std::min(1.0f, d));
+    Quat e = b;
+    if (d < 0.0f) { d = -d; e = Quat(-b.x, -b.y, -b.z, -b.w); }
+    const float th0 = std::acos(d), th = th0 * t, s = std::sin(th0);
+    if (s < 1e-6f) return a;
+    const float s0 = std::sin(th0 - th) / s, s1 = std::sin(th) / s;
+    return Quat(a.x * s0 + e.x * s1, a.y * s0 + e.y * s1, a.z * s0 + e.z * s1, a.w * s0 + e.w * s1);
+}
+inline Quat value(ir::InterpolationType ip, const Quat& a, const Quat& oa, const Quat& ib,
+                  const Quat& b, float t) {
+    if (ip == ir::InterpolationType::Hermite || ip == ir::InterpolationType::Bezier)
+        return slerp(slerp(a, b, t), slerp(oa, ib, t), 2 * t * (1 - t));   // Wc3Squad
+    return slerp(a, b, t);
+}
+// The wrap span last -> first at parameter t.
+template <typename T>
+T span(ir::InterpolationType ip, const ir::Keyframe<T>& last, const ir::Keyframe<T>& first, float t) {
+    // the keys themselves at the span's ends, bit for bit (a loop closure
+    // stays exactly the first key's value)
+    if (t >= 1.0f) return first.value;
+    if (t == 0.0f) return last.value;
+    const bool curved = ip == ir::InterpolationType::Hermite || ip == ir::InterpolationType::Bezier;
+    return value(ip, last.value, curved && last.hasTangents ? last.outTangent : last.value,
+                 curved && first.hasTangents ? first.inTangent : first.value, first.value, t);
+}
+} // namespace wrap_edge
+
 template <typename T>
 void remapTrackKeys(ir::Track<T>& track,
                     const std::vector<SeqRange>& ranges,
@@ -2315,18 +2392,47 @@ void remapTrackKeys(ir::Track<T>& track,
             // and after the last (the wrap, WhiteoutLib FindBracket).
             const bool stepped = track.interpolation == ir::InterpolationType::None;
 
+            // The wrap span last -> first in the game's own timing (old
+            // times, one tick = 1/4800 s): its length, and the parameter at a
+            // time past the last key / before the first (wrap_edge above).
+            // Steps and a single key hold, which the old values already did.
+            // The game's window includes both ends: a key on the boundary of
+            // two back-to-back sequences is the last key of the one and the
+            // first of the next (seqKeyIdx gives it to the next only).
+            const ir::Keyframe<T>& kFirst = track.keys[seqKeyIdx[0]];
+            size_t gameLastKi = seqKeyIdx.back(), inWindow = 0;
+            for (size_t ki = 0; ki < track.keys.size(); ++ki) {
+                const TimeValue kt = track.keys[ki].time;
+                if (kt < r.oldStart || kt > r.oldEnd) continue;
+                gameLastKi = ki;
+                ++inWindow;
+            }
+            const ir::Keyframe<T>& kLast = track.keys[gameLastKi];
+            const double wrapLen = double(kFirst.time - kLast.time) + double(r.oldEnd - r.oldStart);
+            const bool wraps = !stepped && inWindow >= 2 && wrapLen > 0.0;
+
             // Start boundary
-            if (track.keys[seqKeyIdx[0]].time + offset != r.newStart) {
+            if (kFirst.time + offset != r.newStart) {
                 ir::Keyframe<T> sk{};
                 sk.time = r.newStart;
-                // Previously: useDefaultForStartBoundary ? defaultVal : firstKey
-                // That flag was set for float/int tracks and forced a jump to
-                // 1.0 (or 0) between sequences, destroying the held value.
-                // Now: always use the first in-sequence key's value — the
-                // emitter "enters" each sequence at whatever the author wrote
-                // as the first keyframe. This matches what NeoDex does.
-                sk.value = stepped ? track.keys[seqKeyIdx.back()].value
-                                   : track.keys[seqKeyIdx[0]].value;
+                // Steps play the last key here. A curve used to enter at the
+                // first key's value (NeoDex); the game extrapolates the wrap
+                // span backwards and jumps to the first key on reaching it,
+                // so the start gets that value and a key 1 ms short of the
+                // first holds the jump.
+                sk.value = stepped ? kLast.value : kFirst.value;
+                if (wraps) {
+                    sk.value = wrap_edge::span(track.interpolation, kLast, kFirst,
+                                               float(double(r.oldStart - kFirst.time) / wrapLen));
+                    constexpr TimeValue kOneMs = 5;      // 4.8 ticks
+                    if (kFirst.time - kOneMs > r.oldStart) {
+                        ir::Keyframe<T> hk{};
+                        hk.time = kFirst.time - kOneMs + offset;
+                        hk.value = wrap_edge::span(track.interpolation, kLast, kFirst,
+                                                   float(-double(kOneMs) / wrapLen));
+                        newKeys.push_back(hk);
+                    }
+                }
                 newKeys.push_back(sk);
             }
 
@@ -2337,14 +2443,20 @@ void remapTrackKeys(ir::Track<T>& track,
                 newKeys.push_back(k);
             }
 
-            // End boundary
+            // End boundary: the wrap span from the last key at the sequence
+            // end. It reaches the first key's value exactly when the first
+            // key sits at the start (the old loop closure); a non-looping
+            // sequence wraps the same way (it used to hold the last key).
+            // (The end key goes in whenever this sequence's own last key is
+            // short of the end, also when the boundary key went to the next
+            // sequence: then it carries that key's value, the wrap at 0.)
             size_t lastKi = seqKeyIdx.back();
             if (track.keys[lastKi].time + offset != r.newEnd) {
                 ir::Keyframe<T> ek{};
                 ek.time = r.newEnd;
-                ek.value = (r.isLooping && !stepped)
-                    ? track.keys[seqKeyIdx[0]].value   // loop closure
-                    : track.keys[lastKi].value;         // hold last
+                ek.value = wraps ? wrap_edge::span(track.interpolation, kLast, kFirst,
+                                                   float(double(r.oldEnd - kLast.time) / wrapLen))
+                                 : kLast.value;
                 newKeys.push_back(ek);
             }
         }
