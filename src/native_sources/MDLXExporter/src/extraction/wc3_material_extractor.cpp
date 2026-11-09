@@ -653,6 +653,7 @@ struct UVAnimControllers {
     Control* vOffset = nullptr;
     Control* wOffset = nullptr;   // param-only channel (StdUVGen has no W offset)
     Control* wAngle  = nullptr;
+    bool wAngleRadians = true;    // false for the material-level params (degrees)
     Control* uTiling = nullptr;
     Control* vTiling = nullptr;
     bool any() const {
@@ -693,6 +694,14 @@ static UVAnimControllers resolveUVAnimControllers(ReferenceTarget* mtlRef,
     uv.vOffset = pick(L"anim_VOffset", L"V_Offset", 1, L"Wc3_V_Offset");
     uv.wOffset = pick(L"anim_WOffset", nullptr,    -1, L"Wc3_W_Offset");
     uv.wAngle  = pick(L"anim_WAngle",  L"W_Angle",  6, L"Wc3_W_Angle");
+    // Radians on a Wc3Bitmap's param and on a StdUVGen; degrees on the
+    // material-level params, and on the StdUVGen of a plain bitmap in a
+    // NeoDex material: NeoDex's importer keys W_Angle with raw degree values.
+    if (uv.wAngle && !(bmpRef && getParamController(bmpRef, L"anim_WAngle"))) {
+        const bool onUVGen = uvGen && getUVGenController(uvGen, L"W_Angle", 6);
+        const bool neoDex = mtlRef && mtlRef->ClassID() == mdx_ids::NEODEX_MATERIAL;
+        if (!onUVGen || neoDex) uv.wAngleRadians = false;
+    }
     uv.uTiling = pick(L"anim_UTiling", L"U_Tiling", 2, L"Wc3_U_Tiling");
     uv.vTiling = pick(L"anim_VTiling", L"V_Tiling", 3, L"Wc3_V_Tiling");
     return uv;
@@ -1020,24 +1029,61 @@ static int32_t extractVec3FromTwoCtrls(Control* ctrlU, Control* ctrlV,
     return idx;
 }
 
-// Extract UV rotation from the W-angle controller (degrees → quaternion
-// around Z). Uses Linear interpolation, or DontInterp for step keys;
-// Bezier tangent→quat conversion is non-trivial and rarely needed for UV
-// rotation.
-static int32_t extractQuatFromAngleCtrl(Control* ctrl, ir::IRModel& model)
+// Extract UV rotation from the W-angle controller (→ quaternion around Z).
+// The Wc3Bitmap's anim_WAngle shares its controller with the StdUVGen's
+// W_Angle, an angle parameter: the controller holds radians, which is what
+// Max turns the texture by (StdUVGen::GetWAng, "the W angle in radians",
+// 3ds Max SDK). Reading them as degrees made a full turn typed as 6.28 a
+// 6.28 degree turn in the file. Only the old material-level params
+// (Wc3Material / NeoDex) hold degrees. Uses Linear interpolation, or
+// DontInterp for step keys; Bezier tangent→quat conversion is non-trivial
+// and rarely needed for UV rotation.
+static int32_t extractQuatFromAngleCtrl(Control* ctrl, ir::IRModel& model,
+                                        bool radians)
 {
     if (!ctrl) return -1;
     auto keyTimes = collectKeyTimes(ctrl);
     if (keyTimes.empty()) return -1;
 
     ir::Track<Quat> track;
-    track.interpolation = isStepBezierController(ctrl) ? ir::InterpolationType::None
-                                                       : ir::InterpolationType::Linear;
+    const bool step = isStepBezierController(ctrl);
+    track.interpolation = step ? ir::InterpolationType::None
+                               : ir::InterpolationType::Linear;
 
-    for (TimeValue t : keyTimes) {
-        float angleDeg = evalFloat(ctrl, t, 0.0f);
-        float angleRad = angleDeg * (3.14159265358979323846f / 180.0f);
+    auto angleAt = [&](TimeValue t) {
+        float angle = evalFloat(ctrl, t, 0.0f);
+        return radians ? angle : angle * (3.14159265358979323846f / 180.0f);
+    };
 
+    // A quaternion is the same for an angle and the angle plus a full turn,
+    // and the game turns each span the short way: two keys 0 and 360 did
+    // not turn at all, which Max showed as one full turn. Split every
+    // interpolated span until neighbouring keys are at most a quarter turn
+    // apart, sampling the controller so the keys follow Max's curve.
+    std::vector<TimeValue> times;
+    for (size_t i = 0; i < keyTimes.size(); ++i) {
+        if (!step && i > 0) {
+            std::vector<std::pair<TimeValue, TimeValue>> todo{{keyTimes[i - 1], keyTimes[i]}};
+            std::vector<TimeValue> inner;
+            while (!todo.empty()) {
+                auto [a, b] = todo.back();
+                todo.pop_back();
+                if (b - a < 2 || inner.size() > 256) continue;
+                // a hair over 90 degrees: the creator's quarter-turn keys stay as they are
+                if (std::fabs(angleAt(b) - angleAt(a)) <= 1.5710f) continue;
+                TimeValue m = a + (b - a) / 2;
+                inner.push_back(m);
+                todo.push_back({a, m});
+                todo.push_back({m, b});
+            }
+            std::sort(inner.begin(), inner.end());
+            times.insert(times.end(), inner.begin(), inner.end());
+        }
+        times.push_back(keyTimes[i]);
+    }
+
+    for (TimeValue t : times) {
+        const float angleRad = angleAt(t);
         ir::Keyframe<Quat> key;
         key.time  = t;
         key.value = Quat(0.0f, 0.0f, sinf(angleRad * 0.5f), cosf(angleRad * 0.5f));
@@ -1428,7 +1474,7 @@ static int32_t extractTextureAnimationFromMaterial(ReferenceTarget* mtlRef,
 
     // Rotation: W angle → Quat (Linear)
     if (uv.wAngle) {
-        ta.rotationTrackIndex = extractQuatFromAngleCtrl(uv.wAngle, model);
+        ta.rotationTrackIndex = extractQuatFromAngleCtrl(uv.wAngle, model, uv.wAngleRadians);
         if (ta.rotationTrackIndex >= 0) {
             int32_t gsIdx = detectAndRegisterGlobalSeq(uv.wAngle, model);
             if (gsIdx >= 0)

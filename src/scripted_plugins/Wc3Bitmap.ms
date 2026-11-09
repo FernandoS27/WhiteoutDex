@@ -24,7 +24,7 @@
 plugin textureMap Wc3Bitmap
 name:"Wc3Bitmap"
 classID:#(0x3a7c10f1, 0x5e2d4b08)
-extends:Bitmaptexture replaceUI:true version:11
+extends:Bitmaptexture replaceUI:true version:12
 (
 	local iniPath = (getDir #userScripts) + "\\WhiteoutDexConfig\\MatPrefixPath.ini"
 
@@ -68,6 +68,64 @@ extends:Bitmaptexture replaceUI:true version:11
 			if delegate.coords.V_Tiling.isAnimated and not this.anim_VTiling.isAnimated do
 				this.anim_VTiling.controller = delegate.coords.V_Tiling.controller
 		) catch()
+	)
+
+	-- Version 12 made anim_WAngle an angle parameter. Its controller is
+	-- shared with the StdUVGen's W_Angle, which turns the texture by the
+	-- controller value as radians (StdUVGen::GetWAng, 3ds Max SDK), but
+	-- version 11, the importer and the Texture Animation Creator kept degree
+	-- values in it: Max turned the texture 57 times too far, and the
+	-- exporter read the values as degrees. Divides the keys by 180/pi so the
+	-- turn Max showed is the turn the file had before. The static value is
+	-- taken from coords.W_Angle, which the set handler always wrote in
+	-- degrees. Controllers shared by several maps are converted once.
+	-- Multiplies the key values (and custom bezier tangents) of a float
+	-- controller by f. Read-modify-write: Max 2021 and older give the key
+	-- values of a controller on an angle parameter in degrees both ways,
+	-- 2023+ raw, so only the ratio counts.
+	fn scaleAngleKeys c f =
+	(
+		for i = 1 to (numKeys c) do
+		(
+			local k = c.keys[i]
+			k.value = k.value * f
+			if classof c == Bezier_Float do
+			(
+				if k.inTangentType == #custom do k.inTangent = k.inTangent * f
+				if k.outTangentType == #custom do k.outTangent = k.outTangent * f
+			)
+		)
+	)
+
+	fn wAngleDegreesToRadians =
+	(
+		pullUVControllersFromCoords()
+		local c = try ( getPropertyController this #anim_WAngle ) catch ( undefined )
+		if c == undefined do
+		(
+			local w = try ( delegate.coords.W_Angle ) catch ( undefined )
+			if w != undefined do this.anim_WAngle = w
+			return ok
+		)
+		if ::WdxWAngleConverted == undefined do ::WdxWAngleConverted = #()
+		if (findItem ::WdxWAngleConverted c) > 0 do return ok
+		append ::WdxWAngleConverted c
+		local n = try ( numKeys c ) catch ( 0 )
+		if n <= 0 do return ok
+		try ( setPropertyController delegate.coords #W_Angle c ) catch ()
+		-- a key away from zero to check the result on
+		local tp = undefined
+		for i = 1 to n where tp == undefined and abs (try ( c.keys[i].value ) catch ( 0.0 )) > 1e-4 do tp = getKeyTime c i
+		local target = if tp != undefined then (at time tp delegate.coords.W_Angle) / (180.0 / pi) else undefined
+		scaleAngleKeys c (pi / 180.0)
+		if target != undefined do
+			for pass = 1 to 3 do
+			(
+				local got = at time tp delegate.coords.W_Angle
+				if abs got < 1e-6 or abs (got - target) <= 1e-3 * abs target do exit
+				scaleAngleKeys c (target / got)
+			)
+		ok
 	)
 
 	-- The UV channels the TXAN controller type applies to.
@@ -198,7 +256,9 @@ extends:Bitmaptexture replaceUI:true version:11
 		anim_UOffset	type:#float		animatable:true		default:0.0	ui:spnUOffset
 		anim_VOffset	type:#float		animatable:true		default:0.0	ui:spnVOffset
 		anim_WOffset	type:#float		animatable:true		default:0.0	ui:spnWOffset
-		anim_WAngle		type:#float		animatable:true		default:0.0	ui:spnWAngle
+		-- An angle: shown in degrees, kept in radians, the unit of the
+		-- StdUVGen's W_Angle that shares the controller (see on update).
+		anim_WAngle		type:#angle		animatable:true		default:0.0	ui:spnWAngle
 		anim_UTiling	type:#float		animatable:true		default:1.0	ui:spnUTiling
 		anim_VTiling	type:#float		animatable:true		default:1.0	ui:spnVTiling
 
@@ -485,4 +545,10 @@ extends:Bitmaptexture replaceUI:true version:11
 	-- (pre-2.2.0 imports animated the StdUVGen directly). Adopt those
 	-- controllers into the anim_* params on load.
 	on load do ( pullUVControllersFromCoords() )
+	-- Schema migration of an older saved map ("Updating Scripted Plug-ins",
+	-- MAXScript Help: version still holds the old number here).
+	on update do
+	(
+		if version < 12 do try ( wAngleDegreesToRadians() ) catch ()
+	)
 )

@@ -3810,7 +3810,7 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                             }
                         }
 
-                        // KTAR: UV rotation — quaternion → Z-euler angle → W_Angle (degrees)
+                        // KTAR: UV rotation — quaternion → Z-euler angle → W_Angle (radians)
                         if (!bitmapAlreadyProcessed &&
                             ta.rotationTrackIndex >= 0 &&
                             ta.rotationTrackIndex < (int32_t)irModel.quatTracks.size()) {
@@ -3856,6 +3856,17 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                                         fk.inTangent = nearAngle(fk.inTangent, fk.value);
                                         fk.outTangent = nearAngle(fk.outTangent, fk.value);
                                     }
+                                }
+
+                                // The controller is shared with the StdUVGen's
+                                // W_Angle, an angle parameter, which holds radians
+                                // (StdUVGen::GetWAng, 3ds Max SDK): degree values
+                                // turned the texture 57 times too fast in Max.
+                                constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+                                for (auto& fk : rotFloat.keys) {
+                                    fk.value *= kDegToRad;
+                                    fk.inTangent *= kDegToRad;
+                                    fk.outTangent *= kDegToRad;
                                 }
 
                                 Control* wCtrl = createFloatController(rotFloat);

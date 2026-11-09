@@ -286,11 +286,12 @@ fn WdxTAC_KeyChannel map prop times values ctrlClass keep:false cycle:false =
 		default: undefined
 	)
 	if coordProp != undefined do try (setPropertyController map.delegate.coords coordProp c) catch ()
-	-- The rotation track holds raw degrees (importer and exporter). Max 2021
-	-- and older convert a key value set from MAXScript on this controller -
-	-- shared with the StdUVGen's W_Angle, an angle - from degrees to radians,
-	-- Max 2023+ does not: read the float param back and scale the keys until
-	-- it holds the degrees asked for.
+	-- The rotation controller holds radians: it is shared with the
+	-- StdUVGen's W_Angle, and anim_WAngle is an angle parameter too (shown
+	-- in degrees). Max 2021 and older convert a key value set from MAXScript
+	-- on this controller from degrees to radians, Max 2023+ does not: read
+	-- the param back (in degrees) and scale the keys until it holds the
+	-- degrees asked for.
 	if prop == #anim_WAngle do
 	(
 		local probe = 0

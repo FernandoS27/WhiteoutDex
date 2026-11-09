@@ -414,6 +414,9 @@ private:
     struct UvAnimSource {
         Texmap* texmap = nullptr; // Wc3Bitmap (anim_* PB2) or plain BitmapTex (StdUVGen)
         Mtl* legacyMtl = nullptr; // pre-TXAN-refactor material-level anim_* params
+        // The W angle controller holds degrees: NeoDex's importer keys a plain
+        // BitmapTex's W_Angle with raw degree values (radians everywhere else)
+        bool angleDegrees = false;
         bool any() const { return texmap || legacyMtl; }
     };
     std::vector<UvAnimSource> uvAnimSources_;

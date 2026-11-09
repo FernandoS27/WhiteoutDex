@@ -1812,6 +1812,7 @@ MaxSceneAdapter::UvAnimSource MaxSceneAdapter::FindUvAnimSource(Mtl* mtl, Texmap
                 Control* c = StdUVGenTrack(uvg, si);
                 if (c && c->IsAnimated()) {
                     src.texmap = diffuseTex;
+                    src.angleDegrees = mtl && mtl->ClassID() == NEODEX_MAT_CLASS_ID;
                     break;
                 }
             }
@@ -3725,41 +3726,43 @@ FrameState MaxSceneAdapter::Evaluate(const PoseRequest& req) const {
     // ApplyTexAnimPaletteToFrame; the old FrameState::texAnims channel fed
     // RenderModel::matTexAnim, which nothing reads). Values convert
     // Max → MDX exactly as the exporter writes them (KTAT.x = -U_Offset,
-    // KTAT.y = V_Offset, KTAR = anim_WAngle degrees CCW around the texture
+    // KTAT.y = V_Offset, KTAR = the W angle CCW around the texture
     // centre, KTAS = tiling) and the matrix is composed exactly like
     // MdxModelAdapter's TXAN build, so preview == exported file.
     for (i32 taId = 0; taId < (i32)uvAnimSources_.size(); taId++) {
         const auto& src = uvAnimSources_[taId];
-        f32 uOff = 0, vOff = 0, uTile = 1, vTile = 1, angDeg = 0;
+        // The texture's W angle is an angle parameter: radians (the
+        // Wc3Bitmap's anim_WAngle shares its controller with the StdUVGen's
+        // W_Angle, StdUVGen::GetWAng is "in radians", 3ds Max SDK). Only the
+        // old material-level param holds degrees.
+        f32 uOff = 0, vOff = 0, uTile = 1, vTile = 1, ang = 0;
         if (src.texmap && src.texmap->ClassID() == WC3_BITMAP_CLASS_ID) {
             PB2Float(src.texmap, L"anim_UOffset", t, uOff);
             PB2Float(src.texmap, L"anim_VOffset", t, vOff);
             PB2Float(src.texmap, L"anim_UTiling", t, uTile);
             PB2Float(src.texmap, L"anim_VTiling", t, vTile);
-            PB2Float(src.texmap, L"anim_WAngle", t, angDeg);
+            PB2Float(src.texmap, L"anim_WAngle", t, ang);
         } else if (BitmapTex* bmt = UnwrapBitmapTex(src.texmap)) {
             if (StdUVGen* uvg = bmt->GetUVGen()) {
                 uOff = uvg->GetUOffs(t);
                 vOff = uvg->GetVOffs(t);
                 uTile = uvg->GetUScl(t);
                 vTile = uvg->GetVScl(t);
-                // The importer's KTAR controller stores degree values
-                // (shared with Wc3Bitmap's anim_WAngle) and the exporter
-                // reads this channel as degrees too — match them.
-                angDeg = uvg->GetWAng(t);
+                ang = uvg->GetWAng(t);
+                if (src.angleDegrees) ang *= kDegToRad;
             }
         } else if (src.legacyMtl) {
             PB2Float(src.legacyMtl, L"anim_UOffset", t, uOff);
             PB2Float(src.legacyMtl, L"anim_VOffset", t, vOff);
             PB2Float(src.legacyMtl, L"anim_UTiling", t, uTile);
             PB2Float(src.legacyMtl, L"anim_VTiling", t, vTile);
-            PB2Float(src.legacyMtl, L"anim_WAngle", t, angDeg);
+            PB2Float(src.legacyMtl, L"anim_WAngle", t, ang);
+            ang *= kDegToRad;
         }
 
         // Max → MDX: U offset negates into KTAT.x (matches the exporter's
         // signA = -1), V passes through.
         const f32 tx = -uOff, ty = vOff;
-        const f32 ang = angDeg * kDegToRad;
         const f32 c = std::cos(ang), si = std::sin(ang);
         const f32 a = uTile * c;
         const f32 b = -vTile * si;
