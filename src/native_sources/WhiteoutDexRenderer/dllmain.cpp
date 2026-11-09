@@ -371,6 +371,10 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
     }
     if (result.changed) {
         g_renderer->Loader().UpdateMaterials(g_actor->handle, result.materials, result.textures);
+        // The re-sent materials carry their static values (an animated layer
+        // opacity as at frame 0): put the current frame's back right away.
+        if (Interface* ip = GetCOREInterface())
+            EvalFromMax(MaxTimeToMs(ip->GetTime()));
     }
 
     // Re-evaluate when the timeline is idle — picks up non-animated

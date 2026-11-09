@@ -888,12 +888,21 @@ MaxSceneAdapter::MaterialSnapshot MaxSceneAdapter::SnapshotMaterial(Mtl* mtl) {
     return snap;
 }
 
+// The snapshot key of a material or of one layer of a composite. A layer used
+// materialId * 1000 + layer and a single material its id, so layer 1 of
+// composite 0 and material 1 shared key 1: every refresh then saw a change,
+// re-sent all materials with their frame-0 opacity, and a layer faded out at
+// the current frame flickered on (the Detheroc/Chaugnar morph, 2026).
+static i32 SnapshotKey(i32 materialId, bool single, i32 layerIdx) {
+    return materialId * 1024 + (single ? 1023 : std::min(layerIdx, 1022));
+}
+
 void MaxSceneAdapter::UpdateMaterialSnapshots() {
     matSnapshots_.clear();
     for (auto& mi : materials_) {
         ForEachWc3SubMtl(mi.mtl, [&](Mtl* sub, i32 layerIdx) {
             // Single Wc3Material → key by materialId; composite → combined key.
-            const i32 key = (sub == mi.mtl) ? mi.materialId : (mi.materialId * 1000 + layerIdx);
+            const i32 key = SnapshotKey(mi.materialId, sub == mi.mtl, layerIdx);
             matSnapshots_[key] = SnapshotMaterial(sub);
         });
     }
@@ -3866,7 +3875,7 @@ MaxSceneAdapter::MaterialRefreshResult MaxSceneAdapter::RefreshMaterials() {
         ForEachWc3SubMtl(mi.mtl, [&](Mtl* sub, i32 layerIdx) {
             if (anyChanged)
                 return;
-            const i32 key = (sub == mi.mtl) ? mi.materialId : (mi.materialId * 1000 + layerIdx);
+            const i32 key = SnapshotKey(mi.materialId, sub == mi.mtl, layerIdx);
             MaterialSnapshot cur = SnapshotMaterial(sub);
             auto it = matSnapshots_.find(key);
             if (it == matSnapshots_.end() || !snapshotsEqual(it->second, cur))
