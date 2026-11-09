@@ -83,4 +83,9 @@ struct MdlxImportOptions {
     // ── Reforged v1200 Objects ──
     bool importCornEmitters = true;
     bool importFaceFX = true;
+
+    // ── Merge ──
+    // The extra word a merge adds to this model's sequence names (one of
+    // mdx_merge::nameTags(); empty keeps the names). INI key MergeNameTag.
+    std::wstring mergeNameTag = L"Alternate";
 };

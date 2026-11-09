@@ -59,6 +59,10 @@
 #define IDC_LBL_NO_OBJECTS          1090
 #define IDC_LBL_NO_ANIMATIONS       1091
 
+// ── Animations tab: name tag of a merged model's sequences ──
+#define IDC_LBL_MERGE_TAG           1092
+#define IDC_CMB_MERGE_TAG           1093
+
 // ── Counts from the parsed file, right of their checkbox (checkbox id + 500) ──
 #define IDC_CNT_OFFSET              500
 #define IDC_CNT_IMPORT_MATERIALS    1511

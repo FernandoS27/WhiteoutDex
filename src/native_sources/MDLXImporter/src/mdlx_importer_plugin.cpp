@@ -12,6 +12,7 @@
 #include "scene/wc3_material_builder.h"
 #include "scene/wc3_scene_builders.h"
 #include "scene/texture_resolver.h"
+#include "scene/merge_import.h"
 
 // Core (MaxCore)
 #include <core/intermediate_types.h>
@@ -2049,6 +2050,10 @@ struct SeqRange {
     TimeValue newStart, newEnd;
     bool isLooping;
     size_t origIdx;
+    // End of the window the keys before the first sequence are fitted into
+    // (0 = up to the first sequence). A merge import starts the sequences
+    // after the scene's own and keeps this window at frames 0..10.
+    TimeValue preEnd;
 };
 
 // ── Visibility-specific remap ───────────────────────────────────
@@ -2301,7 +2306,7 @@ void remapTrackKeys(ir::Track<T>& track,
     if (!ranges.empty()) {
         const auto& r0 = ranges[0];
         TimeValue ogS = 0, ogE = r0.oldStart;
-        TimeValue ngS = 0, ngE = r0.newStart;
+        TimeValue ngS = 0, ngE = r0.preEnd > 0 ? std::min(r0.preEnd, r0.newStart) : r0.newStart;
         float oLen = static_cast<float>(ogE - ogS);
         float nLen = static_cast<float>(ngE - ngS);
         if (oLen > 0.0f && nLen > 0.0f) {
@@ -2488,7 +2493,10 @@ void remapTrackKeys(ir::Track<T>& track,
     track.keys = std::move(newKeys);
 }
 
-void remapTimeline(ir::IRModel& irModel) {
+// firstStart: where the first sequence goes - frame 10, or after the scene's
+// own sequences in a merge import (the keys before the first sequence still
+// land in frames 0..10, next to the bind pose).
+void remapTimeline(ir::IRModel& irModel, TimeValue firstStart) {
     if (irModel.sequences.empty()) return;
 
     const TimeValue tpf = GetTicksPerFrame(); // 160 at 30 fps
@@ -2513,8 +2521,9 @@ void remapTimeline(ir::IRModel& irModel) {
     // when a sequence's duration is not a multiple of 10 (e.g. Campfire
     // Stand=45 frames → end=85 → rounds to 80, Death starts at 100
     // instead of 105). The correct behavior is a consistent 20-frame gap.
-    TimeValue nextStart = 10 * tpf;
+    TimeValue nextStart = std::max<TimeValue>(firstStart, 10 * tpf);
     for (auto& r : ranges) {
+        r.preEnd = 10 * tpf;
         TimeValue dur = r.oldEnd - r.oldStart;
         r.newStart = nextStart;
         r.newEnd   = nextStart + dur;
@@ -2835,10 +2844,35 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     const UINT modelCodePage = wdx::text::detectCodePage(modelTexts);
     wdx::text::CodePageScope codePageScope(modelCodePage);
 
-    // 4b. Compact timeline (MaxScript convertSequences + preProcessKeys)
-    remapTimeline(irModel);
+    // 4b. Merge into a scene that has sequences: this model's sequences go
+    // after the scene's, under names with the chosen tag (merge_import.h).
+    const TimeValue frameTicks = GetTicksPerFrame();
+    const bool merging = opts.core.mode == ir::CoreImportOptions::ImportMode::Merge;
+    std::vector<mdx_merge::SceneSequence> sceneSequences;
+    if (merging)
+        sceneSequences = mdx_merge::readSceneSequences();
+    const bool keepSceneSequences = !sceneSequences.empty();
+    const bool appendSequences = keepSceneSequences && !irModel.sequences.empty();
+    TimeValue firstStart = 10 * frameTicks;
+    std::set<ULONG> handlesBeforeImport;
+    if (appendSequences) {
+        TimeValue lastEnd = 0;
+        std::vector<std::wstring> taken;
+        for (const auto& s : sceneSequences) {
+            lastEnd = std::max(lastEnd, s.end);
+            taken.push_back(s.name);
+        }
+        firstStart = (lastEnd / frameTicks + 20) * frameTicks;
+        for (auto& seq : irModel.sequences)
+            seq.name = wdx::text::wideToMdx(
+                mdx_merge::tagSequenceName(wdx::text::mdxToWide(seq.name), opts.mergeNameTag, taken));
+        handlesBeforeImport = mdx_merge::sceneNodeHandles(gi);
+    }
 
-    // 4c. PIVT / BPOS reconciliation.
+    // 4c. Compact timeline (MaxScript convertSequences + preProcessKeys)
+    remapTimeline(irModel, firstStart);
+
+    // 4d. PIVT / BPOS reconciliation.
     // In some v1200 (Reforged) models PIVT is left zero for certain bones —
     // in that case BPOS.row3 is the authoritative world-space position.
     // BUT: in v1000/v1100 (and mixed v1200 rigs) PIVT is populated and
@@ -4855,7 +4889,17 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     dialog.step(ImportStep::Finishing);
     {
         mdx_scene::Wc3SequenceBuilder seqBuilder;
-        seqBuilder.buildSequences(irModel, gi, reporter);
+        seqBuilder.buildSequences(irModel, gi, reporter, keepSceneSequences);
+    }
+
+    // 14a. Merge: each model hidden during the other's sequences.
+    if (appendSequences) {
+        std::vector<Interval> oldRanges, newRanges;
+        for (const auto& s : sceneSequences)
+            oldRanges.emplace_back(s.start, s.end);
+        for (const auto& seq : irModel.sequences)
+            newRanges.emplace_back(seq.startTime, seq.endTime);
+        mdx_merge::hideDuringOtherSequences(gi, handlesBeforeImport, oldRanges, newRanges);
     }
 
     // 14b. Scene art tier, through the same MaxScript writer the Settings
@@ -4996,8 +5040,13 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
     ILOG << "==== end Material Editor ====\n";
     ILOG.flush();
 
-    // Set animation range to cover all sequences
-    if (!irModel.sequences.empty()) {
+    // Set animation range to cover all sequences (in a merge, the scene's too)
+    if (keepSceneSequences) {
+        TimeValue maxEnd = gi->GetAnimRange().End();
+        for (const auto& s : sceneSequences) maxEnd = std::max(maxEnd, s.end);
+        for (const auto& seq : irModel.sequences) maxEnd = std::max(maxEnd, seq.endTime);
+        gi->SetAnimRange(Interval(0, std::max<TimeValue>(maxEnd, GetTicksPerFrame())));
+    } else if (!irModel.sequences.empty()) {
         TimeValue maxEnd = 0;
         for (const auto& seq : irModel.sequences)
             if (seq.endTime > maxEnd) maxEnd = seq.endTime;

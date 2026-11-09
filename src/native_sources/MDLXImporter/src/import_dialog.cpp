@@ -44,6 +44,7 @@ namespace Gdiplus { using std::min; using std::max; }
 // includes.
 #include "wdx_localization.h" // wdx::l10n::LocalizeDialog
 #include "wdx_window_icon.h"  // wdx::ApplyWindowIcon
+#include "scene/merge_import.h"   // mdx_merge::nameTags
 
 #ifdef _MSC_VER
 #pragma comment(lib, "dwmapi.lib")
@@ -147,6 +148,7 @@ constexpr int progTextY = 7;            // progress row, from the footer's top
 constexpr int progBarY = 29, progBarH = 6;
 constexpr int btnH = 23, btnGap = 7, btnMinW = 75, btnPad = 12;
 constexpr int comboDropH = 160;
+constexpr int mergeTagGap = 4;          // merge name tag row, below the last animation row
 } // namespace lay
 
 // ============================================================================
@@ -289,6 +291,7 @@ struct DialogState {
     ULONGLONG lastPaint = 0;              // GetTickCount64 of the last footer repaint
 
     bool merge = false;      // Mode card
+    int  mergeTag = 1;       // index into mdx_merge::nameTags() (1 = Alternate)
     int  tab = 0;            // 0 Objects, 1 Animations, 2 Model
     int  preset = 5;         // index into the drop-down = ir::CoreImportOptions::Preset
 
@@ -774,6 +777,9 @@ void applyEnabledState(HWND hDlg, const DialogState* ds) {
         enableCtrl(hDlg, id + IDC_CNT_OFFSET, IsWindowEnabled(GetDlgItem(hDlg, id)) != FALSE);
     for (int id : kOptionRows)
         enableCtrl(hDlg, id, true);
+    // The name tag only matters when the model is added to a scene.
+    enableCtrl(hDlg, IDC_LBL_MERGE_TAG, ds->merge);
+    enableCtrl(hDlg, IDC_CMB_MERGE_TAG, ds->merge);
 }
 
 // After the user changed a checkbox: leave the preset if it no longer matches.
@@ -830,6 +836,9 @@ void saveDialogSettingsToINI(HWND hDlg, const DialogState* ds) {
     // The loader reads "Merge"; the old dialog wrote true/false here, which the
     // loader never recognised, so Merge was never restored.
     Win32_WritePrivateProfileStringW(sec, L"ImportMode", ds->merge ? L"Merge" : L"NewScene", iniPath.c_str());
+    Win32_WritePrivateProfileStringW(sec, L"MergeNameTag",
+                                     mdx_merge::nameTags()[static_cast<size_t>(ds->mergeTag)].c_str(),
+                                     iniPath.c_str());
 
     // 1-based, as before (1 = Custom ... 6 = All)
     wchar_t buf[16];
@@ -848,6 +857,13 @@ void optionsToDialog(HWND hDlg, DialogState* ds) {
 
     ds->merge = (opts.core.mode == ir::CoreImportOptions::ImportMode::Merge);
     ds->preset = std::min(5, std::max(0, static_cast<int>(opts.core.preset)));
+
+    // A tag the list does not have (an edited INI) shows the default.
+    const auto& tags = mdx_merge::nameTags();
+    ds->mergeTag = 1;
+    for (size_t i = 0; i < tags.size(); ++i)
+        if (_wcsicmp(tags[i].c_str(), opts.mergeNameTag.c_str()) == 0) ds->mergeTag = static_cast<int>(i);
+    SendDlgItemMessageW(hDlg, IDC_CMB_MERGE_TAG, CB_SETCURSEL, ds->mergeTag, 0);
 }
 
 // Categories the file does not contain keep the value they came in with.
@@ -865,6 +881,7 @@ void dialogToOptions(HWND hDlg, const DialogState* ds, MdlxImportOptions& opts) 
     opts.core.mode = ds->merge ? ir::CoreImportOptions::ImportMode::Merge
                                : ir::CoreImportOptions::ImportMode::NewScene;
     opts.core.preset = static_cast<ir::CoreImportOptions::Preset>(ds->preset);
+    opts.mergeNameTag = mdx_merge::nameTags()[static_cast<size_t>(ds->mergeTag)];
 }
 
 // ============================================================================
@@ -903,6 +920,7 @@ constexpr wdx::l10n::DialogString kImportStrings[] = {
     {IDC_CHK_VISIBILITY, "imp_visibility_chk"},
     {IDC_CHK_COLOR, "imp_color_chk"},
     {IDC_LBL_NO_ANIMATIONS, "imp_no_animations_lbl"},
+    {IDC_LBL_MERGE_TAG, "imp_merge_tag_lbl"},
 
     {IDC_CHK_SKINNED, "imp_skinned_chk"},
     {IDC_CHK_IMPORT_MATERIALS, "imp_import_materials_chk"},
@@ -982,6 +1000,18 @@ void initPresetCombo(HWND hDlg, const std::wstring& joined) {
     }
 }
 
+// The name tags of a merge: the first entry keeps the names (translated), the
+// others are the words the game reads, which stay English in every language.
+void initMergeTagCombo(HWND hDlg) {
+    const std::vector<std::wstring> v = wdx::l10n::TranslateMany(std::vector<const char*>{"imp_merge_tag_none"});
+    const std::wstring keep = usable(v.empty() ? std::wstring() : v[0], "imp_merge_tag_none", L"(keep the names)");
+    HWND h = GetDlgItem(hDlg, IDC_CMB_MERGE_TAG);
+    SendMessageW(h, CB_RESETCONTENT, 0, 0);
+    const auto& tags = mdx_merge::nameTags();
+    for (size_t i = 0; i < tags.size(); ++i)
+        SendMessageW(h, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(i == 0 ? keep.c_str() : tags[i].c_str()));
+}
+
 void buildHeaderAndFooter(DialogState* ds, const DrawnText& t) {
     const ImportFileInfo& f = *ds->file;
     const size_t sl = f.path.find_last_of(L"\\/");
@@ -1026,7 +1056,8 @@ int computePageHeight(const ImportFileInfo& f) {
     const int note = master + lay::noteH;
     const int objects = anyObjects(f) ? master + gridRows(shownObjectRows(f).size()) * lay::rowPitch - lay::rowGap
                                       : note;
-    const int anims = f.sequences > 0 ? master + 4 * lay::rowPitch - lay::rowGap : note;
+    // Four rows of checkboxes, then the merge name tag (label + drop-down).
+    const int anims = f.sequences > 0 ? master + 4 * lay::rowPitch + lay::mergeTagGap + lay::cmbFast.h : note;
     const int model = lay::optionsFirstRowY + 2 * lay::rowPitch + lay::rowH - lay::pageY;
     return std::max(objects, std::max(anims, model));
 }
@@ -1087,6 +1118,13 @@ void layoutImportDialog(HWND hDlg, DialogState* ds) {
         place(hDlg, ds, kAnimRows[i], colX, gridY + static_cast<int>(i / 2) * lay::rowPitch, colW, lay::rowH);
     }
     place(hDlg, ds, IDC_LBL_NO_ANIMATIONS, lay::subX, gridY, lay::pageX + lay::pageW - lay::subX, lay::noteH);
+    {
+        const int tagY = gridY + 4 * lay::rowPitch + lay::mergeTagGap;
+        const int comboX = lay::subX + lay::colW0 + lay::colGap;
+        place(hDlg, ds, IDC_LBL_MERGE_TAG, lay::subX, tagY + (lay::cmbFast.h - lay::noteH) / 2, lay::colW0, lay::noteH);
+        placeCombo(hDlg, ds, IDC_CMB_MERGE_TAG, ds->S(comboX), ds->S(tagY),
+                   ds->S(comboX + lay::colW1) - ds->S(comboX), ds->S(lay::cmbFast.h));
+    }
 
     // Model tab
     for (size_t i = 0; i < std::size(kModelRows); ++i)
@@ -1130,6 +1168,8 @@ void applyPageVisibility(HWND hDlg, const DialogState* ds) {
     for (int id : kAnimRows)
         showCtrl(hDlg, id, animTab && haveAnims);
     showCtrl(hDlg, IDC_LBL_NO_ANIMATIONS, animTab && !haveAnims);
+    showCtrl(hDlg, IDC_LBL_MERGE_TAG, animTab && haveAnims);
+    showCtrl(hDlg, IDC_CMB_MERGE_TAG, animTab && haveAnims);
 
     for (int id : kModelRows)
         showCtrl(hDlg, id, modelTab);
@@ -1160,6 +1200,7 @@ void selectMode(HWND hDlg, DialogState* ds, bool merge) {
     if (ds->merge == merge) return;
     ds->merge = merge;
     updateTabStops(hDlg, ds);
+    applyEnabledState(hDlg, ds);
     InvalidateRect(GetDlgItem(hDlg, IDC_BTN_MODE_NEW_SCENE), nullptr, FALSE);
     InvalidateRect(GetDlgItem(hDlg, IDC_BTN_MODE_MERGE), nullptr, FALSE);
 }
@@ -1453,6 +1494,7 @@ BOOL onInitDialog(HWND hDlg, DialogState* ds) {
     ds->subNewScene = t.subNew;
     ds->subMerge = t.subMerge;
     initPresetCombo(hDlg, t.presets);
+    initMergeTagCombo(hDlg);
     buildHeaderAndFooter(ds, t);
 
     // Fonts: regular for every control, small for the counts
@@ -1632,6 +1674,14 @@ INT_PTR CALLBACK ImportDialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lPa
                 applyPreset(hDlg, ds, ds->preset);   // Custom leaves everything as it is
                 applyEnabledState(hDlg, ds);
                 ds->updating = false;
+            }
+            return TRUE;
+
+        case IDC_CMB_MERGE_TAG:
+            if (code == CBN_SELCHANGE) {
+                const int sel = static_cast<int>(SendDlgItemMessageW(hDlg, id, CB_GETCURSEL, 0, 0));
+                const int last = static_cast<int>(mdx_merge::nameTags().size()) - 1;
+                ds->mergeTag = std::min(last, std::max(0, sel));
             }
             return TRUE;
 

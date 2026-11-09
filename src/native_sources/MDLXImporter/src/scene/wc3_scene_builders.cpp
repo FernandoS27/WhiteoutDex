@@ -1511,10 +1511,14 @@ std::vector<Wc3CameraBuilder::CameraNodePair> Wc3CameraBuilder::buildCameras(
 
 void Wc3SequenceBuilder::buildSequences(
     const ir::IRModel& irModel, Interface* gi,
-    core::ExportErrorReporter& reporter)
+    core::ExportErrorReporter& reporter, bool appendToScene)
 {
     INode* rootNode = gi->GetRootNode();
     if (!rootNode) return;
+
+    // A merge into a scene that has sequences keeps them and adds this
+    // model's (none for a model without sequences).
+    if (appendToScene && irModel.sequences.empty()) return;
 
     // If the MDX has no sequences, inject a default "Stand" sequence
     // (frame 10 → 60, looping) so the artist always has a working
@@ -1542,15 +1546,18 @@ void Wc3SequenceBuilder::buildSequences(
     const std::vector<ir::Sequence>& sequences =
         irModel.sequences.empty() ? sequencesLocal : irModel.sequences;
 
-    // Remove legacy note tracks
-    while (rootNode->HasNoteTracks())
-        rootNode->DeleteNoteTrack(rootNode->GetNoteTrack(0), TRUE);
-
     // Setup WhiteoutDexSequenceData custom attributes and populate via MaxScript.
     // This matches the MaxScript rebuilder's recreateSequences().
-    // Build the script: remove old CA, add fresh one, populate arrays, create FrameTags.
+    // Build the script: remove old CA, add fresh one, populate arrays, create
+    // FrameTags. A merge appends to the scene's list instead (its read already
+    // ran ensureCA, which adopts a legacy block).
     std::wstring script;
-    script += L"::WdxSequenceStorage.removeCA()\n";
+    if (!appendToScene) {
+        // Remove legacy note tracks
+        while (rootNode->HasNoteTracks())
+            rootNode->DeleteNoteTrack(rootNode->GetNoteTrack(0), TRUE);
+        script += L"::WdxSequenceStorage.removeCA()\n";
+    }
     script += L"::WdxSequenceStorage.ensureCA()\n";
 
     for (const auto& seq : sequences) {

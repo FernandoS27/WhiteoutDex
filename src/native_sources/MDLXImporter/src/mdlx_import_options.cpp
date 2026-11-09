@@ -163,6 +163,9 @@ void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts) {
     auto ffx = iniGetString(iniPath.c_str(), sec, L"ImportFaceFX");
     if (!ffx.empty()) opts.importFaceFX = iniBool(ffx);
 
+    // ── Merge ── (missing key: the default; written empty: keep the names)
+    opts.mergeNameTag = iniGetString(iniPath.c_str(), sec, L"MergeNameTag", opts.mergeNameTag.c_str());
+
     } // end if (haveImporterIni)
     // ────────────────────────────────────────────────────────────────────
     // Fallback to the global WhiteoutDex Settings INI files used by the

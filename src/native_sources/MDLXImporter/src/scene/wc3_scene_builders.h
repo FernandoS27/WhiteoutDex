@@ -149,7 +149,8 @@ public:
     void buildSequences(
         const ir::IRModel& irModel,
         Interface* gi,
-        core::ExportErrorReporter& reporter);
+        core::ExportErrorReporter& reporter,
+        bool appendToScene = false);   // merge: keep the scene's sequences
 };
 
 } // namespace mdx_scene

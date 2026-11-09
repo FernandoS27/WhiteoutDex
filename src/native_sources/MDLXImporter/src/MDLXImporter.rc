@@ -103,6 +103,9 @@ BEGIN
     CONTROL         "Color", IDC_CHK_COLOR, "Button",
                     BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
     LTEXT           "This file has no animations.", IDC_LBL_NO_ANIMATIONS, 0, 0, 10, 8, SS_NOPREFIX
+    LTEXT           "Merge: name tag", IDC_LBL_MERGE_TAG, 0, 0, 10, 8, SS_NOPREFIX
+    COMBOBOX        IDC_CMB_MERGE_TAG, 0, 0, 10, 80,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
     // ── Model tab ──
     CONTROL         "Skinned", IDC_CHK_SKINNED, "Button",
