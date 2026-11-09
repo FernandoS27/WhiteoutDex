@@ -118,14 +118,8 @@ if(MSVC)
     target_compile_options(WhiteoutDexRenderer PRIVATE
         /W3 /EHsc
         /wd4100 /wd4127 /wd4244 /wd4267
-        # C4535: MaxScript's value_locals.h defines ScopedMaxScriptSEHandler,
-        # whose inline ctor calls _set_se_translator — which MSVC only honours
-        # under /EHa. Pulled in by the GC-local macros in
-        # storage_browser_primitives.cpp. We never instantiate that handler (the
-        # scripter engine sets its own translator around our _cf calls), so this
-        # is the SDK header warning about itself; switching the whole .dlx to
-        # /EHa to silence it would change its exception semantics for real code.
-        /wd4535
+        # C4535 (the SDK's ScopedMaxScriptSEHandler) is off for every
+        # plug-in on the MaxSDK target, see src/native_sources/CMakeLists.txt.
         /permissive
         /Zc:strictStrings-
     )

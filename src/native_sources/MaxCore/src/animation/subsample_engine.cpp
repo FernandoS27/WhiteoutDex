@@ -155,7 +155,8 @@ void SubsampleEngine::evaluateLocalTransform(INode* node, INode* parent, TimeVal
 
         // Build pure rotation matrix by normalizing rows
         // This matches MaxScript's .rotationPart
-        Matrix3 rotMat(1);
+        Matrix3 rotMat;
+        rotMat.IdentityMatrix();
         if (fabsf(sx) > 0.0001f) r0 = r0 / sx; else r0 = Point3(1, 0, 0);
         if (fabsf(sy) > 0.0001f) r1 = r1 / sy; else r1 = Point3(0, 1, 0);
         if (fabsf(sz) > 0.0001f) r2 = r2 / sz; else r2 = Point3(0, 0, 1);

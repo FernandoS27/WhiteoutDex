@@ -835,7 +835,8 @@ void Wc3RibbonBuilder::buildRibbons(
         // onto it; the node and its keys stay as the file has them, and the
         // exporter turns MDX +Y back onto the object's +Y.
         {
-            Matrix3 off(1);
+            Matrix3 off;
+            off.IdentityMatrix();
             off.SetRow(0, Point3(0.0f, -1.0f, 0.0f));
             off.SetRow(1, Point3(1.0f, 0.0f, 0.0f));
             off.SetRow(2, Point3(0.0f, 0.0f, 1.0f));

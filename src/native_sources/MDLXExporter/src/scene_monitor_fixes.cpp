@@ -31,6 +31,14 @@
 #include <unordered_map>
 #include <functional>
 
+// An identity matrix on every SDK: Matrix3(bool) is deprecated since the
+// default constructor initialises to identity, which Max 2016's does not.
+static Matrix3 IdentityTM() {
+    Matrix3 m;
+    m.IdentityMatrix();
+    return m;
+}
+
 namespace {
 // MtlBase::GetSubTexmapSlotName gained a `localized` parameter in Max 2022.
 // Older SDKs only return the (potentially localized) name.
@@ -338,7 +346,7 @@ int fixBoneControllers(const ScanResult& result) {
         const bool hasPar = par && !par->IsRootNode();
         for (TimeValue t : times) {
             worldTMs[i].push_back(nodes[i]->GetNodeTM(t));
-            parentTMs[i].push_back(hasPar ? par->GetNodeTM(t) : Matrix3(1));
+            parentTMs[i].push_back(hasPar ? par->GetNodeTM(t) : IdentityTM());
         }
     }
 

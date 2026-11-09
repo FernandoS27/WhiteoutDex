@@ -11,6 +11,14 @@
 #include <string>
 #include <locale.h>
 
+// An identity matrix on every SDK: Matrix3(bool) is deprecated since the
+// default constructor initialises to identity, which Max 2016's does not.
+static Matrix3 IdentityTM() {
+    Matrix3 m;
+    m.IdentityMatrix();
+    return m;
+}
+
 // Preset files are shared (NeoDex writes them too): numbers always use '.'.
 // sprintf/sscanf/atof follow the host's LC_NUMERIC, and 3ds Max 2027 on a
 // German Windows runs with ',' - "1.5" read back as 1, and the presets it
@@ -1871,7 +1879,7 @@ void GenParticle::BirthParticle(INode* node, TimeValue bt, int index, TimeValue 
 
     BOOL modelSpace = FALSE;
     pblock2->GetValue(PB_MODELSPACE, bt, modelSpace, forever);
-    Matrix3 tm = modelSpace ? Matrix3(1) : node->GetObjTMBeforeWSM(bt);
+    Matrix3 tm = modelSpace ? IdentityTM() : node->GetObjTMBeforeWSM(bt);
 
     // Use member RNG (std::mt19937) instead of global srand/rand
     std::uniform_real_distribution<float> dist01(0.0f, 1.0f);
@@ -2222,7 +2230,7 @@ int GenParticle::Display(TimeValue t, INode* inode, ViewExp* vpt, int flags)
         theWc3Particles2Draw.emitterTM = tm;
         theWc3Particles2Draw.invEmitterTM = Inverse(tm);
     } else {
-        gw->setTransform(Matrix3(1));   // particles in world space
+        gw->setTransform(IdentityTM());   // particles in world space
     }
     parts.Render(gw, mt);
 
@@ -2737,7 +2745,7 @@ Mesh* Wc3Particles2Particle::GetRenderMesh(TimeValue t, INode* inode, View& view
     pblock2->GetValue(PB_MODELSPACE, t, modelSpace, forever);
 
     // In model space, particles are already local — no inverse TM needed
-    Matrix3 tm = modelSpace ? Matrix3(1) : Inverse(inode->GetObjTMAfterWSM(t));
+    Matrix3 tm = modelSpace ? IdentityTM() : Inverse(inode->GetObjTMAfterWSM(t));
     int ix = 0, nx = 0;
 
     auto* pm = new Mesh;

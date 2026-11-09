@@ -152,6 +152,21 @@ if(NOT BUILD_COMMON_ONLY)
     add_library(MaxSDK INTERFACE)
     target_include_directories(MaxSDK INTERFACE "${MAXSDK_PATH}/include")
     target_link_directories(MaxSDK INTERFACE "${MAXSDK_PATH}/lib/x64/Release")
+    # Warnings the Max SDK's own headers raise in every plug-in, not our code.
+    # The SDK stays a plain /I include (CMAKE_NO_SYSTEM_FROM_IMPORTED above),
+    # so /external:W0 cannot silence them; these two are switched off here:
+    #  - C4535: maxscript/macros/value_locals.h defines ScopedMaxScriptSEHandler,
+    #    whose inline constructor calls _set_se_translator, which MSVC honours
+    #    only under /EHa. No WhiteoutDex code instantiates it, and /EHa would
+    #    change the exception semantics of every plug-in.
+    #  - C4828: the SDK headers of 3ds Max 2016-2023 hold Latin-1 characters
+    #    while the plug-ins compile as UTF-8 (/utf-8); 2024 and later are UTF-8.
+    if(MSVC)
+        target_compile_options(MaxSDK INTERFACE /wd4535)
+        if(MAX_VERSION LESS_EQUAL 2023)
+            target_compile_options(MaxSDK INTERFACE /wd4828)
+        endif()
+    endif()
     target_compile_definitions(MaxSDK INTERFACE
         WIN32 _WIN64 _WINDOWS _USRDLL
         UNICODE _UNICODE

@@ -1447,7 +1447,11 @@ int GenParticle1::Display(TimeValue t, INode* inode, ViewExp* vpt, int flags)
     // --- Particles (world space) ---
     Update(t, inode);
     MarkerType mt = GetMarkerType();
-    gw->setTransform(Matrix3(1));
+    {
+        Matrix3 ident;
+        ident.IdentityMatrix();
+        gw->setTransform(ident);
+    }
     parts.Render(gw, mt);
 
     return 0;

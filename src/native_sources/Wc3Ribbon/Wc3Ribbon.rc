@@ -1,7 +1,7 @@
 // Wc3Ribbon — Resource script
 //
+#include <windows.h>    // first: resource.h only defines what it lacks
 #include "resource.h"
-#include <windows.h>
 
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 

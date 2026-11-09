@@ -729,7 +729,8 @@ int RibbonObject::DrawAndHit(TimeValue t, INode* inode, ViewExp* vpt)
 
     if (edgeHistory.size() >= 2)
     {
-        Matrix3 identTM(1);
+        Matrix3 identTM;
+        identTM.IdentityMatrix();
         gw->setTransform(identTM);
 
         if (inode->Selected())

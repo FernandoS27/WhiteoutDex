@@ -1,4 +1,5 @@
-LIBRARY Wc3Particles2
+; No LIBRARY line: the linker takes the module name from the output
+; file (.dlo/.dlx/.bmi); a LIBRARY name made it assume .dll (LNK4070).
 EXPORTS
     LibDescription
     LibNumberClasses
