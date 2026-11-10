@@ -2459,6 +2459,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== WC3 MATERIAL — CURRENT ROLLOUTS =====
 			#("mat_basic_rollout_title", "Material Basic Parameters"),
 			#("mat_shader_ddl", "Shader ........................................................"),
+			#("mat_remove_hd_maps_q", "Remove the Reforged maps (normal, ORM, emissive, team colour, environment) from this material?\n\nThe SD shader uses only the diffuse map."),
 			#("mat_filter_mode_ddl", "Filter Mode ................................................."),
 			#("mat_filter_mode_items", "None|Transparent|Blend|Additive|AddAlpha|Modulate|Modulate 2x"),
 			#("mat_sort_order_ddl", "Sort Order ..................................................."),
@@ -5135,6 +5136,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== WC3 MATERIAL — CURRENT ROLLOUTS =====
 			#("mat_basic_rollout_title", "材质基础参数"),
 			#("mat_shader_ddl", "着色器 ........................................................"),
+			#("mat_remove_hd_maps_q", "要从此材质中移除重制版贴图（法线、ORM、自发光、队伍颜色、环境）吗？\n\nSD 着色器只使用漫反射贴图。"),
 			#("mat_filter_mode_ddl", "过滤模式 ................................................."),
 			#("mat_filter_mode_items", "None(无)|Transparent(透明)|Blend(混合)|Additive(叠加)|AddAlpha(叠加Alpha)|Modulate(正片叠底)|Modulate 2X(正片叠底 2X)"),
 			#("mat_sort_order_ddl", "排序顺序 ..................................................."),
@@ -7811,6 +7813,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== WC3 MATERIAL — CURRENT ROLLOUTS =====
 			#("mat_basic_rollout_title", "Material-Grundparameter"),
 			#("mat_shader_ddl", "Shader ........................................................"),
+			#("mat_remove_hd_maps_q", "Die Reforged-Maps (Normal, ORM, Emissive, Teamfarbe, Environment) aus diesem Material entfernen?\n\nDer SD-Shader nutzt nur die Diffuse-Map."),
 			#("mat_filter_mode_ddl", "Filtermodus ................................................."),
 			#("mat_filter_mode_items", "Kein|Transparent|Mischen|Additiv|AddAlpha|Multiplizieren|Multiplizieren 2x"),
 			#("mat_sort_order_ddl", "Sortierreihenfolge ..................................................."),
@@ -10487,6 +10490,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== WC3 MATERIAL — CURRENT ROLLOUTS =====
 			#("mat_basic_rollout_title", "Основные параметры материала"),
 			#("mat_shader_ddl", "Шейдер ........................................................"),
+			#("mat_remove_hd_maps_q", "Удалить из этого материала карты Reforged (нормали, ORM, свечение, цвет команды, окружение)?\n\nШейдер SD использует только диффузную карту."),
 			#("mat_filter_mode_ddl", "Режим фильтра ................................................."),
 			#("mat_filter_mode_items", "Нет|Прозрачный|Смешивание|Аддитивный|AddAlpha|Умножение|Умножение 2x"),
 			#("mat_sort_order_ddl", "Порядок сортировки ..................................................."),
@@ -13163,6 +13167,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== WC3 MATERIAL — CURRENT ROLLOUTS =====
 			#("mat_basic_rollout_title", "マテリアル基本パラメータ"),
 			#("mat_shader_ddl", "シェーダー ........................................................"),
+			#("mat_remove_hd_maps_q", "このマテリアルから Reforged マップ（法線、ORM、エミッシブ、チームカラー、環境）を削除しますか？\n\nSD シェーダーはディフューズマップのみを使用します。"),
 			#("mat_filter_mode_ddl", "フィルターモード ................................................."),
 			#("mat_filter_mode_items", "なし|透明|ブレンド|加算|加算アルファ|乗算|乗算 2x"),
 			#("mat_sort_order_ddl", "ソート順 ..................................................."),
@@ -15839,6 +15844,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== WC3 MATERIAL — CURRENT ROLLOUTS =====
 			#("mat_basic_rollout_title", "머티리얼 기본 매개변수"),
 			#("mat_shader_ddl", "셰이더 ........................................................"),
+			#("mat_remove_hd_maps_q", "이 재질에서 리포지드 맵(노멀, ORM, 이미시브, 팀 컬러, 환경)을 제거할까요?\n\nSD 셰이더는 디퓨즈 맵만 사용합니다."),
 			#("mat_filter_mode_ddl", "필터 모드 ................................................."),
 			#("mat_filter_mode_items", "없음|투명|블렌드|가산|가산 알파|변조|변조 2x"),
 			#("mat_sort_order_ddl", "정렬 순서 ..................................................."),
@@ -18514,6 +18520,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== WC3 MATERIAL — CURRENT ROLLOUTS =====
 			#("mat_basic_rollout_title", "Paramètres de base du matériau"),
 			#("mat_shader_ddl", "Shader ........................................................"),
+			#("mat_remove_hd_maps_q", "Retirer de ce matériau les maps Reforged (normale, ORM, émissive, couleur d'équipe, environnement) ?\n\nLe shader SD n'utilise que la map diffuse."),
 			#("mat_filter_mode_ddl", "Mode de filtrage ............................................"),
 			#("mat_filter_mode_items", "Aucun|Transparent|Fondu|Additif|AddAlpha|Modulation|Modulation 2x"),
 			#("mat_sort_order_ddl", "Ordre de tri ................................................."),
@@ -21189,6 +21196,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== WC3 MATERIAL — CURRENT ROLLOUTS =====
 			#("mat_basic_rollout_title", "Parámetros básicos del material"),
 			#("mat_shader_ddl", "Shader ........................................................"),
+			#("mat_remove_hd_maps_q", "¿Quitar de este material los mapas de Reforged (normal, ORM, emisivo, color de equipo, entorno)?\n\nEl shader SD solo usa el mapa difuso."),
 			#("mat_filter_mode_ddl", "Modo de filtro .............................................."),
 			#("mat_filter_mode_items", "Ninguno|Transparente|Mezcla|Aditivo|AddAlpha|Modulación|Modulación 2x"),
 			#("mat_sort_order_ddl", "Orden de clasificación ......................................."),
@@ -23864,6 +23872,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== WC3 MATERIAL — CURRENT ROLLOUTS =====
 			#("mat_basic_rollout_title", "Parametri di base del materiale"),
 			#("mat_shader_ddl", "Shader ........................................................"),
+			#("mat_remove_hd_maps_q", "Rimuovere da questo materiale le mappe Reforged (normale, ORM, emissiva, colore squadra, ambiente)?\n\nLo shader SD usa solo la mappa diffusa."),
 			#("mat_filter_mode_ddl", "Modalità filtro ............................................."),
 			#("mat_filter_mode_items", "Nessuno|Trasparente|Fusione|Additivo|AddAlpha|Modulazione|Modulazione 2x"),
 			#("mat_sort_order_ddl", "Ordine di ordinamento ........................................"),
@@ -26539,6 +26548,7 @@ struct WhiteoutDexLocalizationStruct
 			-- ===== WC3 MATERIAL — CURRENT ROLLOUTS =====
 			#("mat_basic_rollout_title", "Parâmetros básicos do material"),
 			#("mat_shader_ddl", "Shader ........................................................"),
+			#("mat_remove_hd_maps_q", "Remover deste material os mapas do Reforged (normal, ORM, emissivo, cor do time, ambiente)?\n\nO shader SD usa apenas o mapa difuso."),
 			#("mat_filter_mode_ddl", "Modo de filtro .............................................."),
 			#("mat_filter_mode_items", "Nenhum|Transparente|Mistura|Aditivo|AddAlpha|Modulação|Modulação 2x"),
 			#("mat_sort_order_ddl", "Ordem de classificação ......................................."),

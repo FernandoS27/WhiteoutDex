@@ -294,6 +294,104 @@ extends:Standard replaceUI:true version:14
 		else if prefix == undefined or prefix == "" then fileName
 		else prefix + fileName
 	)
+
+	---------------------------------------------------------------------------
+	-- Shader switch: SD draws only the diffuse map, HD also reads the normal,
+	-- ORM, emissive, team colour and environment maps (the Reforged maps).
+	---------------------------------------------------------------------------
+	fn hasReforgedMaps =
+	(
+		this.normalMap != undefined or this.ormMap != undefined or this.emissiveMap != undefined or \
+		this.teamColorMap != undefined or this.environmentMap != undefined
+	)
+
+	-- HD -> SD, when the user agreed: only the diffuse map stays (one undo step).
+	fn clearReforgedMaps =
+	(
+		undo "Remove Reforged maps" on
+		(
+			this.normalMap = undefined
+			this.ormMap = undefined
+			this.emissiveMap = undefined
+			this.teamColorMap = undefined
+			this.environmentMap = undefined
+		)
+	)
+
+	-- The file of a map on disk ("" when it has none). A Wc3Bitmap keeps it
+	-- on its delegate.
+	fn mapFile texMap =
+	(
+		local f = ""
+		if texMap == undefined do return f
+		try ( f = texMap.fileName ) catch()
+		if f == undefined or f == "" do ( try ( f = texMap.delegate.fileName ) catch() )
+		if f == undefined then "" else f
+	)
+
+	-- A map that lies next to the diffuse map under Blizzard's names:
+	-- X_Diffuse -> X_<kind>, otherwise X -> X_<kind>; the diffuse map's file
+	-- type first, then the others the exporter converts from.
+	fn findCompanionMap diffuseFile kind =
+	(
+		if diffuseFile == "" or not (doesFileExist diffuseFile) do return undefined
+		local dir = getFilenamePath diffuseFile
+		local stem = getFilenameFile diffuseFile
+		local ext = getFilenameType diffuseFile
+		if matchPattern stem pattern:"*_diffuse" do stem = substring stem 1 (stem.count - 8)
+		local found = undefined
+		for e in #(ext, ".dds", ".blp", ".tga", ".png") while found == undefined do
+		(
+			local p = dir + stem + "_" + kind + e
+			if doesFileExist p do found = p
+		)
+		found
+	)
+
+	fn companionBitmap path =
+	(
+		local b = Wc3Bitmap()
+		b.delegate.fileName = path
+		b
+	)
+
+	-- SD -> HD: the normal, ORM and emissive maps found next to the diffuse map
+	-- go into the empty slots, with the diffuse map's MDX folder (prefix).
+	-- Nothing found, nothing changes. Returns how many were added.
+	fn addCompanionMaps =
+	(
+		local df = mapFile this.diffuseMap
+		if df == "" do return 0
+		local pNormal = if this.normalMap == undefined then findCompanionMap df "Normal" else undefined
+		local pOrm = if this.ormMap == undefined then findCompanionMap df "ORM" else undefined
+		local pEmissive = if this.emissiveMap == undefined then findCompanionMap df "Emissive" else undefined
+		local added = 0
+		if pNormal != undefined or pOrm != undefined or pEmissive != undefined do
+		(
+			undo "Add Reforged maps" on
+			(
+				if pNormal != undefined do
+				(
+					this.normalPrefix = this.diffusePrefix
+					this.normalMap = companionBitmap pNormal
+					added += 1
+				)
+				if pOrm != undefined do
+				(
+					this.ormPrefix = this.diffusePrefix
+					this.ormMap = companionBitmap pOrm
+					added += 1
+				)
+				if pEmissive != undefined do
+				(
+					this.emissivePrefix = this.diffusePrefix
+					this.emissiveMap = companionBitmap pEmissive
+					added += 1
+				)
+			)
+		)
+		added
+	)
 	
 	---------------------------------------------------------------------------
 	-- PARAMETERS: Material Basic
@@ -466,6 +564,20 @@ extends:Standard replaceUI:true version:14
 		label		lblSep2b	"" height:2
 		dropdownlist	ddReplaceable	"Replaceable Texture ................................" items:#("Not Used", "Team Color", "Team Glow", "Cliff", "Lordaeron Tree", "Ashenvale Tree", "Barrens Tree", "Northrend Tree", "Mushroom Tree", "Ruins Tree", "Outland Mushroom Tree") width:300 align:#center
 		
+		-- Switching the shader by hand: to SD (or SD on HD), offer to remove the
+		-- Reforged maps, which only HD reads; to HD, pick up the maps that lie
+		-- next to the diffuse map.
+		on ddShader selected i do
+		(
+			if (i == 1 or i == 3) and hasReforgedMaps() then
+			(
+				local q = "Remove the Reforged maps (normal, ORM, emissive, team colour, environment) from this material?"
+				if ::WdxL != undefined do try ( q = ::WdxL.t "mat_remove_hd_maps_q" ) catch()
+				if queryBox q title:"WhiteoutDex" do clearReforgedMaps()
+			)
+			else if i == 2 do addCompanionMaps()
+		)
+
 		on basicRollout open do
 		(
 			try ( delegate.twoSided = this.twoSided ) catch()

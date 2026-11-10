@@ -1802,9 +1802,14 @@ static ir::BlendMode blendModeFromFilterDropdown(int filterMode) {
     }
 }
 
+// withPbrMaps: the Reforged maps (normal, ORM, emissive, team colour mask,
+// environment) are written. A Classic (v800) layer has one texture and the
+// game reads nothing else, so a v800 export leaves them out of the layer, the
+// texture list and the texture conversion.
 ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
                                   MaterialLevelProps& matProps,
-                                  bool textureLayerOnly = false)
+                                  bool textureLayerOnly = false,
+                                  bool withPbrMaps = true)
 {
     using PBR = core::ParamBlockReader;
     TimeValue t = 0;
@@ -2168,6 +2173,7 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     auto addPbrMap = [&](const wchar_t* mapName, const wchar_t* prefixName,
                          const wchar_t* neoMapName, const wchar_t* neoPrefixName,
                          const wchar_t* neoOrigName, ir::TextureSlot slot) {
+        if (!withPbrMaps) return;
         Texmap* map = nullptr;
         const bool found = PBR::readTexmapByName(mtlRef, mapName, map) && map;
         if (!found && !(neoDex && PBR::readTexmapByName(mtlRef, neoMapName, map) && map))
@@ -2224,7 +2230,7 @@ ir::MaterialLayer extractWc3Layer(ReferenceTarget* mtlRef, ir::IRModel& model,
     //
     // Material-level replaceableId dropdown stays on "Not Used" for these HD
     // materials — the TC-Mask lives exclusively in the teamColorMap slot.
-    {
+    if (withPbrMaps) {
         Texmap* tcMap = nullptr;
         if (PBR::readTexmapByName(mtlRef, L"teamColorMap", tcMap) && tcMap) {
             // The texture has no path, but its wrap flags are real TEXS data
@@ -2327,9 +2333,9 @@ void extractWc3Material(ReferenceTarget* mtlRef, ir::IRModel& model,
         tcRef.slot = ir::TextureSlot::Diffuse;
         tcLayer.textureRefs.push_back(tcRef);
         mat.layers.push_back(std::move(tcLayer));
-        mat.layers.push_back(extractWc3Layer(mtlRef, model, matProps, true));
+        mat.layers.push_back(extractWc3Layer(mtlRef, model, matProps, true, formatVersion >= 900));
     } else {
-        mat.layers.push_back(extractWc3Layer(mtlRef, model, matProps));
+        mat.layers.push_back(extractWc3Layer(mtlRef, model, matProps, false, formatVersion >= 900));
     }
 
     mat.priorityPlane = matProps.priorityPlane;
@@ -2355,7 +2361,8 @@ bool isWc3Composite(Mtl* mtl) {
 }
 
 void extractCompositeMaterial(Mtl* mtl, ir::IRModel& model,
-                              core::ExportErrorReporter& /*reporter*/)
+                              core::ExportErrorReporter& /*reporter*/,
+                              int32_t formatVersion)
 {
     ir::Material mat;
     MaterialLevelProps matProps;
@@ -2369,7 +2376,7 @@ void extractCompositeMaterial(Mtl* mtl, ir::IRModel& model,
         if (!ref) continue;
 
         MaterialLevelProps layerProps;
-        ir::MaterialLayer layer = extractWc3Layer(ref, model, layerProps);
+        ir::MaterialLayer layer = extractWc3Layer(ref, model, layerProps, false, formatVersion >= 900);
         mat.layers.push_back(std::move(layer));
 
         // Use properties from the first layer for the material
@@ -2563,7 +2570,7 @@ MaterialMap extractMaterials(const std::vector<core::SceneNode>& nodes,
                     mtl->ClassID() == mdx_ids::NEODEX_MATERIAL)) {
             extractWc3Material(ref, model, reporter, formatVersion);
         } else if (isWc3Composite(mtl)) {
-            extractCompositeMaterial(mtl, model, reporter);
+            extractCompositeMaterial(mtl, model, reporter, formatVersion);
         } else {
             extractForeignMaterial(mtl, model);
         }
