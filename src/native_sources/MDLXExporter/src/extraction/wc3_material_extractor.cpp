@@ -198,7 +198,7 @@ std::wstring lowerWide(std::wstring s) {
 
 // Formats texture conversion can decode, in the order a lookup prefers them.
 const wchar_t* const kTextureExts[] = {
-    L".blp", L".dds", L".tga", L".png", L".bmp", L".jpg", L".jpeg"
+    L".blp", L".dds", L".tga", L".png", L".bmp", L".jpg", L".jpeg", L".tif", L".tiff"
 };
 
 bool isTextureExt(const std::wstring& lowerExt) {

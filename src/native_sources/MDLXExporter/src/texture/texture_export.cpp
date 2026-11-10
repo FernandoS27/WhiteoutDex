@@ -9,6 +9,7 @@
 #include <whiteout/textures/tga/tga.h>
 #include <whiteout/textures/bmp/bmp.h>
 #include <whiteout/textures/jpeg/jpeg.h>
+#include <whiteout/textures/tiff/tiff.h>
 #include <whiteout/textures/texture.h>
 
 #include <algorithm>
@@ -29,6 +30,7 @@ namespace png = whiteout::textures::png;
 namespace tga = whiteout::textures::tga;
 namespace bmp = whiteout::textures::bmp;
 namespace jpg = whiteout::textures::jpeg;
+namespace tiff = whiteout::textures::tiff;
 
 namespace mdx_export {
 namespace {
@@ -138,6 +140,12 @@ std::optional<wt::Texture> loadSource(const std::string& srcPath) {
     }
     if (ext == ".jpg" || ext == ".jpeg") {
         jpg::Parser p;
+        return p.parse(data);
+    }
+    // TIFF as painting programs save it: 8/16-bit gray, RGB or RGBA,
+    // uncompressed, PackBits, LZW or Deflate (WhiteoutLib docs/TIFF.md).
+    if (ext == ".tif" || ext == ".tiff") {
+        tiff::Parser p;
         return p.parse(data);
     }
     return std::nullopt;
@@ -310,7 +318,11 @@ std::wstring saveTextureAs(const std::wstring& source, const std::wstring& targe
     if (fs::equivalent(srcPath, dstPath, ec))
         return {};
 
-    auto family = [](std::string ext) { return ext == ".jpeg" ? std::string(".jpg") : ext; };
+    auto family = [](std::string ext) {
+        if (ext == ".jpeg") return std::string(".jpg");
+        if (ext == ".tiff") return std::string(".tif");
+        return ext;
+    };
     const std::string srcExt = family(lowerExt(src)), dstExt = family(lowerExt(dst));
 
     if (dstPath.has_parent_path())
