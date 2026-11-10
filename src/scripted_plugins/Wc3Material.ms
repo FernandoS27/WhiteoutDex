@@ -177,6 +177,32 @@ extends:Standard replaceUI:true version:14
 			this.reforgedRollout.spnFrTeamCol.enabled	= not isSD
 			this.reforgedRollout.edtShaderPath.enabled	= not isSD
 		) catch()
+		-- SD leaves the Reforged parts out of sight: the map rows below the
+		-- diffuse one hide and the rollout shrinks to the diffuse row, the
+		-- Reforged Settings rollout rolls up. HD shows them again.
+		try (
+			local r = this.texMapRollout
+			local hdRows = #(r.lblNorm, r.btnSaveNorm, r.mbNormal, r.btnBrwNorm, r.edtNormPrefix, r.lblSep4,
+			                 r.lblORM, r.btnSaveORM, r.mbORM, r.btnBrwORM, r.edtORMPrefix, r.lblSep5,
+			                 r.lblEmis, r.btnSaveEmis, r.mbEmissive, r.btnBrwEmis, r.edtEmisPrefix, r.lblSepTC,
+			                 r.lblTeamCol, r.btnSaveTeamCol, r.mbTeamColor, r.btnBrwTeamCol, r.edtTeamColPrefix, r.lblSep6,
+			                 r.lblEnv, r.btnSaveEnv, r.mbEnv, r.btnBrwEnv, r.edtEnvPrefix)
+			for c in hdRows do c.visible = not isSD
+			-- visible:false also disables a control: enable the map buttons again
+			if not isSD do for c in hdRows do c.enabled = true
+			-- The heights come from the rows themselves: .height reads 0 in the
+			-- Material Editor until it has been set once. A control's .pos is
+			-- in unscaled units, the rollout's .height in screen pixels, so on
+			-- a scaled (High DPI) display the height takes the UI scale factor
+			-- (GetUIScaleFactor, 3ds Max 2018 and later; before, Windows scales
+			-- the whole window and both are the same).
+			local uiScale = 1.0
+			try ( uiScale = GetUIScaleFactor() ) catch ()
+			if not (isKindOf uiScale Number) or uiScale < 1.0 or uiScale > 4.0 do uiScale = 1.0
+			local h = if isSD then (r.lblSep3.pos.y + 8) else (r.edtEnvPrefix.pos.y + 26)
+			r.height = (h * uiScale + 0.5) as integer
+		) catch()
+		try ( this.reforgedRollout.open = not isSD ) catch()
 	)
 	
 	-- A bezier_float whose keys all hold (STEP out-tangents) is how
