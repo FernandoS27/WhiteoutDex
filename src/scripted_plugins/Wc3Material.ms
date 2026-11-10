@@ -606,6 +606,10 @@ extends:Standard replaceUI:true version:14
 
 		on basicRollout open do
 		(
+			-- The row with the long "Back Faces for Shadows" has two columns;
+			-- Unlit goes into the third column of the rows above, under
+			-- Ambient Occlusion.
+			try ( chkUnlit.pos = [chkAmbOcc.pos.x, chkUnlit.pos.y] ) catch()
 			try ( delegate.twoSided = this.twoSided ) catch()
 			ddSortOrder.enabled = this.noDepthTest
 			chkNoDSet.enabled = not (this.filterMode == 1 or this.filterMode == 2)
