@@ -1377,14 +1377,20 @@ Model MdxModelBuilder::build(const ir::IRModel& ir, const MdxExportOptions& opts
         const uint32_t numNodes = hierarchy.totalNodes();
         model.bindPoses.resize(numNodes + 1);   // +1 for trailing identity
 
+        // Full basis change Max -> MDX, M' = P^T * M * P with P the axis swap
+        // (x,y,z) -> (-y,x,z): the exact inverse of the importer's
+        // transformToMaxCoordinates (mdx_model_disassembler.cpp). Swapping
+        // only the columns turned every matrix 90 degrees about Z, so an
+        // unrotated node got a turned bind pose where Blizzard's files hold
+        // identity.
         auto transformBP = [](const Matrix3& m) -> std::array<f32, 12> {
             Point3 r0 = m.GetRow(0), r1 = m.GetRow(1),
                    r2 = m.GetRow(2), r3 = m.GetRow(3);
             return {{
-                -r0.y, r0.x, r0.z,
-                -r1.y, r1.x, r1.z,
-                -r2.y, r2.x, r2.z,
-                -r3.y, r3.x, r3.z
+                 r1.y, -r1.x, -r1.z,
+                -r0.y,  r0.x,  r0.z,
+                -r2.y,  r2.x,  r2.z,
+                -r3.y,  r3.x,  r3.z
             }};
         };
 
