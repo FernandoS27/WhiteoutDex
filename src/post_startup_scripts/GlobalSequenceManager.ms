@@ -114,6 +114,37 @@ struct WdxGlobalSequenceManager
 	(
 		type == "Bone" or type == "Flow"
 	),
+
+	-- The importer puts a global sequence's transform on a list controller,
+	-- so that frame 0 shows the bind pose: a "Bind" layer and a cycling
+	-- "Global Sequence" layer whose loop starts at its first key, frame 1
+	-- (the exporter reads it the same way). For such a list: #(layer, start
+	-- of the loop); for any other controller #(ctrl, 0f).
+	fn loopLayerOf ctrl =
+	(
+		local cls = classOf ctrl
+		if cls == Position_List or cls == Rotation_List or cls == Scale_List then
+		(
+			local n = 0
+			try (n = ctrl.count) catch()
+			for i = 1 to n do
+			(
+				local c = undefined
+				try (c = ctrl[i].controller) catch()
+				local cycling = false
+				try (cycling = c != undefined and (isProperty c #keys) and c.keys != undefined and c.keys.count > 0 and (getAfterORT c) == #cycle) catch()
+				if cycling do return #(c, c.keys[1].time)
+			)
+		)
+		#(ctrl, 0f)
+	),
+
+	-- Where the loop of a collected controller starts (element 6 of a
+	-- ctrlPair; pairs from before it have none and start at 0).
+	fn loopStartOf ctrlPair =
+	(
+		if ctrlPair.count >= 6 and ctrlPair[6] != undefined then ctrlPair[6] else 0f
+	),
 	
 	-- srcObj: the node the controller belongs to (undefined for material tracks).
 	-- Carried as the 5th element of the ctrlPair so that it NEVER has to be
@@ -123,20 +154,25 @@ struct WdxGlobalSequenceManager
 		try
 		(
 			if ctrl == undefined then return()
+			local layer = this.loopLayerOf ctrl
+			ctrl = layer[1]
+			local loopStart = layer[2]
 			if not (isProperty ctrl #keys) then return()
 			if ctrl.keys == undefined or ctrl.keys.count == 0 then return()
 			if getAfterORT ctrl != #cycle then return()
 
-			local lastKeyTime = ctrl.keys[ctrl.keys.count].time
+			-- The duration: the loop's last key on its own clock
+			local lastKeyTime = ctrl.keys[ctrl.keys.count].time - loopStart
 			if lastKeyTime <= 0f then return()
 
 			local editable = this.isTypeEditable ctrlType
 			local sourceStr = description + "  [" + ctrlType + "]"
+			local ctrlPair = #(ctrl, description, ctrlType, editable, srcObj, loopStart)
 
 			local found = false
 			for entry in entriesMap where entry[1] == lastKeyTime do
 			(
-				append entry[2] #(ctrl, description, ctrlType, editable, srcObj)
+				append entry[2] ctrlPair
 				appendIfUnique entry[4] sourceStr
 				if editable then entry[5] = true
 				found = true
@@ -144,7 +180,7 @@ struct WdxGlobalSequenceManager
 			)
 			if not found then
 			(
-				append entriesMap #(lastKeyTime, #(#(ctrl, description, ctrlType, editable, srcObj)), false, #(sourceStr), editable, ctrlType)
+				append entriesMap #(lastKeyTime, #(ctrlPair), false, #(sourceStr), editable, ctrlType)
 			)
 		)
 		catch()
@@ -376,26 +412,29 @@ struct WdxGlobalSequenceManager
 		this.globalEntries = entriesMap
 	),
 	
-	-- Scales the keys on a controller (incl. sub-controllers) proportionally
-	fn scaleControllerKeys ctrl oldLastFrame newLastFrame =
+	-- Scales the keys on a controller (incl. sub-controllers) proportionally.
+	-- The frames count on the loop's own clock, which starts at `origin`
+	-- (frame 1 on the importer's list layers, see loopLayerOf).
+	fn scaleControllerKeys ctrl oldLastFrame newLastFrame origin:0 =
 	(
 		if oldLastFrame <= 0 or newLastFrame <= 0 then return()
-		
+
 		-- Helper: scale the keys on a single key controller
-		fn scaleKeys kCtrl oldLast newLast =
+		fn scaleKeys kCtrl oldLast newLast origin =
 		(
 			if kCtrl == undefined then return()
 			if not (isProperty kCtrl #keys) then return()
 			if kCtrl.keys == undefined or kCtrl.keys.count < 2 then return()
-			
+
 			local kc = kCtrl.keys.count
-			format "DEBUG     scaleKeys class=% keys=% old=% new=%\n" (classOf kCtrl) kc oldLast newLast
+			format "DEBUG     scaleKeys class=% keys=% old=% new=% origin=%\n" (classOf kCtrl) kc oldLast newLast origin
 			-- Target frame per key: the last one exactly on the new end, a key
-			-- at 0 stays, the ones between in proportion (rounded, 1..end-1).
+			-- at the start stays, the ones between in proportion (rounded,
+			-- 1..end-1).
 			local target = for k = 1 to kc collect
 			(
-				local oldFrame = kCtrl.keys[k].time.frame as integer
-				if k == kc then newLast
+				local oldFrame = (kCtrl.keys[k].time.frame as integer) - origin
+				origin + (if k == kc then newLast
 				else if oldFrame > 0 then
 				(
 					local f = ((oldFrame as float / oldLast as float) * newLast as float + 0.5) as integer
@@ -403,7 +442,7 @@ struct WdxGlobalSequenceManager
 					if f >= newLast then f = newLast - 1
 					f
 				)
-				else 0
+				else 0)
 			)
 			-- Shrinking packs keys onto one frame (a key on every frame of 30
 			-- frames going to 10 put two or three on each), and keys sharing a
@@ -434,7 +473,7 @@ struct WdxGlobalSequenceManager
 				local sc = ctrl[i].controller
 				if sc != undefined and (isProperty sc #keys) and sc.keys != undefined and sc.keys.count > 0 then
 				(
-					scaleKeys sc oldLastFrame newLastFrame
+					scaleKeys sc oldLastFrame newLastFrame origin
 					subScaled = true
 				)
 			)
@@ -444,7 +483,7 @@ struct WdxGlobalSequenceManager
 		-- sub-controllers: a Position_XYZ lists their keys as its own, so a
 		-- second pass scaled the already scaled keys again, and deleting one
 		-- of them deleted it in every sub-controller.
-		if not subScaled do try (scaleKeys ctrl oldLastFrame newLastFrame) catch()
+		if not subScaled do try (scaleKeys ctrl oldLastFrame newLastFrame origin) catch()
 	),
 	
 	fn changeDuration entryIndex newDuration =
@@ -462,9 +501,10 @@ struct WdxGlobalSequenceManager
 		for ctrlPair in entry[2] where ctrlPair[4] do
 		(
 			local ctrl = ctrlPair[1]
+			local origin = (this.loopStartOf ctrlPair).frame as integer
 			-- Main controller
 			try (if ctrl.keys != undefined and ctrl.keys.count > 0 then
-				(local lf = ctrl.keys[ctrl.keys.count].time.frame as integer; if lf > oldFrame then oldFrame = lf)
+				(local lf = (ctrl.keys[ctrl.keys.count].time.frame as integer) - origin; if lf > oldFrame then oldFrame = lf)
 			) catch()
 			-- Sub-Controller
 			for i = 1 to 3 do
@@ -473,7 +513,7 @@ struct WdxGlobalSequenceManager
 				(
 					local sc = ctrl[i].controller
 					if sc != undefined and (isProperty sc #keys) and sc.keys != undefined and sc.keys.count > 0 then
-						(local lf = sc.keys[sc.keys.count].time.frame as integer; if lf > oldFrame then oldFrame = lf)
+						(local lf = (sc.keys[sc.keys.count].time.frame as integer) - origin; if lf > oldFrame then oldFrame = lf)
 				)
 				catch()
 			)
@@ -489,7 +529,7 @@ struct WdxGlobalSequenceManager
 		(
 			local ctrl = ctrlPair[1]
 			format "DEBUG   scaling '%' class=%\n" ctrlPair[2] (classOf ctrl)
-			this.scaleControllerKeys ctrl oldFrame newFrame
+			this.scaleControllerKeys ctrl oldFrame newFrame origin:((this.loopStartOf ctrlPair).frame as integer)
 		)
 		
 		-- Store the duration as an exact frame (no float drift)
@@ -537,8 +577,12 @@ struct WdxGlobalSequenceManager
 					)
 				)
 				
-				format "DEBUG remove: desc=% ctrl=% keys=%\n" desc (classOf ctrl) (this.countControllerKeys ctrl)
-				this.deleteKeysAfterZero ctrl
+				-- A loop on a list layer keeps its first key, as a plain loop
+				-- keeps the one at frame 0; frame 0 stays the bind pose.
+				local layer = this.loopLayerOf ctrl
+				ctrl = layer[1]
+				format "DEBUG remove: desc=% ctrl=% keys=% start=%\n" desc (classOf ctrl) (this.countControllerKeys ctrl) layer[2]
+				this.deleteKeysAfterZero ctrl after:layer[2]
 				format "DEBUG remove: after delete keys=%\n" (this.countControllerKeys ctrl)
 			)
 			catch(format "DEBUG remove ERROR: %\n" (getCurrentException()))
@@ -750,7 +794,10 @@ struct WdxGlobalSequenceManager
 		try (callbacks.removeScripts id:#WdxGlobalSeqRec) catch()
 	),
 
-	fn beginRecording duration ctrlType doPos doRot doScale editMode:false =
+	-- rangeStart: where the loop's own clock starts in the scene (frame 1 for
+	-- the importer's list layers, see loopLayerOf); the recording shows the
+	-- frames from there on.
+	fn beginRecording duration ctrlType doPos doRot doScale editMode:false rangeStart:0f =
 	(
 		this.savedAnimRange = animationRange
 		this.recordDuration = duration as time
@@ -880,8 +927,8 @@ struct WdxGlobalSequenceManager
 		)
 		
 		this.isRecording = true
-		animationRange = interval 0 this.recordDuration
-		sliderTime = 0
+		animationRange = interval rangeStart (rangeStart + this.recordDuration)
+		sliderTime = rangeStart
 	),
 	
 	fn finishRecording =
@@ -955,8 +1002,9 @@ struct WdxGlobalSequenceManager
 		#(newGlobals, warnings)
 	),
 	
-	-- Deletes all keys after frame 0 on a controller (incl. sub-controllers)
-	fn deleteKeysAfterZero ctrl =
+	-- Deletes all keys after frame 0 (or `after`) on a controller (incl.
+	-- sub-controllers)
+	fn deleteKeysAfterZero ctrl after:0f =
 	(
 		try
 		(
@@ -970,7 +1018,7 @@ struct WdxGlobalSequenceManager
 					(
 						for k = sc.keys.count to 1 by -1 do
 						(
-							if sc.keys[k].time > 0f then deleteKey sc k
+							if sc.keys[k].time > after then deleteKey sc k
 						)
 					)
 				)
@@ -981,7 +1029,7 @@ struct WdxGlobalSequenceManager
 			(
 				for k = ctrl.keys.count to 1 by -1 do
 				(
-					if ctrl.keys[k].time > 0f then deleteKey ctrl k
+					if ctrl.keys[k].time > after then deleteKey ctrl k
 				)
 			)
 			-- Reset the ORT
@@ -1681,10 +1729,24 @@ struct WdxGlobalSequenceManager
 			rotChk.checked = hasRot
 			sclChk.checked = hasScl
 			
-			-- Set the slider to frame 0
-			sliderTime = 0
-			
-			self.beginRecording durSpn.value ctrlDdl.selection hasPos hasRot hasScl editMode:true
+			-- The loops on the importer's list layers start at frame 1 (frame 0
+			-- is the bind pose): the recording shows the frames from the
+			-- earliest start to the latest end.
+			local firstStart = undefined
+			local lastStart = 0f
+			for cInfo in entry[2] do
+			(
+				local s = self.loopStartOf cInfo
+				if firstStart == undefined or s < firstStart then firstStart = s
+				if s > lastStart then lastStart = s
+			)
+			if firstStart == undefined then firstStart = 0f
+			local recordFrames = durSpn.value + ((lastStart - firstStart).frame as integer)
+
+			-- Set the slider to the start
+			sliderTime = firstStart
+
+			self.beginRecording recordFrames ctrlDdl.selection hasPos hasRot hasScl editMode:true rangeStart:firstStart
 			recording = true
 			spinApplied = false
 			setRecordingUI true

@@ -54,6 +54,7 @@
 #define IDC_CHK_POINT_HELPERS       1071
 #define IDC_CHK_OPT_GEOMETRY        1081
 #define IDC_CHK_OPT_BONES           1082
+#define IDC_CHK_MAX_BONES           1083
 
 // ── "Nothing of this kind in the file" notes ──
 #define IDC_LBL_NO_OBJECTS          1090

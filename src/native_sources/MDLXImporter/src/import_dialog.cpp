@@ -177,7 +177,7 @@ constexpr int kModelRows[] = {
 };
 
 constexpr int kOptionRows[] = {
-    IDC_CHK_POINT_HELPERS, IDC_CHK_OPT_GEOMETRY, IDC_CHK_OPT_BONES,
+    IDC_CHK_POINT_HELPERS, IDC_CHK_OPT_GEOMETRY, IDC_CHK_OPT_BONES, IDC_CHK_MAX_BONES,
 };
 
 // Every checkbox a Fast Setting decides (same set as before the redesign).
@@ -242,6 +242,7 @@ const CoreRow kCoreRows[] = {
     {IDC_CHK_POINT_HELPERS,      &ir::CoreImportOptions::importHelpersAsPointHelpers, L"ImportHelpersAsPointHelpers"},
     {IDC_CHK_OPT_GEOMETRY,       &ir::CoreImportOptions::optimizeGeometry,         L"OptimizeGeometry"},
     {IDC_CHK_OPT_BONES,          &ir::CoreImportOptions::optimizeBonesAndHelpers,  L"OptimizeBonesAndHelpers"},
+    {IDC_CHK_MAX_BONES,          &ir::CoreImportOptions::maxBoneOrientation,       L"MaxBoneOrientation"},
 };
 
 // ============================================================================
@@ -929,6 +930,7 @@ constexpr wdx::l10n::DialogString kImportStrings[] = {
     {IDC_CHK_POINT_HELPERS, "imp_import_helpers_as_point_helpers_chk"},
     {IDC_CHK_OPT_GEOMETRY, "imp_optimize_geometry_chk"},
     {IDC_CHK_OPT_BONES, "imp_optimize_bones_and_helpers_chk"},
+    {IDC_CHK_MAX_BONES, "imp_max_bones_chk"},
 
     {IDOK, "imp_import_btn"},
     {IDCANCEL, "common_cancel_btn"},
@@ -1058,7 +1060,8 @@ int computePageHeight(const ImportFileInfo& f) {
                                       : note;
     // Four rows of checkboxes, then the merge name tag (label + drop-down).
     const int anims = f.sequences > 0 ? master + 4 * lay::rowPitch + lay::mergeTagGap + lay::cmbFast.h : note;
-    const int model = lay::optionsFirstRowY + 2 * lay::rowPitch + lay::rowH - lay::pageY;
+    const int model = lay::optionsFirstRowY + static_cast<int>(std::size(kOptionRows) - 1) * lay::rowPitch
+                      + lay::rowH - lay::pageY;
     return std::max(objects, std::max(anims, model));
 }
 

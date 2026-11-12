@@ -509,6 +509,108 @@ static TimeValue globalSequenceDuration(Control* ctrl) {
     return end > 0 ? end : 0;
 }
 
+// Earliest key of a controller or, for Euler XYZ / Position XYZ, of its
+// float sub-controllers; -1 without keys.
+static TimeValue firstKeyTime(Control* ctrl) {
+    if (!ctrl) return -1;
+    if (ctrl->NumKeys() > 0) return ctrl->GetKeyTime(0);
+    TimeValue first = -1;
+    for (int i = 0; i < ctrl->NumSubs(); ++i) {
+        Animatable* sub = ctrl->SubAnim(i);
+        Control* c = sub ? GetControlInterface(sub) : nullptr;
+        if (!c || c->NumKeys() <= 0) continue;
+        const TimeValue t = c->GetKeyTime(0);
+        if (first < 0 || t < first) first = t;
+    }
+    return first;
+}
+
+// A transform channel running on a Global Sequence: the controller holding
+// its keys and the loop's window in scene time. The loop's own time 0 is
+// `start`, its duration end - start. keys == null: sequence-driven.
+struct GlobalSequenceChannel {
+    Control* keys = nullptr;
+    TimeValue start = 0, end = 0;
+};
+
+// A cycling controller (see globalSequenceDuration) loops from time 0.
+//
+// The importer puts a global sequence on a list controller instead, so that
+// frame 0 shows the bind pose (mdlx_importer_plugin setBindAndLoopLayers):
+// a "Bind" layer of one key and a cycling "Global Sequence" layer whose clock
+// starts at its first key, frame 1, with the layer weights switching between
+// frame 0 and 1. Any list whose one cycling layer is the only animated one,
+// with weights that stay constant over that layer's keys, is read that way:
+// the scene then repeats that layer's loop from its first key on. Values
+// still come from the node TM; only the key times and the window come from
+// the layer.
+static GlobalSequenceChannel globalSequenceChannel(Control* ctrl) {
+    GlobalSequenceChannel gs;
+    if (!ctrl) return gs;
+    IListControl* list = GetIListControlInterface(ctrl);
+    if (!list) {
+        gs.end = globalSequenceDuration(ctrl);
+        if (gs.end > 0) gs.keys = ctrl;
+        return gs;
+    }
+
+    // More than one key on the controller or one of its float channels.
+    const auto animated = [](Control* c) {
+        if (c->NumKeys() > 1) return true;
+        for (int i = 0; i < c->NumSubs(); ++i) {
+            Animatable* sub = c->SubAnim(i);
+            Control* s = sub ? GetControlInterface(sub) : nullptr;
+            if (s && s->NumKeys() > 1) return true;
+        }
+        return false;
+    };
+    const int count = list->GetListCount();
+    int loop = -1;
+    TimeValue loopEnd = 0;
+    for (int i = 0; i < count; ++i) {
+        Control* c = list->GetSubCtrl(i);
+        if (!c) continue;
+        const TimeValue end = globalSequenceDuration(c);
+        if (end <= 0) continue;
+        if (loop >= 0) return {};       // two loops: no single clock
+        loop = i;
+        loopEnd = end;
+    }
+    if (loop < 0) return {};
+    Control* loopCtrl = list->GetSubCtrl(loop);
+    const TimeValue start = std::max<TimeValue>(firstKeyTime(loopCtrl), 0);
+    if (start >= loopEnd) return {};
+
+    // The weights must not change while the loop plays.
+    IParamBlock2* pb = ctrl->GetParamBlock(0);
+    ParamBlockDesc2* desc = pb ? pb->GetDesc() : nullptr;
+    const int weightIdx = desc ? desc->NameToIndex(_M("weight")) : -1;
+    if (weightIdx < 0) return {};
+    const ParamID weightId = desc->IndextoID(weightIdx);
+    if (pb->Count(weightId) != count) return {};
+    for (int i = 0; i < count; ++i) {
+        Control* w = pb->GetControllerByID(weightId, i);
+        if (!w) continue;
+        for (int k = 0, n = w->NumKeys(); k < n; ++k) {
+            const TimeValue t = w->GetKeyTime(k);
+            if (t > start && t <= loopEnd) return {};
+        }
+    }
+    // Nor may another layer that is on during the loop: an animated one
+    // would play inside every cycle. One switched off there (the "Bind"
+    // layer, even if a key was copied onto it) does not count.
+    for (int i = 0; i < count; ++i) {
+        Control* c = list->GetSubCtrl(i);
+        if (i == loop || !c) continue;
+        if (list->GetSubCtrlWeight(i, start) == 0.0f) continue;
+        if (animated(c)) return {};
+    }
+    gs.keys = loopCtrl;
+    gs.start = start;
+    gs.end = loopEnd;
+    return gs;
+}
+
 // Walk the derived-object chain down to the base object.
 static Object* baseObjectOf(INode* maxNode) {
     if (!maxNode) return nullptr;
@@ -804,6 +906,23 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
         Control* posCtrlFK = tmCtrl->GetPositionController();
         Control* rotCtrlFK = tmCtrl->GetRotationController();
         Control* sclCtrlFK = tmCtrl->GetScaleController();
+        bool needsPerFrame = isBipedNode || isLinkNode || isCATNode;
+        bool isIKNode = ControllerReader::isIKAffected(maxNode);
+
+        // Global-sequence channels (see globalSequenceChannel). Per-frame and
+        // IK nodes are baked whole from GetNodeTM; they have no channel
+        // controller to loop. A loop on a list layer gives its key times and
+        // type through that layer: a channel lives either in its loop window
+        // or in the sequences, so the sequences never read these.
+        GlobalSequenceChannel gsChannel[3];
+        if (!needsPerFrame && !isIKNode) {
+            gsChannel[0] = globalSequenceChannel(posCtrlFK);
+            gsChannel[1] = globalSequenceChannel(rotCtrlFK);
+            gsChannel[2] = globalSequenceChannel(sclCtrlFK);
+            if (gsChannel[0].keys) posCtrlFK = gsChannel[0].keys;
+            if (gsChannel[1].keys) rotCtrlFK = gsChannel[1].keys;
+            if (gsChannel[2].keys) sclCtrlFK = gsChannel[2].keys;
+        }
         ControllerType posTypeFK = ControllerReader::detect(posCtrlFK);
         ControllerType rotTypeFK = ControllerReader::detect(rotCtrlFK);
 
@@ -814,17 +933,14 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                             rotTypeFK == ControllerType::TCB_Rotation ||
                             rotTypeFK == ControllerType::Linear_Rotation ||
                             rotTypeFK == ControllerType::Euler_XYZ);
-        bool needsPerFrame = isBipedNode || isLinkNode || isCATNode;
-        bool isIKNode = ControllerReader::isIKAffected(maxNode);
 
         ALOG << "    keyTimeMode: pos=" << (isFKPosNode && !needsPerFrame && !isIKNode ? "KEY" : (isIKNode ? "IK-KEY" : "FRAME"))
              << " rot=" << (isFKRotNode && !needsPerFrame && !isIKNode ? "KEY" : (isIKNode ? "IK-KEY" : "FRAME")) << "\n";
 
         // ── Sampling windows: every sequence, plus one per global-sequence
-        // channel (see globalSequenceDuration) sampled once over
-        // [0, duration], the loop's own clock. A channel lives in exactly one
-        // of the two. Per-frame and IK nodes are baked whole from GetNodeTM;
-        // they have no channel controller to loop.
+        // channel (see globalSequenceChannel) sampled once over its loop,
+        // [start, end] in scene time; the keys are moved to the loop's own
+        // clock below. A channel lives in exactly one of the two.
         enum { kTrans, kRot, kScale };
         struct SampleWindow {
             TimeValue startTime = 0, endTime = 0;
@@ -834,16 +950,13 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
         for (const auto& s : sequences)
             windows.push_back({s.startTime, s.endTime, -1});
         bool channelIsGlobal[3] = {false, false, false};
-        if (!needsPerFrame && !isIKNode) {
-            Control* const channelCtrls[3] = {posCtrlFK, rotCtrlFK, sclCtrlFK};
-            for (int ch = 0; ch < 3; ++ch) {
-                const TimeValue dur = globalSequenceDuration(channelCtrls[ch]);
-                if (dur <= 0) continue;
-                channelIsGlobal[ch] = true;
-                windows.push_back({0, dur, ch});
-                ALOG << "    GLOBAL-SEQ channel " << "TRS"[ch]
-                     << " duration=" << dur << " ticks\n";
-            }
+        for (int ch = 0; ch < 3; ++ch) {
+            if (!gsChannel[ch].keys) continue;
+            channelIsGlobal[ch] = true;
+            windows.push_back({gsChannel[ch].start, gsChannel[ch].end, ch});
+            ALOG << "    GLOBAL-SEQ channel " << "TRS"[ch]
+                 << " start=" << gsChannel[ch].start
+                 << " duration=" << (gsChannel[ch].end - gsChannel[ch].start) << " ticks\n";
         }
 
         for (const auto& seq : windows) {
@@ -1355,7 +1468,14 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
 
             if (!isSequence && !(nodeAnim.translation.empty() &&
                                  nodeAnim.rotation.empty() && nodeAnim.scale.empty())) {
-                const int32_t gs = anim::registerGlobalSequence(irModel, seq.endTime);
+                // Onto the loop's own clock (0 except for a list layer).
+                const TimeValue shift = seq.startTime;
+                if (shift != 0) {
+                    for (auto& k : nodeAnim.translation.keys) k.time -= shift;
+                    for (auto& k : nodeAnim.rotation.keys) k.time -= shift;
+                    for (auto& k : nodeAnim.scale.keys) k.time -= shift;
+                }
+                const int32_t gs = anim::registerGlobalSequence(irModel, seq.endTime - shift);
                 nodeAnim.translation.globalSequenceIndex = gs;
                 nodeAnim.rotation.globalSequenceIndex = gs;
                 nodeAnim.scale.globalSequenceIndex = gs;

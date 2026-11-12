@@ -18,15 +18,32 @@
     -- Covers: transform controllers, visibility controllers, material alpha,
     --         UV offset/rotation/scale controllers, and IFL texture animations.
     
-    -- Checks a single controller for ORT #cycle and collects its duration
+    -- Checks a single controller for ORT #cycle and collects its duration.
+    -- The importer puts a global sequence's transform on a list controller
+    -- so that frame 0 shows the bind pose: its cycling layer loops from its
+    -- first key, frame 1 (GlobalSequenceManager.ms loopLayerOf).
     fn checkControllerForGlobalSeq ctrl &durations =
     (
         try (
+            local loopStart = 0f
+            local cls = classOf ctrl
+            if cls == Position_List or cls == Rotation_List or cls == Scale_List then
+            (
+                local layer = undefined
+                for i = 1 to ctrl.count while layer == undefined do
+                (
+                    local c = try (ctrl[i].controller) catch (undefined)
+                    if c != undefined and isProperty c #keys and c.keys != undefined and c.keys.count > 0 and \
+                       getAfterORT c == #cycle then layer = c
+                )
+                ctrl = layer
+                if layer != undefined then loopStart = layer.keys[1].time
+            )
             if ctrl != undefined and \
                isProperty ctrl #keys and ctrl.keys != undefined and ctrl.keys.count > 0 and \
                getAfterORT ctrl == #cycle then
             (
-                local lastKeyTime = ctrl.keys[ctrl.keys.count].time
+                local lastKeyTime = ctrl.keys[ctrl.keys.count].time - loopStart
                 if lastKeyTime > 0f then
                     appendIfUnique durations lastKeyTime
             )

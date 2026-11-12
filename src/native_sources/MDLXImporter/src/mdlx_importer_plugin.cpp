@@ -1056,10 +1056,508 @@ static void bakeCurvedRotation(ir::QuatTrack& track,
         [](const ir::Keyframe<Quat>& x, const ir::Keyframe<Quat>& y) { return x.time < y.time; });
 }
 
-void insertTranslationKeys(INode* node, const ir::Vec3Track& track,
+// ── 3ds Max bone orientation (import option MaxBoneOrientation) ───────
+//
+// Warcraft III nodes have no orientation: every bone rests at its pivot
+// aligned with the world, and so did the imported bones. With the option the
+// real bones point along their chain like bones built in Max: local X toward
+// the main child, with that distance as the bone length.
+//
+// The animation stays exactly the same. With O the world bind rotation of a
+// node (identity without the option), every node's TM becomes O_n * TM_old,
+// so the skin deformation TM_bind^-1 * TM(t) does not change, and the local
+// TM becomes O_n * L_old * O_p^-1 (p: the parent). Split into Max's
+// scale * rotation * translation:
+//   rotation     O_n * R * O_p^-1        (each key; slerp is unchanged by a
+//                                         fixed rotation on either side)
+//   translation  t * O_p^-1              (values and tangents, linear)
+//   scale        O_n * S * O_n^-1 = S    for a uniform scale. A non-uniform
+//                                         one would need a scale axis, which
+//                                         Max's Bezier Scale keys do not apply
+//                                         (measured: the key's axis is
+//                                         ignored), so a bone with a
+//                                         non-uniform scale track keeps the
+//                                         world orientation.
+// The exporter reads both back through the bind TMs, as for any bone built
+// in Max (anim_dispatcher: bind delta rotation, parent-rotated translation).
+
+// How Max turns a rotation key into a matrix. Read from a real controller
+// once rather than assumed: a wrong guess would turn every converted key the
+// other way.
+struct MaxKeyConvention {
+    bool valid = false;
+    bool rotationConjugate = false;   // key matrix = MakeMatrix(conj(key))
+};
+
+// Identity in every SDK: Matrix3() leaves it uninitialized up to 2016 and
+// Matrix3(BOOL) is deprecated in 2027.
+static Matrix3 identity3()
+{
+    Matrix3 m;
+    m.IdentityMatrix();
+    return m;
+}
+
+static Matrix3 quatMatrix(const Quat& q)
+{
+    Matrix3 m;
+    q.MakeMatrix(m);
+    m.NoTrans();
+    return m;
+}
+
+static Quat conjugated(const Quat& q) { return Quat(-q.x, -q.y, -q.z, q.w); }
+
+static bool sameRotation(const Matrix3& a, const Matrix3& b)
+{
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            if (std::fabs(a.GetRow(r)[c] - b.GetRow(r)[c]) > 1e-4f) return false;
+    return true;
+}
+
+static MaxKeyConvention readMaxKeyConvention()
+{
+    MaxKeyConvention conv;
+    Quat test(0.2f, -0.4f, 0.3f, 0.84f);
+    test.Normalize();
+    const Matrix3 q = quatMatrix(test);
+
+    // Quat(Matrix3) must undo MakeMatrix (it is used for the way back).
+    if (!sameRotation(quatMatrix(Quat(q)), q)) return conv;
+
+    Control* rot = static_cast<Control*>(
+        CreateInstance(CTRL_ROTATION_CLASS_ID, Class_ID(LININTERP_ROTATION_CLASS_ID, 0)));
+    IKeyControl* rk = rot ? GetKeyControlInterface(rot) : nullptr;
+    if (!rk) { if (rot) rot->MaybeAutoDelete(); return conv; }
+    rk->SetNumKeys(0);
+    ILinRotKey k;
+    memset(&k, 0, sizeof(k));
+    k.val = test;
+    rk->AppendKey(&k);
+    Matrix3 m = identity3();
+    Interval iv = FOREVER;
+    rot->GetValue(0, &m, iv, CTRL_RELATIVE);
+    rot->MaybeAutoDelete();
+    m.NoTrans();
+    if (sameRotation(m, q)) conv.rotationConjugate = false;
+    else if (sameRotation(m, quatMatrix(conjugated(test)))) conv.rotationConjugate = true;
+    else return conv;
+
+    conv.valid = true;
+    return conv;
+}
+
+// A node's orientation for its keys: its own and its parent's world bind
+// rotation (no translation, unit rows).
+struct BoneFrame {
+    bool active = false;      // either rotation differs from identity
+    Matrix3 node = identity3();
+    Matrix3 parent = identity3();
+    Matrix3 invParent = identity3();
+};
+
+static Matrix3 rotationOnly(Matrix3 m)
+{
+    m.NoTrans();
+    for (int r = 0; r < 3; ++r) {
+        const Point3 row = m.GetRow(r);
+        const float len = Length(row);
+        if (len > 1e-8f) m.SetRow(r, row / len);
+    }
+    return m;
+}
+
+static bool isIdentityRotation(const Matrix3& m) { return sameRotation(m, identity3()); }
+
+// A rotation as insertRotationKeys takes it (its keys hold the conjugate).
+static Quat orientRotation(const Quat& q, const BoneFrame& f, const MaxKeyConvention& c)
+{
+    const Quat key = conjugated(q);
+    const Matrix3 r = quatMatrix(c.rotationConjugate ? conjugated(key) : key);
+    Quat back(f.node * r * f.invParent);
+    back.Normalize();
+    const Quat newKey = c.rotationConjugate ? conjugated(back) : back;
+    return conjugated(newKey);
+}
+
+static void orientRotationTrack(ir::QuatTrack& track, const BoneFrame& f, const MaxKeyConvention& c)
+{
+    for (auto& k : track.keys) {
+        k.value = orientRotation(k.value, f, c);
+        // Tangents are not used: rotation keys go onto Linear Rotation
+        // (curves are baked into keys first, bakeCurvedRotation).
+    }
+}
+
+static void orientTranslationTrack(ir::Vec3Track& track, const BoneFrame& f)
+{
+    for (auto& k : track.keys) {
+        k.value = k.value * f.invParent;
+        k.inTangent = k.inTangent * f.invParent;
+        k.outTangent = k.outTangent * f.invParent;
+    }
+}
+
+// Whether a scale track scales the three axes differently anywhere.
+static bool isNonUniformScale(const ir::Vec3Track& track)
+{
+    auto uneven = [](const Point3& v) {
+        return std::fabs(v.x - v.y) > 1e-5f || std::fabs(v.x - v.z) > 1e-5f;
+    };
+    for (const auto& k : track.keys) {
+        if (uneven(k.value)) return true;
+        if (k.hasTangents && (uneven(k.inTangent) || uneven(k.outTangent))) return true;
+    }
+    return false;
+}
+
+// Turns the real bones along their chains (see above). Runs on the finished
+// skeleton, before anything else is attached to it; keeps every pivot.
+static void orientBonesAlongChains(const ir::IRModel& irModel, const std::vector<INode*>& nodeMap)
+{
+    struct Item {
+        INode* node = nullptr;
+        bool orient = false;
+        Point3 pivot;
+        int parent = -1;              // index into items
+        std::vector<int> children;
+        int subtree = 1;
+        Matrix3 rot = identity3();
+        bool oriented = false;
+        float length = 0.0f;
+    };
+    std::vector<Item> items;
+    std::map<INode*, int> indexOf;
+    // Non-uniform scale cannot follow a turned bone (see above).
+    std::set<int32_t> nonUniform;
+    for (const auto& na : irModel.nodeAnimations)
+        if (isNonUniformScale(na.scale)) nonUniform.insert(na.nodeIndex);
+    for (const auto& bone : irModel.bones) {
+        if (bone.nodeIndex < 0 || bone.nodeIndex >= static_cast<int32_t>(nodeMap.size())) continue;
+        INode* n = nodeMap[bone.nodeIndex];
+        if (!n || indexOf.count(n)) continue;
+        Item it;
+        it.node = n;
+        // Helpers, billboards, camera-anchored nodes and nodes that do not
+        // inherit translation or scale (Max inherit flags) keep the world
+        // orientation: their behaviour in game depends on it.
+        it.orient = !bone.isHelper && (bone.nodeFlags & 0xFD) == 0 &&
+                    !nonUniform.count(bone.nodeIndex);
+        it.pivot = n->GetNodeTM(0).GetTrans();
+        indexOf[n] = static_cast<int>(items.size());
+        items.push_back(it);
+    }
+    if (items.empty()) return;
+
+    Box3 bounds;
+    bounds.Init();
+    for (const auto& it : items) bounds += it.pivot;
+    const float size = std::max(Length(bounds.Width()), 1.0f);
+    const float eps = size * 1e-4f;
+
+    std::vector<int> roots;
+    for (size_t i = 0; i < items.size(); ++i) {
+        INode* p = items[i].node->GetParentNode();
+        auto found = p ? indexOf.find(p) : indexOf.end();
+        if (found != indexOf.end()) {
+            items[i].parent = found->second;
+            items[found->second].children.push_back(static_cast<int>(i));
+        } else {
+            roots.push_back(static_cast<int>(i));
+        }
+    }
+    // Top-down order; subtree sizes bottom-up.
+    std::vector<int> order = roots;
+    for (size_t i = 0; i < order.size(); ++i)
+        for (int c : items[order[i]].children) order.push_back(c);
+    for (size_t i = order.size(); i-- > 0;) {
+        Item& it = items[order[i]];
+        for (int c : it.children) it.subtree += items[c].subtree;
+    }
+
+    auto alongX = [](const Point3& x) {
+        const Point3 ref = std::fabs(x.z) < 0.9f ? Point3(0.0f, 0.0f, 1.0f) : Point3(0.0f, 1.0f, 0.0f);
+        const Point3 z = Normalize(ref - x * DotProd(ref, x));
+        Matrix3 m = identity3();
+        m.SetRow(0, x);
+        m.SetRow(1, CrossProd(z, x));
+        m.SetRow(2, z);
+        return m;
+    };
+
+    for (int i : order) {
+        Item& it = items[i];
+        if (!it.orient) continue;
+        // The main child: the most nodes below it, then the farthest.
+        int best = -1;
+        float bestDist = 0.0f;
+        for (int c : it.children) {
+            const float d = Length(items[c].pivot - it.pivot);
+            if (d <= eps) continue;
+            if (best < 0 || items[c].subtree > items[best].subtree ||
+                (items[c].subtree == items[best].subtree && d > bestDist)) {
+                best = c;
+                bestDist = d;
+            }
+        }
+        if (best >= 0) {
+            it.rot = alongX((items[best].pivot - it.pivot) / bestDist);
+            it.length = bestDist;
+            it.oriented = true;
+        } else if (it.parent >= 0 && items[it.parent].oriented) {
+            // A chain's end continues its parent bone.
+            it.rot = items[it.parent].rot;
+            it.length = items[it.parent].length * 0.5f;
+            it.oriented = true;
+        } else if (it.parent >= 0) {
+            const Point3 d = it.pivot - items[it.parent].pivot;
+            const float len = Length(d);
+            if (len > eps) {
+                it.rot = alongX(d / len);
+                it.length = len * 0.5f;
+                it.oriented = true;
+            }
+        }
+    }
+
+    for (int i : order) {
+        const Item& it = items[i];
+        Matrix3 tm = it.rot;          // identity for the nodes left as they were
+        tm.SetTrans(it.pivot);
+        it.node->SetNodeTM(0, tm);
+    }
+
+    std::wstringstream ss;
+    ss.imbue(std::locale::classic());
+    ss << L"(";
+    for (const auto& it : items) {
+        if (!it.oriented) continue;
+        const float len = std::max(it.length, size * 0.005f);
+        const float w = std::min(std::max(len * 0.2f, size * 0.004f), size * 0.03f);
+        ss << L"(local n = maxOps.getNodeByHandle " << it.node->GetHandle()
+           << L"; if n != undefined and classOf n == BoneGeometry do (n.length = " << len
+           << L"; n.width = " << w << L"; n.height = " << w << L"));";
+    }
+    ss << L"ok)";
+    const std::wstring script = ss.str();
+    ExecuteMAXScriptScript(
+        const_cast<wchar_t*>(script.c_str()),
+#if MAX_PRODUCT_YEAR_NUMBER >= 2022
+        MAXScript::ScriptSource::NonEmbedded,
+#endif
+        TRUE, nullptr);
+}
+
+// ── Global sequences: frame 0 shows the bind pose ──────────────────────
+//
+// A global sequence loops on its own clock whatever sequence plays, while
+// the mesh is skinned to the bind pose. Written as one cycling controller,
+// frame 0 showed the loop instead of the bind pose, and the exporter, which
+// takes frame 0 as the bind pose (bone_extractor, anim_dispatcher), wrote
+// shifted pivots: VoidwalkerLesser's legs came out 1.6-8.8 units off.
+//
+// Such a channel becomes a list controller with two layers:
+//   "Bind"            one key, the bind value; weight 1 at frame 0, 0 after
+//   "Global Sequence" the file's keys one frame later, cycling;
+//                     weight 0 at frame 0, 1 after
+// Frame 0 is then exactly the bind pose and every frame from 1 on exactly the
+// loop, which starts its own clock at frame 1. Weight 0 removes a layer
+// entirely and weight 1 applies it unchanged (listctrl.cpp in the SDK
+// samples: the position, rotation and scale lists skip a layer of weight 0).
+// The exporter reads the loop's keys from the cycling layer
+// (anim_dispatcher globalSequenceWindow).
+
+// The loop layer's keys: the file's keys one frame later, so that frame 0
+// stays free for the bind pose. A loop whose first key lies after its own
+// time 0 holds that key from time 0, as the game and the ORT before did,
+// and gets it as a key so the loop's clock starts at frame 1.
+template <class T>
+static ir::Track<T> globalSequenceLoopTrack(const ir::Track<T>& track)
+{
+    ir::Track<T> loop = track;
+    if (loop.keys.empty()) return loop;
+    if (loop.keys.front().time > 0) {
+        ir::Keyframe<T> hold;           // no tangents: flat into the first key
+        hold.time = 0;
+        hold.value = loop.keys.front().value;
+        loop.keys.insert(loop.keys.begin(), hold);
+    }
+    const TimeValue tpf = GetTicksPerFrame();
+    for (auto& k : loop.keys) k.time += tpf;
+    return loop;
+}
+
+// Whether a track goes on the two layers. A loop of a single key at its own
+// time 0 is a constant: it stays one controller as before, and the exporter
+// keeps writing it into the sequences.
+template <class T>
+static bool usesBindLayer(const ir::Track<T>& track, const ir::Track<T>& loop)
+{
+    return track.globalSequenceIndex >= 0 && loop.keys.size() >= 2;
+}
+
+// A layer weight: `atZero` at frame 0, `fromOne` from frame 1 on, stepped.
+static Control* makeLayerWeight(float atZero, float fromOne)
+{
+    Control* c = static_cast<Control*>(
+        CreateInstance(CTRL_FLOAT_CLASS_ID, Class_ID(HYBRIDINTERP_FLOAT_CLASS_ID, 0)));
+    IKeyControl* ikc = c ? GetKeyControlInterface(c) : nullptr;
+    if (!ikc) {
+        if (c) c->MaybeAutoDelete();
+        return nullptr;
+    }
+    const TimeValue times[2] = {0, GetTicksPerFrame()};
+    const float values[2] = {atZero, fromOne};
+    for (int i = 0; i < 2; ++i) {
+        IBezFloatKey k;
+        memset(&k, 0, sizeof(k));
+        k.time = times[i];
+        k.val = values[i];
+        SetInTanType(k.flags, BEZKEY_STEP);
+        SetOutTanType(k.flags, BEZKEY_STEP);
+        ikc->AppendKey(&k);
+    }
+    ikc->SortKeys();
+    return c;
+}
+
+enum class TransformChannel { Position, Rotation, Scale };
+
+// Puts `bindCtrl` and `loopCtrl` on a list controller as described above.
+// `loopCtrl` must already be the node's channel controller: if anything
+// fails it stays there, the import as before this change.
+static bool setBindAndLoopLayers(INode* node, TransformChannel channel,
+                                 Control* bindCtrl, Control* loopCtrl)
+{
+    Control* tmCtrl = node->GetTMController();
+    if (!tmCtrl || !bindCtrl || !loopCtrl) {
+        if (bindCtrl) bindCtrl->MaybeAutoDelete();
+        return false;
+    }
+    SClass_ID superId = CTRL_POSITION_CLASS_ID;
+    ULONG listId = POSLIST_CONTROL_CLASS_ID;
+    if (channel == TransformChannel::Rotation) {
+        superId = CTRL_ROTATION_CLASS_ID;
+        listId = ROTLIST_CONTROL_CLASS_ID;
+    } else if (channel == TransformChannel::Scale) {
+        superId = CTRL_SCALE_CLASS_ID;
+        listId = SCALELIST_CONTROL_CLASS_ID;
+    }
+
+    Control* list = static_cast<Control*>(CreateInstance(superId, Class_ID(listId, 0)));
+    IListControl* items = list ? GetIListControlInterface(list) : nullptr;
+    IParamBlock2* pb = list ? list->GetParamBlock(0) : nullptr;
+    ParamID weightId = -1;
+    if (pb && pb->GetDesc()) {
+        const int idx = pb->GetDesc()->NameToIndex(_M("weight"));
+        if (idx >= 0) weightId = pb->GetDesc()->IndextoID(idx);
+    }
+    Control* bindWeight = makeLayerWeight(1.0f, 0.0f);
+    Control* loopWeight = makeLayerWeight(0.0f, 1.0f);
+
+    bool ok = items && weightId >= 0 && bindWeight && loopWeight &&
+              items->GetListCount() == 0;
+    bool listOwnsLayers = false, listOwnsWeights = false;
+    if (ok) {
+        // Index GetListCount() is the "Available" entry: assigning there
+        // appends an item of weight 1 (ListControl::AssignController).
+        list->AssignController(bindCtrl, 0);
+        list->AssignController(loopCtrl, 1);
+        listOwnsLayers = true;
+        ok = items->GetListCount() == 2 && items->GetSubCtrl(0) == bindCtrl &&
+             items->GetSubCtrl(1) == loopCtrl &&
+             pb->Count(weightId) == 2;
+    }
+    if (ok) {
+        pb->SetControllerByID(weightId, 0, bindWeight, FALSE);
+        pb->SetControllerByID(weightId, 1, loopWeight, FALSE);
+        listOwnsWeights = true;
+        Interval iv = FOREVER;
+        float w0 = -1.0f, w1 = -1.0f, w0Loop = -1.0f, w1Loop = -1.0f;
+        pb->GetValue(weightId, 0, w0, iv, 0);
+        pb->GetValue(weightId, 0, w0Loop, iv, 1);
+        pb->GetValue(weightId, GetTicksPerFrame(), w1, iv, 0);
+        pb->GetValue(weightId, GetTicksPerFrame(), w1Loop, iv, 1);
+        ok = w0 == 1.0f && w0Loop == 0.0f && w1 == 0.0f && w1Loop == 1.0f;
+    }
+    if (!ok) {
+        ILOG << "    bind/loop layers failed on '" << narrow(node->GetName())
+             << "', the global sequence stays on one controller\n";
+        // Whatever the list took over goes with it; loopCtrl stays, the node
+        // references it.
+        if (!listOwnsLayers) bindCtrl->MaybeAutoDelete();
+        if (!listOwnsWeights) {
+            if (bindWeight) bindWeight->MaybeAutoDelete();
+            if (loopWeight) loopWeight->MaybeAutoDelete();
+        }
+        if (list) list->MaybeAutoDelete();
+        return false;
+    }
+    items->SetName(0, MSTR(_M("Bind")));
+    items->SetName(1, MSTR(_M("Global Sequence")));
+    items->SetActive(1);   // edits go to the loop
+
+    if (channel == TransformChannel::Position) tmCtrl->SetPositionController(list);
+    else if (channel == TransformChannel::Rotation) tmCtrl->SetRotationController(list);
+    else tmCtrl->SetScaleController(list);
+    return true;
+}
+
+// The bind layers: one flat key at frame 0, constant everywhere.
+static Control* makeBindPosition(const Point3& value)
+{
+    Control* c = static_cast<Control*>(
+        CreateInstance(CTRL_POSITION_CLASS_ID, Class_ID(HYBRIDINTERP_POSITION_CLASS_ID, 0)));
+    IKeyControl* ikc = c ? GetKeyControlInterface(c) : nullptr;
+    if (!ikc) { if (c) c->MaybeAutoDelete(); return nullptr; }
+    ikc->SetNumKeys(0);
+    IBezPoint3Key k;
+    memset(&k, 0, sizeof(k));
+    k.val = value;
+    setFlatBezierKey(k);
+    ikc->AppendKey(&k);
+    return c;
+}
+
+// `value` as the game stores it; the key holds its conjugate, as every
+// rotation key here (insertRotationKeys).
+static Control* makeBindRotation(const Quat& value)
+{
+    Control* c = static_cast<Control*>(
+        CreateInstance(CTRL_ROTATION_CLASS_ID, Class_ID(LININTERP_ROTATION_CLASS_ID, 0)));
+    IKeyControl* ikc = c ? GetKeyControlInterface(c) : nullptr;
+    if (!ikc) { if (c) c->MaybeAutoDelete(); return nullptr; }
+    ikc->SetNumKeys(0);
+    ILinRotKey k;
+    memset(&k, 0, sizeof(k));
+    k.val = Quat(-value.x, -value.y, -value.z, value.w);
+    ikc->AppendKey(&k);
+    return c;
+}
+
+static Control* makeBindScale(const Point3& value)
+{
+    Control* c = static_cast<Control*>(
+        CreateInstance(CTRL_SCALE_CLASS_ID, Class_ID(HYBRIDINTERP_SCALE_CLASS_ID, 0)));
+    IKeyControl* ikc = c ? GetKeyControlInterface(c) : nullptr;
+    if (!ikc) { if (c) c->MaybeAutoDelete(); return nullptr; }
+    ikc->SetNumKeys(0);
+    IBezScaleKey k;
+    memset(&k, 0, sizeof(k));
+    k.val = ScaleValue(value);
+    setFlatBezierKey(k);
+    ikc->AppendKey(&k);
+    return c;
+}
+
+void insertTranslationKeys(INode* node, const ir::Vec3Track& fileTrack,
                            const Point3& stubVal)
 {
-    if (track.empty()) return;
+    if (fileTrack.empty()) return;
+    const ir::Vec3Track loopTrack = globalSequenceLoopTrack(fileTrack);
+    const bool bindLayer = usesBindLayer(fileTrack, loopTrack);
+    const ir::Vec3Track& track = bindLayer ? loopTrack : fileTrack;
 
     Control* tmCtrl = node->GetTMController();
     if (!tmCtrl) return;
@@ -1159,11 +1657,16 @@ void insertTranslationKeys(INode* node, const ir::Vec3Track& track,
         posCtrl->SetORT(ORT_CYCLE,    ORT_AFTER);
         posCtrl->EnableORTs(TRUE);
     }
+    if (bindLayer)
+        setBindAndLoopLayers(node, TransformChannel::Position, makeBindPosition(stubVal), posCtrl);
 }
 
-void insertRotationKeys(INode* node, const ir::QuatTrack& track,
+void insertRotationKeys(INode* node, const ir::QuatTrack& fileTrack,
                         const Quat& stubVal) {
-    if (track.empty()) return;
+    if (fileTrack.empty()) return;
+    const ir::QuatTrack loopTrack = globalSequenceLoopTrack(fileTrack);
+    const bool bindLayer = usesBindLayer(fileTrack, loopTrack);
+    const ir::QuatTrack& track = bindLayer ? loopTrack : fileTrack;
 
     Control* tmCtrl = node->GetTMController();
     if (!tmCtrl) return;
@@ -1332,12 +1835,17 @@ void insertRotationKeys(INode* node, const ir::QuatTrack& track,
              << ": (" << readBackKey.x << "," << readBackKey.y
              << "," << readBackKey.z << "," << readBackKey.w << ")\n";
     }
+    if (bindLayer)
+        setBindAndLoopLayers(node, TransformChannel::Rotation, makeBindRotation(stubVal), rotCtrl);
 }
 
-void insertScaleKeys(INode* node, const ir::Vec3Track& track,
+void insertScaleKeys(INode* node, const ir::Vec3Track& fileTrack,
                      const Point3& stubVal)
 {
-    if (track.empty()) return;
+    if (fileTrack.empty()) return;
+    const ir::Vec3Track loopTrack = globalSequenceLoopTrack(fileTrack);
+    const bool bindLayer = usesBindLayer(fileTrack, loopTrack);
+    const ir::Vec3Track& track = bindLayer ? loopTrack : fileTrack;
 
     Control* tmCtrl = node->GetTMController();
     if (!tmCtrl) return;
@@ -1419,6 +1927,8 @@ void insertScaleKeys(INode* node, const ir::Vec3Track& track,
         scaleCtrl->SetORT(ORT_CYCLE,    ORT_AFTER);
         scaleCtrl->EnableORTs(TRUE);
     }
+    if (bindLayer)
+        setBindAndLoopLayers(node, TransformChannel::Scale, makeBindScale(stubVal), scaleCtrl);
 }
 
 // ── Parameter animation helpers ─────────────────────────────
@@ -2956,6 +3466,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
     std::vector<INode*> nodeMap(irModel.nodes.size(), nullptr);
     std::vector<INode*> boneNodes;
+    MaxKeyConvention keyConvention;   // set with the 3ds Max bone orientation
+    bool maxBones = false;
 
     if (opts.core.importBones || opts.core.importHelpers) {
         boneNodes.reserve(irModel.bones.size());
@@ -3122,6 +3634,17 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
 
             if (parent)
                 parent->AttachChild(boneNode);
+        }
+
+        // 3ds Max bone orientation: only when the key conversion it needs
+        // reads back right from Max, else the bones stay as in Warcraft III.
+        if (opts.core.maxBoneOrientation) {
+            keyConvention = readMaxKeyConvention();
+            maxBones = keyConvention.valid;
+            ILOG << "Max bone orientation: "
+                 << (maxBones ? "on" : "off (key convention not recognised)")
+                 << " rotConj=" << keyConvention.rotationConjugate << "\n";
+            if (maxBones) orientBonesAlongChains(irModel, nodeMap);
         }
     }
 
@@ -3455,6 +3978,11 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
         // setup.  This matches MaxScript's "in coordsys parent subPos = obj.pos"
         // and correctly handles v1200 where PIVT may differ from BPOS.
         std::vector<Point3> nodeLocalPos(irModel.nodes.size(), Point3(0,0,0));
+        // 3ds Max bone orientation: each node's bind rotations, and its
+        // position relative to the parent in the world-aligned frame the
+        // file's translation keys are in (see orientBonesAlongChains).
+        std::vector<BoneFrame> nodeFrames(irModel.nodes.size());
+        std::vector<Point3> fileLocalPos(irModel.nodes.size(), Point3(0,0,0));
         for (size_t i = 0; i < irModel.nodes.size(); ++i) {
             INode* nd = (i < nodeMap.size()) ? nodeMap[i] : nullptr;
             if (!nd) continue;
@@ -3465,8 +3993,17 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
                 Matrix3 parentTM = par->GetNodeTM(0);
                 Matrix3 localTM = worldTM * Inverse(parentTM);
                 nodeLocalPos[i] = localTM.GetTrans();
+                fileLocalPos[i] = worldTM.GetTrans() - parentTM.GetTrans();
+                if (maxBones) nodeFrames[i].parent = rotationOnly(parentTM);
             } else {
                 nodeLocalPos[i] = worldTM.GetTrans();
+                fileLocalPos[i] = worldTM.GetTrans();
+            }
+            if (maxBones) {
+                BoneFrame& f = nodeFrames[i];
+                f.node = rotationOnly(worldTM);
+                f.invParent = Inverse(f.parent);
+                f.active = !isIdentityRotation(f.node) || !isIdentityRotation(f.parent);
             }
         }
 
@@ -3530,18 +4067,34 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             }
 
             // Rotation: write raw keys (no offset needed)
+            // 3ds Max bone orientation: the keys through the node's bind
+            // rotations (orientBonesAlongChains); the rest as before.
+            const BoneFrame& frame = nodeFrames[na.nodeIndex];
+            const bool oriented = maxBones && frame.active;
+
             if (opts.core.importRotation && !na.rotation.empty()) {
                 ir::QuatTrack rotTrack = na.rotation;
                 insertSequenceBoundaryKeys(rotTrack, irModel.sequences);
                 bakeCurvedRotation(rotTrack, irModel.sequences);
-                insertRotationKeys(node, rotTrack, stubRot);
+                if (oriented) {
+                    orientRotationTrack(rotTrack, frame, keyConvention);
+                    insertRotationKeys(node, rotTrack, orientRotation(stubRot, frame, keyConvention));
+                } else {
+                    insertRotationKeys(node, rotTrack, stubRot);
+                }
             }
 
             // Translation: add localPos to every key value + stub
             if (opts.core.importTranslation && !na.translation.empty()) {
                 ir::Vec3Track adjustedTrack = na.translation;
-                offsetTrack(adjustedTrack, localPos);
-                insertSequenceBoundaryKeys(adjustedTrack, irModel.sequences);
+                if (oriented) {
+                    offsetTrack(adjustedTrack, fileLocalPos[na.nodeIndex]);
+                    insertSequenceBoundaryKeys(adjustedTrack, irModel.sequences);
+                    orientTranslationTrack(adjustedTrack, frame);
+                } else {
+                    offsetTrack(adjustedTrack, localPos);
+                    insertSequenceBoundaryKeys(adjustedTrack, irModel.sequences);
+                }
                 insertTranslationKeys(node, adjustedTrack, localPos);
             }
 
@@ -3549,6 +4102,8 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             if (opts.core.importScale && !na.scale.empty()) {
                 ir::Vec3Track scaleTrack = na.scale;
                 insertSequenceBoundaryKeys(scaleTrack, irModel.sequences);
+                // Unchanged when oriented: only uniform scale tracks are on
+                // turned bones (orientBonesAlongChains).
                 insertScaleKeys(node, scaleTrack, Point3(1.0f, 1.0f, 1.0f));
             }
         }

@@ -41,6 +41,10 @@ struct CoreImportOptions {
 
     // ── Helper Options ──
     bool importHelpersAsPointHelpers = true;
+    // Bones point along their chain, with a length, like bones built in
+    // 3ds Max; off: identity orientation at the pivot, as Warcraft III keeps
+    // them. The animation is the same either way (orientBonesAlongChains).
+    bool maxBoneOrientation = false;
 
     // ── Optimization ──
     bool optimizeGeometry = true;

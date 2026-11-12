@@ -123,6 +123,8 @@ BEGIN
                     BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
     CONTROL         "Optimize Bones and Helpers", IDC_CHK_OPT_BONES, "Button",
                     BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
+    CONTROL         "Bones point along the chain (3ds Max)", IDC_CHK_MAX_BONES, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 10, 10
 
     // ── Footer (the texture archive status is painted by the dialog) ──
     CONTROL         "Import", IDOK, "Button",
