@@ -1071,15 +1071,21 @@ static void bakeCurvedRotation(ir::QuatTrack& track,
 //   rotation     O_n * R * O_p^-1        (each key; slerp is unchanged by a
 //                                         fixed rotation on either side)
 //   translation  t * O_p^-1              (values and tangents, linear)
-//   scale        O_n * S * O_n^-1 = S    for a uniform scale. A non-uniform
-//                                         one would need a scale axis, which
-//                                         Max's Bezier Scale keys do not apply
-//                                         (measured: the key's axis is
-//                                         ignored), so a bone with a
-//                                         non-uniform scale track keeps the
-//                                         world orientation.
-// The exporter reads both back through the bind TMs, as for any bone built
-// in Max (anim_dispatcher: bind delta rotation, parent-rotated translation).
+//   scale        O_n * S * O_n^-1        S itself for a uniform scale; a
+//                                         non-uniform one gets the scale axis
+//                                         of the ScaleValue (axis O_n, read
+//                                         from a real controller,
+//                                         readMaxKeyConvention). Measured:
+//                                         Linear and TCB Scale apply the axis,
+//                                         Bezier Scale only with 2+ keys, so a
+//                                         lone key goes on Linear Scale. If
+//                                         the axis cannot be confirmed, a bone
+//                                         with a non-uniform scale track keeps
+//                                         the world orientation.
+// The exporter reads all three back through the bind TMs, as for any bone
+// built in Max (anim_dispatcher: bind delta rotation, parent-rotated
+// translation; rotation and scale from the bind frame when the scale has an
+// axis of its own).
 
 // How Max turns a rotation key into a matrix. Read from a real controller
 // once rather than assumed: a wrong guess would turn every converted key the
@@ -1087,6 +1093,8 @@ static void bakeCurvedRotation(ir::QuatTrack& track,
 struct MaxKeyConvention {
     bool valid = false;
     bool rotationConjugate = false;   // key matrix = MakeMatrix(conj(key))
+    bool scaleAxis = false;           // a scale key's axis is applied
+    bool scaleAxisConjugate = false;  // axis for O = conj(Quat(O))
 };
 
 // Identity in every SDK: Matrix3() leaves it uninitialized up to 2016 and
@@ -1113,6 +1121,36 @@ static bool sameRotation(const Matrix3& a, const Matrix3& b)
     for (int r = 0; r < 3; ++r)
         for (int c = 0; c < 3; ++c)
             if (std::fabs(a.GetRow(r)[c] - b.GetRow(r)[c]) > 1e-4f) return false;
+    return true;
+}
+
+static bool sameMatrix3x3(const Matrix3& a, const Matrix3& b)
+{
+    return sameRotation(a, b);   // element-wise, 1e-4
+}
+
+// The matrix a Linear Scale controller holding `value` makes. Two keys: with a
+// single key Max's Bezier Scale ignores the key's axis (measured); Linear
+// applies it either way, and two equal keys keep the test independent of that.
+static bool linearScaleMatrix(const ScaleValue& value, Matrix3& out)
+{
+    Control* c = static_cast<Control*>(
+        CreateInstance(CTRL_SCALE_CLASS_ID, Class_ID(LININTERP_SCALE_CLASS_ID, 0)));
+    IKeyControl* kc = c ? GetKeyControlInterface(c) : nullptr;
+    if (!kc) { if (c) c->MaybeAutoDelete(); return false; }
+    kc->SetNumKeys(0);
+    ILinScaleKey k;
+    memset(&k, 0, sizeof(k));
+    k.val = value;
+    kc->AppendKey(&k);
+    k.time = 10 * GetTicksPerFrame();
+    kc->AppendKey(&k);
+    kc->SortKeys();
+    out = identity3();
+    Interval iv = FOREVER;
+    c->GetValue(5 * GetTicksPerFrame(), &out, iv, CTRL_RELATIVE);
+    c->MaybeAutoDelete();
+    out.NoTrans();
     return true;
 }
 
@@ -1145,7 +1183,32 @@ static MaxKeyConvention readMaxKeyConvention()
     else return conv;
 
     conv.valid = true;
+
+    // Scale axis: which ScaleValue axis makes the scale O * S * O^-1, the
+    // file's world-axis scale S seen from a bone turned by O (see above).
+    Matrix3 s = identity3();
+    const Point3 sv(2.0f, 1.0f, 0.5f);
+    s.SetRow(0, Point3(sv.x, 0.0f, 0.0f));
+    s.SetRow(1, Point3(0.0f, sv.y, 0.0f));
+    s.SetRow(2, Point3(0.0f, 0.0f, sv.z));
+    const Matrix3 want = q * s * Inverse(q);
+    Matrix3 got;
+    if (linearScaleMatrix(ScaleValue(sv, test), got) && sameMatrix3x3(got, want)) {
+        conv.scaleAxis = true;
+        conv.scaleAxisConjugate = false;
+    } else if (linearScaleMatrix(ScaleValue(sv, conjugated(test)), got) && sameMatrix3x3(got, want)) {
+        conv.scaleAxis = true;
+        conv.scaleAxisConjugate = true;
+    }
     return conv;
+}
+
+// The ScaleValue axis for a bone turned by `node` (its world bind rotation).
+static Quat scaleAxisFor(const Matrix3& node, const MaxKeyConvention& c)
+{
+    Quat q(node);
+    q.Normalize();
+    return c.scaleAxisConjugate ? conjugated(q) : q;
 }
 
 // A node's orientation for its keys: its own and its parent's world bind
@@ -1214,7 +1277,8 @@ static bool isNonUniformScale(const ir::Vec3Track& track)
 
 // Turns the real bones along their chains (see above). Runs on the finished
 // skeleton, before anything else is attached to it; keeps every pivot.
-static void orientBonesAlongChains(const ir::IRModel& irModel, const std::vector<INode*>& nodeMap)
+static void orientBonesAlongChains(const ir::IRModel& irModel, const std::vector<INode*>& nodeMap,
+                                   bool scaleAxis)
 {
     struct Item {
         INode* node = nullptr;
@@ -1229,10 +1293,20 @@ static void orientBonesAlongChains(const ir::IRModel& irModel, const std::vector
     };
     std::vector<Item> items;
     std::map<INode*, int> indexOf;
-    // Non-uniform scale cannot follow a turned bone (see above).
+    // Non-uniform scale follows a turned bone only through the scale axis
+    // (see above); without it such a bone keeps the world orientation. So
+    // does one whose non-uniform scale reaches 0 or turns negative on an
+    // axis: flattened that way, the local TM no longer splits into scale and
+    // rotation in the bone's frame, and the exporter read a wrong rotation
+    // (035 az-zidan, a glow scaled (1, 1.2, 0): 54 units off in Death).
     std::set<int32_t> nonUniform;
-    for (const auto& na : irModel.nodeAnimations)
-        if (isNonUniformScale(na.scale)) nonUniform.insert(na.nodeIndex);
+    for (const auto& na : irModel.nodeAnimations) {
+        if (!isNonUniformScale(na.scale)) continue;
+        bool flat = false;
+        for (const auto& k : na.scale.keys)
+            if (k.value.x < 0.01f || k.value.y < 0.01f || k.value.z < 0.01f) flat = true;
+        if (!scaleAxis || flat) nonUniform.insert(na.nodeIndex);
+    }
     for (const auto& bone : irModel.bones) {
         if (bone.nodeIndex < 0 || bone.nodeIndex >= static_cast<int32_t>(nodeMap.size())) continue;
         INode* n = nodeMap[bone.nodeIndex];
@@ -1276,6 +1350,26 @@ static void orientBonesAlongChains(const ir::IRModel& irModel, const std::vector
         for (int c : it.children) it.subtree += items[c].subtree;
     }
 
+    // Where each bone's skinned vertices sit (weighted centre, bind pose):
+    // the direction for a bone without a child to point at. Closer than 1%
+    // of the skeleton it says nothing (a toe weighted over the whole foot).
+    std::map<INode*, Point3> skinCentre;
+    {
+        std::map<int32_t, std::pair<Point3, float>> sum;
+        for (const auto& mesh : irModel.meshes)
+            for (const auto& v : mesh.vertices)
+                for (const auto& inf : v.skinInfluences) {
+                    if (inf.weight <= 0.0f) continue;
+                    auto& s = sum[inf.boneIndex];
+                    s.first += v.position * inf.weight;
+                    s.second += inf.weight;
+                }
+        for (const auto& [idx, s] : sum)
+            if (s.second > 0.0f && idx >= 0 && idx < static_cast<int32_t>(nodeMap.size()) && nodeMap[idx])
+                skinCentre[nodeMap[idx]] = s.first / s.second;
+    }
+    const float minReach = size * 0.01f;
+
     auto alongX = [](const Point3& x) {
         const Point3 ref = std::fabs(x.z) < 0.9f ? Point3(0.0f, 0.0f, 1.0f) : Point3(0.0f, 1.0f, 0.0f);
         const Point3 z = Normalize(ref - x * DotProd(ref, x));
@@ -1292,18 +1386,60 @@ static void orientBonesAlongChains(const ir::IRModel& irModel, const std::vector
         // The main child: the most nodes below it, then the farthest.
         int best = -1;
         float bestDist = 0.0f;
-        for (int c : it.children) {
-            const float d = Length(items[c].pivot - it.pivot);
-            if (d <= eps) continue;
-            if (best < 0 || items[c].subtree > items[best].subtree ||
-                (items[c].subtree == items[best].subtree && d > bestDist)) {
-                best = c;
-                bestDist = d;
+        auto pick = [&](auto accept) {
+            int b = -1;
+            float bd = 0.0f;
+            for (int c : it.children) {
+                const float d = Length(items[c].pivot - it.pivot);
+                if (d <= eps || !accept(c, d)) continue;
+                if (b < 0 || items[c].subtree > items[b].subtree ||
+                    (items[c].subtree == items[b].subtree && d > bd)) {
+                    b = c;
+                    bd = d;
+                }
+            }
+            best = b;
+            bestDist = bd;
+        };
+        pick([](int, float) { return true; });
+        // Unless it turns back against the way the chain comes in while
+        // another child carries the chain on: Hidan's neck has both
+        // clavicles (whole arms below them) and the head; it pointed at the
+        // left clavicle, down and to the side.
+        if (best >= 0 && it.parent >= 0) {
+            const Point3 in = it.pivot - items[it.parent].pivot;
+            const float inLen = Length(in);
+            if (inLen > eps) {
+                const Point3 dirIn = in / inLen;
+                auto along = [&](int c, float d) {
+                    return DotProd((items[c].pivot - it.pivot) / d, dirIn);
+                };
+                if (along(best, bestDist) < 0.3f) {
+                    const int keep = best;
+                    const float keepDist = bestDist;
+                    pick([&](int c, float d) { return along(c, d) >= 0.7f; });
+                    if (best < 0) { best = keep; bestDist = keepDist; }
+                }
             }
         }
         if (best >= 0) {
             it.rot = alongX((items[best].pivot - it.pivot) / bestDist);
             it.length = bestDist;
+            it.oriented = true;
+        } else if (const auto c = skinCentre.find(it.node); c != skinCentre.end() &&
+                   Length(c->second - it.pivot) >= minReach) {
+            // No child to point at (a chain's end, or helper bones that hang
+            // side by side from one parent): toward the vertices the bone
+            // moves. Copying the parent's direction pointed acce01 away from
+            // its whole mesh (Hidan).
+            const Point3 d = c->second - it.pivot;
+            const float len = Length(d);
+            it.rot = alongX(d / len);
+            // Just past the centre of its vertices, and no longer than the
+            // bone it hangs from (twice the distance stuck out of the mesh).
+            it.length = len * 1.2f;
+            if (it.parent >= 0 && items[it.parent].oriented)
+                it.length = std::min(it.length, std::max(items[it.parent].length, len));
             it.oriented = true;
         } else if (it.parent >= 0 && items[it.parent].oriented) {
             // A chain's end continues its parent bone.
@@ -1328,16 +1464,33 @@ static void orientBonesAlongChains(const ir::IRModel& irModel, const std::vector
         it.node->SetNodeTM(0, tm);
     }
 
+    // Display. createBoneNode turns the link display on with "link replaces
+    // object" (showLinksOnly), so Max draws only the links and the bone's
+    // own length/width/height never show. An oriented bone draws itself
+    // along its chain instead: no links. A bone left in world orientation
+    // keeps its links, which show where its children are, and gets a size
+    // that shows; its length stays short, as it points along world X.
+    // Node properties showLinks/showLinksOnly: MAXScript Help, "General Node
+    // Properties"; BoneGeometry length/width/height: "Bone : Helper".
+    const float markerWidth = size * 0.012f;
     std::wstringstream ss;
     ss.imbue(std::locale::classic());
     ss << L"(";
     for (const auto& it : items) {
-        if (!it.oriented) continue;
-        const float len = std::max(it.length, size * 0.005f);
-        const float w = std::min(std::max(len * 0.2f, size * 0.004f), size * 0.03f);
         ss << L"(local n = maxOps.getNodeByHandle " << it.node->GetHandle()
-           << L"; if n != undefined and classOf n == BoneGeometry do (n.length = " << len
-           << L"; n.width = " << w << L"; n.height = " << w << L"));";
+           << L"; if n != undefined and classOf n == BoneGeometry do (";
+        if (it.oriented) {
+            const float len = std::max(it.length, size * 0.005f);
+            // Thickness from the bone's own length: the skeleton's size
+            // (a scythe and its rope included) made fingers as thick as legs.
+            const float w = std::min(std::max(len * 0.12f, size * 0.002f), size * 0.02f);
+            ss << L"n.length = " << len << L"; n.width = " << w << L"; n.height = " << w
+               << L"; n.showLinks = false; n.showLinksOnly = false";
+        } else {
+            ss << L"n.length = " << markerWidth * 2.0f << L"; n.width = " << markerWidth
+               << L"; n.height = " << markerWidth << L"; n.showLinksOnly = false";
+        }
+        ss << L"));";
     }
     ss << L"ok)";
     const std::wstring script = ss.str();
@@ -1839,8 +1992,10 @@ void insertRotationKeys(INode* node, const ir::QuatTrack& fileTrack,
         setBindAndLoopLayers(node, TransformChannel::Rotation, makeBindRotation(stubVal), rotCtrl);
 }
 
+// axis: the ScaleValue axis for a turned bone's non-uniform scale (3ds Max
+// bone orientation), nullptr for none.
 void insertScaleKeys(INode* node, const ir::Vec3Track& fileTrack,
-                     const Point3& stubVal)
+                     const Point3& stubVal, const Quat* axis)
 {
     if (fileTrack.empty()) return;
     const ir::Vec3Track loopTrack = globalSequenceLoopTrack(fileTrack);
@@ -1850,11 +2005,23 @@ void insertScaleKeys(INode* node, const ir::Vec3Track& fileTrack,
     Control* tmCtrl = node->GetTMController();
     if (!tmCtrl) return;
 
+    int numKeys = static_cast<int>(track.keys.size());
+
+    // Stub rule: sequence-driven tracks get a Frame-0 stub (bind-pose scale);
+    // global-sequence tracks DO NOT (matches NeoDex behavior, prevents
+    // unwanted interpolation from stub scale to first real key).
+    bool isGlobalSeq = (track.globalSequenceIndex >= 0);
+    bool needStub = !isGlobalSeq && (numKeys == 0 || track.keys[0].time > 0);
+
     // A typed scale controller written through IKeyControl, like position:
     // SetValue on the default Bezier Scale let Max pick its own tangents for
     // every key, so Linear, DontInterp and the file's Bezier/Hermite curves
     // all played as auto-smooth curves. Hermite sits on bezier handles.
-    const bool linear = (track.interpolation == ir::InterpolationType::Linear);
+    // A lone key with an axis goes on Linear Scale: Bezier Scale ignores the
+    // axis of a single key (measured); one key is constant either way.
+    const bool lone = numKeys + (needStub ? 1 : 0) < 2;
+    const bool linear = (track.interpolation == ir::InterpolationType::Linear) ||
+                        (axis && lone);
     const Class_ID cid = linear ? Class_ID(LININTERP_SCALE_CLASS_ID, 0)
                                 : Class_ID(HYBRIDINTERP_SCALE_CLASS_ID, 0);
     Control* scaleCtrl = static_cast<Control*>(CreateInstance(CTRL_SCALE_CLASS_ID, cid));
@@ -1864,27 +2031,23 @@ void insertScaleKeys(INode* node, const ir::Vec3Track& fileTrack,
     IKeyControl* ikc = GetKeyControlInterface(scaleCtrl);
     if (!ikc) return;
 
-    int numKeys = static_cast<int>(track.keys.size());
-
-    // Stub rule: sequence-driven tracks get a Frame-0 stub (bind-pose scale);
-    // global-sequence tracks DO NOT (matches NeoDex behavior, prevents
-    // unwanted interpolation from stub scale to first real key).
-    bool isGlobalSeq = (track.globalSequenceIndex >= 0);
-    bool needStub = !isGlobalSeq && (numKeys == 0 || track.keys[0].time > 0);
+    auto scaleValue = [axis](const Point3& v) {
+        return axis ? ScaleValue(v, *axis) : ScaleValue(v);
+    };
 
     if (linear) {
         if (needStub) {
             ILinScaleKey k;
             memset(&k, 0, sizeof(k));
             k.time = 0;
-            k.val = ScaleValue(stubVal);
+            k.val = scaleValue(stubVal);
             ikc->AppendKey(&k);
         }
         for (int i = 0; i < numKeys; ++i) {
             ILinScaleKey k;
             memset(&k, 0, sizeof(k));
             k.time = track.keys[i].time;
-            k.val = ScaleValue(track.keys[i].value);
+            k.val = scaleValue(track.keys[i].value);
             ikc->AppendKey(&k);
         }
     } else { // Bezier, Hermite, None (step)
@@ -1894,7 +2057,7 @@ void insertScaleKeys(INode* node, const ir::Vec3Track& fileTrack,
             IBezScaleKey k;
             memset(&k, 0, sizeof(k));
             k.time = 0;
-            k.val = ScaleValue(stubVal);
+            k.val = scaleValue(stubVal);
             if (step) {
                 SetInTanType(k.flags, BEZKEY_STEP);
                 SetOutTanType(k.flags, BEZKEY_STEP);
@@ -1907,7 +2070,7 @@ void insertScaleKeys(INode* node, const ir::Vec3Track& fileTrack,
             IBezScaleKey k;
             memset(&k, 0, sizeof(k));
             k.time = track.keys[i].time;
-            k.val = ScaleValue(track.keys[i].value);
+            k.val = scaleValue(track.keys[i].value);
             if (step) {
                 SetInTanType(k.flags, BEZKEY_STEP);
                 SetOutTanType(k.flags, BEZKEY_STEP);
@@ -3643,8 +3806,10 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             maxBones = keyConvention.valid;
             ILOG << "Max bone orientation: "
                  << (maxBones ? "on" : "off (key convention not recognised)")
-                 << " rotConj=" << keyConvention.rotationConjugate << "\n";
-            if (maxBones) orientBonesAlongChains(irModel, nodeMap);
+                 << " rotConj=" << keyConvention.rotationConjugate
+                 << " scaleAxis=" << keyConvention.scaleAxis
+                 << " scaleConj=" << keyConvention.scaleAxisConjugate << "\n";
+            if (maxBones) orientBonesAlongChains(irModel, nodeMap, keyConvention.scaleAxis);
         }
     }
 
@@ -4102,9 +4267,15 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             if (opts.core.importScale && !na.scale.empty()) {
                 ir::Vec3Track scaleTrack = na.scale;
                 insertSequenceBoundaryKeys(scaleTrack, irModel.sequences);
-                // Unchanged when oriented: only uniform scale tracks are on
-                // turned bones (orientBonesAlongChains).
-                insertScaleKeys(node, scaleTrack, Point3(1.0f, 1.0f, 1.0f));
+                // A turned bone's non-uniform scale keeps the world axes
+                // through the scale axis; a uniform one is the same either way.
+                Quat axis;
+                const bool withAxis = oriented && keyConvention.scaleAxis &&
+                                      !isIdentityRotation(frame.node) &&
+                                      isNonUniformScale(na.scale);
+                if (withAxis) axis = scaleAxisFor(frame.node, keyConvention);
+                insertScaleKeys(node, scaleTrack, Point3(1.0f, 1.0f, 1.0f),
+                                withAxis ? &axis : nullptr);
             }
         }
 

@@ -115,6 +115,28 @@ static Matrix3 unitSized(const Matrix3& tm) {
     return m;
 }
 
+// The rotation/scale part with every row brought to length 1 (a zero row is
+// left as it is).
+static Matrix3 unitRows(const Matrix3& tm) {
+    Matrix3 m = tm;
+    m.NoTrans();
+    for (int i = 0; i < 3; ++i) {
+        const float len = Length(m.GetRow(i));
+        if (len > 1e-12f) m.SetRow(i, m.GetRow(i) / len);
+    }
+    return m;
+}
+
+// How far the rows of a TM are from perpendicular: the largest |cos| between
+// two of them. 0 for rotation * scale along the TM's own axes; a scale along
+// other axes (a ScaleValue axis) shears the rows.
+static float rowShear(const Matrix3& tm) {
+    const Matrix3 m = unitRows(tm);
+    const Point3 r0 = m.GetRow(0), r1 = m.GetRow(1), r2 = m.GetRow(2);
+    return (std::max)({std::fabs(DotProd(r0, r1)), std::fabs(DotProd(r0, r2)),
+                       std::fabs(DotProd(r1, r2))});
+}
+
 // Whether a TM mirrors: negative determinant of its rotation/scale part
 // (measured at unit size, so a tiny scale cannot underflow it to 0).
 static bool isMirrored(const Matrix3& tm) {
@@ -888,7 +910,71 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
             }
         }
 
+        // Scale with an axis of its own. KGSC scales along the MDX node
+        // frame - the world axes at bind - before the rotation. A bone that
+        // is turned at bind (the importer's 3ds Max bone orientation) keeps a
+        // non-uniform scale on those axes through the ScaleValue axis, so its
+        // local TM is O_n * S * R * O_p^-1 with S along the world: the rows
+        // shear, a row length mixes the axes and the normalized rows are no
+        // rotation. Brought into the bind frame, O_n^-1 * L * O_p = S * R
+        // again: rows S_i * R_i, so the row lengths are KGSC and the unit rows
+        // the rotation delta. Used for a node only when its scale keys carry
+        // an axis and that frame takes the shear out at every checked time;
+        // every other node is sampled as before.
+        const Matrix3 bindFrameNode = unitRows(maxNode->GetNodeTM(0));
+        const Matrix3 bindFrameParent = (parentNode && !parentNode->IsRootNode())
+            ? unitRows(parentNode->GetNodeTM(0)) : Matrix3(Point3(1, 0, 0), Point3(0, 1, 0),
+                                                           Point3(0, 0, 1), Point3(0, 0, 0));
+        const Matrix3 invBindFrameNode = Inverse(bindFrameNode);
+        const auto inBindFrame = [&](const Matrix3& local) {
+            Matrix3 m = local;
+            m.NoTrans();
+            return invBindFrameNode * m * bindFrameParent;
+        };
+        const auto localTMAt = [&](TimeValue t) {
+            const Matrix3 nodeTM = maxNode->GetNodeTM(t);
+            if (parentNode && !parentNode->IsRootNode())
+                return unitSized(nodeTM) * Inverse(unitSized(parentNode->GetNodeTM(t)));
+            return nodeTM;
+        };
+        const bool scaleInBindFrame = [&] {
+            Control* sc = tmCtrl ? tmCtrl->GetScaleController() : nullptr;
+            if (useAbsoluteRotScale || bindMirrored || !sc) return false;
+            // Only a node turned at bind: an unturned one is sampled exactly
+            // as before, whatever axis Max keeps on its scale (a negative
+            // scale comes back from a scale controller as a half-turn axis).
+            bool turned = false;
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 3; ++c)
+                    if (std::fabs(bindFrameNode.GetRow(r)[c] - (r == c ? 1.0f : 0.0f)) > 1e-4f)
+                        turned = true;
+            if (!turned) return false;
+            if (rowShear(bindFrameNode) > 1e-4f || rowShear(bindFrameParent) > 1e-4f) return false;
+            if (isMirrored(bindFrameNode) || isMirrored(bindFrameParent)) return false;
+            std::vector<TimeValue> times{0};
+            for (int i = 0; i < sc->NumKeys(); ++i) times.push_back(sc->GetKeyTime(i));
+            const Interval range = GetCOREInterface()->GetAnimRange();
+            for (int i = 0; i <= 32; ++i)
+                times.push_back(range.Start() + static_cast<TimeValue>(
+                    static_cast<long long>(range.End() - range.Start()) * i / 32));
+            bool axis = false;
+            for (TimeValue t : times) {
+                ScaleValue sv;
+                Interval iv = FOREVER;
+                sc->GetValue(t, &sv, iv, CTRL_ABSOLUTE);
+                if (std::fabs(sv.q.w) < 0.99999f) axis = true;
+                const Matrix3 local = localTMAt(t);
+                if (!hasRotation(local)) continue;
+                const Matrix3 m = inBindFrame(local);
+                // Flattened on one bind axis (a scale of 0 there): the frame
+                // gives no rotation, the old sampling handles that instant.
+                if (!hasRotation(m) || rowShear(m) > 1e-3f) return false;
+            }
+            return axis;
+        }();
+
         ALOG << "  node[" << nodeIdx << "] '" << irNode.name << "'"
+             << " scaleInBindFrame=" << scaleInBindFrame
              << " bindPos=(" << bindPos.x << "," << bindPos.y << "," << bindPos.z << ")"
              << " bindRot=(" << bindRot.x << "," << bindRot.y << "," << bindRot.z << "," << bindRot.w << ")"
              << " bindScl=(" << bindScl.x << "," << bindScl.y << "," << bindScl.z << ")"
@@ -1179,6 +1265,12 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                         // A temporary mirror is carried by a negative KGSC.
                         if (isMirrored(local) != bindMirrored)
                             local = negated(local);
+                        // A scale with its own axis: the rotation from the
+                        // bind frame, put back as the local rotation the
+                        // formula below expects (see scaleInBindFrame).
+                        if (scaleInBindFrame)
+                            local = bindFrameNode * unitRows(inBindFrame(local)) *
+                                    Inverse(bindFrameParent);
                         localRot = extractRotation(local);
                         return isFiniteQuat(localRot);
                     };
@@ -1339,6 +1431,18 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                     return w;
                 };
 
+                // A scale with its own axis (see scaleInBindFrame): the row
+                // lengths in the bind frame are along the world axes already,
+                // relative to their bind lengths there.
+                Point3 bindFrameScale(1.0f, 1.0f, 1.0f);
+                if (scaleInBindFrame) {
+                    const Matrix3 b = inBindFrame(bindLocalTM);
+                    for (int i = 0; i < 3; ++i) {
+                        const float len = Length(b.GetRow(i));
+                        if (len >= 0.0001f) bindFrameScale[i] = len;
+                    }
+                }
+
                 // KGSC value at t: local scale relative to the bind scale.
                 auto scaleAt = [&](TimeValue t) {
                     Matrix3 nodeTM = maxNode->GetNodeTM(t);
@@ -1349,6 +1453,12 @@ void AnimDispatcher::bakeAll(ir::IRModel& irModel,
                     Matrix3 localTM = nodeTM * Inverse(parTM);
                     // A temporary mirror is a negative scale (see negated).
                     const float sign = isMirrored(localTM) != bindMirrored ? -1.0f : 1.0f;
+                    if (scaleInBindFrame) {
+                        const Matrix3 m = inBindFrame(localTM);
+                        return Point3(sign * Length(m.GetRow(0)) / bindFrameScale.x,
+                                      sign * Length(m.GetRow(1)) / bindFrameScale.y,
+                                      sign * Length(m.GetRow(2)) / bindFrameScale.z);
+                    }
                     return toWorldAxes(Point3(sign * Length(localTM.GetRow(0)) / bindSx * parentBindScale.x,
                                               sign * Length(localTM.GetRow(1)) / bindSy * parentBindScale.y,
                                               sign * Length(localTM.GetRow(2)) / bindSz * parentBindScale.z));
