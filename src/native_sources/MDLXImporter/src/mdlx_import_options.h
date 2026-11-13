@@ -45,6 +45,9 @@ struct CoreImportOptions {
     // 3ds Max; off: identity orientation at the pivot, as Warcraft III keeps
     // them. The animation is the same either way (orientBonesAlongChains).
     bool maxBoneOrientation = false;
+    // After the import: an IK rig on arms and legs, the animation moved onto it,
+    // held weapons linked to the hand (ik_rig.h). Every frame stays as imported.
+    bool buildIKRig = false;
 
     // ── Optimization ──
     bool optimizeGeometry = true;

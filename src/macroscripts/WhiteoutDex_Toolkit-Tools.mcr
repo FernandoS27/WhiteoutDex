@@ -243,3 +243,20 @@ macroScript WhiteoutDex_TextureAnimCreator
 		) catch (messageBox ((::WdxL.t "tac_open_error_msg") + "\n" + (getCurrentException())))
 	)
 )
+
+macroScript WhiteoutDex_IKRig
+	category:"WhiteoutDex Toolkit"
+	toolTip:"IK Rig"
+	buttonText:"IK Rig"
+(
+	on execute do
+	(
+		try
+		(
+			if ::WdxIKRig == undefined do
+				fileIn ((::WhiteoutDexInstallRoot) + "\\scripts\\post_startup_scripts\\IKRigCreator.ms")
+			try (destroyDialog ::WdxIKRig.mainRollout) catch()
+			createDialog ::WdxIKRig.mainRollout width:440 height:310 style:#(#style_titlebar, #style_border, #style_sysmenu, #style_minimizebox)
+		) catch (messageBox ("IK Rig\n" + (getCurrentException())))
+	)
+)

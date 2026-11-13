@@ -19,6 +19,15 @@ bool isSkippedHidden(INode* node) {
     return node->IsHidden() && !isHiddenLodGeoset(node);
 }
 
+// Scene helpers that never belong to the model: the IK Rig tool's driver
+// bones, IK chains and controls carry the user property WdxNoExport = 1.
+// Hidden alone did not protect them - unhidden, the drivers would export as
+// bones and the IK chain as a helper.
+bool isNoExport(INode* node) {
+    int v = 0;
+    return node->GetUserPropInt(_T("WdxNoExport"), v) && v != 0;
+}
+
 // True when something below the node exports: a visible descendant the
 // classifier does not ignore.
 bool hasExportableDescendant(INode* node, const NodeClassifier& classifier) {
@@ -26,7 +35,7 @@ bool hasExportableDescendant(INode* node, const NodeClassifier& classifier) {
     for (int i = 0; i < node->NumberOfChildren(); ++i) {
         INode* c = node->GetChildNode(i);
         if (!c) continue;
-        if (!isSkippedHidden(c) && classifier.classify(c, tag) != NodeCategory::Ignored)
+        if (!isSkippedHidden(c) && !isNoExport(c) && classifier.classify(c, tag) != NodeCategory::Ignored)
             return true;
         if (hasExportableDescendant(c, classifier))
             return true;
@@ -63,6 +72,15 @@ void SceneTraversal::visitNode(INode* node, int parentIndex,
     // in the hierarchy as a plain helper: no geometry, no emitter of its
     // own, but its animation, which the children follow in Max. Skipping it
     // linked them to the next visible ancestor and they lost that motion.
+    // Not part of the model at all: its children still are, linked to the
+    // next exported ancestor.
+    if (node && isNoExport(node)) {
+        int numChildren = node->NumberOfChildren();
+        for (int i = 0; i < numChildren; ++i)
+            visitNode(node->GetChildNode(i), parentIndex, classifier, result);
+        return;
+    }
+
     std::string customTag;
     NodeCategory cat = NodeCategory::Ignored;
     if (node && isSkippedHidden(node)) {

@@ -142,6 +142,9 @@ void loadImportOptionsFromINI(Interface* gi, MdlxImportOptions& opts) {
     auto maxBones = iniGetString(iniPath.c_str(), sec, L"MaxBoneOrientation");
     if (!maxBones.empty()) c.maxBoneOrientation = iniBool(maxBones);
 
+    auto ikRig = iniGetString(iniPath.c_str(), sec, L"BuildIKRig");
+    if (!ikRig.empty()) c.buildIKRig = iniBool(ikRig);
+
     // ── Optimization ──
     auto optGeo = iniGetString(iniPath.c_str(), sec, L"OptimizeGeometry");
     if (!optGeo.empty()) c.optimizeGeometry = iniBool(optGeo);

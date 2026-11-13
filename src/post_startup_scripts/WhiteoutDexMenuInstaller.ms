@@ -93,6 +93,7 @@ fn InstallWhiteoutDexMenu =
 		addAction whiteoutDexMain "WhiteoutDex_AnimControllers"   locKey:"menu_anim_controllers"
 		addAction whiteoutDexMain "WhiteoutDex_AnimSkin"          locKey:"menu_anim_skin"
 		addAction whiteoutDexMain "WhiteoutDex_AnimScaler"        locKey:"menu_anim_scaler"
+		addAction whiteoutDexMain "WhiteoutDex_IKRig"             locKey:"menu_ik_rig"
 		addSep whiteoutDexMain
 		addAction whiteoutDexMain "WhiteoutDex_SkinChanger"       locKey:"menu_skin_changer"
 		addAction whiteoutDexMain "WhiteoutDex_GridDummy"         locKey:"menu_grid_dummy"

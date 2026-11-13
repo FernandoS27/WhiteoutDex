@@ -177,7 +177,7 @@ constexpr int kModelRows[] = {
 };
 
 constexpr int kOptionRows[] = {
-    IDC_CHK_POINT_HELPERS, IDC_CHK_OPT_GEOMETRY, IDC_CHK_OPT_BONES, IDC_CHK_MAX_BONES,
+    IDC_CHK_POINT_HELPERS, IDC_CHK_OPT_GEOMETRY, IDC_CHK_OPT_BONES, IDC_CHK_MAX_BONES, IDC_CHK_IK_RIG,
 };
 
 // Every checkbox a Fast Setting decides (same set as before the redesign).
@@ -243,6 +243,7 @@ const CoreRow kCoreRows[] = {
     {IDC_CHK_OPT_GEOMETRY,       &ir::CoreImportOptions::optimizeGeometry,         L"OptimizeGeometry"},
     {IDC_CHK_OPT_BONES,          &ir::CoreImportOptions::optimizeBonesAndHelpers,  L"OptimizeBonesAndHelpers"},
     {IDC_CHK_MAX_BONES,          &ir::CoreImportOptions::maxBoneOrientation,       L"MaxBoneOrientation"},
+    {IDC_CHK_IK_RIG,             &ir::CoreImportOptions::buildIKRig,               L"BuildIKRig"},
 };
 
 // ============================================================================
@@ -931,6 +932,7 @@ constexpr wdx::l10n::DialogString kImportStrings[] = {
     {IDC_CHK_OPT_GEOMETRY, "imp_optimize_geometry_chk"},
     {IDC_CHK_OPT_BONES, "imp_optimize_bones_and_helpers_chk"},
     {IDC_CHK_MAX_BONES, "imp_max_bones_chk"},
+    {IDC_CHK_IK_RIG, "imp_ik_rig_chk"},
 
     {IDOK, "imp_import_btn"},
     {IDCANCEL, "common_cancel_btn"},

@@ -301,6 +301,14 @@ bool hasValidPRS(INode* node) {
     if (isBipedOrCATNode(node)) return true;
     if (isIKNode(node))         return true;
     if (isWdxPluginNode(node))  return true;
+    // The IK Rig tool's bones turn by [IK constraint, Offset, Twist]; the
+    // exporter samples them on every frame like any constrained node. A "fix"
+    // would bake the rig away.
+    {
+        MSTR rigRole;
+        if (node->GetUserPropString(_T("WdxIKRigBone"), rigRole) && rigRole.Length() > 0)
+            return true;
+    }
 
     Control* tm = node->GetTMController();
     if (!tm) return false;
@@ -487,6 +495,9 @@ void collectBoneControllerProblems(INode* root, std::vector<Problem>& out) {
         if (n == root) return;
         if (!isBoneLikeNode(n)) return;
         if (hasValidPRS(n))     return;
+        // Not exported at all (IK Rig drivers, chains, controls).
+        int noExport = 0;
+        if (n->GetUserPropInt(_T("WdxNoExport"), noExport) && noExport != 0) return;
 
         Problem p;
         p.type = ProblemType::InvalidController;

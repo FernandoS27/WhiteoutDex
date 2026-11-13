@@ -2,6 +2,7 @@
 #include "mdlx_importer_plugin.h"
 #include <wdx_text.h>
 #include "mdlx_import_options.h"
+#include "ik_rig.h"
 #include "mdlx_class_ids.h"
 #include "import_dialog.h"
 
@@ -5796,6 +5797,17 @@ int MdlxImporterPlugin::DoImport(const TCHAR* name, ImpInterface* ii,
             ILOG << "  Animation range (global seq) set to 0 - " << maxGS
                  << " ticks (" << (maxGS / GetTicksPerFrame()) << " frames)\n";
         }
+    }
+
+    // 15b. IK rig (import option): built last, on the finished scene with its
+    // animation range, so every frame it compares against is the imported one.
+    // A merge import leaves it to the IK Rig window: the scene holds two models.
+    if (opts.core.buildIKRig && !merging) {
+        const wdx::ikrig::Result rig = wdx::ikrig::build(nullptr, false);
+        ILOG << "\n==== IK Rig ====\n";
+        for (const auto& line : rig.lines) ILOG << narrow(line.c_str()) << "\n";
+        if (rig.limbs == 0)
+            for (const auto& line : rig.lines) reporter.warning(L"IK rig: " + line);
     }
 
     // Tell an open Sequence Manager to re-read the scene. We wrote the sequence

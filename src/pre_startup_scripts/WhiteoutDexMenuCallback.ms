@@ -92,6 +92,7 @@ struct WhiteoutDexMenuStruct
         addAction m "F153E90B-87F4-407B-A0E1-48CE33C8F66E" "WhiteoutDex_AnimControllers"   "menu_anim_controllers"
         addAction m "E41C9C72-BFA7-4FD6-8AB8-CC96A3C6F3CA" "WhiteoutDex_AnimSkin"          "menu_anim_skin"
         addAction m "C1B05DD5-1434-4B25-AD70-513D80EB84BC" "WhiteoutDex_AnimScaler"        "menu_anim_scaler"
+        addAction m "D8B74EF0-3153-4DF3-8A97-FB16DDADEBF7" "WhiteoutDex_IKRig"             "menu_ik_rig"
         m.CreateSeparator "16705361-29F9-4DE0-854D-BAA46C5B5681"
         addAction m "B59300EB-790A-4335-A11E-9C821DE7BFC7" "WhiteoutDex_SkinChanger"       "menu_skin_changer"
         addAction m "64B61757-30BC-45F4-8365-12EEAB81C876" "WhiteoutDex_GridDummy"         "menu_grid_dummy"
