@@ -45,6 +45,7 @@
 #include "assembly/mdx_sequence_boundary_keys.h"
 #include "assembly/mdx_bone_stretch.h"
 #include "assembly/mdx_non_finite.h"
+#include "assembly/mdx_geoset_split.h"
 
 #include "texture/texture_export.h"
 
@@ -806,6 +807,11 @@ int MdxExporterPlugin::DoExport(const TCHAR* name, ExpInterface*, Interface* gi,
     // reach the MDX; see mdx_non_finite.h.
     if (const size_t nonFinite = mdx_assembly::replaceNonFinite(irModel, reporter))
         ELOG << "Replaced " << nonFinite << " non-finite value(s)\n";
+
+    // Triangle corners are 16-bit: a mesh with more vertices than that
+    // reaches becomes several geosets; see mdx_geoset_split.h.
+    if (const size_t split = mdx_assembly::splitOversizedMeshes(irModel, reporter))
+        ELOG << "Split " << split << " mesh(es) over " << mdx_assembly::kMaxGeosetVertices << " vertices\n";
 
     // Build
     ELOG << "\n==== Model Build ====\n"; EFLUSH;
