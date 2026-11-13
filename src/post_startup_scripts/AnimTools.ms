@@ -1662,10 +1662,23 @@ struct WdxAnimTools
             ); return true ) catch() )
             false
         )
+        -- Every scale key of the controller times the factor. ScaleXYZ (three float
+        -- tracks) is what Max's FBX import and AnimMerge give a root: with only
+        -- bezier_scale / linear_scale handled, a Phoenix FBX root kept its scale
+        -- while its position keys grew 20x, so the model moved instead of growing.
+        fn scaleScaleCtrl sclCtrl factor =
+        (
+            local cn = classOf sclCtrl
+            if cn == bezier_scale or cn == linear_scale or cn == tcb_scale then
+            ( for k = 1 to (numKeys sclCtrl) do (getKey sclCtrl k).value *= [factor, factor, factor]; true )
+            else if cn == ScaleXYZ then
+            ( for axis = 1 to 3 do try ( local sub = sclCtrl[axis].controller; for k = 1 to (numKeys sub) do (getKey sub k).value *= factor ) catch(); true )
+            else if cn == scale_list then
+            ( local ok = true; for i = 1 to sclCtrl.count do ( local sub = sclCtrl[i].controller; if sub != undefined and (numKeys sub) != 0 do ok = (scaleScaleCtrl sub factor) and ok ); ok )
+            else false
+        )
         fn scaleScaleKeys obj factor =
-        ( try ( local sclCtrl = obj.scale.controller; local cn = classOf sclCtrl;
-            if cn == bezier_scale or cn == linear_scale do ( for k = 1 to (numKeys sclCtrl) do (getKey sclCtrl k).value *= [factor, factor, factor] )
-        ) catch() )
+        ( try ( scaleScaleCtrl obj.scale.controller factor ) catch ( false ) )
 
         -- Scale Roots
         fn scaleRootsAllKeys roots factor =
